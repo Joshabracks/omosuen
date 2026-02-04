@@ -1,7 +1,6 @@
 import {
   ComponentData,
   ComponentMethods,
-  ComponentOptions,
   ComponentMethod,
 } from "../types";
 import { nexus } from "./data";
@@ -228,16 +227,3 @@ export const Nexus: NexusMethods = {
     n._disposed = true;
   },
 };
-
-export function builder(options: ComponentOptions): nexus {
-  const nexus: nexus = {
-    type: "nexus",
-    name: options.name,
-    unique: false,
-    parent: null,
-    _disposed: false,
-    components: [],
-    paused: false,
-  };
-  return nexus;
-}

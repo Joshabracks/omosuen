@@ -1,9 +1,11 @@
 import { Nexus, builder as nexusBuilder } from "./nexus";
 import type { NexusMethods } from "./nexus/methods";
+import { UIOverlay, builder as uiOverlayBuilder } from "./ui-overlay";
+import type { UIOverlayMethods } from "./ui-overlay";
 
 let COMPONENT_COUNT = 0;
 
-export type COMPONENT_TYPE = "nexus";
+export type COMPONENT_TYPE = "nexus" | "ui-overlay";
 
 export interface ComponentOptions {
   name: string;
@@ -12,11 +14,13 @@ export interface ComponentOptions {
 type builder = (options: ComponentOptions) => ComponentData;
 
 const BUILDERS: Record<COMPONENT_TYPE, builder> = {
-  nexus: nexusBuilder
+  nexus: nexusBuilder,
+  "ui-overlay": uiOverlayBuilder
 };
 
 export const ComponentMethod: Record<COMPONENT_TYPE, ComponentMethods> = {
   nexus: Nexus,
+  "ui-overlay": UIOverlay
 };
 
 /**
@@ -24,7 +28,7 @@ export const ComponentMethod: Record<COMPONENT_TYPE, ComponentMethods> = {
  * This utility type removes the 'type' property and keeps all method signatures
  */
 type ExtractMethods<T> = {
-  [K in keyof T as K extends 'type' ? never : K]: T[K]
+  [K in keyof T as K extends "type" ? never : K]: T[K];
 };
 
 /**
@@ -61,7 +65,9 @@ const methodHandler = {
     const func = <T extends ComponentData>(c: T, ...args: any[]) => {
       const method: Function = cachedMethodMap[c.type];
       if (!method) {
-        console.error(`Method '${prop}' not found for component type '${c.type}'`);
+        console.error(
+          `Method '${prop}' not found for component type '${c.type}'`,
+        );
         return null;
       }
       return method(c, ...args);
@@ -85,7 +91,10 @@ const methodHandler = {
  * const found = $.getComponentByName(myNexus, "Enemy", true);
  * ```
  */
-export const $ = new Proxy(ComponentMethod, methodHandler) as unknown as ProxyMethodSignatures;
+export const $ = new Proxy(
+  ComponentMethod,
+  methodHandler,
+) as unknown as ProxyMethodSignatures;
 
 export interface ComponentData {
   name: string;

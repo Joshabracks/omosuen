@@ -55,7 +55,7 @@ This separation allows the engine to achieve excellent performance while remaini
 
 ### File Structure
 
-All components follow a **data-oriented design (DOD) pattern** with a 4-file directory structure that separates data from functionality:
+All components follow a **data-oriented design (DOD) pattern** with a 3-file directory structure that separates data from functionality:
 
 ```
 src/
@@ -63,19 +63,17 @@ src/
     ├── index.ts              # Re-exports all components
     ├── types.ts              # Core component types, factory, and $ Proxy
     └── {component-name}/
-        ├── index.ts          # Re-exports data, methods, builder, serializer
-        ├── data.ts           # Pure TypeScript interface (data only)
-        ├── methods.ts        # Static methods object + builder function
-        └── serializer.ts     # ComponentSerializer implementation
+        ├── index.ts          # Re-exports data and methods
+        ├── data.ts           # Pure interface + builder + serializer
+        └── methods.ts        # Static methods object
 ```
 
 **Example**: For a new `sprite` component:
 
 ```
-src/component/sprite/index.ts          # export * from './data', './methods', './serializer'
-src/component/sprite/data.ts           # Sprite interface (pure data)
-src/component/sprite/methods.ts        # SpriteMethods object + builder()
-src/component/sprite/serializer.ts     # SpriteSerializer
+src/component/sprite/index.ts          # export * from './data', './methods'
+src/component/sprite/data.ts           # Sprite interface + builder() + SpriteSerializer
+src/component/sprite/methods.ts        # SpriteMethods object
 ```
 
 **Key Principle**: Data and functionality are separated for optimal performance at scale (10,000+ entities)
@@ -104,7 +102,7 @@ const spawner = await newComponent("enemy-spawner", { name: "Boss Arena Spawner"
 
 ### Component Registration
 
-Every new component must be registered in `src/component/types.ts` with **three required registrations**:
+Every new component must be registered in `src/component/types.ts` with **four required registrations**:
 
 1. **Add to `COMPONENT_TYPE` union**:
 
@@ -115,9 +113,9 @@ export type COMPONENT_TYPE = "nexus" | "sprite" | "your-new-component";
 2. **Add methods object to `ComponentMethod` record**:
 
 ```typescript
-import { Nexus } from './nexus';
-import { Sprite } from './sprite';
-import { YourNewComponent } from './your-new-component';
+import { Nexus } from './nexus/methods';
+import { Sprite } from './sprite/methods';
+import { YourNewComponent } from './your-new-component/methods';
 
 export const ComponentMethod: Record<COMPONENT_TYPE, ComponentMethods> = {
   nexus: Nexus,
@@ -129,9 +127,9 @@ export const ComponentMethod: Record<COMPONENT_TYPE, ComponentMethods> = {
 3. **Add builder to `BUILDERS` record**:
 
 ```typescript
-import { builder as nexusBuilder } from './nexus';
-import { builder as spriteBuilder } from './sprite';
-import { builder as yourNewComponentBuilder } from './your-new-component';
+import { builder as nexusBuilder } from './nexus/data';
+import { builder as spriteBuilder } from './sprite/data';
+import { builder as yourNewComponentBuilder } from './your-new-component/data';
 
 const BUILDERS: Record<COMPONENT_TYPE, builder> = {
   nexus: nexusBuilder,
@@ -229,12 +227,13 @@ $.nonExistentMethod(myNexus);          // ✗ Compile error
 
 ### Required Exports
 
-Each component module must export **four essential elements** following the data-oriented design pattern:
+Each component module must export **three essential elements** following the data-oriented design pattern:
 
 1. **Pure Data Interface** (in `data.ts`) - Component data structure only
-2. **Static Methods Object** (in `methods.ts`) - All component methods + builder function
-3. **ComponentSerializer** (in `serializer.ts`) - Serialization logic
-4. **Methods Interface** (in `methods.ts`) - Exported for TypeScript typing
+2. **Builder Function** (in `data.ts`) - Creates pure data instances
+3. **ComponentSerializer** (in `data.ts`) - Serialization logic
+4. **Static Methods Object** (in `methods.ts`) - All component methods
+5. **Methods Interface** (in `methods.ts`) - Exported for TypeScript typing
 
 All elements are re-exported from the component's `index.ts` file for convenient importing.
 
@@ -242,8 +241,9 @@ All elements are re-exported from the component's `index.ts` file for convenient
 
 ```typescript
 // src/component/sprite/data.ts
-import { ComponentData } from '../types';
+import { ComponentData, ComponentOptions, ComponentSerializer } from '../types';
 
+// Pure data interface
 export interface sprite extends ComponentData {
   type: 'sprite';
   unique: false;
@@ -251,11 +251,52 @@ export interface sprite extends ComponentData {
   position: Vector2D;
   // ... additional properties (DATA ONLY)
 }
+
+// Builder function (pure data only)
+export function builder(options: ComponentOptions): sprite {
+  return {
+    type: 'sprite',
+    name: options.name,
+    unique: false,
+    parent: null,
+    _disposed: false,
+    texture: '',
+    position: new Vector2D(0, 0)
+  };
+}
+
+// Serialization logic
+function serialize(component: ComponentData): any {
+  const s = component as sprite;
+  return {
+    type: 'sprite',
+    name: s.name,
+    texture: s.texture,
+    position: { x: s.position.x, y: s.position.y }
+  };
+}
+
+function deserialize(data: any): sprite {
+  const errors = [];
+  if (data.type !== 'sprite') errors.push(`type ${data.type} does not match "sprite"`);
+  if (!data.name) errors.push(`Sprite requires a name`);
+  if (errors.length) throw new Error(errors.join('\n'));
+
+  const s = builder({ name: data.name });
+  s.texture = data.texture;
+  s.position = new Vector2D(data.position.x, data.position.y);
+  return s;
+}
+
+export const SpriteSerializer: ComponentSerializer = {
+  serialize,
+  deserialize
+};
 ```
 
 ```typescript
 // src/component/sprite/methods.ts
-import { ComponentData, ComponentMethods, ComponentOptions } from '../types';
+import { ComponentData, ComponentMethods } from '../types';
 import { sprite } from './data';
 
 // Export interface for TypeScript typing
@@ -284,55 +325,12 @@ export const Sprite: SpriteMethods = {
     s._disposed = true;
   }
 };
-
-// Builder function (pure data only)
-export function builder(options: ComponentOptions): sprite {
-  return {
-    type: 'sprite',
-    name: options.name,
-    unique: false,
-    parent: null,
-    _disposed: false,
-    texture: '',
-    position: new Vector2D(0, 0)
-  };
-}
-```
-
-```typescript
-// src/component/sprite/serializer.ts
-import { ComponentData, ComponentSerializer } from '../types';
-import { builder } from './methods';
-import { sprite } from './data';
-
-function serialize(component: ComponentData): any {
-  const s = component as sprite;
-  return {
-    type: 'sprite',
-    name: s.name,
-    texture: s.texture,
-    position: { x: s.position.x, y: s.position.y }
-  };
-}
-
-function deserialize(data: any): sprite {
-  const s = builder({ name: data.name });
-  s.texture = data.texture;
-  s.position = new Vector2D(data.position.x, data.position.y);
-  return s;
-}
-
-export const SpriteSerializer: ComponentSerializer = {
-  serialize,
-  deserialize
-};
 ```
 
 ```typescript
 // src/component/sprite/index.ts
 export * from './data';
 export * from './methods';
-export * from './serializer';
 ```
 
 **Key Differences from Old Pattern:**
@@ -340,6 +338,7 @@ export * from './serializer';
 - ✅ Methods are **static functions** in a separate object
 - ✅ Methods take component as **first parameter**: `Sprite.move(sprite, delta)`
 - ✅ Use **`$` Proxy** for ergonomic calls: `$.move(sprite, delta)`
+- ✅ Serialization logic lives in **data.ts** alongside the interface and builder
 
 ---
 
@@ -725,29 +724,48 @@ To support **save/load functionality**, every component must implement a `Compon
 
 ### Serialization Pattern
 
-Serialization code should be placed in a dedicated `serializer.ts` file within the component directory. Follow the pattern established in `src/component/nexus/serializer.ts`:
+Serialization code should be placed in the component's `data.ts` file alongside the interface and builder function. Follow the pattern established in `src/component/nexus/data.ts`:
 
 ```typescript
-// src/component/my-component/serializer.ts
-import { Component, ComponentSerializer } from '../types';
-import { builder } from './builder';
-import { MyComponent } from './component';
+// src/component/my-component/data.ts
+import { ComponentData, ComponentOptions, ComponentSerializer } from '../types';
 
+// Interface definition
+export interface myComponent extends ComponentData {
+  type: 'my-component';
+  unique: false;
+  customProperty: string;
+  position: Vector2D;
+}
+
+// Builder function
+export function builder(options: ComponentOptions): myComponent {
+  return {
+    type: 'my-component',
+    name: options.name,
+    unique: false,
+    parent: null,
+    _disposed: false,
+    customProperty: '',
+    position: new Vector2D(0, 0)
+  };
+}
+
+// Serialization functions
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function serialize(component: Component): any {
-  const myComponent = component as MyComponent;
+function serialize(component: ComponentData): any {
+  const myComponent = component as myComponent;
 
   return {
     type: 'my-component',
     name: myComponent.name,
-    // Serialize all relevant properties
     customProperty: myComponent.customProperty,
     position: { x: myComponent.position.x, y: myComponent.position.y }
   };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): MyComponent {
+function deserialize(data: any): myComponent {
   // Validate data
   const errors = [];
   if (data.type !== 'my-component') {
@@ -760,7 +778,7 @@ function deserialize(data: any): MyComponent {
     throw new Error(errors.join('\n'));
   }
 
-  // Create component
+  // Create component using builder
   const component = builder({ name: data.name });
 
   // Restore properties
@@ -770,6 +788,7 @@ function deserialize(data: any): MyComponent {
   return component;
 }
 
+// Export serializer
 export const MyComponentSerializer: ComponentSerializer = {
   serialize,
   deserialize
@@ -1287,22 +1306,26 @@ When adding a new component to the engine, ensure:
 
 ### File Structure (Data-Oriented Design)
 - [ ] Component directory created at `src/component/{component-name}/`
-- [ ] **Pure data interface** created in `data.ts` extending `ComponentData`
-- [ ] **Static methods object** created in `methods.ts` with all component methods
-- [ ] **Methods interface** exported from `methods.ts` (e.g., `SpriteMethods extends ComponentMethods`)
-- [ ] **Builder function** in `methods.ts` returns pure data only (no attached methods)
-- [ ] `ComponentSerializer` created in `serializer.ts` with `serialize()` and `deserialize()`
-- [ ] All parts re-exported from `index.ts`: `export * from './data'`, `'./methods'`, `'./serializer'`
+- [ ] **data.ts** created with:
+  - [ ] Pure data interface extending `ComponentData`
+  - [ ] Builder function that returns pure data only (no attached methods)
+  - [ ] ComponentSerializer with `serialize()` and `deserialize()` functions
+  - [ ] All three exported
+- [ ] **methods.ts** created with:
+  - [ ] Static methods object with all component methods
+  - [ ] Methods interface exported for TypeScript typing (e.g., `SpriteMethods extends ComponentMethods`)
+  - [ ] All exported
+- [ ] **index.ts** re-exports both files: `export * from './data'`, `export * from './methods'`
 
 ### Component Registration (types.ts)
 - [ ] Component type is `kebab-case` and added to `COMPONENT_TYPE` union
-- [ ] Static methods object added to `ComponentMethod` record
-- [ ] Builder function added to `BUILDERS` record
+- [ ] Static methods object added to `ComponentMethod` record (imported from `./component-name/methods`)
+- [ ] Builder function added to `BUILDERS` record (imported from `./component-name/data`)
 - [ ] Methods interface type added to `ProxyMethodSignatures` union for `$` Proxy typing
 
 ### Implementation Details
 - [ ] Static methods take component as **first parameter**: `methodName(component, ...args)`
-- [ ] Methods use `ComponentMethod[c.type]` for type-specific lookups
+- [ ] Methods use `ComponentMethod[c.type]` for type-specific lookups when needed
 - [ ] `dispose()` method uses static dispatch pattern (see Nexus.dispose example)
 - [ ] Module-level data is properly cleaned up in `dispose()`
 - [ ] `unique` flag is set correctly (false for most components)

@@ -55,7 +55,7 @@ This separation allows the engine to achieve excellent performance while remaini
 
 ### File Structure
 
-All components follow a consistent directory structure:
+All components follow a consistent multi-file directory structure for improved maintainability and readability:
 
 ```
 src/
@@ -63,13 +63,19 @@ src/
     ├── index.ts              # Re-exports all components
     ├── types.ts              # Core component types and factory
     └── {component-name}/
-        └── index.ts          # Component implementation
+        ├── index.ts          # Re-exports component, builder, and serializer
+        ├── component.ts      # TypeScript interface definition
+        ├── builder.ts        # Builder function implementation
+        └── serializer.ts     # ComponentSerializer implementation
 ```
 
 **Example**: For a new `sprite` component:
 
 ```
-src/component/sprite/index.ts
+src/component/sprite/index.ts          # export * from './component', './builder', './serializer'
+src/component/sprite/component.ts      # Sprite interface
+src/component/sprite/builder.ts        # builder() function
+src/component/sprite/serializer.ts     # SpriteSerializer
 ```
 
 ### Naming Conventions
@@ -118,17 +124,19 @@ const BUILDERS: Record<COMPONENT_TYPE, builder> = {
 
 ### Required Exports
 
-Each component module must export:
+Each component module must export three essential elements, organized across separate files:
 
-1. **TypeScript Interface** extending `Component`
-2. **Builder Function** that creates component instances
-3. **ComponentSerializer** for save/load functionality
+1. **TypeScript Interface** extending `Component` (in `component.ts`)
+2. **Builder Function** that creates component instances (in `builder.ts`)
+3. **ComponentSerializer** for save/load functionality (in `serializer.ts`)
+
+All three are re-exported from the component's `index.ts` file for convenient importing.
 
 **Example Template**:
 
 ```typescript
-// src/component/sprite/index.ts
-import { Component, ComponentOptions, ComponentSerializer } from '../types';
+// src/component/sprite/component.ts
+import { Component } from '../types';
 
 export interface Sprite extends Component {
   type: 'sprite';
@@ -137,6 +145,12 @@ export interface Sprite extends Component {
   position: Vector2D;
   // ... additional properties
 }
+```
+
+```typescript
+// src/component/sprite/builder.ts
+import { ComponentOptions } from '../types';
+import { Sprite } from './component';
 
 export function builder(options: ComponentOptions): Sprite {
   const sprite: Sprite = {
@@ -163,8 +177,16 @@ export function builder(options: ComponentOptions): Sprite {
 
   return sprite;
 }
+```
 
-function serialize(component: Component): SerializedData {
+```typescript
+// src/component/sprite/serializer.ts
+import { Component, ComponentSerializer } from '../types';
+import { builder } from './builder';
+import { Sprite } from './component';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serialize(component: Component): any {
   const sprite = component as Sprite;
   return {
     type: 'sprite',
@@ -174,7 +196,8 @@ function serialize(component: Component): SerializedData {
   };
 }
 
-function deserialize(data: SerializedData): Sprite {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function deserialize(data: any): Sprite {
   const sprite = builder({ name: data.name });
   sprite.texture = data.texture;
   sprite.position = new Vector2D(data.position.x, data.position.y);
@@ -185,6 +208,13 @@ export const SpriteSerializer: ComponentSerializer = {
   serialize,
   deserialize
 };
+```
+
+```typescript
+// src/component/sprite/index.ts
+export * from './component';
+export * from './builder';
+export * from './serializer';
 ```
 
 ---
@@ -571,10 +601,16 @@ To support **save/load functionality**, every component must implement a `Compon
 
 ### Serialization Pattern
 
-Follow the pattern established in `src/component/nexus/index.ts`:
+Serialization code should be placed in a dedicated `serializer.ts` file within the component directory. Follow the pattern established in `src/component/nexus/serializer.ts`:
 
 ```typescript
-function serialize(component: Component): SerializedData {
+// src/component/my-component/serializer.ts
+import { Component, ComponentSerializer } from '../types';
+import { builder } from './builder';
+import { MyComponent } from './component';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serialize(component: Component): any {
   const myComponent = component as MyComponent;
 
   return {
@@ -586,7 +622,8 @@ function serialize(component: Component): SerializedData {
   };
 }
 
-function deserialize(data: SerializedData): MyComponent {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function deserialize(data: any): MyComponent {
   // Validate data
   const errors = [];
   if (data.type !== 'my-component') {
@@ -1025,14 +1062,16 @@ While not currently implemented, plan for:
 
 When adding a new component to the engine, ensure:
 
-- [ ] Component lives in `src/component/{component-name}/index.ts`
-- [ ] Component type is `kebab-case` and added to `COMPONENT_TYPE` union
+- [ ] Component directory created at `src/component/{component-name}/`
+- [ ] TypeScript interface created in `component.ts` and extends `Component`
+- [ ] Builder function created in `builder.ts`
+- [ ] `ComponentSerializer` created in `serializer.ts` with `serialize()` and `deserialize()`
+- [ ] All three parts re-exported from `index.ts` using `export * from './...'`
+- [ ] Component type is `kebab-case` and added to `COMPONENT_TYPE` union in `types.ts`
 - [ ] Builder function added to `BUILDERS` record in `types.ts`
-- [ ] TypeScript interface extends `Component`
 - [ ] Component implements required lifecycle hooks (`init`, `update`, `dispose`)
 - [ ] Module-level data is properly cleaned up in `dispose()`
 - [ ] `unique` flag is set correctly (false for most components)
-- [ ] `ComponentSerializer` is implemented with `serialize()` and `deserialize()`
 - [ ] Null checks are performed after `newComponent()` calls
 - [ ] Error handling uses `console.error()` instead of throwing
 - [ ] Performance-critical code is documented with inline notes

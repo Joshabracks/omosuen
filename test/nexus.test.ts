@@ -84,7 +84,7 @@ async function createBranchingTree(depth: number, branchFactor: number): Promise
       for (let i = 0; i < branchFactor; i++) {
         const childPath = path ? `${path}-${i}` : `${i}`;
         const child = await createNode(currentDepth + 1, childPath);
-        $.addComponent(node, child);
+        $.addComponent(node as nexus, child);
       }
     }
 

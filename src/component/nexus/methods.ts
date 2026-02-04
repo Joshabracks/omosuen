@@ -14,7 +14,7 @@ function getChildNexuses(n: nexus): nexus[] {
   return n.components.filter((c) => c.type === "nexus") as nexus[];
 }
 
-interface NexusMethods extends ComponentMethods {
+export interface NexusMethods extends ComponentMethods {
   addComponent: (n: nexus, component: ComponentData) => void;
   addComponents: (
     n: nexus,

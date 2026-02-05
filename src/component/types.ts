@@ -7,7 +7,6 @@ export type COMPONENT_TYPE = "nexus" | "ui-overlay";
 export interface ComponentOptions {
   name: string;
   overrideKey?: string;
-  functionOverrides: Record<string, Function>
 }
 
 export interface ComponentData {
@@ -37,9 +36,6 @@ export async function newComponent(
       `[NEW COMPONENT ERROR] component type ${type} does not exist`,
     );
     return null;
-  }
-  if (options.functionOverrides && !options.overrideKey) {
-    options.overrideKey = options.name;
   }
   const component = await builder(options) as ComponentData;
   if (!component) {

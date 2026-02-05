@@ -1,5 +1,5 @@
 import { ComponentData, ComponentOptions, ComponentSerializer } from "../types";
-import { ComponentMethod } from "../registry";
+import { hasComponentMethod } from "../registry";
 
 type UIAction =
   // Mouse Events
@@ -120,14 +120,7 @@ export interface UIOverlayOptions extends ComponentOptions {
   html?: string;
   cssOverrides?: Record<string, string>;
   bindings?: UIBinding[];
-  //   update?: (deltaTime: number) => void; // todo: register callbacks for custom method handling
-  //   hide?: (element: Element) => void;    // todo: register callbacks for custom method handling
-  //   show?: (element: Element) => void;    // todo: register callbacks for custom method handling
   previousOverlay?: ui_overlay;
-  functionOverrides: {
-    show?: (u: ui_overlay) => void;
-    hide?: (u: ui_overlay) => void;
-  };
 }
 
 export function builder(options: UIOverlayOptions): ui_overlay {
@@ -159,31 +152,14 @@ export function builder(options: UIOverlayOptions): ui_overlay {
   // Add the container to the document body
   document.body.appendChild(container);
 
-  if (options.functionOverrides.hide) {
-    const registryKey = `${options.overrideKey}-hide`;
-    // @ts-ignore
-    const existingFunc = ComponentMethod['ui-overlay']?.[registryKey];
-    if (!existingFunc) {
-      // TODO: Register options.functionOverrides.hide under registryKey
-    }
-  }
-  if (options.functionOverrides.show) {
-    const registryKey = `${options.overrideKey}-show`;
-    // @ts-ignore
-    const existingFunc = ComponentMethod['ui-overlay']?.[registryKey];
-    if (!existingFunc) {
-      // TODO: Register options.functionOverrides.show under registryKey
-    }
-  }
-
   const overlay: ui_overlay = {
     type: "ui-overlay",
     name: options.name,
     unique: false,
     parent: null,
     overrideKey: options.overrideKey,
-    showOverride: options?.functionOverrides?.show ? `${options.overrideKey}-show` : undefined,
-    hideOverride: options?.functionOverrides?.hide ? `${options.overrideKey}-hide` : undefined,
+    showOverride: options?.overrideKey ? `${options.overrideKey}-show` : undefined,
+    hideOverride: options?.overrideKey ? `${options.overrideKey}-hide` : undefined,
     _disposed: false,
     element: container,
     bindings: options.bindings || [],
@@ -191,6 +167,24 @@ export function builder(options: UIOverlayOptions): ui_overlay {
     previousOverlay: options.previousOverlay,
     container: container,
   };
+
+  // Validate that override methods are registered if overrideKey is set
+  if (overlay.overrideKey) {
+    if (overlay.showOverride && !hasComponentMethod("ui-overlay", overlay.showOverride)) {
+      console.warn(
+        `[ui-overlay] Custom show method '${overlay.showOverride}' is not registered for component '${overlay.name}'. ` +
+        `Call registerComponentMethod('ui-overlay', '${overlay.showOverride}', func) before creating this component. ` +
+        `Falling back to default show behavior.`
+      );
+    }
+    if (overlay.hideOverride && !hasComponentMethod("ui-overlay", overlay.hideOverride)) {
+      console.warn(
+        `[ui-overlay] Custom hide method '${overlay.hideOverride}' is not registered for component '${overlay.name}'. ` +
+        `Call registerComponentMethod('ui-overlay', '${overlay.hideOverride}', func) before creating this component. ` +
+        `Falling back to default hide behavior.`
+      );
+    }
+  }
 
   return overlay;
 }
@@ -230,8 +224,7 @@ function deserialize(data: any): ui_overlay {
     name,
     html,
     cssOverrides,
-    hideOverride,
-    showOverride,
+    overrideKey,
     bindingFactoryString,
   } = data;
   const errors = [];
@@ -239,9 +232,6 @@ function deserialize(data: any): ui_overlay {
     errors.push(`type ${type} does not match "ui-overlay"`);
   if (!name) errors.push(`UIOverlay requires a name`);
   if (errors.length) throw new Error(errors.join("\n"));
-  const functionOverrides: any = {};
-  if (hideOverride) functionOverrides.hide = hideOverride;
-  if (showOverride) functionOverrides.show = showOverride;
   eval(bindingFactoryString);
   let serializedBindings;
   try {
@@ -257,7 +247,7 @@ function deserialize(data: any): ui_overlay {
     name,
     cssOverrides,
     html,
-    functionOverrides,
+    overrideKey,
     bindings: serializedBindings.map((binding: any) => {
       const selector = binding.selector;
       const onActions = binding.onActions;

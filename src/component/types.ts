@@ -1,4 +1,4 @@
-import { BUILDERS, ComponentMethod } from "./registry";
+import { BUILDERS } from "./registry";
 
 let COMPONENT_COUNT = 0;
 

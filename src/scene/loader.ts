@@ -77,7 +77,10 @@ async function loadFromModule(name: string, modulePath: string): Promise<nexus |
   console.info(`[SCENE LOADER] Loading scene "${name}" from module: ${modulePath}`);
 
   try {
-    const module = await import(/* webpackIgnore: true */ modulePath);
+    // Use Function constructor to bypass webpack's static analysis
+    // This ensures the import is handled at runtime by the browser, not bundled by webpack
+    const importFunc = new Function('modulePath', 'return import(modulePath)');
+    const module = await importFunc(modulePath);
 
     // Try different export patterns
     let scene: nexus | null = null;

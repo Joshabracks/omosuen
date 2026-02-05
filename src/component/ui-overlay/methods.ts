@@ -1,5 +1,6 @@
-import { ComponentData, ComponentMethod, ComponentMethods } from "../types";
-import { ui_overlay, UIBinding } from "./data";
+import { ComponentMethod } from "../registry";
+import { ComponentData, ComponentMethods, ComponentOptions } from "../types";
+import { ui_overlay, UIBinding, UIOverlayOptions } from "./data";
 
 export interface UIOverlayMethods extends ComponentMethods {
   hide?: (u: ui_overlay) => void;
@@ -11,20 +12,37 @@ export interface UIOverlayMethods extends ComponentMethods {
 export const UIOverlay: UIOverlayMethods = {
   type: 'ui-overlay',
   hide(u: ui_overlay) {
-    u.container.style.display = "none";
+    if (u.hideOverride) {
+      // @ts-ignore
+      UIOverlay[u.hideOverride](u)
+    } else {
+      u.container.style.display = "none";
+    }
   },
 
   show(u: ui_overlay) {
-    u.container.style.display = "block";
+    if (u.showOverride) {
+      // @ts-ignore
+      UIOverlay[u.showOverride](u)
+    } else {
+      u.container.style.display = "block";
+    }
   },
 
   back(u: ui_overlay) {
-    const C = ComponentMethod["ui-overlay"] as UIOverlayMethods;
-    // @ts-ignore
-    C.hide(u);
-    if (u.previousOverlay) {
+    if (u.hideOverride) {
       // @ts-ignore
-      C.show(u.previousOverlay)
+      UIOverlay[u.hideOverride](u);
+    }
+    else if (UIOverlay.hide) {
+      UIOverlay.hide(u);
+    }
+    if (u.previousOverlay?.showOverride) {
+      // @ts-ignore
+      UIOverlay[u.previousOverlay.showOverride](u.previousOverlay)
+    }
+    else if (u.previousOverlay && UIOverlay.show) {
+      UIOverlay.show(u.previousOverlay);
     }
   },
 
@@ -60,5 +78,5 @@ export const UIOverlay: UIOverlayMethods = {
     u.bindings = [];
     u.element = null;
     u._disposed = true;
-  },
+  }
 };

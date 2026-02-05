@@ -1,8 +1,8 @@
 import {
   ComponentData,
   ComponentMethods,
-  ComponentMethod,
 } from "../types";
+import { ComponentMethod } from "../registry";
 import { nexus } from "./data";
 
 /**

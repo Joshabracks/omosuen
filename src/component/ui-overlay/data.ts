@@ -1,4 +1,5 @@
 import { ComponentData, ComponentOptions, ComponentSerializer } from "../types";
+import { ComponentMethod } from "../registry";
 
 type UIAction =
   // Mouse Events
@@ -111,6 +112,8 @@ export interface ui_overlay extends ComponentData {
   cssOverrides: Record<string, string>;
   previousOverlay?: ui_overlay;
   container: HTMLElement;
+  showOverride?: string;
+  hideOverride?: string;
 }
 
 export interface UIOverlayOptions extends ComponentOptions {
@@ -121,6 +124,10 @@ export interface UIOverlayOptions extends ComponentOptions {
   //   hide?: (element: Element) => void;    // todo: register callbacks for custom method handling
   //   show?: (element: Element) => void;    // todo: register callbacks for custom method handling
   previousOverlay?: ui_overlay;
+  functionOverrides: {
+    show?: (u: ui_overlay) => void;
+    hide?: (u: ui_overlay) => void;
+  };
 }
 
 export function builder(options: UIOverlayOptions): ui_overlay {
@@ -152,11 +159,31 @@ export function builder(options: UIOverlayOptions): ui_overlay {
   // Add the container to the document body
   document.body.appendChild(container);
 
+  if (options.functionOverrides.hide) {
+    const registryKey = `${options.overrideKey}-hide`;
+    // @ts-ignore
+    const existingFunc = ComponentMethod['ui-overlay']?.[registryKey];
+    if (!existingFunc) {
+      // TODO: Register options.functionOverrides.hide under registryKey
+    }
+  }
+  if (options.functionOverrides.show) {
+    const registryKey = `${options.overrideKey}-show`;
+    // @ts-ignore
+    const existingFunc = ComponentMethod['ui-overlay']?.[registryKey];
+    if (!existingFunc) {
+      // TODO: Register options.functionOverrides.show under registryKey
+    }
+  }
+
   const overlay: ui_overlay = {
     type: "ui-overlay",
     name: options.name,
     unique: false,
     parent: null,
+    overrideKey: options.overrideKey,
+    showOverride: options?.functionOverrides?.show ? `${options.overrideKey}-show` : undefined,
+    hideOverride: options?.functionOverrides?.hide ? `${options.overrideKey}-hide` : undefined,
     _disposed: false,
     element: container,
     bindings: options.bindings || [],
@@ -180,28 +207,41 @@ function serialize(component: ComponentData): any {
           selector: "${binding.selector}",
           onActions: ["${binding.onActions.join('","')}"],
           method: "${binding.method.toString()}"
-        }`
+        }`,
         )
-        .join(',')}
+        .join(",")}
     ]
   }`;
   return {
-    type: 'ui-overlay',
+    type: "ui-overlay",
     name: uiOverlay.name,
     unique: false,
-    cssOverrides: Object.keys(uiOverlay.cssOverrides).length ? uiOverlay.cssOverrides : undefined,
+    cssOverrides: Object.keys(uiOverlay.cssOverrides).length
+      ? uiOverlay.cssOverrides
+      : undefined,
     html: container?.innerHTML || null,
     bindingFactoryString,
   };
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deserialize(data: any): ui_overlay {
-  const { type, name, html, cssOverrides, bindingFactoryString } = data;
+  const {
+    type,
+    name,
+    html,
+    cssOverrides,
+    hideOverride,
+    showOverride,
+    bindingFactoryString,
+  } = data;
   const errors = [];
-  if (type !== 'ui-overlay') errors.push(`type ${type} does not match "ui-overlay"`);
+  if (type !== "ui-overlay")
+    errors.push(`type ${type} does not match "ui-overlay"`);
   if (!name) errors.push(`UIOverlay requires a name`);
-  if (errors.length) throw new Error(errors.join('\n'));
-
+  if (errors.length) throw new Error(errors.join("\n"));
+  const functionOverrides: any = {};
+  if (hideOverride) functionOverrides.hide = hideOverride;
+  if (showOverride) functionOverrides.show = showOverride;
   eval(bindingFactoryString);
   let serializedBindings;
   try {
@@ -217,10 +257,16 @@ function deserialize(data: any): ui_overlay {
     name,
     cssOverrides,
     html,
+    functionOverrides,
     bindings: serializedBindings.map((binding: any) => {
       const selector = binding.selector;
       const onActions = binding.onActions;
-      eval(binding.method.replace(/function\s*\(\)/, 'function deserializedMethod()'));
+      eval(
+        binding.method.replace(
+          /function\s*\(\)/,
+          "function deserializedMethod()",
+        ),
+      );
       // @ts-expect-error deserializedMethod-via-eval
       // eslint-disable-next-line no-undef
       return { selector, onActions, method: deserializedMethod };

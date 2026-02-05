@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omosuen Engine - UI Overlay Test</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            background: #1a1a1a;
+            color: #00ff00;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+
+        h1 {
+            font-size: 3em;
+            margin: 0;
+            text-shadow: 0 0 10px #00ff00;
+        }
+
+        .subtitle {
+            font-size: 1.2em;
+            opacity: 0.7;
+            margin-top: 10px;
+        }
+
+        #output {
+            margin-top: 40px;
+            padding: 20px;
+            border: 2px solid #00ff00;
+            border-radius: 4px;
+            min-width: 400px;
+            background: rgba(0, 255, 0, 0.05);
+        }
+
+        .console-line {
+            margin: 5px 0;
+        }
+
+        .console-line::before {
+            content: '> ';
+            opacity: 0.5;
+        }
+    </style>
+</head>
+<body>
+    <script src="./dev/omosuen.js"></script>
+    <script>
+        // Initialize the UI using ui-overlay component
+        async function initializeUI() {
+            if (typeof Omosuen === 'undefined') {
+                console.error('ERROR: Omosuen engine failed to load');
+                return;
+            }
+
+            // Create the main UI overlay with all HTML content
+            window.mainUI = await Omosuen.newComponent('ui-overlay', {
+                name: 'Main UI',
+                html: `
+                    <h1>Omosuen Engine</h1>
+                    <div class="subtitle">Axonometric Game Engine</div>
+                    <div id="output">
+                        <div class="console-line">Initializing engine...</div>
+                    </div>
+                `,
+                cssOverrides: {
+                    pointerEvents: 'auto', // Enable interaction with UI elements
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                }
+            });
+
+            if (!mainUI) {
+                console.error('ERROR: Failed to create UI overlay');
+                return;
+            }
+
+            // Get reference to output element (now created by ui-overlay)
+            const output = document.getElementById('output');
+
+            // Override console.log to display in the page
+            const originalLog = console.log;
+            console.log = function(...args) {
+                originalLog.apply(console, args);
+                const line = document.createElement('div');
+                line.className = 'console-line';
+                line.textContent = args.join(' ');
+                output.appendChild(line);
+            };
+
+            // Initialize the engine
+            Omosuen.init();
+            console.log(`Engine version: ${Omosuen.version}`);
+
+            // Test math exports
+            const vec3 = new Omosuen.Vector3D(1, 2, 3);
+            console.log(`Vector3D created: (${vec3.x}, ${vec3.y}, ${vec3.z})`);
+
+            // Test component exports
+            console.log(`newComponent available: ${typeof Omosuen.newComponent === 'function'}`);
+            console.log('All exports loaded successfully!');
+            console.log('UI created using ui-overlay component (no HTML in body!)');
+        }
+
+        // Run initialization when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initializeUI);
+        } else {
+            initializeUI();
+        }
+    </script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-import { ComponentData, ComponentOptions, ComponentSerializer } from "../types";
+import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique } from "../types";
 import { Vector2D, Vector3D, Vector4D } from "../../math";
 
 /**
@@ -14,7 +14,7 @@ export type DataLayerType = string | number | boolean | Vector2D | Vector3D | Ve
  */
 export interface data_layer extends ComponentData {
   type: "data-layer";
-  unique: false;
+  unique: ComponentUnique.FALSE;
   storage: Map<string, DataLayerType>;
   typeMap: Map<string, string>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -117,7 +117,7 @@ export function builder(options: ComponentOptions): data_layer {
   const dataLayer: data_layer = {
     type: "data-layer",
     name: options.name,
-    unique: false,
+    unique: ComponentUnique.FALSE,
     parent: null,
     _disposed: false,
     storage: new Map<string, DataLayerType>(),
@@ -162,7 +162,7 @@ function serialize(component: ComponentData): any {
   return {
     type: "data-layer",
     name: dl.name,
-    unique: false,
+    unique: ComponentUnique.FALSE,
     storage: storageObj,
     typeMap: typeMapObj
   };

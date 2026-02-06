@@ -1,6 +1,7 @@
 import {
   ComponentData,
   ComponentMethods,
+  ComponentUnique,
 } from "../types";
 import { ComponentMethod } from "../registry";
 import { nexus } from "./data";
@@ -67,8 +68,8 @@ export interface NexusMethods extends ComponentMethods {
 export const Nexus: NexusMethods = {
   type: "nexus",
   addComponent: (n: nexus, component: ComponentData) => {
-    if (component.unique) {
-      // Find and dispose existing components of the same type
+    if (component.unique === ComponentUnique.LOCAL) {
+      // LOCAL: Dispose existing components of same type in THIS Nexus only
       const existing = n.components.filter((c) => c.type === component.type);
       existing.forEach((c) => {
         const C = ComponentMethod[c.type];
@@ -79,7 +80,27 @@ export const Nexus: NexusMethods = {
 
       // Remove them from the components array
       n.components = n.components.filter((c) => c.type !== component.type);
+    } else if (component.unique === ComponentUnique.GLOBAL) {
+      // GLOBAL: Dispose ALL instances in entire scene hierarchy
+      // Find root nexus by traversing up the parent chain
+      let root: ComponentData = n;
+      while (root.parent && root.parent.type === 'nexus') {
+        root = root.parent;
+      }
+
+      // Recursively find and dispose all instances of this type in entire scene
+      const allInstances = Nexus.getComponentsByType(root as nexus, component.type, true);
+      allInstances.forEach((c) => {
+        const C = ComponentMethod[c.type];
+        if (C.dispose && typeof C.dispose === "function") {
+          C.dispose(c);
+        }
+      });
+
+      // Note: Disposed components are automatically removed from their parent Nexus
+      // during the dispose process or will be filtered out as _disposed
     }
+
     component.parent = n;
     n.components.push(component);
   },

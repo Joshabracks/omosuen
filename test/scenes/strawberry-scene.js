@@ -2,6 +2,7 @@
  * Strawberry Scene Module
  *
  * Theme: Sweet, vibrant, red/pink colors
+ * Demonstrates flag-manager component with GLOBAL uniqueness
  * Exports an async function that creates and returns a scene nexus
  */
 
@@ -17,9 +18,51 @@ export default async function createStrawberryScene() {
     return null;
   }
 
-  // Create UI Overlay with strawberry theme
+  // Create flag-manager component (GLOBAL unique - only one per scene)
+  const flagManager = await newComponent('flag-manager', { name: 'Game Flags' });
+
+  if (!flagManager) {
+    console.error('[Strawberry Scene] Failed to create flag-manager');
+    return root;
+  }
+
+  // Initialize with some flags using $ Proxy
+  $.addFlags(flagManager, [
+    'strawberrySceneVisited',
+    'tutorialComplete',
+    'level1Complete',
+    'secretFound'
+  ]);
+
+  // Create UI Overlay with strawberry theme and custom update method
   const overlay = await newComponent('ui-overlay', {
     name: 'StrawberryOverlay',
+    update: function(deltaTime) {
+      // Get flags display element
+      const flagsDisplay = document.getElementById('flags-display');
+
+      if (!flagsDisplay) {
+        return; // Element not ready yet
+      }
+
+      // Get all flags from flag-manager using $ Proxy
+      const allFlags = $.getFlags(flagManager);
+
+      // Format the flags display
+      if (allFlags.length === 0) {
+        flagsDisplay.innerHTML = '<div style="opacity: 0.7;">No flags set yet</div>';
+      } else {
+        flagsDisplay.innerHTML = allFlags
+          .map(flag => `<div>✓ ${flag}</div>`)
+          .join('');
+      }
+
+      // Update flag count
+      const flagCount = document.getElementById('flag-count');
+      if (flagCount) {
+        flagCount.textContent = allFlags.length;
+      }
+    },
     html: `
       <div id="strawberry-container" style="
         position: absolute;
@@ -34,7 +77,7 @@ export default async function createStrawberryScene() {
         box-shadow: 0 20px 60px rgba(255, 23, 68, 0.4);
         font-family: 'Georgia', 'Times New Roman', serif;
         text-align: center;
-        max-width: 500px;
+        max-width: 600px;
         min-width: 400px;
       ">
         <h1 style="
@@ -45,13 +88,32 @@ export default async function createStrawberryScene() {
         ">🍓 Strawberry Scene</h1>
 
         <p style="
-          margin: 0 0 30px 0;
+          margin: 0 0 20px 0;
           font-size: 20px;
           font-weight: bold;
           text-shadow: 1px 1px 3px rgba(0,0,0,0.2);
         ">
           Sweet strawberry fields forever!
         </p>
+
+        <div style="
+          background: rgba(0,0,0,0.2);
+          padding: 20px;
+          border-radius: 10px;
+          margin-bottom: 20px;
+          font-size: 14px;
+          text-align: left;
+        ">
+          <h3 style="margin: 0 0 10px 0; font-size: 18px; text-align: center;">
+            🚩 Flag Manager (<span id="flag-count">0</span> flags)
+          </h3>
+          <div id="flags-display" style="line-height: 1.8; max-height: 200px; overflow-y: auto;">
+            <!-- Dynamic content updated by flag-manager -->
+          </div>
+          <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.3); text-align: center; font-size: 12px; opacity: 0.8;">
+            Flag manager is GLOBAL unique - only one per scene
+          </div>
+        </div>
 
         <p style="
           margin: 0 0 30px 0;
@@ -95,6 +157,10 @@ export default async function createStrawberryScene() {
             🥑 Go to Avocado
           </button>
         </div>
+
+        <div style="margin-top: 20px; font-size: 12px; opacity: 0.7;">
+          <p>Flags update every frame using ui-overlay update() method</p>
+        </div>
       </div>
     `,
     cssOverrides: {
@@ -127,12 +193,15 @@ export default async function createStrawberryScene() {
     return root;
   }
 
-  // Add overlay to root
+  // Add both components to root
+  $.addComponent(root, flagManager);
   $.addComponent(root, overlay);
 
   // Apply bindings to set up event listeners
   $.applyBindings(overlay);
 
-  console.log('[Strawberry Scene] Scene created successfully');
+  console.log('[Strawberry Scene] Scene created successfully with flag-manager');
+  console.log('[Strawberry Scene] Initial flags:', $.getFlags(flagManager));
+
   return root;
 }

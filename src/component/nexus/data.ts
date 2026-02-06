@@ -1,8 +1,8 @@
-import { ComponentData, ComponentOptions, ComponentSerializer } from "../types";
+import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique } from "../types";
 
 export interface nexus extends ComponentData {
   type: "nexus";
-  unique: false;
+  unique: ComponentUnique.FALSE;
   components: ComponentData[];
   paused: boolean;
 }
@@ -11,7 +11,7 @@ export function builder(options: ComponentOptions): nexus {
   const nexus: nexus = {
     type: "nexus",
     name: options.name,
-    unique: false,
+    unique: ComponentUnique.FALSE,
     parent: null,
     _disposed: false,
     components: [],
@@ -35,7 +35,7 @@ function serialize(component: ComponentData): any {
   return {
     type: "nexus",
     name: nexus.name,
-    unique: false,
+    unique: ComponentUnique.FALSE,
     components: serializedComponents,
   };
 }

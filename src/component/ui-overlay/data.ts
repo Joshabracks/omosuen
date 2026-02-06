@@ -1,4 +1,4 @@
-import { ComponentData, ComponentOptions, ComponentSerializer } from "../types";
+import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique } from "../types";
 import { hasComponentMethod } from "../registry";
 
 type UIAction =
@@ -106,7 +106,7 @@ export interface UIBinding {
 
 export interface ui_overlay extends ComponentData {
   type: "ui-overlay";
-  unique: false;
+  unique: ComponentUnique.FALSE;
   element: HTMLDivElement | null;
   bindings: UIBinding[];
   cssOverrides: Record<string, string>;
@@ -155,7 +155,7 @@ export function builder(options: UIOverlayOptions): ui_overlay {
   const overlay: ui_overlay = {
     type: "ui-overlay",
     name: options.name,
-    unique: false,
+    unique: ComponentUnique.FALSE,
     parent: null,
     overrideKey: options.overrideKey,
     showOverride: options?.overrideKey ? `${options.overrideKey}-show` : undefined,
@@ -209,7 +209,7 @@ function serialize(component: ComponentData): any {
   return {
     type: "ui-overlay",
     name: uiOverlay.name,
-    unique: false,
+    unique: ComponentUnique.FALSE,
     cssOverrides: Object.keys(uiOverlay.cssOverrides).length
       ? uiOverlay.cssOverrides
       : undefined,

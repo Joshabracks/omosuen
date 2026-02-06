@@ -4,6 +4,8 @@ import { UIOverlay, builder as uiOverlayBuilder } from "./ui-overlay";
 import type { UIOverlayMethods } from "./ui-overlay";
 import { DataLayer, builder as dataLayerBuilder } from "./data-layer";
 import type { DataLayerMethods } from "./data-layer/methods";
+import { FlagManager, builder as flagManagerBuilder } from "./flag-manager";
+import type { FlagManagerMethods } from "./flag-manager/methods";
 import type {
   COMPONENT_TYPE,
   ComponentData,
@@ -25,18 +27,21 @@ type ExtractMethods<T> = {
  */
 type ProxyMethodSignatures = ExtractMethods<NexusMethods> &
   ExtractMethods<UIOverlayMethods> &
-  ExtractMethods<DataLayerMethods>;
+  ExtractMethods<DataLayerMethods> &
+  ExtractMethods<FlagManagerMethods>;
 
 export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   nexus: nexusBuilder,
   "ui-overlay": uiOverlayBuilder,
   "data-layer": dataLayerBuilder,
+  "flag-manager": flagManagerBuilder,
 };
 
 export const ComponentMethod: Record<COMPONENT_TYPE, ComponentMethods> = {
   nexus: Nexus,
   "ui-overlay": UIOverlay,
   "data-layer": DataLayer,
+  "flag-manager": FlagManager,
 };
 
 const methodTypeCache: Record<string, Record<string, Function>> = {};

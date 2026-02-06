@@ -40,7 +40,7 @@ export const name = 'Omosuen';
 /**
  * Initialize the Omosuen engine
  */
-export function init() {
+export function init(): void {
   console.log(`${name} Engine v${version} initialized`);
 }
 

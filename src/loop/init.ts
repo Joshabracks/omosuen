@@ -7,7 +7,7 @@
  */
 
 import { ComponentData } from '../component';
-import type { nexus } from '../component/nexus/data';
+import type { NexusT } from '../component/nexus/data';
 import { ComponentMethod } from '../component/registry';
 
 /**
@@ -75,7 +75,7 @@ export function queueInit(id: number): void {
  * processInitQueue(activeScene, 16.67);
  * ```
  */
-export function processInitQueue(scene: nexus, targetFrameTime: number): void {
+export function processInitQueue(scene: NexusT, targetFrameTime: number): void {
   // Start new init cycle
   if (INIT_QUEUE_LENGTH === -1 && INIT_QUEUE.length > 0) {
     INIT_QUEUE_LENGTH = INIT_QUEUE.length;
@@ -101,8 +101,9 @@ export function processInitQueue(scene: nexus, targetFrameTime: number): void {
 
   while (INIT_QUEUE.length > 0) {
     const id = INIT_QUEUE.shift()!;
-    // @ts-ignore
-    const component: ComponentData = scene.getComponentById(id, true);
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-expect-error
+    const component: ComponentData | null = scene.getComponentById(id, true);
 
     if (!component) {
       console.warn(`[INIT] Component ID ${id} not found in scene`);

@@ -6,7 +6,7 @@
  */
 
 import type { ComponentData } from '../component/types';
-import type { nexus } from '../component/nexus/data';
+import type { NexusT } from '../component/nexus/data';
 import { ComponentMethod } from '../component/registry';
 import { isInitializing } from './init';
 
@@ -58,7 +58,7 @@ function traverseAndUpdate(
   // Propagate pause state from nexus
   let shouldPause = isPaused;
   if (component.type === 'nexus') {
-    const n = component as nexus;
+    const n = component as NexusT;
     shouldPause = isPaused || n.paused;
   }
 
@@ -75,7 +75,7 @@ function traverseAndUpdate(
   // Check for instance-specific update override first
   if (component.updateOverride) {
     const method = ComponentMethod[component.type];
-    // @ts-ignore - Dynamic method access via registered override
+    // @ts-expect-error - Dynamic method access via registered override
     const overrideMethod = method[component.updateOverride];
     if (overrideMethod && typeof overrideMethod === 'function') {
       overrideMethod(component, deltaTime);
@@ -94,7 +94,7 @@ function traverseAndUpdate(
 
   // Recurse into nexus children
   if (component.type === 'nexus') {
-    const n = component as nexus;
+    const n = component as NexusT;
     for (let i = 0; i < n.components.length; i++) {
       traverseAndUpdate(n.components[i], deltaTime, shouldPause);
     }
@@ -139,6 +139,6 @@ function traverseAndUpdate(
  * };
  * ```
  */
-export function updateScene(scene: nexus, deltaTime: number): void {
+export function updateScene(scene: NexusT, deltaTime: number): void {
   traverseAndUpdate(scene, deltaTime, false);
 }

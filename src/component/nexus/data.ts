@@ -7,7 +7,7 @@ import {
 } from '../types';
 import type { NexusMethods } from './methods';
 
-export interface nexus
+export interface NexusT
   extends ComponentData, ComponentInstanceMethods<NexusMethods> {
   type: 'nexus';
   unique: ComponentUnique.FALSE;
@@ -15,7 +15,7 @@ export interface nexus
   paused: boolean;
 }
 
-export function builder(options: ComponentOptions): nexus {
+export function builder(options: ComponentOptions): NexusT {
   // Create data-only object. Methods will be added by Proxy wrapper in newComponent()
   const nexus = {
     type: 'nexus' as const,
@@ -26,12 +26,12 @@ export function builder(options: ComponentOptions): nexus {
     components: [],
     paused: false,
   };
-  return nexus as unknown as nexus;
+  return nexus as unknown as NexusT;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function serialize(component: ComponentData): any {
-  const nexus = component as nexus;
+  const nexus = component as NexusT;
 
   const serializedComponents = [];
   // We'll handle recursive serialization at the main Serializer level
@@ -49,7 +49,7 @@ function serialize(component: ComponentData): any {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): nexus {
+function deserialize(data: any): NexusT {
   const { type, name } = data;
   const errors = [];
   if (type !== 'nexus') errors.push(`type ${type} does not match "nexus"`);

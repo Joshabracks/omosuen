@@ -152,7 +152,7 @@ export default [
     ignores: [
       'node_modules/**',
       'dist/**',
-      'test/dev/**',
+      'test/**',
       '**/*.min.js',
       'webpack.config.js',
     ],

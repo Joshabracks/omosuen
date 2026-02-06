@@ -16,7 +16,7 @@ import type { FlagManagerMethods } from './methods';
  * - World state ("boss_defeated", "secret_unlocked")
  * - Player progression ("has_double_jump", "can_swim")
  */
-export interface flag_manager
+export interface FlagManagerT
   extends ComponentData, ComponentInstanceMethods<FlagManagerMethods> {
   type: 'flag-manager';
   unique: ComponentUnique.GLOBAL;
@@ -47,7 +47,7 @@ export interface flag_manager
  * if ($.hasFlag(flagManager, "tutorialComplete")) { }
  * ```
  */
-export function builder(options: ComponentOptions): flag_manager {
+export function builder(options: ComponentOptions): FlagManagerT {
   // Create data-only object. Methods will be added by Proxy wrapper in newComponent()
   return {
     type: 'flag-manager' as const,
@@ -56,7 +56,7 @@ export function builder(options: ComponentOptions): flag_manager {
     parent: null,
     _disposed: false,
     flags: new Set<string>(),
-  } as unknown as flag_manager;
+  } as unknown as FlagManagerT;
 }
 
 /**
@@ -65,7 +65,7 @@ export function builder(options: ComponentOptions): flag_manager {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function serialize(component: ComponentData): any {
-  const fm = component as flag_manager;
+  const fm = component as FlagManagerT;
 
   return {
     type: 'flag-manager',
@@ -80,7 +80,7 @@ function serialize(component: ComponentData): any {
  * Reconstructs Set<string> from Array<string>.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): flag_manager {
+function deserialize(data: any): FlagManagerT {
   const { type, name, flags } = data;
 
   // Validate required fields

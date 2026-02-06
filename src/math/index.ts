@@ -190,19 +190,20 @@ export class Array2D<T> {
     // For numeric types, -1 is typically used to indicate empty/invalid cells
     this.value =
       defaultValue !== undefined
-        ? Array(length).fill(defaultValue)
+        ? Array<T>(length).fill(defaultValue)
         : Array<T>(length).fill(-1 as T);
   }
-  set = (coordinates: Vector2D, v: T) =>
-    (this.value[coordinates.y * this.size.x + coordinates.x] = v);
-  indexSet = (i: number, v: T) => {
+  set = (coordinates: Vector2D, v: T): void => {
+    this.value[coordinates.y * this.size.x + coordinates.x] = v;
+  };
+  indexSet = (i: number, v: T): void => {
     this.value[i] = v;
   };
-  get = (coordinates: Vector2D) =>
+  get = (coordinates: Vector2D): T =>
     this.value[coordinates.y * this.size.x + coordinates.x];
   forEach = (
     callback: (cell: T, x: number, y: number, index: number) => void,
-  ) => {
+  ): void => {
     // Performance note: forEach with indexSet() is recommended for best performance.
     // Example: array2D.forEach((cell, x, y, i) => { array2D.indexSet(i, newValue); })
     // Direct array access is also fast: array2D.forEach((cell, x, y, i) => { array2D.value[i] = newValue; })
@@ -222,7 +223,7 @@ export class Array2D<T> {
       i += 1;
     }
   };
-  indexForEach = (callback: (cell: T, index: number) => void) => {
+  indexForEach = (callback: (cell: T, index: number) => void): void => {
     // Performance note: indexForEach is optimized for when you don't need x, y coordinates.
     // Use this when working with index-based operations for potential performance gains.
     let i = 0;
@@ -252,20 +253,20 @@ export class Array3D<T> {
     // For numeric types, -1 is typically used to indicate empty/invalid cells
     this.value =
       defaultValue !== undefined
-        ? Array(length).fill(defaultValue)
+        ? Array<T>(length).fill(defaultValue)
         : Array<T>(length).fill(-1 as T);
   }
-  set = (coordinates: Vector3D, v: T) => {
+  set = (coordinates: Vector3D, v: T): void => {
     this.value[
       coordinates.z * this.size.y * this.size.x +
         coordinates.y * this.size.x +
         coordinates.x
     ] = v;
   };
-  indexSet = (i: number, v: T) => {
+  indexSet = (i: number, v: T): void => {
     this.value[i] = v;
   };
-  get = (coordinates: Vector3D) =>
+  get = (coordinates: Vector3D): T =>
     this.value[
       coordinates.z * this.size.y * this.size.x +
         coordinates.y * this.size.x +
@@ -273,7 +274,7 @@ export class Array3D<T> {
     ];
   forEach = (
     callback: (cell: T, x: number, y: number, z: number, index: number) => void,
-  ) => {
+  ): void => {
     // Performance note: forEach with indexSet() is the fastest approach across all array sizes.
     // Example: array3D.forEach((cell, x, y, z, i) => { array3D.indexSet(i, newValue); })
     // Direct array access is also fast: array3D.forEach((cell, x, y, z, i) => { array3D.value[i] = newValue; })
@@ -299,7 +300,7 @@ export class Array3D<T> {
       i += 1;
     }
   };
-  indexForEach = (callback: (cell: T, index: number) => void) => {
+  indexForEach = (callback: (cell: T, index: number) => void): void => {
     // Performance note: indexForEach is optimized for when you don't need x, y, z coordinates.
     // Use this when working with index-based operations for potential performance gains.
     let i = 0;
@@ -369,7 +370,7 @@ export class Array3Dc<T> {
   }
   forEach = (
     callback: (cell: T, x: number, y: number, z: number, i: number) => void,
-  ) => {
+  ): void => {
     const width = this.size.x;
     const height = this.size.y;
     let x = 0;
@@ -542,6 +543,6 @@ export class Array3Dc<T> {
   };
 }
 
-export function lerp(a: number, b: number, t: number) {
+export function lerp(a: number, b: number, t: number): number {
   return a + t * (b - a);
 }

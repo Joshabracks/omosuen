@@ -3,7 +3,9 @@ node_modules
 
 # Build output
 dist
-test/dev
+
+# Test directory
+test
 
 # Minified files
 *.min.js

@@ -12,8 +12,8 @@
     "test": "npx serve test -p 3000",
     "test:cli": "tsx test/nexus.test.ts",
     "lint": "eslint . --ext .ts",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.{ts,js}\" \"*.js\" \"*.json\"",
-    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.{ts,js}\" \"*.js\" \"*.json\""
+    "format": "prettier --write \"src/**/*.ts\" \"*.js\" \"*.json\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"*.js\" \"*.json\""
   },
   "keywords": [
     "game-engine",

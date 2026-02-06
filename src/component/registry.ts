@@ -20,6 +20,7 @@ import {
 } from './flag-manager';
 import type { COMPONENT_TYPE, ComponentMethods } from './types';
 
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
 export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   nexus: nexusBuilder,
   'ui-overlay': uiOverlayBuilder,
@@ -45,6 +46,7 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   'flag-manager': FlagManagerPropertyAllowlist,
 };
 
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
 const methodTypeCache: Record<string, Record<string, Function>> = {};
 
 export function invalidateMethodCache(): void {
@@ -75,6 +77,7 @@ export function invalidateMethodCache(): void {
 export function registerComponentMethod(
   type: COMPONENT_TYPE,
   key: string,
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
   func: Function,
 ): void {
   if (!ComponentMethod[type]) {
@@ -83,7 +86,7 @@ export function registerComponentMethod(
     );
     return;
   }
-  // @ts-ignore - Dynamic method registration
+  // @ts-expect-error - Dynamic method registration
   ComponentMethod[type][key] = func;
   invalidateMethodCache();
 }
@@ -110,7 +113,7 @@ export function unregisterComponentMethod(
     );
     return;
   }
-  // @ts-ignore - Dynamic method access
+  // @ts-expect-error - Dynamic method access
   delete ComponentMethod[type][key];
   invalidateMethodCache();
 }
@@ -133,6 +136,6 @@ export function hasComponentMethod(type: COMPONENT_TYPE, key: string): boolean {
   if (!ComponentMethod[type]) {
     return false;
   }
-  // @ts-ignore - Dynamic method access
+  // @ts-expect-error - Dynamic method access
   return typeof ComponentMethod[type][key] === 'function';
 }

@@ -1,6 +1,6 @@
-import type { nexus } from '../component/nexus/data';
+import type { NexusT } from '../component/nexus/data';
 import { NexusSerializer } from '../component/nexus/data';
-import type { ui_overlay } from '../component/ui-overlay/data';
+import type { UIOverlayT } from '../component/ui-overlay/data';
 import { UIOverlaySerializer } from '../component/ui-overlay/data';
 import { getSceneEntry, hasScene } from './registry';
 import type { ComponentData } from '../component/types';
@@ -8,7 +8,7 @@ import type { ComponentData } from '../component/types';
 /**
  * Currently active scene (root nexus component)
  */
-let activeScene: nexus | null = null;
+let activeScene: NexusT | null = null;
 
 /**
  * Loads a scene from the registry by name.
@@ -26,7 +26,7 @@ let activeScene: nexus | null = null;
  * }
  * ```
  */
-export async function loadScene(name: string): Promise<nexus | null> {
+export async function loadScene(name: string): Promise<NexusT | null> {
   if (!hasScene(name)) {
     console.error(`[SCENE LOADER ERROR] Scene "${name}" is not registered`);
     return null;
@@ -43,7 +43,7 @@ export async function loadScene(name: string): Promise<nexus | null> {
   try {
     switch (entry.type) {
       case 'memory':
-        return loadFromMemory(name, entry.source as nexus);
+        return loadFromMemory(name, entry.source as NexusT);
 
       case 'module':
         return await loadFromModule(name, entry.source as string);
@@ -69,7 +69,7 @@ export async function loadScene(name: string): Promise<nexus | null> {
 /**
  * Loads a scene from memory (pre-built nexus component)
  */
-function loadFromMemory(name: string, scene: nexus): nexus {
+function loadFromMemory(name: string, scene: NexusT): NexusT {
   console.info(`[SCENE LOADER] Loading scene "${name}" from memory`);
   return scene;
 }
@@ -80,7 +80,7 @@ function loadFromMemory(name: string, scene: nexus): nexus {
 async function loadFromModule(
   name: string,
   modulePath: string,
-): Promise<nexus | null> {
+): Promise<NexusT | null> {
   console.info(
     `[SCENE LOADER] Loading scene "${name}" from module: ${modulePath}`,
   );
@@ -92,24 +92,24 @@ async function loadFromModule(
     const module = await importFunc(modulePath);
 
     // Try different export patterns
-    let scene: nexus | null = null;
+    let scene: NexusT | null = null;
 
     // Pattern 1: Default export is a nexus
     if (module.default && module.default.type === 'nexus') {
-      scene = module.default as nexus;
+      scene = module.default as NexusT;
     }
     // Pattern 2: Default export is a function that returns a nexus
     else if (typeof module.default === 'function') {
       const result = await module.default();
       if (result && result.type === 'nexus') {
-        scene = result as nexus;
+        scene = result as NexusT;
       }
     }
     // Pattern 3: Named export `createScene` function
     else if (typeof module.createScene === 'function') {
       const result = await module.createScene();
       if (result && result.type === 'nexus') {
-        scene = result as nexus;
+        scene = result as NexusT;
       }
     }
 
@@ -137,17 +137,20 @@ async function loadFromModule(
 /**
  * Recursively deserializes a component and its children
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deserializeComponentRecursive(data: any): ComponentData | null {
   try {
     if (data.type === 'nexus') {
       // Deserialize the nexus itself (creates empty nexus)
-      const nexusComp = NexusSerializer.deserialize(data) as nexus;
+      const nexusComp = NexusSerializer.deserialize(data) as NexusT;
 
       // Recursively deserialize child components if they exist
       if (data.components && Array.isArray(data.components)) {
         for (const childData of data.components) {
           const child = deserializeComponentRecursive(childData);
           if (child) {
+            // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+            // @ts-expect-error
             nexusComp.addComponent(child);
           }
         }
@@ -156,7 +159,7 @@ function deserializeComponentRecursive(data: any): ComponentData | null {
       return nexusComp;
     } else if (data.type === 'ui-overlay') {
       // Deserialize UI Overlay
-      return UIOverlaySerializer.deserialize(data) as ui_overlay;
+      return UIOverlaySerializer.deserialize(data) as UIOverlayT;
     } else {
       console.error(
         `[SCENE LOADER ERROR] Unknown component type: ${data.type}`,
@@ -178,7 +181,7 @@ function deserializeComponentRecursive(data: any): ComponentData | null {
 async function loadFromSerialized(
   name: string,
   filePath: string,
-): Promise<nexus | null> {
+): Promise<NexusT | null> {
   console.info(`[SCENE LOADER] Loading scene "${name}" from file: ${filePath}`);
 
   try {
@@ -196,7 +199,7 @@ async function loadFromSerialized(
     const data = await response.json();
 
     // Recursively deserialize the entire scene hierarchy
-    const scene = deserializeComponentRecursive(data) as nexus;
+    const scene = deserializeComponentRecursive(data) as NexusT;
 
     if (!scene || scene.type !== 'nexus') {
       console.error(
@@ -265,7 +268,7 @@ export function unloadScene(): void {
  * }
  * ```
  */
-export async function switchScene(name: string): Promise<nexus | null> {
+export async function switchScene(name: string): Promise<NexusT | null> {
   console.info(`[SCENE LOADER] Switching to scene "${name}"`);
 
   // Unload current scene if any
@@ -301,6 +304,6 @@ export async function switchScene(name: string): Promise<nexus | null> {
  * }
  * ```
  */
-export function getActiveScene(): nexus | null {
+export function getActiveScene(): NexusT | null {
   return activeScene;
 }

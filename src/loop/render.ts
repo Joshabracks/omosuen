@@ -5,7 +5,7 @@
  * it's a stub to earmark the rendering phase in the game loop.
  */
 
-import type { nexus } from '../component/nexus/data';
+import type { NexusT } from '../component/nexus/data';
 
 /**
  * Renders the active scene.
@@ -30,7 +30,8 @@ import type { nexus } from '../component/nexus/data';
  * renderScene(activeScene);
  * ```
  */
-export function renderScene(scene: nexus): void {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function renderScene(scene: NexusT): void {
   // Stub - no rendering yet
   // Future implementation will render all visible components
 }

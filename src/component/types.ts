@@ -70,7 +70,7 @@ export interface ComponentMethods {
  */
 export type ComponentInstanceMethods<T extends ComponentMethods> = {
   [K in keyof T as K extends 'type' ? never : K]: T[K] extends (
-    component: any,
+    component: ComponentData,
     ...args: infer Args
   ) => infer Return
     ? (...args: Args) => Return
@@ -80,7 +80,7 @@ export type ComponentInstanceMethods<T extends ComponentMethods> = {
 export async function newComponent(
   type: COMPONENT_TYPE,
   options: ComponentOptions,
-) {
+): Promise<ComponentData | null> {
   const builder = BUILDERS[type];
   if (!builder) {
     console.error(
@@ -103,7 +103,7 @@ export async function newComponent(
     const updateKey = `${component.name}-${component.id}-update`;
 
     // Create wrapper that matches ComponentMethods.update signature
-    const updateWrapper = (_comp: ComponentData, deltaTime: number) => {
+    const updateWrapper = (_comp: ComponentData, deltaTime: number): void => {
       // Call the user's update function with deltaTime only
       // The component is available via closure
       options.update!(deltaTime);
@@ -147,7 +147,8 @@ export async function newComponent(
 
       // Check if property is allowed (base or component-specific)
       if (baseProperties.includes(prop) || componentAllowlist.includes(prop)) {
-        // @ts-ignore
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-expect-error
         return c[prop];
       }
 
@@ -161,8 +162,9 @@ export async function newComponent(
       }
 
       // Return method wrapper
-      return (...args: any[]) => {
-        // @ts-ignore
+      return (...args: unknown[]) => {
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-expect-error
         return ComponentMethod[c.type][prop](c, ...args);
       };
     },

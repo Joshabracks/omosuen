@@ -1,59 +1,59 @@
 import { ComponentData, ComponentMethods, ComponentUnique } from '../types';
 import { ComponentMethod } from '../registry';
-import { nexus } from './data';
+import { NexusT } from './data';
 
 /**
  * Helper function to extract child nexus components from a nexus.
  * Used by recursive query methods to traverse the hierarchy.
  */
-function getChildNexuses(n: nexus): nexus[] {
-  return n.components.filter((c) => c.type === 'nexus') as nexus[];
+function getChildNexuses(n: NexusT): NexusT[] {
+  return n.components.filter((c) => c.type === 'nexus') as NexusT[];
 }
 
 export interface NexusMethods extends ComponentMethods {
-  addComponent: (n: nexus, component: ComponentData) => void;
+  addComponent: (n: NexusT, component: ComponentData) => void;
   addComponents: (
-    n: nexus,
+    n: NexusT,
     components: ComponentData[] | { [index: string]: ComponentData },
   ) => void;
   getComponentById: (
-    n: nexus,
+    n: NexusT,
     id: number,
     recursive?: boolean,
   ) => ComponentData | null;
   getComponentsById: (
-    n: nexus,
+    n: NexusT,
     id: number,
     recursive?: boolean,
   ) => ComponentData[];
   getComponentByType: (
-    n: nexus,
+    n: NexusT,
     type: string,
     recursive?: boolean,
   ) => ComponentData | null;
   getComponentsByType: (
-    n: nexus,
+    n: NexusT,
     type: string,
     recursive?: boolean,
   ) => ComponentData[];
   getComponentByName: (
-    n: nexus,
+    n: NexusT,
     name: string,
     recursive?: boolean,
   ) => ComponentData | null;
   getComponentsByName: (
-    n: nexus,
+    n: NexusT,
     name: string,
     recursive?: boolean,
   ) => ComponentData[];
   getComponentByTypeAndName: (
-    n: nexus,
+    n: NexusT,
     type: string,
     name: string,
     recursive?: boolean,
   ) => ComponentData | null;
   getComponentsByTypeAndName: (
-    n: nexus,
+    n: NexusT,
     type: string,
     name: string,
     recursive?: boolean,
@@ -63,7 +63,7 @@ export interface NexusMethods extends ComponentMethods {
 
 export const Nexus: NexusMethods = {
   type: 'nexus',
-  addComponent: (n: nexus, component: ComponentData) => {
+  addComponent: (n: NexusT, component: ComponentData) => {
     if (component.unique === ComponentUnique.LOCAL) {
       // LOCAL: Dispose existing components of same type in THIS Nexus only
       const existing = n.components.filter((c) => c.type === component.type);
@@ -86,7 +86,7 @@ export const Nexus: NexusMethods = {
 
       // Recursively find and dispose all instances of this type in entire scene
       const allInstances = Nexus.getComponentsByType(
-        root as nexus,
+        root as NexusT,
         component.type,
         true,
       );
@@ -105,13 +105,14 @@ export const Nexus: NexusMethods = {
     n.components.push(component);
   },
   addComponents: (
-    n: nexus,
+    n: NexusT,
     components: ComponentData[] | { [index: string]: ComponentData },
   ) => {
     switch (components.constructor.name) {
       case 'Object':
         for (const key in components) {
-          // @ts-ignore
+          // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+          // @ts-expect-error
           Nexus.addComponent(n, components[key]);
         }
         break;
@@ -126,7 +127,7 @@ export const Nexus: NexusMethods = {
         );
     }
   },
-  getComponentByType: (n: nexus, type: string, recursive: boolean = false) => {
+  getComponentByType: (n: NexusT, type: string, recursive: boolean = false) => {
     const match = n.components.find((c) => c.type === type);
     if (match || !recursive) return match ?? null;
 
@@ -137,7 +138,11 @@ export const Nexus: NexusMethods = {
     }
     return null;
   },
-  getComponentsByType: (n: nexus, type: string, recursive: boolean = false) => {
+  getComponentsByType: (
+    n: NexusT,
+    type: string,
+    recursive: boolean = false,
+  ) => {
     const matches = n.components.filter((c) => c.type === type);
     if (!recursive) return matches;
 
@@ -147,7 +152,7 @@ export const Nexus: NexusMethods = {
     }
     return matches;
   },
-  getComponentByName: (n: nexus, name: string, recursive: boolean = false) => {
+  getComponentByName: (n: NexusT, name: string, recursive: boolean = false) => {
     const match = n.components.find((c) => c.name === name);
     if (match || !recursive) return match ?? null;
 
@@ -158,7 +163,11 @@ export const Nexus: NexusMethods = {
     }
     return null;
   },
-  getComponentsByName: (n: nexus, name: string, recursive: boolean = false) => {
+  getComponentsByName: (
+    n: NexusT,
+    name: string,
+    recursive: boolean = false,
+  ) => {
     const matches = n.components.filter((c) => c.name === name);
     if (!recursive) return matches;
 
@@ -169,7 +178,7 @@ export const Nexus: NexusMethods = {
     return matches;
   },
   getComponentByTypeAndName: (
-    n: nexus,
+    n: NexusT,
     type: string,
     name: string,
     recursive: boolean = false,
@@ -190,7 +199,7 @@ export const Nexus: NexusMethods = {
     return null;
   },
   getComponentsByTypeAndName: (
-    n: nexus,
+    n: NexusT,
     type: string,
     name: string,
     recursive: boolean = false,
@@ -208,7 +217,7 @@ export const Nexus: NexusMethods = {
     }
     return matches;
   },
-  getComponentById: (n: nexus, id: number, recursive: boolean = false) => {
+  getComponentById: (n: NexusT, id: number, recursive: boolean = false) => {
     const match = n.components.find((c) => c.id === id);
     if (match || !recursive) return match ?? null;
 
@@ -219,7 +228,7 @@ export const Nexus: NexusMethods = {
     }
     return null;
   },
-  getComponentsById: (n: nexus, id: number, recursive: boolean = false) => {
+  getComponentsById: (n: NexusT, id: number, recursive: boolean = false) => {
     const matches = n.components.filter((c) => c.id === id);
     if (!recursive) return matches;
 
@@ -230,7 +239,7 @@ export const Nexus: NexusMethods = {
     return matches;
   },
   dispose: (component: ComponentData) => {
-    const n = component as nexus;
+    const n = component as NexusT;
     // Recursively dispose all child components (depth-first)
     n.components.forEach((c) => {
       const C = ComponentMethod[c.type];

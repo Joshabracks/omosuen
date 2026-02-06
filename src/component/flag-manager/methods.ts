@@ -1,21 +1,21 @@
 import { ComponentData, ComponentMethods } from '../types';
-import { flag_manager } from './data';
+import { FlagManagerT } from './data';
 
 /**
  * Methods interface for flag-manager component.
  * Provides type-safe method signatures for the $ Proxy.
  */
 export interface FlagManagerMethods extends ComponentMethods {
-  hasFlag: (fm: flag_manager, flag: string) => boolean;
-  hasAllFlags: (fm: flag_manager, flags: string | string[]) => boolean;
-  hasAnyFlag: (fm: flag_manager, flags: string | string[]) => boolean;
-  hasNoneOfFlags: (fm: flag_manager, flags: string | string[]) => boolean;
-  addFlag: (fm: flag_manager, flag: string) => void;
-  addFlags: (fm: flag_manager, flags: string[]) => void;
-  removeFlag: (fm: flag_manager, flag: string) => void;
-  removeFlags: (fm: flag_manager, flags: string[]) => void;
-  getFlags: (fm: flag_manager) => string[];
-  clearFlags: (fm: flag_manager) => void;
+  hasFlag: (fm: FlagManagerT, flag: string) => boolean;
+  hasAllFlags: (fm: FlagManagerT, flags: string | string[]) => boolean;
+  hasAnyFlag: (fm: FlagManagerT, flags: string | string[]) => boolean;
+  hasNoneOfFlags: (fm: FlagManagerT, flags: string | string[]) => boolean;
+  addFlag: (fm: FlagManagerT, flag: string) => void;
+  addFlags: (fm: FlagManagerT, flags: string[]) => void;
+  removeFlag: (fm: FlagManagerT, flag: string) => void;
+  removeFlags: (fm: FlagManagerT, flags: string[]) => void;
+  getFlags: (fm: FlagManagerT) => string[];
+  clearFlags: (fm: FlagManagerT) => void;
   dispose: (component: ComponentData) => void;
 }
 
@@ -69,7 +69,7 @@ export const FlagManager: FlagManagerMethods = {
    * }
    * ```
    */
-  hasFlag: (fm: flag_manager, flag: string): boolean => {
+  hasFlag: (fm: FlagManagerT, flag: string): boolean => {
     return fm.flags.has(flag);
   },
 
@@ -91,7 +91,7 @@ export const FlagManager: FlagManagerMethods = {
    * }
    * ```
    */
-  hasAllFlags: (fm: flag_manager, flags: string | string[]): boolean => {
+  hasAllFlags: (fm: FlagManagerT, flags: string | string[]): boolean => {
     const flagArray = Array.isArray(flags) ? flags : [flags];
     return flagArray.every((flag) => fm.flags.has(flag));
   },
@@ -114,7 +114,7 @@ export const FlagManager: FlagManagerMethods = {
    * }
    * ```
    */
-  hasAnyFlag: (fm: flag_manager, flags: string | string[]): boolean => {
+  hasAnyFlag: (fm: FlagManagerT, flags: string | string[]): boolean => {
     const flagArray = Array.isArray(flags) ? flags : [flags];
     return flagArray.some((flag) => fm.flags.has(flag));
   },
@@ -137,7 +137,7 @@ export const FlagManager: FlagManagerMethods = {
    * }
    * ```
    */
-  hasNoneOfFlags: (fm: flag_manager, flags: string | string[]): boolean => {
+  hasNoneOfFlags: (fm: FlagManagerT, flags: string | string[]): boolean => {
     const flagArray = Array.isArray(flags) ? flags : [flags];
     return !flagArray.some((flag) => fm.flags.has(flag));
   },
@@ -154,7 +154,7 @@ export const FlagManager: FlagManagerMethods = {
    * FlagManager.addFlag(flagManager, "bossDefeated");
    * ```
    */
-  addFlag: (fm: flag_manager, flag: string): void => {
+  addFlag: (fm: FlagManagerT, flag: string): void => {
     fm.flags.add(flag);
   },
 
@@ -174,7 +174,7 @@ export const FlagManager: FlagManagerMethods = {
    * ]);
    * ```
    */
-  addFlags: (fm: flag_manager, flags: string[]): void => {
+  addFlags: (fm: FlagManagerT, flags: string[]): void => {
     flags.forEach((flag) => fm.flags.add(flag));
   },
 
@@ -190,7 +190,7 @@ export const FlagManager: FlagManagerMethods = {
    * FlagManager.removeFlag(flagManager, "tempBoost");
    * ```
    */
-  removeFlag: (fm: flag_manager, flag: string): void => {
+  removeFlag: (fm: FlagManagerT, flag: string): void => {
     fm.flags.delete(flag);
   },
 
@@ -211,7 +211,7 @@ export const FlagManager: FlagManagerMethods = {
    * ]);
    * ```
    */
-  removeFlags: (fm: flag_manager, flags: string[]): void => {
+  removeFlags: (fm: FlagManagerT, flags: string[]): void => {
     flags.forEach((flag) => fm.flags.delete(flag));
   },
 
@@ -229,7 +229,7 @@ export const FlagManager: FlagManagerMethods = {
    * // ["level1Complete", "level2Complete", "tutorialComplete"]
    * ```
    */
-  getFlags: (fm: flag_manager): string[] => {
+  getFlags: (fm: FlagManagerT): string[] => {
     return Array.from(fm.flags);
   },
 
@@ -245,7 +245,7 @@ export const FlagManager: FlagManagerMethods = {
    * FlagManager.clearFlags(flagManager);
    * ```
    */
-  clearFlags: (fm: flag_manager): void => {
+  clearFlags: (fm: FlagManagerT): void => {
     fm.flags.clear();
   },
 
@@ -262,7 +262,7 @@ export const FlagManager: FlagManagerMethods = {
    * ```
    */
   dispose: (component: ComponentData): void => {
-    const fm = component as flag_manager;
+    const fm = component as FlagManagerT;
     fm.flags.clear();
     fm._disposed = true;
   },

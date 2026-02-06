@@ -1,16 +1,16 @@
 import { ComponentData, ComponentMethods } from '../types';
-import { ui_overlay, UIBinding } from './data';
+import { UIOverlayT, UIBinding } from './data';
 
 export interface UIOverlayMethods extends ComponentMethods {
-  hide?: (u: ui_overlay) => void;
-  show?: (u: ui_overlay) => void;
-  back: (u: ui_overlay) => void;
-  applyBindings: (u: ui_overlay) => void;
+  hide?: (u: UIOverlayT) => void;
+  show?: (u: UIOverlayT) => void;
+  back: (u: UIOverlayT) => void;
+  applyBindings: (u: UIOverlayT) => void;
 }
 
 export const UIOverlay: UIOverlayMethods = {
   type: 'ui-overlay',
-  hide(u: ui_overlay) {
+  hide(u: UIOverlayT) {
     if (u.hideOverride) {
       // @ts-expect-error - Dynamic method access via registered override
       const overrideMethod = UIOverlay[u.hideOverride];
@@ -27,7 +27,7 @@ export const UIOverlay: UIOverlayMethods = {
     }
   },
 
-  show(u: ui_overlay) {
+  show(u: UIOverlayT) {
     if (u.showOverride) {
       // @ts-expect-error - Dynamic method access via registered override
       const overrideMethod = UIOverlay[u.showOverride];
@@ -44,7 +44,7 @@ export const UIOverlay: UIOverlayMethods = {
     }
   },
 
-  back(u: ui_overlay) {
+  back(u: UIOverlayT) {
     // Hide current overlay
     if (u.hideOverride) {
       // @ts-expect-error - Dynamic method access via registered override
@@ -84,7 +84,7 @@ export const UIOverlay: UIOverlayMethods = {
     }
   },
 
-  applyBindings(u: ui_overlay) {
+  applyBindings(u: UIOverlayT) {
     u.bindings.forEach((binding: UIBinding) => {
       const elements = Array.from(document.querySelectorAll(binding.selector));
       if (!elements.length) return;
@@ -98,7 +98,7 @@ export const UIOverlay: UIOverlayMethods = {
 
   dispose(c: ComponentData) {
     // Remove event listeners
-    const u = c as ui_overlay;
+    const u = c as UIOverlayT;
     u.bindings.forEach((binding) => {
       const elements = document.querySelectorAll(binding.selector);
       elements.forEach((element) => {

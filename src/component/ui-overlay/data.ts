@@ -111,14 +111,14 @@ export interface UIBinding {
   method: (e: Event) => void;
 }
 
-export interface ui_overlay
+export interface UIOverlayT
   extends ComponentData, ComponentInstanceMethods<UIOverlayMethods> {
   type: 'ui-overlay';
   unique: ComponentUnique.FALSE;
   element: HTMLDivElement | null;
   bindings: UIBinding[];
   cssOverrides: Record<string, string>;
-  previousOverlay?: ui_overlay;
+  previousOverlay?: UIOverlayT;
   container: HTMLElement;
   showOverride?: string;
   hideOverride?: string;
@@ -128,10 +128,10 @@ export interface UIOverlayOptions extends ComponentOptions {
   html?: string;
   cssOverrides?: Record<string, string>;
   bindings?: UIBinding[];
-  previousOverlay?: ui_overlay;
+  previousOverlay?: UIOverlayT;
 }
 
-export function builder(options: UIOverlayOptions): ui_overlay {
+export function builder(options: UIOverlayOptions): UIOverlayT {
   // Create the container element
   const container = document.createElement('div');
   container.style.position = 'absolute';
@@ -152,7 +152,8 @@ export function builder(options: UIOverlayOptions): ui_overlay {
   // Apply CSS overrides if provided
   if (options.cssOverrides) {
     Object.keys(options.cssOverrides).forEach((key) => {
-      // @ts-ignore
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-expect-error
       container.style[key] = options.cssOverrides[key];
     });
   }
@@ -205,12 +206,12 @@ export function builder(options: UIOverlayOptions): ui_overlay {
     }
   }
 
-  return overlay as unknown as ui_overlay;
+  return overlay as unknown as UIOverlayT;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function serialize(component: ComponentData): any {
-  const uiOverlay = component as ui_overlay;
+  const uiOverlay = component as UIOverlayT;
   const container = uiOverlay.element;
   const bindingFactoryString = `function bindingFactory() {
     return [
@@ -237,7 +238,7 @@ function serialize(component: ComponentData): any {
   };
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): ui_overlay {
+function deserialize(data: any): UIOverlayT {
   const { type, name, html, cssOverrides, overrideKey, bindingFactoryString } =
     data;
   const errors = [];
@@ -261,17 +262,16 @@ function deserialize(data: any): ui_overlay {
     cssOverrides,
     html,
     overrideKey,
-    bindings: serializedBindings.map((binding: any) => {
+    bindings: serializedBindings.map((binding: UIBinding) => {
       const selector = binding.selector;
       const onActions = binding.onActions;
       eval(
-        binding.method.replace(
-          /function\s*\(\)/,
-          'function deserializedMethod()',
-        ),
+        binding.method
+          .toString()
+          .replace(/function\s*\(\)/, 'function deserializedMethod()'),
       );
       // @ts-expect-error deserializedMethod-via-eval
-      // eslint-disable-next-line no-undef
+      // eslint-disable-next-line no-undef, @typescript-eslint/no-unsafe-assignment
       return { selector, onActions, method: deserializedMethod };
     }),
   });

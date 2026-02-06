@@ -1,5 +1,5 @@
 import { ComponentData, ComponentMethods } from '../types';
-import { data_layer, DataLayerType } from './data';
+import { DataLayerT, DataLayerType } from './data';
 import { Vector2D, Vector3D, Vector4D } from '../../math';
 
 /**
@@ -21,12 +21,12 @@ function getTypeName(value: unknown): string | null {
  * Provides type-safe method signatures for the $ Proxy.
  */
 export interface DataLayerMethods extends ComponentMethods {
-  set: (d: data_layer, key: string, value: DataLayerType) => boolean;
-  get: (d: data_layer, key: string) => DataLayerType | null;
-  has: (d: data_layer, key: string) => boolean;
-  delete: (d: data_layer, key: string) => boolean;
-  setAll: (d: data_layer, data: Record<string, unknown>) => void;
-  getAll: (d: data_layer, keys: string[]) => Record<string, DataLayerType>;
+  set: (d: DataLayerT, key: string, value: DataLayerType) => boolean;
+  get: (d: DataLayerT, key: string) => DataLayerType | null;
+  has: (d: DataLayerT, key: string) => boolean;
+  delete: (d: DataLayerT, key: string) => boolean;
+  setAll: (d: DataLayerT, data: Record<string, unknown>) => void;
+  getAll: (d: DataLayerT, keys: string[]) => Record<string, DataLayerType>;
   dispose: (component: ComponentData) => void;
 }
 
@@ -77,7 +77,7 @@ export const DataLayer: DataLayerMethods = {
    * DataLayer.set(dataLayer, "health", "text");  // ✗ Fails - type mismatch
    * ```
    */
-  set: (d: data_layer, key: string, value: DataLayerType): boolean => {
+  set: (d: DataLayerT, key: string, value: DataLayerType): boolean => {
     // Validate type
     const typeName = getTypeName(value);
     if (typeName === null) {
@@ -122,7 +122,7 @@ export const DataLayer: DataLayerMethods = {
    * }
    * ```
    */
-  get: (d: data_layer, key: string): DataLayerType | null => {
+  get: (d: DataLayerT, key: string): DataLayerType | null => {
     return d.storage.get(key) ?? null;
   },
 
@@ -140,7 +140,7 @@ export const DataLayer: DataLayerMethods = {
    * }
    * ```
    */
-  has: (d: data_layer, key: string): boolean => {
+  has: (d: DataLayerT, key: string): boolean => {
     return d.storage.has(key);
   },
 
@@ -156,7 +156,7 @@ export const DataLayer: DataLayerMethods = {
    * DataLayer.delete(dataLayer, "health");
    * ```
    */
-  delete: (d: data_layer, key: string): boolean => {
+  delete: (d: DataLayerT, key: string): boolean => {
     const existed = d.storage.has(key);
     d.storage.delete(key);
     d.typeMap.delete(key);
@@ -180,7 +180,7 @@ export const DataLayer: DataLayerMethods = {
    * });
    * ```
    */
-  setAll: (d: data_layer, data: Record<string, unknown>): void => {
+  setAll: (d: DataLayerT, data: Record<string, unknown>): void => {
     for (const key in data) {
       const value = data[key];
       const typeName = getTypeName(value);
@@ -212,7 +212,7 @@ export const DataLayer: DataLayerMethods = {
    * // "nonexistent" is omitted
    * ```
    */
-  getAll: (d: data_layer, keys: string[]): Record<string, DataLayerType> => {
+  getAll: (d: DataLayerT, keys: string[]): Record<string, DataLayerType> => {
     const result: Record<string, DataLayerType> = {};
 
     for (const key of keys) {
@@ -231,7 +231,7 @@ export const DataLayer: DataLayerMethods = {
    * @param component - The component to dispose
    */
   dispose: (component: ComponentData): void => {
-    const d = component as data_layer;
+    const d = component as DataLayerT;
 
     // Clear all storage
     d.storage.clear();

@@ -1,4 +1,4 @@
-import type { nexus } from '../component/nexus/data';
+import type { NexusT } from '../component/nexus/data';
 
 /**
  * Internal type for tracking scene source types
@@ -10,7 +10,7 @@ type SceneSourceType = 'memory' | 'module' | 'serialized';
  */
 interface SceneRegistryEntry {
   type: SceneSourceType;
-  source: nexus | string; // nexus for memory, string path for module/serialized
+  source: NexusT | string; // nexus for memory, string path for module/serialized
 }
 
 /**
@@ -31,7 +31,7 @@ const sceneRegistry = new Map<string, SceneRegistryEntry>();
  * registerScene("MainMenu", mainMenu);
  * ```
  */
-export function registerScene(name: string, scene: nexus): void {
+export function registerScene(name: string, scene: NexusT): void {
   if (sceneRegistry.has(name)) {
     console.error(
       `[SCENE REGISTRY ERROR] Scene "${name}" is already registered`,

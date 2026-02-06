@@ -25,7 +25,7 @@ export type DataLayerType =
  * Data-layer component for storing typed key-value pairs.
  * Provides both Proxy-based property access and explicit method access.
  */
-export interface data_layer
+export interface DataLayerT
   extends ComponentData, ComponentInstanceMethods<DataLayerMethods> {
   type: 'data-layer';
   unique: ComponentUnique.FALSE;
@@ -53,7 +53,7 @@ function getTypeName(value: unknown): string | null {
  * Creates a Proxy handler for the data-layer component.
  * Enables direct property access: dataLayer.$.health = 100
  */
-function createProxyHandler(dataLayer: data_layer): ProxyHandler<object> {
+function createProxyHandler(dataLayer: DataLayerT): ProxyHandler<object> {
   return {
     get(_target: object, key: string): DataLayerType | undefined {
       if (typeof key === 'symbol') return undefined;
@@ -127,7 +127,7 @@ function createProxyHandler(dataLayer: data_layer): ProxyHandler<object> {
  * const health = DataLayer.get(dataLayer, "health");
  * ```
  */
-export function builder(options: ComponentOptions): data_layer {
+export function builder(options: ComponentOptions): DataLayerT {
   // Create data-only object. Methods will be added by Proxy wrapper in newComponent()
   const dataLayer = {
     type: 'data-layer' as const,
@@ -143,10 +143,10 @@ export function builder(options: ComponentOptions): data_layer {
   // Create Proxy for property access
   dataLayer.$ = new Proxy(
     {},
-    createProxyHandler(dataLayer as unknown as data_layer),
+    createProxyHandler(dataLayer as unknown as DataLayerT),
   );
 
-  return dataLayer as unknown as data_layer;
+  return dataLayer as unknown as DataLayerT;
 }
 
 /**
@@ -155,7 +155,7 @@ export function builder(options: ComponentOptions): data_layer {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function serialize(component: ComponentData): any {
-  const dl = component as data_layer;
+  const dl = component as DataLayerT;
 
   // Convert storage Map to plain object
   const storageObj: Record<string, unknown> = {};
@@ -202,7 +202,7 @@ function serialize(component: ComponentData): any {
  * Reconstructs Vector instances from serialized data.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): data_layer {
+function deserialize(data: any): DataLayerT {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, storage, typeMap } = data;
 

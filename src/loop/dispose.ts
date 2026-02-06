@@ -6,7 +6,7 @@
  */
 
 import type { COMPONENT_TYPE, ComponentData } from '../component/types';
-import type { nexus } from '../component/nexus/data';
+import type { NexusT } from '../component/nexus/data';
 import { unregisterComponentMethod } from '../component/registry';
 import { ComponentMethod } from '../component/registry';
 
@@ -75,7 +75,7 @@ export function markForDisposal(component: ComponentData): void {
  * processDisposeQueue(activeScene);
  * ```
  */
-export function processDisposeQueue(scene: nexus): void {
+export function processDisposeQueue(scene: NexusT): void {
   if (DISPOSE_QUEUE.size === 0) {
     return;
   }
@@ -87,7 +87,8 @@ export function processDisposeQueue(scene: nexus): void {
   // Process each disposal
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i];
-    // @ts-ignore
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-expect-error
     const component = scene.getComponentById(id, true);
 
     if (!component) {

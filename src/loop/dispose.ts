@@ -7,7 +7,7 @@
 
 import type { ComponentData } from "../component/types";
 import type { nexus } from "../component/nexus/data";
-import { $ } from "../component/registry";
+import { $, unregisterComponentMethod } from "../component/registry";
 import { ComponentMethod } from "../component/registry";
 
 /**
@@ -91,6 +91,12 @@ export function processDisposeQueue(scene: nexus): void {
 
     if (!component) {
       continue;
+    }
+
+    // Clean up custom update method if it exists
+    if (component.updateOverride) {
+      unregisterComponentMethod(component.type, component.updateOverride);
+      component.updateOverride = undefined;
     }
 
     const method = ComponentMethod[component.type];

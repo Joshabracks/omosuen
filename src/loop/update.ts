@@ -72,10 +72,24 @@ function traverseAndUpdate(
     return;
   }
 
-  // Call update if it exists
-  const method = ComponentMethod[component.type];
-  if (method.update && typeof method.update === "function") {
-    method.update(component, deltaTime);
+  // Check for instance-specific update override first
+  if (component.updateOverride) {
+    const method = ComponentMethod[component.type];
+    // @ts-ignore - Dynamic method access via registered override
+    const overrideMethod = method[component.updateOverride];
+    if (overrideMethod && typeof overrideMethod === "function") {
+      overrideMethod(component, deltaTime);
+    } else {
+      console.warn(
+        `[UPDATE] Custom update method '${component.updateOverride}' not found for component '${component.name}'`
+      );
+    }
+  } else {
+    // Fall back to type-level update
+    const method = ComponentMethod[component.type];
+    if (method.update && typeof method.update === "function") {
+      method.update(component, deltaTime);
+    }
   }
 
   // Recurse into nexus children

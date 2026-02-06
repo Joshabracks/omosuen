@@ -1,13 +1,14 @@
-import { BUILDERS } from "./registry";
+import { BUILDERS, registerComponentMethod } from "./registry";
 import { queueInit } from "../loop/init";
 
 let COMPONENT_COUNT = 0;
 
-export type COMPONENT_TYPE = "nexus" | "ui-overlay";
+export type COMPONENT_TYPE = "nexus" | "ui-overlay" | "data-layer";
 
 export interface ComponentOptions {
   name: string;
   overrideKey?: string;
+  update?: (deltaTime: number) => void
 }
 
 export interface ComponentData {
@@ -19,6 +20,7 @@ export interface ComponentData {
   loader?: boolean;
   unique?: boolean;
   overrideKey?: string;
+  updateOverride?: string;
   _initialized?: boolean;
 }
 
@@ -48,6 +50,25 @@ export async function newComponent(
     return null;
   }
   component.id = COMPONENT_COUNT++;
+
+  // Register custom update method if provided
+  if (options.update && typeof options.update === 'function') {
+    // Generate unique key for this component's update method
+    const updateKey = `${component.name}-${component.id}-update`;
+
+    // Create wrapper that matches ComponentMethods.update signature
+    const updateWrapper = (_comp: ComponentData, deltaTime: number) => {
+      // Call the user's update function with deltaTime only
+      // The component is available via closure
+      options.update!(deltaTime);
+    };
+
+    // Register the method
+    registerComponentMethod(type, updateKey, updateWrapper);
+
+    // Store the key so we can find it later
+    component.updateOverride = updateKey;
+  }
 
   // Automatically queue for initialization
   queueInit(component.id);

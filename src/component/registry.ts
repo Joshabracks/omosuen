@@ -2,6 +2,8 @@ import { Nexus, builder as nexusBuilder } from "./nexus";
 import type { NexusMethods } from "./nexus/methods";
 import { UIOverlay, builder as uiOverlayBuilder } from "./ui-overlay";
 import type { UIOverlayMethods } from "./ui-overlay";
+import { DataLayer, builder as dataLayerBuilder } from "./data-layer";
+import type { DataLayerMethods } from "./data-layer/methods";
 import type {
   COMPONENT_TYPE,
   ComponentData,
@@ -22,16 +24,19 @@ type ExtractMethods<T> = {
  * As new components are added, their method types should be added to this intersection
  */
 type ProxyMethodSignatures = ExtractMethods<NexusMethods> &
-  ExtractMethods<UIOverlayMethods>;
+  ExtractMethods<UIOverlayMethods> &
+  ExtractMethods<DataLayerMethods>;
 
 export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   nexus: nexusBuilder,
   "ui-overlay": uiOverlayBuilder,
+  "data-layer": dataLayerBuilder,
 };
 
 export const ComponentMethod: Record<COMPONENT_TYPE, ComponentMethods> = {
   nexus: Nexus,
   "ui-overlay": UIOverlay,
+  "data-layer": DataLayer,
 };
 
 const methodTypeCache: Record<string, Record<string, Function>> = {};

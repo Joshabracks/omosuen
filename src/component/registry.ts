@@ -1,10 +1,10 @@
-import { Nexus, builder as nexusBuilder } from "./nexus";
+import { Nexus, builder as nexusBuilder, PROPERTY_ALLOWLIST as NexusPropertyAllowlist } from "./nexus";
 import type { NexusMethods } from "./nexus/methods";
-import { UIOverlay, builder as uiOverlayBuilder } from "./ui-overlay";
+import { UIOverlay, builder as uiOverlayBuilder, PROPERTY_ALLOWLIST as UIOverlayPropertyAllowlist } from "./ui-overlay";
 import type { UIOverlayMethods } from "./ui-overlay";
-import { DataLayer, builder as dataLayerBuilder } from "./data-layer";
+import { DataLayer, builder as dataLayerBuilder, PROPERTY_ALLOWLIST as DataLayerPropertyAllowlist } from "./data-layer";
 import type { DataLayerMethods } from "./data-layer/methods";
-import { FlagManager, builder as flagManagerBuilder } from "./flag-manager";
+import { FlagManager, builder as flagManagerBuilder, PROPERTY_ALLOWLIST as FlagManagerPropertyAllowlist } from "./flag-manager";
 import type { FlagManagerMethods } from "./flag-manager/methods";
 import type {
   COMPONENT_TYPE,
@@ -42,6 +42,17 @@ export const ComponentMethod: Record<COMPONENT_TYPE, ComponentMethods> = {
   "ui-overlay": UIOverlay,
   "data-layer": DataLayer,
   "flag-manager": FlagManager,
+};
+
+/**
+ * Registry of component-specific property allowlists.
+ * Used by the component Proxy wrapper to distinguish data properties from methods.
+ */
+export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
+  nexus: NexusPropertyAllowlist,
+  "ui-overlay": UIOverlayPropertyAllowlist,
+  "data-layer": DataLayerPropertyAllowlist,
+  "flag-manager": FlagManagerPropertyAllowlist,
 };
 
 const methodTypeCache: Record<string, Record<string, Function>> = {};

@@ -18,7 +18,7 @@ export interface data_layer extends ComponentData {
   storage: Map<string, DataLayerType>;
   typeMap: Map<string, string>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  proxy: any;
+  $: any;
 }
 
 /**
@@ -37,7 +37,7 @@ function getTypeName(value: unknown): string | null {
 
 /**
  * Creates a Proxy handler for the data-layer component.
- * Enables direct property access: dataLayer.proxy.health = 100
+ * Enables direct property access: dataLayer.$.health = 100
  */
 function createProxyHandler(dataLayer: data_layer): ProxyHandler<object> {
   return {
@@ -104,9 +104,9 @@ function createProxyHandler(dataLayer: data_layer): ProxyHandler<object> {
  * const dataLayer = await newComponent("data-layer", { name: "Player Stats" });
  *
  * // Use Proxy for direct access
- * dataLayer.proxy.health = 100;
- * dataLayer.proxy.position = new Vector3D(10, 20, 30);
- * dataLayer.proxy.position.x = 15;  // Direct mutation works!
+ * dataLayer.$.health = 100;
+ * dataLayer.$.position = new Vector3D(10, 20, 30);
+ * dataLayer.$.position.x = 15;  // Direct mutation works!
  *
  * // Or use explicit methods
  * DataLayer.set(dataLayer, "health", 100);
@@ -122,11 +122,11 @@ export function builder(options: ComponentOptions): data_layer {
     _disposed: false,
     storage: new Map<string, DataLayerType>(),
     typeMap: new Map<string, string>(),
-    proxy: null
+    $: null
   };
 
   // Create Proxy for property access
-  dataLayer.proxy = new Proxy({}, createProxyHandler(dataLayer));
+  dataLayer.$ = new Proxy({}, createProxyHandler(dataLayer));
 
   return dataLayer;
 }
@@ -233,3 +233,13 @@ export const DataLayerSerializer: ComponentSerializer = {
   serialize,
   deserialize
 };
+
+/**
+ * Allowlist of data-layer-specific properties accessible via component Proxy.
+ * These properties can be accessed directly without triggering method lookup.
+ */
+export const PROPERTY_ALLOWLIST: string[] = [
+  'storage',
+  'typeMap',
+  '$'
+];

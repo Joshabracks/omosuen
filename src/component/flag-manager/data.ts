@@ -107,3 +107,11 @@ export const FlagManagerSerializer: ComponentSerializer = {
   serialize,
   deserialize
 };
+
+/**
+ * Allowlist of flag-manager-specific properties accessible via component Proxy.
+ * These properties can be accessed directly without triggering method lookup.
+ */
+export const PROPERTY_ALLOWLIST: string[] = [
+  'flags'
+];

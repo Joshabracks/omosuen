@@ -1,4 +1,4 @@
-import { BUILDERS, registerComponentMethod } from "./registry";
+import { $, BUILDERS, ComponentMethod, registerComponentMethod, PROPERTY_ALLOWLIST } from "./registry";
 import { queueInit } from "../loop/init";
 
 let COMPONENT_COUNT = 0;
@@ -86,7 +86,48 @@ export async function newComponent(
   // Automatically queue for initialization
   queueInit(component.id);
 
-  return component;
+  const proxyKeys = Object.keys(ComponentMethod[component.type])
+
+  // Base ComponentData properties (always allowed)
+  const baseProperties = [
+    'name', 'type', 'id', 'parent', '_disposed',
+    'loader', 'unique', 'overrideKey', 'updateOverride', '_initialized'
+  ];
+
+  // Component-specific properties
+  const componentAllowlist = PROPERTY_ALLOWLIST[component.type] || [];
+
+  const handler = {
+    get: function (c: ComponentData, prop: string) {
+      // Handle Promise detection (JavaScript checks for .then when awaiting)
+      if (prop === 'then' || prop === 'catch' || prop === 'finally') {
+        return undefined;
+      }
+
+      // Check if property is allowed (base or component-specific)
+      if (baseProperties.includes(prop) || componentAllowlist.includes(prop)) {
+        // @ts-ignore
+        return c[prop];
+      }
+
+      // Check if it's a method
+      if (proxyKeys.indexOf(prop) === -1) {
+        console.error(`${c.type} has no method named ${prop}. Available methods: ${proxyKeys.join(', ')}`);
+        // return do nothing func for graceful failure
+        return () => {};
+      }
+
+      // Return method wrapper
+      return (...args: any[]) => {
+        // @ts-ignore
+        return $[prop](c, ...args);
+      }
+    }
+  }
+  
+
+  const proxy = new Proxy(component, handler);
+  return proxy;
 }
 
 // Type alias for serialized component data

@@ -126,9 +126,12 @@ async function loadFromModule(
     );
     return scene;
   } catch (error) {
+    const errorMessage =
+      error instanceof Error
+        ? `${error.message}\n${error.stack || ''}`
+        : String(error);
     console.error(
-      `[SCENE LOADER ERROR] Failed to import module "${modulePath}":`,
-      error,
+      `[SCENE LOADER ERROR] Failed to import module "${modulePath}": ${errorMessage}`,
     );
     return null;
   }

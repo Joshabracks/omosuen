@@ -20,3 +20,9 @@ export type {
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';
+
+// Export serializers for scene management
+export { NexusSerializer } from './nexus/data';
+export { UIOverlaySerializer } from './ui-overlay/data';
+export { DataLayerSerializer } from './data-layer/data';
+export { FlagManagerSerializer } from './flag-manager/data';

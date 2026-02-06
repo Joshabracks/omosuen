@@ -72,9 +72,18 @@ function traverseAndUpdate(
     return;
   }
 
+  // Get component method registry entry
+  const method = ComponentMethod[component.type];
+
+  if (!method) {
+    console.error(
+      `[UPDATE] No method registry found for component type '${component.type}' (component: '${component.name}')`,
+    );
+    return;
+  }
+
   // Check for instance-specific update override first
   if (component.updateOverride) {
-    const method = ComponentMethod[component.type];
     // @ts-expect-error - Dynamic method access via registered override
     const overrideMethod = method[component.updateOverride];
     if (overrideMethod && typeof overrideMethod === 'function') {
@@ -86,7 +95,6 @@ function traverseAndUpdate(
     }
   } else {
     // Fall back to type-level update
-    const method = ComponentMethod[component.type];
     if (method.update && typeof method.update === 'function') {
       method.update(component, deltaTime);
     }

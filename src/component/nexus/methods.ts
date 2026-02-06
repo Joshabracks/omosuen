@@ -2,14 +2,6 @@ import { ComponentData, ComponentMethods, ComponentUnique } from '../types';
 import { ComponentMethod } from '../registry';
 import { NexusT } from './data';
 
-/**
- * Helper function to extract child nexus components from a nexus.
- * Used by recursive query methods to traverse the hierarchy.
- */
-function getChildNexuses(n: NexusT): NexusT[] {
-  return n.components.filter((c) => c.type === 'nexus') as NexusT[];
-}
-
 export interface NexusMethods extends ComponentMethods {
   addComponent: (n: NexusT, component: ComponentData) => void;
   addComponents: (
@@ -131,9 +123,11 @@ export const Nexus: NexusMethods = {
     const match = n.components.find((c) => c.type === type);
     if (match || !recursive) return match ?? null;
 
-    const childNexuses = getChildNexuses(n);
-    for (let i = 0; i < childNexuses.length; i++) {
-      const childMatch = Nexus.getComponentByType(childNexuses[i], type, true);
+    // Recurse into child nexuses only (no intermediate array allocation)
+    for (let i = 0; i < n.components.length; i++) {
+      const c = n.components[i];
+      if (c.type !== 'nexus') continue;
+      const childMatch = Nexus.getComponentByType(c as NexusT, type, true);
       if (childMatch) return childMatch;
     }
     return null;
@@ -143,12 +137,24 @@ export const Nexus: NexusMethods = {
     type: string,
     recursive: boolean = false,
   ) => {
-    const matches = n.components.filter((c) => c.type === type);
+    const matches: ComponentData[] = [];
+
+    // Collect matches in this nexus (no filter allocation)
+    for (let i = 0; i < n.components.length; i++) {
+      const c = n.components[i];
+      if (c.type === type) matches.push(c);
+    }
+
     if (!recursive) return matches;
 
-    const childNexuses = getChildNexuses(n);
-    for (const childNexus of childNexuses) {
-      matches.push(...Nexus.getComponentsByType(childNexus, type, true));
+    // Recurse into child nexuses only (no intermediate array, no spread operator)
+    for (let i = 0; i < n.components.length; i++) {
+      const c = n.components[i];
+      if (c.type !== 'nexus') continue;
+      const childMatches = Nexus.getComponentsByType(c as NexusT, type, true);
+      for (let j = 0; j < childMatches.length; j++) {
+        matches.push(childMatches[j]);
+      }
     }
     return matches;
   },
@@ -156,9 +162,11 @@ export const Nexus: NexusMethods = {
     const match = n.components.find((c) => c.name === name);
     if (match || !recursive) return match ?? null;
 
-    const childNexuses = getChildNexuses(n);
-    for (let i = 0; i < childNexuses.length; i++) {
-      const childMatch = Nexus.getComponentByName(childNexuses[i], name, true);
+    // Recurse into child nexuses only (no intermediate array allocation)
+    for (let i = 0; i < n.components.length; i++) {
+      const c = n.components[i];
+      if (c.type !== 'nexus') continue;
+      const childMatch = Nexus.getComponentByName(c as NexusT, name, true);
       if (childMatch) return childMatch;
     }
     return null;
@@ -168,12 +176,24 @@ export const Nexus: NexusMethods = {
     name: string,
     recursive: boolean = false,
   ) => {
-    const matches = n.components.filter((c) => c.name === name);
+    const matches: ComponentData[] = [];
+
+    // Collect matches in this nexus (no filter allocation)
+    for (let i = 0; i < n.components.length; i++) {
+      const c = n.components[i];
+      if (c.name === name) matches.push(c);
+    }
+
     if (!recursive) return matches;
 
-    const childNexuses = getChildNexuses(n);
-    for (const childNexus of childNexuses) {
-      matches.push(...Nexus.getComponentsByName(childNexus, name, true));
+    // Recurse into child nexuses only (no intermediate array, no spread operator)
+    for (let i = 0; i < n.components.length; i++) {
+      const c = n.components[i];
+      if (c.type !== 'nexus') continue;
+      const childMatches = Nexus.getComponentsByName(c as NexusT, name, true);
+      for (let j = 0; j < childMatches.length; j++) {
+        matches.push(childMatches[j]);
+      }
     }
     return matches;
   },
@@ -186,10 +206,12 @@ export const Nexus: NexusMethods = {
     const match = n.components.find((c) => c.type === type && c.name === name);
     if (match || !recursive) return match ?? null;
 
-    const childNexuses = getChildNexuses(n);
-    for (let i = 0; i < childNexuses.length; i++) {
+    // Recurse into child nexuses only (no intermediate array allocation)
+    for (let i = 0; i < n.components.length; i++) {
+      const c = n.components[i];
+      if (c.type !== 'nexus') continue;
       const childMatch = Nexus.getComponentByTypeAndName(
-        childNexuses[i],
+        c as NexusT,
         type,
         name,
         true,
@@ -204,16 +226,29 @@ export const Nexus: NexusMethods = {
     name: string,
     recursive: boolean = false,
   ) => {
-    const matches = n.components.filter(
-      (c) => c.type === type && c.name === name,
-    );
+    const matches: ComponentData[] = [];
+
+    // Collect matches in this nexus (no filter allocation)
+    for (let i = 0; i < n.components.length; i++) {
+      const c = n.components[i];
+      if (c.type === type && c.name === name) matches.push(c);
+    }
+
     if (!recursive) return matches;
 
-    const childNexuses = getChildNexuses(n);
-    for (const childNexus of childNexuses) {
-      matches.push(
-        ...Nexus.getComponentsByTypeAndName(childNexus, type, name, true),
+    // Recurse into child nexuses only (no intermediate array, no spread operator)
+    for (let i = 0; i < n.components.length; i++) {
+      const c = n.components[i];
+      if (c.type !== 'nexus') continue;
+      const childMatches = Nexus.getComponentsByTypeAndName(
+        c as NexusT,
+        type,
+        name,
+        true,
       );
+      for (let j = 0; j < childMatches.length; j++) {
+        matches.push(childMatches[j]);
+      }
     }
     return matches;
   },
@@ -221,20 +256,34 @@ export const Nexus: NexusMethods = {
     const match = n.components.find((c) => c.id === id);
     if (match || !recursive) return match ?? null;
 
-    const childNexuses = getChildNexuses(n);
-    for (let i = 0; i < childNexuses.length; i++) {
-      const childMatch = Nexus.getComponentById(childNexuses[i], id, true);
+    // Recurse into child nexuses only (no intermediate array allocation)
+    for (let i = 0; i < n.components.length; i++) {
+      const c = n.components[i];
+      if (c.type !== 'nexus') continue;
+      const childMatch = Nexus.getComponentById(c as NexusT, id, true);
       if (childMatch) return childMatch;
     }
     return null;
   },
   getComponentsById: (n: NexusT, id: number, recursive: boolean = false) => {
-    const matches = n.components.filter((c) => c.id === id);
+    const matches: ComponentData[] = [];
+
+    // Collect matches in this nexus (no filter allocation)
+    for (let i = 0; i < n.components.length; i++) {
+      const c = n.components[i];
+      if (c.id === id) matches.push(c);
+    }
+
     if (!recursive) return matches;
 
-    const childNexuses = getChildNexuses(n);
-    for (const childNexus of childNexuses) {
-      matches.push(...Nexus.getComponentsById(childNexus, id, true));
+    // Recurse into child nexuses only (no intermediate array, no spread operator)
+    for (let i = 0; i < n.components.length; i++) {
+      const c = n.components[i];
+      if (c.type !== 'nexus') continue;
+      const childMatches = Nexus.getComponentsById(c as NexusT, id, true);
+      for (let j = 0; j < childMatches.length; j++) {
+        matches.push(childMatches[j]);
+      }
     }
     return matches;
   },

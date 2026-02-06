@@ -1,17 +1,13 @@
-import {
-  ComponentData,
-  ComponentMethods,
-  ComponentUnique,
-} from "../types";
-import { ComponentMethod } from "../registry";
-import { nexus } from "./data";
+import { ComponentData, ComponentMethods, ComponentUnique } from '../types';
+import { ComponentMethod } from '../registry';
+import { nexus } from './data';
 
 /**
  * Helper function to extract child nexus components from a nexus.
  * Used by recursive query methods to traverse the hierarchy.
  */
 function getChildNexuses(n: nexus): nexus[] {
-  return n.components.filter((c) => c.type === "nexus") as nexus[];
+  return n.components.filter((c) => c.type === 'nexus') as nexus[];
 }
 
 export interface NexusMethods extends ComponentMethods {
@@ -66,14 +62,14 @@ export interface NexusMethods extends ComponentMethods {
 }
 
 export const Nexus: NexusMethods = {
-  type: "nexus",
+  type: 'nexus',
   addComponent: (n: nexus, component: ComponentData) => {
     if (component.unique === ComponentUnique.LOCAL) {
       // LOCAL: Dispose existing components of same type in THIS Nexus only
       const existing = n.components.filter((c) => c.type === component.type);
       existing.forEach((c) => {
         const C = ComponentMethod[c.type];
-        if (C.dispose && typeof C.dispose === "function") {
+        if (C.dispose && typeof C.dispose === 'function') {
           C.dispose(c);
         }
       });
@@ -89,10 +85,14 @@ export const Nexus: NexusMethods = {
       }
 
       // Recursively find and dispose all instances of this type in entire scene
-      const allInstances = Nexus.getComponentsByType(root as nexus, component.type, true);
+      const allInstances = Nexus.getComponentsByType(
+        root as nexus,
+        component.type,
+        true,
+      );
       allInstances.forEach((c) => {
         const C = ComponentMethod[c.type];
-        if (C.dispose && typeof C.dispose === "function") {
+        if (C.dispose && typeof C.dispose === 'function') {
           C.dispose(c);
         }
       });
@@ -109,13 +109,13 @@ export const Nexus: NexusMethods = {
     components: ComponentData[] | { [index: string]: ComponentData },
   ) => {
     switch (components.constructor.name) {
-      case "Object":
+      case 'Object':
         for (const key in components) {
           // @ts-ignore
           Nexus.addComponent(n, components[key]);
         }
         break;
-      case "Array":
+      case 'Array':
         (components as ComponentData[]).forEach((component: ComponentData) =>
           Nexus.addComponent(n, component),
         );
@@ -174,9 +174,7 @@ export const Nexus: NexusMethods = {
     name: string,
     recursive: boolean = false,
   ) => {
-    const match = n.components.find(
-      (c) => c.type === type && c.name === name,
-    );
+    const match = n.components.find((c) => c.type === type && c.name === name);
     if (match || !recursive) return match ?? null;
 
     const childNexuses = getChildNexuses(n);
@@ -204,7 +202,9 @@ export const Nexus: NexusMethods = {
 
     const childNexuses = getChildNexuses(n);
     for (const childNexus of childNexuses) {
-      matches.push(...Nexus.getComponentsByTypeAndName(childNexus, type, name, true));
+      matches.push(
+        ...Nexus.getComponentsByTypeAndName(childNexus, type, name, true),
+      );
     }
     return matches;
   },
@@ -234,7 +234,7 @@ export const Nexus: NexusMethods = {
     // Recursively dispose all child components (depth-first)
     n.components.forEach((c) => {
       const C = ComponentMethod[c.type];
-      if (C.dispose && typeof C.dispose === "function") {
+      if (C.dispose && typeof C.dispose === 'function') {
         C.dispose(c);
       } else {
         c._disposed = true;

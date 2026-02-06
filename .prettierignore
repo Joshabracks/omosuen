@@ -1,0 +1,12 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+test/dev
+
+# Minified files
+*.min.js
+
+# Lock files
+package-lock.json

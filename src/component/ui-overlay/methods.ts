@@ -1,5 +1,5 @@
-import { ComponentData, ComponentMethods } from "../types";
-import { ui_overlay, UIBinding } from "./data";
+import { ComponentData, ComponentMethods } from '../types';
+import { ui_overlay, UIBinding } from './data';
 
 export interface UIOverlayMethods extends ComponentMethods {
   hide?: (u: ui_overlay) => void;
@@ -12,48 +12,48 @@ export const UIOverlay: UIOverlayMethods = {
   type: 'ui-overlay',
   hide(u: ui_overlay) {
     if (u.hideOverride) {
-      // @ts-ignore - Dynamic method access via registered override
+      // @ts-expect-error - Dynamic method access via registered override
       const overrideMethod = UIOverlay[u.hideOverride];
-      if (overrideMethod && typeof overrideMethod === "function") {
+      if (overrideMethod && typeof overrideMethod === 'function') {
         overrideMethod(u);
       } else {
         console.warn(
-          `[ui-overlay] Custom hide method '${u.hideOverride}' not found for '${u.name}'. Using default behavior.`
+          `[ui-overlay] Custom hide method '${u.hideOverride}' not found for '${u.name}'. Using default behavior.`,
         );
-        u.container.style.display = "none";
+        u.container.style.display = 'none';
       }
     } else {
-      u.container.style.display = "none";
+      u.container.style.display = 'none';
     }
   },
 
   show(u: ui_overlay) {
     if (u.showOverride) {
-      // @ts-ignore - Dynamic method access via registered override
+      // @ts-expect-error - Dynamic method access via registered override
       const overrideMethod = UIOverlay[u.showOverride];
-      if (overrideMethod && typeof overrideMethod === "function") {
+      if (overrideMethod && typeof overrideMethod === 'function') {
         overrideMethod(u);
       } else {
         console.warn(
-          `[ui-overlay] Custom show method '${u.showOverride}' not found for '${u.name}'. Using default behavior.`
+          `[ui-overlay] Custom show method '${u.showOverride}' not found for '${u.name}'. Using default behavior.`,
         );
-        u.container.style.display = "block";
+        u.container.style.display = 'block';
       }
     } else {
-      u.container.style.display = "block";
+      u.container.style.display = 'block';
     }
   },
 
   back(u: ui_overlay) {
     // Hide current overlay
     if (u.hideOverride) {
-      // @ts-ignore - Dynamic method access via registered override
+      // @ts-expect-error - Dynamic method access via registered override
       const overrideMethod = UIOverlay[u.hideOverride];
-      if (overrideMethod && typeof overrideMethod === "function") {
+      if (overrideMethod && typeof overrideMethod === 'function') {
         overrideMethod(u);
       } else {
         console.warn(
-          `[ui-overlay] Custom hide method '${u.hideOverride}' not found for '${u.name}'. Using default behavior.`
+          `[ui-overlay] Custom hide method '${u.hideOverride}' not found for '${u.name}'. Using default behavior.`,
         );
         if (UIOverlay.hide) {
           UIOverlay.hide(u);
@@ -66,13 +66,13 @@ export const UIOverlay: UIOverlayMethods = {
     // Show previous overlay
     if (u.previousOverlay) {
       if (u.previousOverlay.showOverride) {
-        // @ts-ignore - Dynamic method access via registered override
+        // @ts-expect-error - Dynamic method access via registered override
         const overrideMethod = UIOverlay[u.previousOverlay.showOverride];
-        if (overrideMethod && typeof overrideMethod === "function") {
+        if (overrideMethod && typeof overrideMethod === 'function') {
           overrideMethod(u.previousOverlay);
         } else {
           console.warn(
-            `[ui-overlay] Custom show method '${u.previousOverlay.showOverride}' not found for '${u.previousOverlay.name}'. Using default behavior.`
+            `[ui-overlay] Custom show method '${u.previousOverlay.showOverride}' not found for '${u.previousOverlay.name}'. Using default behavior.`,
           );
           if (UIOverlay.show) {
             UIOverlay.show(u.previousOverlay);
@@ -122,5 +122,5 @@ export const UIOverlay: UIOverlayMethods = {
     u.bindings = [];
     u.element = null;
     u._disposed = true;
-  }
+  },
 };

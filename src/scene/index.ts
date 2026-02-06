@@ -16,14 +16,9 @@ export {
   hasScene,
   listScenes,
   unregisterScene,
-} from "./registry";
+} from './registry';
 
 // ============================================================================
 // Loader Functions
 // ============================================================================
-export {
-  loadScene,
-  unloadScene,
-  switchScene,
-  getActiveScene,
-} from "./loader";
+export { loadScene, unloadScene, switchScene, getActiveScene } from './loader';

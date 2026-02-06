@@ -17,7 +17,7 @@ export {
   getFrameTime,
   getFPS,
   getTargetFPS,
-} from "./manager";
+} from './manager';
 
 // ============================================================================
 // Initialization System
@@ -29,12 +29,12 @@ export {
   clearInitQueue,
   getInitQueueSize,
   getInitQueueLength,
-} from "./init";
+} from './init';
 
 // ============================================================================
 // Update System
 // ============================================================================
-export { updateScene } from "./update";
+export { updateScene } from './update';
 
 // ============================================================================
 // Disposal System
@@ -45,19 +45,19 @@ export {
   processDisposeQueue,
   clearDisposeQueue,
   getDisposeQueueSize,
-} from "./dispose";
+} from './dispose';
 
 // ============================================================================
 // Render System (Stub)
 // ============================================================================
-export { renderScene } from "./render";
+export { renderScene } from './render';
 
 // ============================================================================
 // Messaging System (Stub)
 // ============================================================================
-export { pollMessages } from "./messaging";
+export { pollMessages } from './messaging';
 
 // ============================================================================
 // Flag System (Stub)
 // ============================================================================
-export { pollFlags } from "./flags";
+export { pollFlags } from './flags';

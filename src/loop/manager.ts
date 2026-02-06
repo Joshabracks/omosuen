@@ -6,13 +6,13 @@
  * all game loop phases (init, update, dispose, render, messaging, flags).
  */
 
-import { getActiveScene } from "../scene/loader";
-import { processInitQueue } from "./init";
-import { updateScene } from "./update";
-import { processDisposeQueue } from "./dispose";
-import { renderScene } from "./render";
-import { pollMessages } from "./messaging";
-import { pollFlags } from "./flags";
+import { getActiveScene } from '../scene/loader';
+import { processInitQueue } from './init';
+import { updateScene } from './update';
+import { processDisposeQueue } from './dispose';
+import { renderScene } from './render';
+import { pollMessages } from './messaging';
+import { pollFlags } from './flags';
 
 /**
  * Whether the game loop is currently running
@@ -135,7 +135,7 @@ function gameLoop(currentTime: number): void {
  */
 export function start(fps: number = 60): void {
   if (loopRunning) {
-    console.warn("[GAME LOOP] Loop is already running");
+    console.warn('[GAME LOOP] Loop is already running');
     return;
   }
 
@@ -168,7 +168,7 @@ export function start(fps: number = 60): void {
  */
 export function stop(): void {
   if (!loopRunning) {
-    console.warn("[GAME LOOP] Loop is not running");
+    console.warn('[GAME LOOP] Loop is not running');
     return;
   }
 
@@ -178,7 +178,7 @@ export function stop(): void {
   lastFrameTime = 0;
   deltaTime = 0;
 
-  console.info("[GAME LOOP] Game loop stopped");
+  console.info('[GAME LOOP] Game loop stopped');
 }
 
 /**
@@ -198,17 +198,17 @@ export function stop(): void {
  */
 export function pause(): void {
   if (!loopRunning) {
-    console.warn("[GAME LOOP] Cannot pause - loop is not running");
+    console.warn('[GAME LOOP] Cannot pause - loop is not running');
     return;
   }
 
   if (loopPaused) {
-    console.warn("[GAME LOOP] Loop is already paused");
+    console.warn('[GAME LOOP] Loop is already paused');
     return;
   }
 
   loopPaused = true;
-  console.info("[GAME LOOP] Game loop paused");
+  console.info('[GAME LOOP] Game loop paused');
 }
 
 /**
@@ -224,17 +224,17 @@ export function pause(): void {
  */
 export function resume(): void {
   if (!loopRunning) {
-    console.warn("[GAME LOOP] Cannot resume - loop is not running");
+    console.warn('[GAME LOOP] Cannot resume - loop is not running');
     return;
   }
 
   if (!loopPaused) {
-    console.warn("[GAME LOOP] Loop is not paused");
+    console.warn('[GAME LOOP] Loop is not paused');
     return;
   }
 
   loopPaused = false;
-  console.info("[GAME LOOP] Game loop resumed");
+  console.info('[GAME LOOP] Game loop resumed');
 }
 
 /**

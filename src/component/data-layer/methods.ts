@@ -1,18 +1,18 @@
-import { ComponentData, ComponentMethods } from "../types";
-import { data_layer, DataLayerType } from "./data";
-import { Vector2D, Vector3D, Vector4D } from "../../math";
+import { ComponentData, ComponentMethods } from '../types';
+import { data_layer, DataLayerType } from './data';
+import { Vector2D, Vector3D, Vector4D } from '../../math';
 
 /**
  * Helper function to get the type name of a value.
  * Returns null if the value is not an allowed DataLayerType.
  */
 function getTypeName(value: unknown): string | null {
-  if (typeof value === "string") return "string";
-  if (typeof value === "number") return "number";
-  if (typeof value === "boolean") return "boolean";
-  if (value instanceof Vector2D) return "Vector2D";
-  if (value instanceof Vector3D) return "Vector3D";
-  if (value instanceof Vector4D) return "Vector4D";
+  if (typeof value === 'string') return 'string';
+  if (typeof value === 'number') return 'number';
+  if (typeof value === 'boolean') return 'boolean';
+  if (value instanceof Vector2D) return 'Vector2D';
+  if (value instanceof Vector3D) return 'Vector3D';
+  if (value instanceof Vector4D) return 'Vector4D';
   return null;
 }
 
@@ -60,7 +60,7 @@ export interface DataLayerMethods extends ComponentMethods {
  * ```
  */
 export const DataLayer: DataLayerMethods = {
-  type: "data-layer",
+  type: 'data-layer',
 
   /**
    * Sets a value in the data-layer.
@@ -83,7 +83,7 @@ export const DataLayer: DataLayerMethods = {
     if (typeName === null) {
       console.error(
         `[data-layer] Cannot set '${key}': value type is not allowed. ` +
-        `Allowed types: string, number, boolean, Vector2D, Vector3D, Vector4D`
+          `Allowed types: string, number, boolean, Vector2D, Vector3D, Vector4D`,
       );
       return false;
     }
@@ -93,7 +93,7 @@ export const DataLayer: DataLayerMethods = {
     if (existingType && existingType !== typeName) {
       console.error(
         `[data-layer] Type mismatch for key '${key}': ` +
-        `expected ${existingType}, got ${typeName}`
+          `expected ${existingType}, got ${typeName}`,
       );
       return false;
     }
@@ -187,7 +187,7 @@ export const DataLayer: DataLayerMethods = {
 
       if (typeName === null) {
         console.warn(
-          `[data-layer] Skipping key '${key}' in setAll: invalid type`
+          `[data-layer] Skipping key '${key}' in setAll: invalid type`,
         );
         continue;
       }
@@ -239,5 +239,5 @@ export const DataLayer: DataLayerMethods = {
 
     // Mark as disposed
     d._disposed = true;
-  }
+  },
 };

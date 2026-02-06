@@ -19,7 +19,9 @@ export default async function createStrawberryScene() {
   }
 
   // Create flag-manager component (GLOBAL unique - only one per scene)
-  const flagManager = await newComponent('flag-manager', { name: 'Game Flags' });
+  const flagManager = await newComponent('flag-manager', {
+    name: 'Game Flags',
+  });
 
   if (!flagManager) {
     console.error('[Strawberry Scene] Failed to create flag-manager');
@@ -31,13 +33,13 @@ export default async function createStrawberryScene() {
     'strawberrySceneVisited',
     'tutorialComplete',
     'level1Complete',
-    'secretFound'
+    'secretFound',
   ]);
 
   // Create UI Overlay with strawberry theme and custom update method
   const overlay = await newComponent('ui-overlay', {
     name: 'StrawberryOverlay',
-    update: function(deltaTime) {
+    update: function (deltaTime) {
       // Get flags display element
       const flagsDisplay = document.getElementById('flags-display');
 
@@ -50,10 +52,11 @@ export default async function createStrawberryScene() {
 
       // Format the flags display
       if (allFlags.length === 0) {
-        flagsDisplay.innerHTML = '<div style="opacity: 0.7;">No flags set yet</div>';
+        flagsDisplay.innerHTML =
+          '<div style="opacity: 0.7;">No flags set yet</div>';
       } else {
         flagsDisplay.innerHTML = allFlags
-          .map(flag => `<div>✓ ${flag}</div>`)
+          .map((flag) => `<div>✓ ${flag}</div>`)
           .join('');
       }
 
@@ -166,7 +169,7 @@ export default async function createStrawberryScene() {
     cssOverrides: {
       display: 'block',
       pointerEvents: 'auto',
-      zIndex: '1000'
+      zIndex: '1000',
     },
     bindings: [
       {
@@ -175,7 +178,7 @@ export default async function createStrawberryScene() {
         method: async (e) => {
           console.log('[Strawberry Scene] Navigating to Banana scene');
           await switchScene('BananaScene');
-        }
+        },
       },
       {
         selector: '#btn-avocado',
@@ -183,9 +186,9 @@ export default async function createStrawberryScene() {
         method: async (e) => {
           console.log('[Strawberry Scene] Navigating to Avocado scene');
           await switchScene('AvocadoScene');
-        }
-      }
-    ]
+        },
+      },
+    ],
   });
 
   if (!overlay) {
@@ -200,7 +203,9 @@ export default async function createStrawberryScene() {
   // Apply bindings to set up event listeners
   overlay.applyBindings();
 
-  console.log('[Strawberry Scene] Scene created successfully with flag-manager');
+  console.log(
+    '[Strawberry Scene] Scene created successfully with flag-manager',
+  );
   console.log('[Strawberry Scene] Initial flags:', flagManager.getFlags());
 
   return root;

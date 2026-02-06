@@ -1,5 +1,5 @@
-import { ComponentData, ComponentMethods } from "../types";
-import { flag_manager } from "./data";
+import { ComponentData, ComponentMethods } from '../types';
+import { flag_manager } from './data';
 
 /**
  * Methods interface for flag-manager component.
@@ -53,7 +53,7 @@ export interface FlagManagerMethods extends ComponentMethods {
  * ```
  */
 export const FlagManager: FlagManagerMethods = {
-  type: "flag-manager",
+  type: 'flag-manager',
 
   /**
    * Checks if a specific flag exists.
@@ -93,7 +93,7 @@ export const FlagManager: FlagManagerMethods = {
    */
   hasAllFlags: (fm: flag_manager, flags: string | string[]): boolean => {
     const flagArray = Array.isArray(flags) ? flags : [flags];
-    return flagArray.every(flag => fm.flags.has(flag));
+    return flagArray.every((flag) => fm.flags.has(flag));
   },
 
   /**
@@ -116,7 +116,7 @@ export const FlagManager: FlagManagerMethods = {
    */
   hasAnyFlag: (fm: flag_manager, flags: string | string[]): boolean => {
     const flagArray = Array.isArray(flags) ? flags : [flags];
-    return flagArray.some(flag => fm.flags.has(flag));
+    return flagArray.some((flag) => fm.flags.has(flag));
   },
 
   /**
@@ -139,7 +139,7 @@ export const FlagManager: FlagManagerMethods = {
    */
   hasNoneOfFlags: (fm: flag_manager, flags: string | string[]): boolean => {
     const flagArray = Array.isArray(flags) ? flags : [flags];
-    return !flagArray.some(flag => fm.flags.has(flag));
+    return !flagArray.some((flag) => fm.flags.has(flag));
   },
 
   /**
@@ -175,7 +175,7 @@ export const FlagManager: FlagManagerMethods = {
    * ```
    */
   addFlags: (fm: flag_manager, flags: string[]): void => {
-    flags.forEach(flag => fm.flags.add(flag));
+    flags.forEach((flag) => fm.flags.add(flag));
   },
 
   /**
@@ -212,7 +212,7 @@ export const FlagManager: FlagManagerMethods = {
    * ```
    */
   removeFlags: (fm: flag_manager, flags: string[]): void => {
-    flags.forEach(flag => fm.flags.delete(flag));
+    flags.forEach((flag) => fm.flags.delete(flag));
   },
 
   /**
@@ -265,5 +265,5 @@ export const FlagManager: FlagManagerMethods = {
     const fm = component as flag_manager;
     fm.flags.clear();
     fm._disposed = true;
-  }
+  },
 };

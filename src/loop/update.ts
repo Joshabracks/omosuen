@@ -5,10 +5,10 @@
  * component, respecting pause states and loader flags.
  */
 
-import type { ComponentData } from "../component/types";
-import type { nexus } from "../component/nexus/data";
-import { ComponentMethod } from "../component/registry";
-import { isInitializing } from "./init";
+import type { ComponentData } from '../component/types';
+import type { nexus } from '../component/nexus/data';
+import { ComponentMethod } from '../component/registry';
+import { isInitializing } from './init';
 
 /**
  * Recursively traverses and updates a component and its children.
@@ -57,7 +57,7 @@ function traverseAndUpdate(
 
   // Propagate pause state from nexus
   let shouldPause = isPaused;
-  if (component.type === "nexus") {
+  if (component.type === 'nexus') {
     const n = component as nexus;
     shouldPause = isPaused || n.paused;
   }
@@ -77,23 +77,23 @@ function traverseAndUpdate(
     const method = ComponentMethod[component.type];
     // @ts-ignore - Dynamic method access via registered override
     const overrideMethod = method[component.updateOverride];
-    if (overrideMethod && typeof overrideMethod === "function") {
+    if (overrideMethod && typeof overrideMethod === 'function') {
       overrideMethod(component, deltaTime);
     } else {
       console.warn(
-        `[UPDATE] Custom update method '${component.updateOverride}' not found for component '${component.name}'`
+        `[UPDATE] Custom update method '${component.updateOverride}' not found for component '${component.name}'`,
       );
     }
   } else {
     // Fall back to type-level update
     const method = ComponentMethod[component.type];
-    if (method.update && typeof method.update === "function") {
+    if (method.update && typeof method.update === 'function') {
       method.update(component, deltaTime);
     }
   }
 
   // Recurse into nexus children
-  if (component.type === "nexus") {
+  if (component.type === 'nexus') {
     const n = component as nexus;
     for (let i = 0; i < n.components.length; i++) {
       traverseAndUpdate(n.components[i], deltaTime, shouldPause);

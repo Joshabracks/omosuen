@@ -1,5 +1,11 @@
-import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique, ComponentInstanceMethods } from "../types";
-import type { FlagManagerMethods } from "./methods";
+import {
+  ComponentData,
+  ComponentOptions,
+  ComponentSerializer,
+  ComponentUnique,
+  ComponentInstanceMethods,
+} from '../types';
+import type { FlagManagerMethods } from './methods';
 
 /**
  * Flag-manager component for storing and querying boolean flags.
@@ -10,9 +16,9 @@ import type { FlagManagerMethods } from "./methods";
  * - World state ("boss_defeated", "secret_unlocked")
  * - Player progression ("has_double_jump", "can_swim")
  */
-export interface flag_manager extends ComponentData,
-  ComponentInstanceMethods<FlagManagerMethods> {
-  type: "flag-manager";
+export interface flag_manager
+  extends ComponentData, ComponentInstanceMethods<FlagManagerMethods> {
+  type: 'flag-manager';
   unique: ComponentUnique.GLOBAL;
   flags: Set<string>;
 }
@@ -44,12 +50,12 @@ export interface flag_manager extends ComponentData,
 export function builder(options: ComponentOptions): flag_manager {
   // Create data-only object. Methods will be added by Proxy wrapper in newComponent()
   return {
-    type: "flag-manager" as const,
+    type: 'flag-manager' as const,
     name: options.name,
     unique: ComponentUnique.GLOBAL,
     parent: null,
     _disposed: false,
-    flags: new Set<string>()
+    flags: new Set<string>(),
   } as unknown as flag_manager;
 }
 
@@ -62,10 +68,10 @@ function serialize(component: ComponentData): any {
   const fm = component as flag_manager;
 
   return {
-    type: "flag-manager",
+    type: 'flag-manager',
     name: fm.name,
     unique: ComponentUnique.GLOBAL,
-    flags: Array.from(fm.flags)
+    flags: Array.from(fm.flags),
   };
 }
 
@@ -79,14 +85,14 @@ function deserialize(data: any): flag_manager {
 
   // Validate required fields
   const errors = [];
-  if (type !== "flag-manager") {
+  if (type !== 'flag-manager') {
     errors.push(`type ${type} does not match "flag-manager"`);
   }
   if (!name) {
-    errors.push("flag-manager requires a name");
+    errors.push('flag-manager requires a name');
   }
   if (errors.length) {
-    throw new Error(errors.join("\n"));
+    throw new Error(errors.join('\n'));
   }
 
   // Create component using builder
@@ -98,7 +104,9 @@ function deserialize(data: any): flag_manager {
       if (typeof flag === 'string') {
         flagManager.flags.add(flag);
       } else {
-        console.warn(`[flag-manager] Skipping non-string flag during deserialization: ${flag}`);
+        console.warn(
+          `[flag-manager] Skipping non-string flag during deserialization: ${flag}`,
+        );
       }
     });
   }
@@ -108,13 +116,11 @@ function deserialize(data: any): flag_manager {
 
 export const FlagManagerSerializer: ComponentSerializer = {
   serialize,
-  deserialize
+  deserialize,
 };
 
 /**
  * Allowlist of flag-manager-specific properties accessible via component Proxy.
  * These properties can be accessed directly without triggering method lookup.
  */
-export const PROPERTY_ALLOWLIST: string[] = [
-  'flags'
-];
+export const PROPERTY_ALLOWLIST: string[] = ['flags'];

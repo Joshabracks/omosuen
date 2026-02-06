@@ -6,22 +6,22 @@
 // ============================================================================
 // Component Exports
 // ============================================================================
-export * from "./component";
+export * from './component';
 
 // ============================================================================
 // Math Exports
 // ============================================================================
-export * from "./math";
+export * from './math';
 
 // ============================================================================
 // Scene Exports
 // ============================================================================
-export * from "./scene";
+export * from './scene';
 
 // ============================================================================
 // Loop Exports
 // ============================================================================
-export * from "./loop";
+export * from './loop';
 
 // ============================================================================
 // Engine Core
@@ -30,12 +30,12 @@ export * from "./loop";
 /**
  * Engine version
  */
-export const version = "0.1.0";
+export const version = '0.1.0';
 
 /**
  * Engine name
  */
-export const name = "Omosuen";
+export const name = 'Omosuen';
 
 /**
  * Initialize the Omosuen engine
@@ -63,7 +63,7 @@ export function init() {
  * Omosuen.start(60);
  * ```
  */
-export { start } from "./loop/manager";
+export { start } from './loop/manager';
 
 /**
  * Default export for backward compatibility
@@ -72,5 +72,5 @@ export { start } from "./loop/manager";
 export default {
   version,
   name,
-  init
+  init,
 };

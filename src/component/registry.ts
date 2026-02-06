@@ -1,25 +1,37 @@
-import { Nexus, builder as nexusBuilder, PROPERTY_ALLOWLIST as NexusPropertyAllowlist } from "./nexus";
-import { UIOverlay, builder as uiOverlayBuilder, PROPERTY_ALLOWLIST as UIOverlayPropertyAllowlist } from "./ui-overlay";
-import { DataLayer, builder as dataLayerBuilder, PROPERTY_ALLOWLIST as DataLayerPropertyAllowlist } from "./data-layer";
-import { FlagManager, builder as flagManagerBuilder, PROPERTY_ALLOWLIST as FlagManagerPropertyAllowlist } from "./flag-manager";
-import type {
-  COMPONENT_TYPE,
-  ComponentMethods,
-} from "./types";
-
+import {
+  Nexus,
+  builder as nexusBuilder,
+  PROPERTY_ALLOWLIST as NexusPropertyAllowlist,
+} from './nexus';
+import {
+  UIOverlay,
+  builder as uiOverlayBuilder,
+  PROPERTY_ALLOWLIST as UIOverlayPropertyAllowlist,
+} from './ui-overlay';
+import {
+  DataLayer,
+  builder as dataLayerBuilder,
+  PROPERTY_ALLOWLIST as DataLayerPropertyAllowlist,
+} from './data-layer';
+import {
+  FlagManager,
+  builder as flagManagerBuilder,
+  PROPERTY_ALLOWLIST as FlagManagerPropertyAllowlist,
+} from './flag-manager';
+import type { COMPONENT_TYPE, ComponentMethods } from './types';
 
 export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   nexus: nexusBuilder,
-  "ui-overlay": uiOverlayBuilder,
-  "data-layer": dataLayerBuilder,
-  "flag-manager": flagManagerBuilder,
+  'ui-overlay': uiOverlayBuilder,
+  'data-layer': dataLayerBuilder,
+  'flag-manager': flagManagerBuilder,
 };
 
 export const ComponentMethod: Record<COMPONENT_TYPE, ComponentMethods> = {
   nexus: Nexus,
-  "ui-overlay": UIOverlay,
-  "data-layer": DataLayer,
-  "flag-manager": FlagManager,
+  'ui-overlay': UIOverlay,
+  'data-layer': DataLayer,
+  'flag-manager': FlagManager,
 };
 
 /**
@@ -28,9 +40,9 @@ export const ComponentMethod: Record<COMPONENT_TYPE, ComponentMethods> = {
  */
 export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   nexus: NexusPropertyAllowlist,
-  "ui-overlay": UIOverlayPropertyAllowlist,
-  "data-layer": DataLayerPropertyAllowlist,
-  "flag-manager": FlagManagerPropertyAllowlist,
+  'ui-overlay': UIOverlayPropertyAllowlist,
+  'data-layer': DataLayerPropertyAllowlist,
+  'flag-manager': FlagManagerPropertyAllowlist,
 };
 
 const methodTypeCache: Record<string, Record<string, Function>> = {};
@@ -122,5 +134,5 @@ export function hasComponentMethod(type: COMPONENT_TYPE, key: string): boolean {
     return false;
   }
   // @ts-ignore - Dynamic method access
-  return typeof ComponentMethod[type][key] === "function";
+  return typeof ComponentMethod[type][key] === 'function';
 }

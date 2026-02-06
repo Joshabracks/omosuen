@@ -5,10 +5,10 @@
  * mid-update errors when components are removed from the scene.
  */
 
-import type { COMPONENT_TYPE, ComponentData } from "../component/types";
-import type { nexus } from "../component/nexus/data";
-import { unregisterComponentMethod } from "../component/registry";
-import { ComponentMethod } from "../component/registry";
+import type { COMPONENT_TYPE, ComponentData } from '../component/types';
+import type { nexus } from '../component/nexus/data';
+import { unregisterComponentMethod } from '../component/registry';
+import { ComponentMethod } from '../component/registry';
 
 /**
  * Set of component IDs flagged for disposal.
@@ -101,7 +101,7 @@ export function processDisposeQueue(scene: nexus): void {
     }
 
     const method = ComponentMethod[component.type as COMPONENT_TYPE];
-    if (method.dispose && typeof method.dispose === "function") {
+    if (method.dispose && typeof method.dispose === 'function') {
       method.dispose(component);
     } else {
       // Ensure _disposed flag is set even without custom dispose

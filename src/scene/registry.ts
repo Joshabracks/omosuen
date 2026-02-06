@@ -1,9 +1,9 @@
-import type { nexus } from "../component/nexus/data";
+import type { nexus } from '../component/nexus/data';
 
 /**
  * Internal type for tracking scene source types
  */
-type SceneSourceType = "memory" | "module" | "serialized";
+type SceneSourceType = 'memory' | 'module' | 'serialized';
 
 /**
  * Internal registry entry structure
@@ -33,7 +33,9 @@ const sceneRegistry = new Map<string, SceneRegistryEntry>();
  */
 export function registerScene(name: string, scene: nexus): void {
   if (sceneRegistry.has(name)) {
-    console.error(`[SCENE REGISTRY ERROR] Scene "${name}" is already registered`);
+    console.error(
+      `[SCENE REGISTRY ERROR] Scene "${name}" is already registered`,
+    );
     return;
   }
 
@@ -44,7 +46,7 @@ export function registerScene(name: string, scene: nexus): void {
   }
 
   sceneRegistry.set(name, {
-    type: "memory",
+    type: 'memory',
     source: scene,
   });
 
@@ -71,16 +73,20 @@ export function registerScene(name: string, scene: nexus): void {
  */
 export function registerSceneModule(name: string, modulePath: string): void {
   if (sceneRegistry.has(name)) {
-    console.error(`[SCENE REGISTRY ERROR] Scene "${name}" is already registered`);
+    console.error(
+      `[SCENE REGISTRY ERROR] Scene "${name}" is already registered`,
+    );
     return;
   }
 
   sceneRegistry.set(name, {
-    type: "module",
+    type: 'module',
     source: modulePath,
   });
 
-  console.info(`[SCENE REGISTRY] Scene "${name}" registered (module: ${modulePath})`);
+  console.info(
+    `[SCENE REGISTRY] Scene "${name}" registered (module: ${modulePath})`,
+  );
 }
 
 /**
@@ -103,12 +109,14 @@ export function registerSceneModule(name: string, modulePath: string): void {
  */
 export function registerSceneSerialized(name: string, filePath: string): void {
   if (sceneRegistry.has(name)) {
-    console.error(`[SCENE REGISTRY ERROR] Scene "${name}" is already registered`);
+    console.error(
+      `[SCENE REGISTRY ERROR] Scene "${name}" is already registered`,
+    );
     return;
   }
 
   sceneRegistry.set(name, {
-    type: "serialized",
+    type: 'serialized',
     source: filePath,
   });
 

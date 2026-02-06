@@ -24,7 +24,7 @@ export class Vector2D {
 
   divide(scalar: number): Vector2D {
     if (scalar === 0) {
-      throw new Error("Cannot divide by zero");
+      throw new Error('Cannot divide by zero');
     }
     return new Vector2D(this.x / scalar, this.y / scalar);
   }
@@ -79,7 +79,7 @@ export class Vector3D {
 
   divide(scalar: number): Vector3D {
     if (scalar === 0) {
-      throw new Error("Cannot divide by zero");
+      throw new Error('Cannot divide by zero');
     }
     return new Vector3D(this.x / scalar, this.y / scalar, this.z / scalar);
   }
@@ -145,7 +145,7 @@ export class Vector4D {
 
   divide(scalar: number): Vector4D {
     if (scalar === 0) {
-      throw new Error("Cannot divide by zero");
+      throw new Error('Cannot divide by zero');
     }
     return new Vector4D(
       this.x / scalar,
@@ -545,4 +545,3 @@ export class Array3Dc<T> {
 export function lerp(a: number, b: number, t: number) {
   return a + t * (b - a);
 }
-

@@ -5,7 +5,7 @@
  * it's a stub to earmark the rendering phase in the game loop.
  */
 
-import type { nexus } from "../component/nexus/data";
+import type { nexus } from '../component/nexus/data';
 
 /**
  * Renders the active scene.

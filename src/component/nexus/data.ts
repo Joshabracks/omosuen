@@ -1,9 +1,15 @@
-import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique, ComponentInstanceMethods } from "../types";
-import type { NexusMethods } from "./methods";
+import {
+  ComponentData,
+  ComponentOptions,
+  ComponentSerializer,
+  ComponentUnique,
+  ComponentInstanceMethods,
+} from '../types';
+import type { NexusMethods } from './methods';
 
-export interface nexus extends ComponentData,
-  ComponentInstanceMethods<NexusMethods> {
-  type: "nexus";
+export interface nexus
+  extends ComponentData, ComponentInstanceMethods<NexusMethods> {
+  type: 'nexus';
   unique: ComponentUnique.FALSE;
   components: ComponentData[];
   paused: boolean;
@@ -12,7 +18,7 @@ export interface nexus extends ComponentData,
 export function builder(options: ComponentOptions): nexus {
   // Create data-only object. Methods will be added by Proxy wrapper in newComponent()
   const nexus = {
-    type: "nexus" as const,
+    type: 'nexus' as const,
     name: options.name,
     unique: ComponentUnique.FALSE,
     parent: null,
@@ -22,7 +28,6 @@ export function builder(options: ComponentOptions): nexus {
   };
   return nexus as unknown as nexus;
 }
-
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function serialize(component: ComponentData): any {
@@ -36,7 +41,7 @@ function serialize(component: ComponentData): any {
   }
 
   return {
-    type: "nexus",
+    type: 'nexus',
     name: nexus.name,
     unique: ComponentUnique.FALSE,
     components: serializedComponents,
@@ -47,9 +52,9 @@ function serialize(component: ComponentData): any {
 function deserialize(data: any): nexus {
   const { type, name } = data;
   const errors = [];
-  if (type !== "nexus") errors.push(`type ${type} does not match "nexus"`);
+  if (type !== 'nexus') errors.push(`type ${type} does not match "nexus"`);
   if (!name) errors.push(`Nexus requires a name`);
-  if (errors.length) throw new Error(errors.join("\n"));
+  if (errors.length) throw new Error(errors.join('\n'));
 
   const nexus = builder({ name });
 
@@ -66,7 +71,4 @@ export const NexusSerializer: ComponentSerializer = {
  * Allowlist of nexus-specific properties accessible via component Proxy.
  * These properties can be accessed directly without triggering method lookup.
  */
-export const PROPERTY_ALLOWLIST: string[] = [
-  'components',
-  'paused'
-];
+export const PROPERTY_ALLOWLIST: string[] = ['components', 'paused'];

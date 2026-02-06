@@ -99,7 +99,7 @@ export default async function createBananaScene() {
     cssOverrides: {
       display: 'block',
       pointerEvents: 'auto',
-      zIndex: '1000'
+      zIndex: '1000',
     },
     bindings: [
       {
@@ -108,7 +108,7 @@ export default async function createBananaScene() {
         method: async (e) => {
           console.log('[Banana Scene] Navigating to Strawberry scene');
           await switchScene('StrawberryScene');
-        }
+        },
       },
       {
         selector: '#btn-avocado',
@@ -116,9 +116,9 @@ export default async function createBananaScene() {
         method: async (e) => {
           console.log('[Banana Scene] Navigating to Avocado scene');
           await switchScene('AvocadoScene');
-        }
-      }
-    ]
+        },
+      },
+    ],
   });
 
   if (!overlay) {

@@ -8,7 +8,8 @@
 
 export default async function createAvocadoScene() {
   // Import Omosuen from the global scope (loaded by main HTML)
-  const { newComponent, $, switchScene, Vector2D, Vector3D, Vector4D } = window.Omosuen;
+  const { newComponent, $, switchScene, Vector2D, Vector3D, Vector4D } =
+    window.Omosuen;
 
   // Create root nexus for the scene
   const root = await newComponent('nexus', { name: 'AvocadoSceneRoot' });
@@ -19,7 +20,9 @@ export default async function createAvocadoScene() {
   }
 
   // Create data-layer component to store scene statistics
-  const dataLayer = await newComponent('data-layer', { name: 'AvocadoSceneData' });
+  const dataLayer = await newComponent('data-layer', {
+    name: 'AvocadoSceneData',
+  });
 
   if (!dataLayer) {
     console.error('[Avocado Scene] Failed to create data-layer');
@@ -27,11 +30,11 @@ export default async function createAvocadoScene() {
   }
 
   // Initialize data-layer with all supported types using Proxy access
-  dataLayer.proxy.sceneName = "Avocado Paradise";           // string
-  dataLayer.proxy.visitCount = 0;                           // number
-  dataLayer.proxy.isHealthy = true;                         // boolean
-  dataLayer.proxy.position2D = new Vector2D(100, 200);      // Vector2D
-  dataLayer.proxy.color = new Vector3D(85, 139, 47);        // Vector3D (RGB)
+  dataLayer.proxy.sceneName = 'Avocado Paradise'; // string
+  dataLayer.proxy.visitCount = 0; // number
+  dataLayer.proxy.isHealthy = true; // boolean
+  dataLayer.proxy.position2D = new Vector2D(100, 200); // Vector2D
+  dataLayer.proxy.color = new Vector3D(85, 139, 47); // Vector3D (RGB)
   dataLayer.proxy.colorWithAlpha = new Vector4D(156, 204, 101, 0.9); // Vector4D (RGBA)
 
   // Increment visit count
@@ -40,7 +43,7 @@ export default async function createAvocadoScene() {
   // Create UI Overlay with avocado theme, dynamic content, and custom update method
   const overlay = await newComponent('ui-overlay', {
     name: 'AvocadoOverlay',
-    update: function(deltaTime) {
+    update: function (deltaTime) {
       // Get stats display elements
       const statsDisplay = document.getElementById('stats-display');
       const sceneTitleElement = document.getElementById('scene-title');
@@ -60,7 +63,7 @@ export default async function createAvocadoScene() {
 
       // Update scene title
       sceneTitleElement.textContent = sceneName;
-      healthStatusElement.textContent = isHealthy ? "healthy" : "unhealthy";
+      healthStatusElement.textContent = isHealthy ? 'healthy' : 'unhealthy';
 
       // Format the stats display
       statsDisplay.innerHTML = `
@@ -77,10 +80,17 @@ export default async function createAvocadoScene() {
       dataLayer.proxy.position2D.y += Math.cos(Date.now() / 1000) * 0.5;
 
       // Also demonstrate method-based access via $ Proxy
-      const allStats = $.getAll(dataLayer, ['sceneName', 'visitCount', 'isHealthy']);
+      const allStats = $.getAll(dataLayer, [
+        'sceneName',
+        'visitCount',
+        'isHealthy',
+      ]);
 
       // Log to console every 60 frames (~1 second at 60fps)
-      if (Math.floor(Date.now() / 1000) % 2 === 0 && Math.floor(Date.now() / 16.67) % 60 === 0) {
+      if (
+        Math.floor(Date.now() / 1000) % 2 === 0 &&
+        Math.floor(Date.now() / 16.67) % 60 === 0
+      ) {
         console.log('[Avocado Scene] Data-layer stats:', allStats);
       }
     },
@@ -183,7 +193,7 @@ export default async function createAvocadoScene() {
     cssOverrides: {
       display: 'block',
       pointerEvents: 'auto',
-      zIndex: '1000'
+      zIndex: '1000',
     },
     bindings: [
       {
@@ -192,7 +202,7 @@ export default async function createAvocadoScene() {
         method: async (e) => {
           console.log('[Avocado Scene] Navigating to Banana scene');
           await switchScene('BananaScene');
-        }
+        },
       },
       {
         selector: '#btn-strawberry',
@@ -200,9 +210,9 @@ export default async function createAvocadoScene() {
         method: async (e) => {
           console.log('[Avocado Scene] Navigating to Strawberry scene');
           await switchScene('StrawberryScene');
-        }
-      }
-    ]
+        },
+      },
+    ],
   });
 
   if (!overlay) {
@@ -224,7 +234,7 @@ export default async function createAvocadoScene() {
     isHealthy: dataLayer.proxy.isHealthy,
     position2D: dataLayer.proxy.position2D,
     color: dataLayer.proxy.color,
-    colorWithAlpha: dataLayer.proxy.colorWithAlpha
+    colorWithAlpha: dataLayer.proxy.colorWithAlpha,
   });
 
   return root;

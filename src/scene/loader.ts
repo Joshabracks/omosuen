@@ -1,9 +1,9 @@
-import type { nexus } from "../component/nexus/data";
-import { NexusSerializer } from "../component/nexus/data";
-import type { ui_overlay } from "../component/ui-overlay/data";
-import { UIOverlaySerializer } from "../component/ui-overlay/data";
-import { getSceneEntry, hasScene } from "./registry";
-import type { ComponentData } from "../component/types";
+import type { nexus } from '../component/nexus/data';
+import { NexusSerializer } from '../component/nexus/data';
+import type { ui_overlay } from '../component/ui-overlay/data';
+import { UIOverlaySerializer } from '../component/ui-overlay/data';
+import { getSceneEntry, hasScene } from './registry';
+import type { ComponentData } from '../component/types';
 
 /**
  * Currently active scene (root nexus component)
@@ -34,19 +34,21 @@ export async function loadScene(name: string): Promise<nexus | null> {
 
   const entry = getSceneEntry(name);
   if (!entry) {
-    console.error(`[SCENE LOADER ERROR] Failed to retrieve scene "${name}" from registry`);
+    console.error(
+      `[SCENE LOADER ERROR] Failed to retrieve scene "${name}" from registry`,
+    );
     return null;
   }
 
   try {
     switch (entry.type) {
-      case "memory":
+      case 'memory':
         return loadFromMemory(name, entry.source as nexus);
 
-      case "module":
+      case 'module':
         return await loadFromModule(name, entry.source as string);
 
-      case "serialized":
+      case 'serialized':
         return await loadFromSerialized(name, entry.source as string);
 
       default:
@@ -56,7 +58,10 @@ export async function loadScene(name: string): Promise<nexus | null> {
         return null;
     }
   } catch (error) {
-    console.error(`[SCENE LOADER ERROR] Failed to load scene "${name}":`, error);
+    console.error(
+      `[SCENE LOADER ERROR] Failed to load scene "${name}":`,
+      error,
+    );
     return null;
   }
 }
@@ -72,8 +77,13 @@ function loadFromMemory(name: string, scene: nexus): nexus {
 /**
  * Loads a scene from a JavaScript module using dynamic import
  */
-async function loadFromModule(name: string, modulePath: string): Promise<nexus | null> {
-  console.info(`[SCENE LOADER] Loading scene "${name}" from module: ${modulePath}`);
+async function loadFromModule(
+  name: string,
+  modulePath: string,
+): Promise<nexus | null> {
+  console.info(
+    `[SCENE LOADER] Loading scene "${name}" from module: ${modulePath}`,
+  );
 
   try {
     // Use Function constructor to bypass webpack's static analysis
@@ -85,20 +95,20 @@ async function loadFromModule(name: string, modulePath: string): Promise<nexus |
     let scene: nexus | null = null;
 
     // Pattern 1: Default export is a nexus
-    if (module.default && module.default.type === "nexus") {
+    if (module.default && module.default.type === 'nexus') {
       scene = module.default as nexus;
     }
     // Pattern 2: Default export is a function that returns a nexus
-    else if (typeof module.default === "function") {
+    else if (typeof module.default === 'function') {
       const result = await module.default();
-      if (result && result.type === "nexus") {
+      if (result && result.type === 'nexus') {
         scene = result as nexus;
       }
     }
     // Pattern 3: Named export `createScene` function
-    else if (typeof module.createScene === "function") {
+    else if (typeof module.createScene === 'function') {
       const result = await module.createScene();
-      if (result && result.type === "nexus") {
+      if (result && result.type === 'nexus') {
         scene = result as nexus;
       }
     }
@@ -111,7 +121,9 @@ async function loadFromModule(name: string, modulePath: string): Promise<nexus |
       return null;
     }
 
-    console.info(`[SCENE LOADER] Scene "${name}" loaded successfully from module`);
+    console.info(
+      `[SCENE LOADER] Scene "${name}" loaded successfully from module`,
+    );
     return scene;
   } catch (error) {
     console.error(
@@ -127,7 +139,7 @@ async function loadFromModule(name: string, modulePath: string): Promise<nexus |
  */
 function deserializeComponentRecursive(data: any): ComponentData | null {
   try {
-    if (data.type === "nexus") {
+    if (data.type === 'nexus') {
       // Deserialize the nexus itself (creates empty nexus)
       const nexusComp = NexusSerializer.deserialize(data) as nexus;
 
@@ -142,7 +154,7 @@ function deserializeComponentRecursive(data: any): ComponentData | null {
       }
 
       return nexusComp;
-    } else if (data.type === "ui-overlay") {
+    } else if (data.type === 'ui-overlay') {
       // Deserialize UI Overlay
       return UIOverlaySerializer.deserialize(data) as ui_overlay;
     } else {
@@ -186,14 +198,16 @@ async function loadFromSerialized(
     // Recursively deserialize the entire scene hierarchy
     const scene = deserializeComponentRecursive(data) as nexus;
 
-    if (!scene || scene.type !== "nexus") {
+    if (!scene || scene.type !== 'nexus') {
       console.error(
         `[SCENE LOADER ERROR] Deserialized data from "${filePath}" is not a valid nexus component`,
       );
       return null;
     }
 
-    console.info(`[SCENE LOADER] Scene "${name}" loaded successfully from file`);
+    console.info(
+      `[SCENE LOADER] Scene "${name}" loaded successfully from file`,
+    );
     return scene;
   } catch (error) {
     console.error(
@@ -215,7 +229,7 @@ async function loadFromSerialized(
  */
 export function unloadScene(): void {
   if (!activeScene) {
-    console.warn("[SCENE LOADER WARNING] No active scene to unload");
+    console.warn('[SCENE LOADER WARNING] No active scene to unload');
     return;
   }
 

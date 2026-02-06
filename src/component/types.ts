@@ -1,5 +1,10 @@
-import { BUILDERS, ComponentMethod, registerComponentMethod, PROPERTY_ALLOWLIST } from "./registry";
-import { queueInit } from "../loop/init";
+import {
+  BUILDERS,
+  ComponentMethod,
+  registerComponentMethod,
+  PROPERTY_ALLOWLIST,
+} from './registry';
+import { queueInit } from '../loop/init';
 
 let COMPONENT_COUNT = 0;
 
@@ -13,15 +18,19 @@ let COMPONENT_COUNT = 0;
 export enum ComponentUnique {
   FALSE = 0,
   LOCAL = 1,
-  GLOBAL = 2
+  GLOBAL = 2,
 }
 
-export type COMPONENT_TYPE = "nexus" | "ui-overlay" | "data-layer" | "flag-manager";
+export type COMPONENT_TYPE =
+  | 'nexus'
+  | 'ui-overlay'
+  | 'data-layer'
+  | 'flag-manager';
 
 export interface ComponentOptions {
   name: string;
   overrideKey?: string;
-  update?: (deltaTime: number) => void
+  update?: (deltaTime: number) => void;
 }
 
 export interface ComponentData {
@@ -60,10 +69,12 @@ export interface ComponentMethods {
  * ```
  */
 export type ComponentInstanceMethods<T extends ComponentMethods> = {
-  [K in keyof T as K extends 'type' ? never : K]:
-    T[K] extends (component: any, ...args: infer Args) => infer Return
-      ? (...args: Args) => Return
-      : never;
+  [K in keyof T as K extends 'type' ? never : K]: T[K] extends (
+    component: any,
+    ...args: infer Args
+  ) => infer Return
+    ? (...args: Args) => Return
+    : never;
 };
 
 export async function newComponent(
@@ -77,7 +88,7 @@ export async function newComponent(
     );
     return null;
   }
-  const component = await builder(options) as ComponentData;
+  const component = (await builder(options)) as ComponentData;
   if (!component) {
     console.error(
       `[NEW COMPONENT ERROR] component named ${options.name} failed to build`,
@@ -108,12 +119,20 @@ export async function newComponent(
   // Automatically queue for initialization
   queueInit(component.id);
 
-  const proxyKeys = Object.keys(ComponentMethod[component.type])
+  const proxyKeys = Object.keys(ComponentMethod[component.type]);
 
   // Base ComponentData properties (always allowed)
   const baseProperties = [
-    'name', 'type', 'id', 'parent', '_disposed',
-    'loader', 'unique', 'overrideKey', 'updateOverride', '_initialized'
+    'name',
+    'type',
+    'id',
+    'parent',
+    '_disposed',
+    'loader',
+    'unique',
+    'overrideKey',
+    'updateOverride',
+    '_initialized',
   ];
 
   // Component-specific properties
@@ -134,7 +153,9 @@ export async function newComponent(
 
       // Check if it's a method
       if (proxyKeys.indexOf(prop) === -1) {
-        console.error(`${c.type} has no method named ${prop}. Available methods: ${proxyKeys.join(', ')}`);
+        console.error(
+          `${c.type} has no method named ${prop}. Available methods: ${proxyKeys.join(', ')}`,
+        );
         // return do nothing func for graceful failure
         return () => {};
       }
@@ -143,10 +164,9 @@ export async function newComponent(
       return (...args: any[]) => {
         // @ts-ignore
         return ComponentMethod[c.type][prop](c, ...args);
-      }
-    }
-  }
-  
+      };
+    },
+  };
 
   const proxy = new Proxy(component, handler);
   return proxy;

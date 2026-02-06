@@ -1,103 +1,109 @@
-import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique, ComponentInstanceMethods } from "../types";
-import { hasComponentMethod } from "../registry";
-import type { UIOverlayMethods } from "./methods";
+import {
+  ComponentData,
+  ComponentOptions,
+  ComponentSerializer,
+  ComponentUnique,
+  ComponentInstanceMethods,
+} from '../types';
+import { hasComponentMethod } from '../registry';
+import type { UIOverlayMethods } from './methods';
 
 type UIAction =
   // Mouse Events
-  | "click"
-  | "dblclick"
-  | "mousedown"
-  | "mouseup"
-  | "mousemove"
-  | "mouseenter"
-  | "mouseleave"
-  | "mouseover"
-  | "mouseout"
-  | "contextmenu"
+  | 'click'
+  | 'dblclick'
+  | 'mousedown'
+  | 'mouseup'
+  | 'mousemove'
+  | 'mouseenter'
+  | 'mouseleave'
+  | 'mouseover'
+  | 'mouseout'
+  | 'contextmenu'
   // Keyboard Events
-  | "keydown"
-  | "keyup"
-  | "keypress"
+  | 'keydown'
+  | 'keyup'
+  | 'keypress'
   // Focus Events
-  | "focus"
-  | "blur"
-  | "focusin"
-  | "focusout"
+  | 'focus'
+  | 'blur'
+  | 'focusin'
+  | 'focusout'
   // Form Events
-  | "input"
-  | "change"
-  | "submit"
-  | "reset"
-  | "invalid"
+  | 'input'
+  | 'change'
+  | 'submit'
+  | 'reset'
+  | 'invalid'
   // Touch Events
-  | "touchstart"
-  | "touchend"
-  | "touchmove"
-  | "touchcancel"
+  | 'touchstart'
+  | 'touchend'
+  | 'touchmove'
+  | 'touchcancel'
   // Pointer Events
-  | "pointerdown"
-  | "pointerup"
-  | "pointermove"
-  | "pointerenter"
-  | "pointerleave"
-  | "pointerover"
-  | "pointerout"
-  | "pointercancel"
-  | "gotpointercapture"
-  | "lostpointercapture"
+  | 'pointerdown'
+  | 'pointerup'
+  | 'pointermove'
+  | 'pointerenter'
+  | 'pointerleave'
+  | 'pointerover'
+  | 'pointerout'
+  | 'pointercancel'
+  | 'gotpointercapture'
+  | 'lostpointercapture'
   // Drag & Drop Events
-  | "drag"
-  | "dragstart"
-  | "dragend"
-  | "dragenter"
-  | "dragleave"
-  | "dragover"
-  | "drop"
+  | 'drag'
+  | 'dragstart'
+  | 'dragend'
+  | 'dragenter'
+  | 'dragleave'
+  | 'dragover'
+  | 'drop'
   // Wheel Events
-  | "wheel"
+  | 'wheel'
   // Animation Events
-  | "animationstart"
-  | "animationend"
-  | "animationiteration"
+  | 'animationstart'
+  | 'animationend'
+  | 'animationiteration'
   // Transition Events
-  | "transitionstart"
-  | "transitionend"
-  | "transitionrun"
-  | "transitioncancel"
+  | 'transitionstart'
+  | 'transitionend'
+  | 'transitionrun'
+  | 'transitioncancel'
   // Clipboard Events
-  | "copy"
-  | "cut"
-  | "paste"
+  | 'copy'
+  | 'cut'
+  | 'paste'
   // Selection Events
-  | "select"
-  | "selectstart"
+  | 'select'
+  | 'selectstart'
   // Scroll Events
-  | "scroll"
+  | 'scroll'
   // Resize Events
-  | "resize"
+  | 'resize'
   // Load Events
-  | "load"
-  | "error"
-  | "abort"
+  | 'load'
+  | 'error'
+  | 'abort'
   // Media Events
-  | "play"
-  | "pause"
-  | "ended"
-  | "volumechange"
-  | "timeupdate"
-  | "canplay"
-  | "canplaythrough"
-  | "durationchange"
-  | "loadeddata"
-  | "loadedmetadata"
-  | "loadstart"
-  | "progress"
-  | "ratechange"
-  | "seeked"
-  | "seeking"
-  | "stalled"
-  | "suspend"
-  | "waiting";
+  | 'play'
+  | 'pause'
+  | 'ended'
+  | 'volumechange'
+  | 'timeupdate'
+  | 'canplay'
+  | 'canplaythrough'
+  | 'durationchange'
+  | 'loadeddata'
+  | 'loadedmetadata'
+  | 'loadstart'
+  | 'progress'
+  | 'ratechange'
+  | 'seeked'
+  | 'seeking'
+  | 'stalled'
+  | 'suspend'
+  | 'waiting';
 
 export interface UIBinding {
   selector: string;
@@ -105,9 +111,9 @@ export interface UIBinding {
   method: (e: Event) => void;
 }
 
-export interface ui_overlay extends ComponentData,
-  ComponentInstanceMethods<UIOverlayMethods> {
-  type: "ui-overlay";
+export interface ui_overlay
+  extends ComponentData, ComponentInstanceMethods<UIOverlayMethods> {
+  type: 'ui-overlay';
   unique: ComponentUnique.FALSE;
   element: HTMLDivElement | null;
   bindings: UIBinding[];
@@ -127,21 +133,21 @@ export interface UIOverlayOptions extends ComponentOptions {
 
 export function builder(options: UIOverlayOptions): ui_overlay {
   // Create the container element
-  const container = document.createElement("div");
-  container.style.position = "absolute";
-  container.style.top = "0";
-  container.style.left = "0";
-  container.style.width = "100%";
-  container.style.height = "100%";
-  container.style.pointerEvents = "none"; // Allow clicks to pass through to canvas
-  container.style.zIndex = "1000"; // Ensure it's above the canvas
+  const container = document.createElement('div');
+  container.style.position = 'absolute';
+  container.style.top = '0';
+  container.style.left = '0';
+  container.style.width = '100%';
+  container.style.height = '100%';
+  container.style.pointerEvents = 'none'; // Allow clicks to pass through to canvas
+  container.style.zIndex = '1000'; // Ensure it's above the canvas
 
   // Set innerHTML if provided
   if (options.html) {
     container.innerHTML = options.html;
   }
 
-  container.id = options.name.replace(/\s/g, "");
+  container.id = options.name.replace(/\s/g, '');
 
   // Apply CSS overrides if provided
   if (options.cssOverrides) {
@@ -156,13 +162,17 @@ export function builder(options: UIOverlayOptions): ui_overlay {
 
   // Create data-only object. Methods will be added by Proxy wrapper in newComponent()
   const overlay = {
-    type: "ui-overlay" as const,
+    type: 'ui-overlay' as const,
     name: options.name,
     unique: ComponentUnique.FALSE,
     parent: null,
     overrideKey: options.overrideKey,
-    showOverride: options?.overrideKey ? `${options.overrideKey}-show` : undefined,
-    hideOverride: options?.overrideKey ? `${options.overrideKey}-hide` : undefined,
+    showOverride: options?.overrideKey
+      ? `${options.overrideKey}-show`
+      : undefined,
+    hideOverride: options?.overrideKey
+      ? `${options.overrideKey}-hide`
+      : undefined,
     _disposed: false,
     element: container,
     bindings: options.bindings || [],
@@ -173,18 +183,24 @@ export function builder(options: UIOverlayOptions): ui_overlay {
 
   // Validate that override methods are registered if overrideKey is set
   if (overlay.overrideKey) {
-    if (overlay.showOverride && !hasComponentMethod("ui-overlay", overlay.showOverride)) {
+    if (
+      overlay.showOverride &&
+      !hasComponentMethod('ui-overlay', overlay.showOverride)
+    ) {
       console.warn(
         `[ui-overlay] Custom show method '${overlay.showOverride}' is not registered for component '${overlay.name}'. ` +
-        `Call registerComponentMethod('ui-overlay', '${overlay.showOverride}', func) before creating this component. ` +
-        `Falling back to default show behavior.`
+          `Call registerComponentMethod('ui-overlay', '${overlay.showOverride}', func) before creating this component. ` +
+          `Falling back to default show behavior.`,
       );
     }
-    if (overlay.hideOverride && !hasComponentMethod("ui-overlay", overlay.hideOverride)) {
+    if (
+      overlay.hideOverride &&
+      !hasComponentMethod('ui-overlay', overlay.hideOverride)
+    ) {
       console.warn(
         `[ui-overlay] Custom hide method '${overlay.hideOverride}' is not registered for component '${overlay.name}'. ` +
-        `Call registerComponentMethod('ui-overlay', '${overlay.hideOverride}', func) before creating this component. ` +
-        `Falling back to default hide behavior.`
+          `Call registerComponentMethod('ui-overlay', '${overlay.hideOverride}', func) before creating this component. ` +
+          `Falling back to default hide behavior.`,
       );
     }
   }
@@ -206,11 +222,11 @@ function serialize(component: ComponentData): any {
           method: "${binding.method.toString()}"
         }`,
         )
-        .join(",")}
+        .join(',')}
     ]
   }`;
   return {
-    type: "ui-overlay",
+    type: 'ui-overlay',
     name: uiOverlay.name,
     unique: ComponentUnique.FALSE,
     cssOverrides: Object.keys(uiOverlay.cssOverrides).length
@@ -222,19 +238,13 @@ function serialize(component: ComponentData): any {
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deserialize(data: any): ui_overlay {
-  const {
-    type,
-    name,
-    html,
-    cssOverrides,
-    overrideKey,
-    bindingFactoryString,
-  } = data;
+  const { type, name, html, cssOverrides, overrideKey, bindingFactoryString } =
+    data;
   const errors = [];
-  if (type !== "ui-overlay")
+  if (type !== 'ui-overlay')
     errors.push(`type ${type} does not match "ui-overlay"`);
   if (!name) errors.push(`UIOverlay requires a name`);
-  if (errors.length) throw new Error(errors.join("\n"));
+  if (errors.length) throw new Error(errors.join('\n'));
   eval(bindingFactoryString);
   let serializedBindings;
   try {
@@ -257,7 +267,7 @@ function deserialize(data: any): ui_overlay {
       eval(
         binding.method.replace(
           /function\s*\(\)/,
-          "function deserializedMethod()",
+          'function deserializedMethod()',
         ),
       );
       // @ts-expect-error deserializedMethod-via-eval
@@ -283,5 +293,5 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'previousOverlay',
   'container',
   'showOverride',
-  'hideOverride'
+  'hideOverride',
 ];

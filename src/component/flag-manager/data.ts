@@ -1,4 +1,5 @@
-import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique } from "../types";
+import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique, ComponentInstanceMethods } from "../types";
+import type { FlagManagerMethods } from "./methods";
 
 /**
  * Flag-manager component for storing and querying boolean flags.
@@ -9,7 +10,8 @@ import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique }
  * - World state ("boss_defeated", "secret_unlocked")
  * - Player progression ("has_double_jump", "can_swim")
  */
-export interface flag_manager extends ComponentData {
+export interface flag_manager extends ComponentData,
+  ComponentInstanceMethods<FlagManagerMethods> {
   type: "flag-manager";
   unique: ComponentUnique.GLOBAL;
   flags: Set<string>;
@@ -40,14 +42,15 @@ export interface flag_manager extends ComponentData {
  * ```
  */
 export function builder(options: ComponentOptions): flag_manager {
+  // Create data-only object. Methods will be added by Proxy wrapper in newComponent()
   return {
-    type: "flag-manager",
+    type: "flag-manager" as const,
     name: options.name,
     unique: ComponentUnique.GLOBAL,
     parent: null,
     _disposed: false,
     flags: new Set<string>()
-  };
+  } as unknown as flag_manager;
 }
 
 /**

@@ -44,6 +44,28 @@ export interface ComponentMethods {
   init?: (component: ComponentData) => void;
 }
 
+/**
+ * Converts a component methods interface into instance method signatures.
+ * Removes the first parameter (the component itself) from each method,
+ * transforming static methods into instance methods for TypeScript typing.
+ *
+ * This enables full IDE autocomplete and type safety for component method calls
+ * (e.g., `nexus.addComponent()`) while maintaining the DOD architecture where
+ * methods are stored centrally and dispatched via Proxy at runtime.
+ *
+ * @example
+ * ```typescript
+ * // Input: addComponent: (n: nexus, component: ComponentData) => void
+ * // Output: addComponent: (component: ComponentData) => void
+ * ```
+ */
+export type ComponentInstanceMethods<T extends ComponentMethods> = {
+  [K in keyof T as K extends 'type' ? never : K]:
+    T[K] extends (component: any, ...args: infer Args) => infer Return
+      ? (...args: Args) => Return
+      : never;
+};
+
 export async function newComponent(
   type: COMPONENT_TYPE,
   options: ComponentOptions,

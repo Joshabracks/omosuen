@@ -136,7 +136,6 @@ function deserializeComponentRecursive(data: any): ComponentData | null {
         for (const childData of data.components) {
           const child = deserializeComponentRecursive(childData);
           if (child) {
-            // @ts-ignore
             nexusComp.addComponent(child);
           }
         }
@@ -224,8 +223,7 @@ export function unloadScene(): void {
   console.info(`[SCENE LOADER] Unloading scene "${sceneName}"`);
 
   // Dispose the scene using existing disposal system
-  // @ts-ignore
-  activeScene.dispose()
+  activeScene.dispose();
 
   // Clear active scene reference
   activeScene = null;

@@ -1,6 +1,8 @@
-import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique } from "../types";
+import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique, ComponentInstanceMethods } from "../types";
+import type { NexusMethods } from "./methods";
 
-export interface nexus extends ComponentData {
+export interface nexus extends ComponentData,
+  ComponentInstanceMethods<NexusMethods> {
   type: "nexus";
   unique: ComponentUnique.FALSE;
   components: ComponentData[];
@@ -8,8 +10,9 @@ export interface nexus extends ComponentData {
 }
 
 export function builder(options: ComponentOptions): nexus {
-  const nexus: nexus = {
-    type: "nexus",
+  // Create data-only object. Methods will be added by Proxy wrapper in newComponent()
+  const nexus = {
+    type: "nexus" as const,
     name: options.name,
     unique: ComponentUnique.FALSE,
     parent: null,
@@ -17,7 +20,7 @@ export function builder(options: ComponentOptions): nexus {
     components: [],
     paused: false,
   };
-  return nexus;
+  return nexus as unknown as nexus;
 }
 
 

@@ -1,5 +1,6 @@
-import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique } from "../types";
+import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique, ComponentInstanceMethods } from "../types";
 import { hasComponentMethod } from "../registry";
+import type { UIOverlayMethods } from "./methods";
 
 type UIAction =
   // Mouse Events
@@ -104,7 +105,8 @@ export interface UIBinding {
   method: (e: Event) => void;
 }
 
-export interface ui_overlay extends ComponentData {
+export interface ui_overlay extends ComponentData,
+  ComponentInstanceMethods<UIOverlayMethods> {
   type: "ui-overlay";
   unique: ComponentUnique.FALSE;
   element: HTMLDivElement | null;
@@ -152,8 +154,9 @@ export function builder(options: UIOverlayOptions): ui_overlay {
   // Add the container to the document body
   document.body.appendChild(container);
 
-  const overlay: ui_overlay = {
-    type: "ui-overlay",
+  // Create data-only object. Methods will be added by Proxy wrapper in newComponent()
+  const overlay = {
+    type: "ui-overlay" as const,
     name: options.name,
     unique: ComponentUnique.FALSE,
     parent: null,
@@ -186,7 +189,7 @@ export function builder(options: UIOverlayOptions): ui_overlay {
     }
   }
 
-  return overlay;
+  return overlay as unknown as ui_overlay;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

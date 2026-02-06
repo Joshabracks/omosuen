@@ -1,5 +1,6 @@
-import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique } from "../types";
+import { ComponentData, ComponentOptions, ComponentSerializer, ComponentUnique, ComponentInstanceMethods } from "../types";
 import { Vector2D, Vector3D, Vector4D } from "../../math";
+import type { DataLayerMethods } from "./methods";
 
 /**
  * Allowed types for data-layer storage.
@@ -12,7 +13,8 @@ export type DataLayerType = string | number | boolean | Vector2D | Vector3D | Ve
  * Data-layer component for storing typed key-value pairs.
  * Provides both Proxy-based property access and explicit method access.
  */
-export interface data_layer extends ComponentData {
+export interface data_layer extends ComponentData,
+  ComponentInstanceMethods<DataLayerMethods> {
   type: "data-layer";
   unique: ComponentUnique.FALSE;
   storage: Map<string, DataLayerType>;
@@ -114,21 +116,22 @@ function createProxyHandler(dataLayer: data_layer): ProxyHandler<object> {
  * ```
  */
 export function builder(options: ComponentOptions): data_layer {
-  const dataLayer: data_layer = {
-    type: "data-layer",
+  // Create data-only object. Methods will be added by Proxy wrapper in newComponent()
+  const dataLayer = {
+    type: "data-layer" as const,
     name: options.name,
     unique: ComponentUnique.FALSE,
     parent: null,
     _disposed: false,
     storage: new Map<string, DataLayerType>(),
     typeMap: new Map<string, string>(),
-    $: null
+    $: null as any
   };
 
   // Create Proxy for property access
-  dataLayer.$ = new Proxy({}, createProxyHandler(dataLayer));
+  dataLayer.$ = new Proxy({}, createProxyHandler(dataLayer as unknown as data_layer));
 
-  return dataLayer;
+  return dataLayer as unknown as data_layer;
 }
 
 /**

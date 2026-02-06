@@ -137,7 +137,7 @@ export function builder(options: ComponentOptions): data_layer {
     _disposed: false,
     storage: new Map<string, DataLayerType>(),
     typeMap: new Map<string, string>(),
-    $: null as any,
+    $: null as unknown,
   };
 
   // Create Proxy for property access
@@ -203,6 +203,7 @@ function serialize(component: ComponentData): any {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deserialize(data: any): data_layer {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, storage, typeMap } = data;
 
   // Validate required fields

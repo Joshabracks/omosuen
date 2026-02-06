@@ -2,6 +2,9 @@ import type { NexusT } from '../component/nexus/data';
 import { NexusSerializer } from '../component/nexus/data';
 import type { UIOverlayT } from '../component/ui-overlay/data';
 import { UIOverlaySerializer } from '../component/ui-overlay/data';
+import { DataLayerSerializer } from '../component/data-layer/data';
+import { FlagManagerSerializer } from '../component/flag-manager/data';
+import { Nexus } from '../component/nexus/methods';
 import { getSceneEntry, hasScene } from './registry';
 import type { ComponentData } from '../component/types';
 
@@ -138,10 +141,51 @@ async function loadFromModule(
 }
 
 /**
+ * Recursively serializes a component and its children.
+ * Handles all component types by calling their respective serializers.
+ *
+ * @param component - Component to serialize (usually a nexus root)
+ * @returns Plain object suitable for JSON.stringify()
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function serializeComponentRecursive(component: ComponentData): any {
+  if (component.type === 'nexus') {
+    const nexus = component as NexusT;
+    const serializedChildren = [];
+
+    // Recursively serialize all child components
+    for (const child of nexus.components) {
+      serializedChildren.push(serializeComponentRecursive(child));
+    }
+
+    return {
+      type: 'nexus',
+      name: nexus.name,
+      unique: nexus.unique,
+      components: serializedChildren,
+    };
+  } else if (component.type === 'ui-overlay') {
+    return UIOverlaySerializer.serialize(component);
+  } else if (component.type === 'data-layer') {
+    return DataLayerSerializer.serialize(component);
+  } else if (component.type === 'flag-manager') {
+    return FlagManagerSerializer.serialize(component);
+  } else {
+    console.warn(
+      `[SCENE LOADER] Unknown component type for serialization: ${component.type}`,
+    );
+    return {
+      type: component.type,
+      name: component.name,
+    };
+  }
+}
+
+/**
  * Recursively deserializes a component and its children
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserializeComponentRecursive(data: any): ComponentData | null {
+export function deserializeComponentRecursive(data: any): ComponentData | null {
   try {
     if (data.type === 'nexus') {
       // Deserialize the nexus itself (creates empty nexus)
@@ -152,9 +196,8 @@ function deserializeComponentRecursive(data: any): ComponentData | null {
         for (const childData of data.components) {
           const child = deserializeComponentRecursive(childData);
           if (child) {
-            // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-            // @ts-expect-error
-            nexusComp.addComponent(child);
+            // Use Nexus methods directly to add child (nexusComp doesn't have Proxy methods yet)
+            Nexus.addComponent(nexusComp, child);
           }
         }
       }
@@ -163,6 +206,12 @@ function deserializeComponentRecursive(data: any): ComponentData | null {
     } else if (data.type === 'ui-overlay') {
       // Deserialize UI Overlay
       return UIOverlaySerializer.deserialize(data) as UIOverlayT;
+    } else if (data.type === 'data-layer') {
+      // Deserialize Data Layer
+      return DataLayerSerializer.deserialize(data) as ComponentData;
+    } else if (data.type === 'flag-manager') {
+      // Deserialize Flag Manager
+      return FlagManagerSerializer.deserialize(data) as ComponentData;
     } else {
       console.error(
         `[SCENE LOADER ERROR] Unknown component type: ${data.type}`,
@@ -170,9 +219,12 @@ function deserializeComponentRecursive(data: any): ComponentData | null {
       return null;
     }
   } catch (error) {
+    const errorMessage =
+      error instanceof Error
+        ? `${error.message}\n${error.stack || ''}`
+        : String(error);
     console.error(
-      `[SCENE LOADER ERROR] Failed to deserialize component:`,
-      error,
+      `[SCENE LOADER ERROR] Failed to deserialize component: ${errorMessage}`,
     );
     return null;
   }

@@ -21,4 +21,11 @@ export {
 // ============================================================================
 // Loader Functions
 // ============================================================================
-export { loadScene, unloadScene, switchScene, getActiveScene } from './loader';
+export {
+  loadScene,
+  unloadScene,
+  switchScene,
+  getActiveScene,
+  serializeComponentRecursive,
+  deserializeComponentRecursive,
+} from './loader';

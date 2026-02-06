@@ -17,7 +17,7 @@
     <!-- Console Interception - MUST run before omosuen.js loads -->
     <script>
       // =========================================================================
-      // Console Interception - Send all logs to test server
+      // Console Interception - Send all logs to test server with queue
       // =========================================================================
       (function() {
         const originalConsole = {
@@ -27,9 +27,38 @@
           error: console.error,
         };
 
-        // Flag to prevent infinite recursion during fetch failures
-        var isSendingLog = false;
+        // Log queue to buffer messages
+        var logQueue = [];
+        var isProcessingQueue = false;
 
+        // Process log queue sequentially
+        function processLogQueue() {
+          if (isProcessingQueue || logQueue.length === 0) {
+            return;
+          }
+
+          isProcessingQueue = true;
+          const logEntry = logQueue.shift();
+
+          fetch('/log', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(logEntry),
+          })
+          .then(function() {
+            isProcessingQueue = false;
+            // Process next log in queue
+            processLogQueue();
+          })
+          .catch(function(err) {
+            isProcessingQueue = false;
+            originalConsole.warn('[Browser] Failed to send log to server:', err.message || err);
+            // Continue processing queue even on error
+            processLogQueue();
+          });
+        }
+
+        // Intercept console methods
         ['log', 'info', 'warn', 'error'].forEach(function(method) {
           console[method] = function() {
             // Convert arguments to array
@@ -38,43 +67,23 @@
             // Always call original method so logs appear in browser console
             originalConsole[method].apply(console, args);
 
-            // Prevent recursion if we're already sending a log
-            if (isSendingLog) {
-              return;
-            }
-
-            // Send to test server
+            // Format message
             var message = args
               .map(function(arg) {
                 return typeof arg === 'object' ? JSON.stringify(arg) : String(arg);
               })
               .join(' ');
 
-            isSendingLog = true;
-            fetch('/log', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ level: method, message: message }),
-            })
-            .then(function() {
-              isSendingLog = false;
-            })
-            .catch(function(err) {
-              isSendingLog = false;
-              // Use originalConsole to avoid recursion, but this won't be sent to server
-              originalConsole.warn('[Browser] Failed to send log to server:', err.message || err);
-            });
+            // Add to queue
+            logQueue.push({ level: method, message: message });
+
+            // Start processing if not already running
+            processLogQueue();
           };
         });
 
         // Global error handler for uncaught exceptions
-        // These bypass console.error() entirely and need special handling
         window.addEventListener('error', function(event) {
-          // Prevent recursion
-          if (isSendingLog) {
-            return;
-          }
-
           // Build error message with stack trace
           var errorMessage = 'Uncaught ' + (event.error ? event.error.toString() : event.message);
           if (event.filename) {
@@ -84,20 +93,9 @@
             errorMessage += '\n' + event.error.stack;
           }
 
-          // Send to server
-          isSendingLog = true;
-          fetch('/log', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ level: 'error', message: errorMessage }),
-          })
-          .then(function() {
-            isSendingLog = false;
-          })
-          .catch(function(err) {
-            isSendingLog = false;
-            originalConsole.warn('[Browser] Failed to send error to server:', err.message || err);
-          });
+          // Add to queue
+          logQueue.push({ level: 'error', message: errorMessage });
+          processLogQueue();
         });
       })();
     </script>
@@ -209,7 +207,7 @@
       // =========================================================================
       // Test Orchestration
       // =========================================================================
-      const { init, start, switchScene, registerScene, registerSceneModule, getActiveScene, newComponent, NexusSerializer } =
+      const { init, start, switchScene, registerScene, registerSceneModule, getActiveScene, serializeComponentRecursive, deserializeComponentRecursive } =
         window.Omosuen;
 
       let firstSceneData = null;
@@ -250,7 +248,7 @@
             console.error('No active scene to serialize');
             return;
           }
-          const serialized = NexusSerializer.serialize(activeScene);
+          const serialized = serializeComponentRecursive(activeScene);
           console.info('scene a serialized');
 
           // Save to server
@@ -282,8 +280,8 @@
           const response = await fetch('/load-scene');
           const serializedData = await response.json();
 
-          // Deserialize scene using NexusSerializer
-          const scene = NexusSerializer.deserialize(serializedData);
+          // Deserialize scene using recursive deserialization
+          const scene = deserializeComponentRecursive(serializedData);
           console.info('scene a deserialized');
 
           // Load the deserialized scene

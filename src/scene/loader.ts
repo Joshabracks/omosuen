@@ -2,7 +2,6 @@ import type { nexus } from "../component/nexus/data";
 import { NexusSerializer } from "../component/nexus/data";
 import type { ui_overlay } from "../component/ui-overlay/data";
 import { UIOverlaySerializer } from "../component/ui-overlay/data";
-import { $ } from "../component/registry";
 import { getSceneEntry, hasScene } from "./registry";
 import type { ComponentData } from "../component/types";
 
@@ -137,7 +136,8 @@ function deserializeComponentRecursive(data: any): ComponentData | null {
         for (const childData of data.components) {
           const child = deserializeComponentRecursive(childData);
           if (child) {
-            $.addComponent(nexusComp, child);
+            // @ts-ignore
+            nexusComp.addComponent(child);
           }
         }
       }
@@ -224,7 +224,8 @@ export function unloadScene(): void {
   console.info(`[SCENE LOADER] Unloading scene "${sceneName}"`);
 
   // Dispose the scene using existing disposal system
-  $.dispose(activeScene);
+  // @ts-ignore
+  activeScene.dispose()
 
   // Clear active scene reference
   activeScene = null;

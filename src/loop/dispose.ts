@@ -5,9 +5,9 @@
  * mid-update errors when components are removed from the scene.
  */
 
-import type { ComponentData } from "../component/types";
+import type { COMPONENT_TYPE, ComponentData } from "../component/types";
 import type { nexus } from "../component/nexus/data";
-import { $, unregisterComponentMethod } from "../component/registry";
+import { unregisterComponentMethod } from "../component/registry";
 import { ComponentMethod } from "../component/registry";
 
 /**
@@ -87,7 +87,8 @@ export function processDisposeQueue(scene: nexus): void {
   // Process each disposal
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i];
-    const component = $.getComponentById(scene, id, true);
+    // @ts-ignore
+    const component = scene.getComponentById(id, true);
 
     if (!component) {
       continue;
@@ -99,7 +100,7 @@ export function processDisposeQueue(scene: nexus): void {
       component.updateOverride = undefined;
     }
 
-    const method = ComponentMethod[component.type];
+    const method = ComponentMethod[component.type as COMPONENT_TYPE];
     if (method.dispose && typeof method.dispose === "function") {
       method.dispose(component);
     } else {

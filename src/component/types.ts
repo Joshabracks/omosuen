@@ -1,4 +1,4 @@
-import { $, BUILDERS, ComponentMethod, registerComponentMethod, PROPERTY_ALLOWLIST } from "./registry";
+import { BUILDERS, ComponentMethod, registerComponentMethod, PROPERTY_ALLOWLIST } from "./registry";
 import { queueInit } from "../loop/init";
 
 let COMPONENT_COUNT = 0;
@@ -120,7 +120,7 @@ export async function newComponent(
       // Return method wrapper
       return (...args: any[]) => {
         // @ts-ignore
-        return $[prop](c, ...args);
+        return ComponentMethod[c.type][prop](c, ...args);
       }
     }
   }

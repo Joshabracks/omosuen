@@ -6,8 +6,8 @@
  * if necessary to maintain target frame rate.
  */
 
+import { ComponentData } from "../component";
 import type { nexus } from "../component/nexus/data";
-import { $ } from "../component/registry";
 import { ComponentMethod } from "../component/registry";
 
 /**
@@ -104,7 +104,8 @@ export function processInitQueue(
 
   while (INIT_QUEUE.length > 0) {
     const id = INIT_QUEUE.shift()!;
-    const component = $.getComponentById(scene, id, true);
+    // @ts-ignore
+    const component: ComponentData = scene.getComponentById(id, true);
 
     if (!component) {
       console.warn(`[INIT] Component ID ${id} not found in scene`);

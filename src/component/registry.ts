@@ -1,34 +1,12 @@
 import { Nexus, builder as nexusBuilder, PROPERTY_ALLOWLIST as NexusPropertyAllowlist } from "./nexus";
-import type { NexusMethods } from "./nexus/methods";
 import { UIOverlay, builder as uiOverlayBuilder, PROPERTY_ALLOWLIST as UIOverlayPropertyAllowlist } from "./ui-overlay";
-import type { UIOverlayMethods } from "./ui-overlay";
 import { DataLayer, builder as dataLayerBuilder, PROPERTY_ALLOWLIST as DataLayerPropertyAllowlist } from "./data-layer";
-import type { DataLayerMethods } from "./data-layer/methods";
 import { FlagManager, builder as flagManagerBuilder, PROPERTY_ALLOWLIST as FlagManagerPropertyAllowlist } from "./flag-manager";
-import type { FlagManagerMethods } from "./flag-manager/methods";
 import type {
   COMPONENT_TYPE,
-  ComponentData,
   ComponentMethods,
 } from "./types";
-import { markForDisposal } from "../loop/dispose";
 
-/**
- * Extract method signatures from component methods (exclude 'type' property)
- * This utility type removes the 'type' property and keeps all method signatures
- */
-type ExtractMethods<T> = {
-  [K in keyof T as K extends "type" ? never : K]: T[K];
-};
-
-/**
- * Union of all component method signatures available through the $ Proxy helper
- * As new components are added, their method types should be added to this intersection
- */
-type ProxyMethodSignatures = ExtractMethods<NexusMethods> &
-  ExtractMethods<UIOverlayMethods> &
-  ExtractMethods<DataLayerMethods> &
-  ExtractMethods<FlagManagerMethods>;
 
 export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   nexus: nexusBuilder,
@@ -146,78 +124,3 @@ export function hasComponentMethod(type: COMPONENT_TYPE, key: string): boolean {
   // @ts-ignore - Dynamic method access
   return typeof ComponentMethod[type][key] === "function";
 }
-
-const methodHandler = {
-  get: function (
-    methodMap: Record<COMPONENT_TYPE, ComponentMethods>,
-    prop: string,
-  ) {
-    // Intercept dispose calls to queue for disposal instead of immediate disposal
-    if (prop === 'dispose') {
-      return (component: ComponentData) => {
-        markForDisposal(component);
-      };
-    }
-
-    // Intercept init calls with a warning
-    if (prop === 'init') {
-      return (component: ComponentData) => {
-        console.warn(
-          '[LIFECYCLE WARNING] $.init() should not be called directly. ' +
-          'Initialization is automatically handled by the game loop. ' +
-          'If you need to manually initialize, use ComponentMethod[type].init() ' +
-          'and manually set component._initialized = true to prevent re-initialization.'
-        );
-        // Still allow the call for edge cases
-        const method = ComponentMethod[component.type];
-        if (method.init && typeof method.init === 'function') {
-          method.init(component);
-        }
-      };
-    }
-
-    if (!methodTypeCache[prop]) {
-      const methodTypeMap: Record<string, Function> = {};
-      for (let key in methodMap) {
-        const methods: ComponentMethods = methodMap[key as COMPONENT_TYPE];
-        if (prop in methods) {
-          // @ts-ignore
-          methodTypeMap[key] = methods[prop];
-        }
-      }
-      methodTypeCache[prop] = methodTypeMap;
-    }
-    const cachedMethodMap = methodTypeCache[prop];
-    const func = <T extends ComponentData>(c: T, ...args: any[]) => {
-      const method: Function = cachedMethodMap[c.type];
-      if (!method) {
-        console.error(
-          `Method '${prop}' not found for component type '${c.type}'`,
-        );
-        return null;
-      }
-      return method(c, ...args);
-    };
-    return func;
-  },
-};
-
-/**
- * Type-safe Proxy helper for calling component methods across all component types.
- * Provides a unified API: $.methodName(component, ...args)
- *
- * The Proxy dynamically routes method calls to the appropriate component implementation
- * based on the component's type property. TypeScript cannot infer this behavior, so we
- * explicitly type it with the union of all component method signatures.
- *
- * @example
- * ```typescript
- * const myNexus = builder({ name: "Player" });
- * $.addComponent(myNexus, childComponent);
- * const found = $.getComponentByName(myNexus, "Enemy", true);
- * ```
- */
-export const $ = new Proxy(
-  ComponentMethod,
-  methodHandler,
-) as unknown as ProxyMethodSignatures;

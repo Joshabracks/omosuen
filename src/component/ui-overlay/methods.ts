@@ -1,6 +1,5 @@
-import { ComponentMethod } from "../registry";
-import { ComponentData, ComponentMethods, ComponentOptions } from "../types";
-import { ui_overlay, UIBinding, UIOverlayOptions } from "./data";
+import { ComponentData, ComponentMethods } from "../types";
+import { ui_overlay, UIBinding } from "./data";
 
 export interface UIOverlayMethods extends ComponentMethods {
   hide?: (u: ui_overlay) => void;

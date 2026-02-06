@@ -8,7 +8,7 @@
 
 export default async function createStrawberryScene() {
   // Import Omosuen from the global scope (loaded by main HTML)
-  const { newComponent, $, switchScene } = window.Omosuen;
+  const { newComponent, switchScene } = window.Omosuen;
 
   // Create root nexus for the scene
   const root = await newComponent('nexus', { name: 'StrawberrySceneRoot' });
@@ -27,7 +27,7 @@ export default async function createStrawberryScene() {
   }
 
   // Initialize with some flags using $ Proxy
-  $.addFlags(flagManager, [
+  flagManager.addFlags([
     'strawberrySceneVisited',
     'tutorialComplete',
     'level1Complete',
@@ -46,7 +46,7 @@ export default async function createStrawberryScene() {
       }
 
       // Get all flags from flag-manager using $ Proxy
-      const allFlags = $.getFlags(flagManager);
+      const allFlags = flagManager.getFlags();
 
       // Format the flags display
       if (allFlags.length === 0) {
@@ -194,14 +194,14 @@ export default async function createStrawberryScene() {
   }
 
   // Add both components to root
-  $.addComponent(root, flagManager);
-  $.addComponent(root, overlay);
+  root.addComponent(flagManager);
+  root.addComponent(overlay);
 
   // Apply bindings to set up event listeners
-  $.applyBindings(overlay);
+  overlay.applyBindings();
 
   console.log('[Strawberry Scene] Scene created successfully with flag-manager');
-  console.log('[Strawberry Scene] Initial flags:', $.getFlags(flagManager));
+  console.log('[Strawberry Scene] Initial flags:', flagManager.getFlags());
 
   return root;
 }

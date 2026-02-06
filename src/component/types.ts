@@ -1,4 +1,5 @@
 import { BUILDERS } from "./registry";
+import { queueInit } from "../loop/init";
 
 let COMPONENT_COUNT = 0;
 
@@ -15,14 +16,16 @@ export interface ComponentData {
   id?: number;
   parent: ComponentData | null;
   _disposed?: boolean;
+  loader?: boolean;
   unique?: boolean;
   overrideKey?: string;
+  _initialized?: boolean;
 }
 
 export interface ComponentMethods {
   type: COMPONENT_TYPE;
   dispose?: (component: ComponentData) => void;
-  update?: (component: ComponentData) => void;
+  update?: (component: ComponentData, deltaTime: number) => void;
   init?: (component: ComponentData) => void;
 }
 
@@ -45,6 +48,10 @@ export async function newComponent(
     return null;
   }
   component.id = COMPONENT_COUNT++;
+
+  // Automatically queue for initialization
+  queueInit(component.id);
+
   return component;
 }
 

@@ -19,6 +19,11 @@ export * from "./math";
 export * from "./scene";
 
 // ============================================================================
+// Loop Exports
+// ============================================================================
+export * from "./loop";
+
+// ============================================================================
 // Engine Core
 // ============================================================================
 
@@ -38,6 +43,27 @@ export const name = "Omosuen";
 export function init() {
   console.log(`${name} Engine v${version} initialized`);
 }
+
+/**
+ * Start the Omosuen game loop
+ *
+ * This function starts the main game loop using requestAnimationFrame.
+ * It should be called after loading the initial scene.
+ *
+ * @param targetFPS - Target frames per second (default: 60)
+ *
+ * @example
+ * ```typescript
+ * import Omosuen from 'omosuen';
+ *
+ * // Load initial scene
+ * await Omosuen.switchScene("MainMenu");
+ *
+ * // Start game loop
+ * Omosuen.start(60);
+ * ```
+ */
+export { start } from "./loop/manager";
 
 /**
  * Default export for backward compatibility

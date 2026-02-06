@@ -7,6 +7,7 @@ import type {
   ComponentData,
   ComponentMethods,
 } from "./types";
+import { markForDisposal } from "../loop/dispose";
 
 /**
  * Extract method signatures from component methods (exclude 'type' property)
@@ -130,6 +131,30 @@ const methodHandler = {
     methodMap: Record<COMPONENT_TYPE, ComponentMethods>,
     prop: string,
   ) {
+    // Intercept dispose calls to queue for disposal instead of immediate disposal
+    if (prop === 'dispose') {
+      return (component: ComponentData) => {
+        markForDisposal(component);
+      };
+    }
+
+    // Intercept init calls with a warning
+    if (prop === 'init') {
+      return (component: ComponentData) => {
+        console.warn(
+          '[LIFECYCLE WARNING] $.init() should not be called directly. ' +
+          'Initialization is automatically handled by the game loop. ' +
+          'If you need to manually initialize, use ComponentMethod[type].init() ' +
+          'and manually set component._initialized = true to prevent re-initialization.'
+        );
+        // Still allow the call for edge cases
+        const method = ComponentMethod[component.type];
+        if (method.init && typeof method.init === 'function') {
+          method.init(component);
+        }
+      };
+    }
+
     if (!methodTypeCache[prop]) {
       const methodTypeMap: Record<string, Function> = {};
       for (let key in methodMap) {

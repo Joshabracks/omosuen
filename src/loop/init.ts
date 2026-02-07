@@ -8,7 +8,7 @@
 
 import { ComponentData } from '../component';
 import type { NexusT } from '../component/nexus/data';
-import { ComponentMethod } from '../component/registry';
+import { MethodRegistry } from '../component/registry';
 
 /**
  * Queue of component IDs awaiting initialization.
@@ -116,7 +116,7 @@ export function processInitQueue(scene: NexusT, targetFrameTime: number): void {
     }
 
     // Call init if it exists
-    const method = ComponentMethod[component.type];
+    const method = MethodRegistry[component.type];
     if (method.init && typeof method.init === 'function') {
       method.init(component);
     }

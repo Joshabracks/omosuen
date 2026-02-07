@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omosuen Engine - UI Overlay Custom Override Demo</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Main Menu Styles */
+        .main-menu-container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            min-width: 400px;
+            max-width: 500px;
+        }
+
+        .main-menu-container h1 {
+            color: #667eea;
+            font-size: 2.5em;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .button-group {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 20px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 14px 24px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        #dropdown-btn {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            margin-bottom: 10px;
+        }
+
+        /* Accordion/Nested SubMenu Styles */
+        .accordion-container {
+            position: relative;
+            width: 100%;
+        }
+
+        .accordion-content {
+            background: rgba(102, 126, 234, 0.1);
+            border-radius: 8px;
+            overflow: hidden;
+            transition: max-height 300ms ease-in-out, opacity 300ms ease-in-out;
+        }
+
+        .accordion-content div {
+            padding: 12px 20px;
+            border-bottom: 1px solid rgba(102, 126, 234, 0.2);
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+
+        .accordion-content div:last-child {
+            border-bottom: none;
+        }
+
+        .accordion-content div:hover {
+            background: rgba(102, 126, 234, 0.15);
+        }
+
+        /* Secondary Menu Styles */
+        .secondary-menu {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            min-width: 400px;
+            max-width: 500px;
+            text-align: center;
+        }
+
+        .secondary-menu h2 {
+            color: #764ba2;
+            font-size: 2em;
+            margin-bottom: 20px;
+        }
+
+        .secondary-menu p {
+            color: #555;
+            font-size: 1.1em;
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }
+
+        .back-btn {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+
+        /* Menu-specific colors */
+        .menu-a h2 { color: #f5576c; }
+        .menu-b h2 { color: #4facfe; }
+        .menu-c h2 { color: #43e97b; }
+
+        /* Info Panel */
+        .info-panel {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+            max-width: 350px;
+            font-size: 14px;
+            color: #333;
+        }
+
+        .info-panel h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        .info-panel ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .info-panel li {
+            padding: 4px 0;
+            padding-left: 20px;
+            position: relative;
+        }
+
+        .info-panel li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: #43e97b;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <script src="./dev/omosuen.js"></script>
+    <script>
+        // Store references to menus globally
+        let mainMenu, nestedSubMenu, menuA, menuB, menuC;
+        let isDropdownOpen = false;
+
+        async function initializeUI() {
+            if (typeof Omosuen === 'undefined') {
+                console.error('ERROR: Omosuen engine failed to load');
+                return;
+            }
+
+            const { newComponent, registerComponentMethod, $ } = Omosuen;
+
+            console.log('=== Registering Custom Override Methods ===');
+
+            // ====================================================================
+            // STEP 1: Register custom override methods BEFORE creating components
+            // ====================================================================
+
+            // Main Menu Fade Animations
+            registerComponentMethod('ui-overlay', 'mainMenu-show', (u) => {
+                console.log(`[Custom Override] mainMenu-show called for: ${u.name}`);
+                u.container.style.transition = 'opacity 300ms ease-in-out';
+                u.container.style.opacity = '0';
+                u.container.style.display = 'flex';
+                // Use requestAnimationFrame to ensure display:flex is applied first
+                requestAnimationFrame(() => {
+                    u.container.style.opacity = '1';
+                });
+            });
+
+            registerComponentMethod('ui-overlay', 'mainMenu-hide', (u) => {
+                console.log(`[Custom Override] mainMenu-hide called for: ${u.name}`);
+                u.container.style.transition = 'opacity 300ms ease-in-out';
+                u.container.style.opacity = '0';
+                setTimeout(() => {
+                    u.container.style.display = 'none';
+                }, 300);
+            });
+
+            // Accordion Animations (vertical slide)
+            registerComponentMethod('ui-overlay', 'accordion-show', (u) => {
+                console.log(`[Custom Override] accordion-show called for: ${u.name}`);
+                u.container.style.display = 'block';
+                u.container.style.maxHeight = '0px';
+                u.container.style.opacity = '0';
+                u.container.style.transition = 'max-height 300ms ease-in-out, opacity 300ms ease-in-out';
+
+                // Calculate full height
+                requestAnimationFrame(() => {
+                    const fullHeight = u.container.scrollHeight;
+                    u.container.style.maxHeight = fullHeight + 'px';
+                    u.container.style.opacity = '1';
+                });
+            });
+
+            registerComponentMethod('ui-overlay', 'accordion-hide', (u) => {
+                console.log(`[Custom Override] accordion-hide called for: ${u.name}`);
+                u.container.style.transition = 'max-height 300ms ease-in-out, opacity 300ms ease-in-out';
+                u.container.style.maxHeight = '0px';
+                u.container.style.opacity = '0';
+                setTimeout(() => {
+                    u.container.style.display = 'none';
+                }, 300);
+            });
+
+            // Secondary Menu Fade + Scale Animations (shared across Menu A, B, C)
+            registerComponentMethod('ui-overlay', 'secondaryMenu-show', (u) => {
+                console.log(`[Custom Override] secondaryMenu-show called for: ${u.name}`);
+                u.container.style.transition = 'opacity 400ms ease-in-out, transform 400ms ease-in-out';
+                u.container.style.opacity = '0';
+                u.container.style.transform = 'scale(0.95)';
+                u.container.style.display = 'flex';
+
+                requestAnimationFrame(() => {
+                    u.container.style.opacity = '1';
+                    u.container.style.transform = 'scale(1)';
+                });
+            });
+
+            registerComponentMethod('ui-overlay', 'secondaryMenu-hide', (u) => {
+                console.log(`[Custom Override] secondaryMenu-hide called for: ${u.name}`);
+                u.container.style.transition = 'opacity 400ms ease-in-out, transform 400ms ease-in-out';
+                u.container.style.opacity = '0';
+                u.container.style.transform = 'scale(0.95)';
+                setTimeout(() => {
+                    u.container.style.display = 'none';
+                }, 400);
+            });
+
+            console.log('✓ All custom override methods registered');
+
+            // ====================================================================
+            // STEP 2: Create Main Menu UI Overlay
+            // ====================================================================
+
+            console.log('\n=== Creating Main Menu ===');
+            mainMenu = await newComponent('ui-overlay', {
+                name: 'Main Menu',
+                overrideKey: 'mainMenu',
+                html: `
+                    <div class="main-menu-container">
+                        <h1>Main Menu</h1>
+                        <button id="dropdown-btn">Dropdown Menu ▼</button>
+                        <div id="nested-submenu-container" class="accordion-container"></div>
+                        <div class="button-group">
+                            <button id="open-menu-a">Open Menu A</button>
+                            <button id="open-menu-b">Open Menu B</button>
+                            <button id="open-menu-c">Open Menu C</button>
+                        </div>
+                    </div>
+                `,
+                cssOverrides: {
+                    pointerEvents: 'auto',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexDirection: 'column'
+                },
+                bindings: [
+                    {
+                        selector: '#dropdown-btn',
+                        onActions: ['click'],
+                        method: (e) => {
+                            isDropdownOpen = !isDropdownOpen;
+                            if (isDropdownOpen) {
+                                $.show(nestedSubMenu);
+                                e.target.textContent = 'Dropdown Menu ▲';
+                            } else {
+                                $.hide(nestedSubMenu);
+                                e.target.textContent = 'Dropdown Menu ▼';
+                            }
+                        }
+                    },
+                    {
+                        selector: '#open-menu-a',
+                        onActions: ['click'],
+                        method: (e) => {
+                            console.log('\n--- Opening Menu A ---');
+                            $.hide(mainMenu);
+                            $.show(menuA);
+                        }
+                    },
+                    {
+                        selector: '#open-menu-b',
+                        onActions: ['click'],
+                        method: (e) => {
+                            console.log('\n--- Opening Menu B ---');
+                            $.hide(mainMenu);
+                            $.show(menuB);
+                        }
+                    },
+                    {
+                        selector: '#open-menu-c',
+                        onActions: ['click'],
+                        method: (e) => {
+                            console.log('\n--- Opening Menu C ---');
+                            $.hide(mainMenu);
+                            $.show(menuC);
+                        }
+                    }
+                ]
+            });
+
+            if (!mainMenu) {
+                console.error('ERROR: Failed to create Main Menu');
+                return;
+            }
+
+            $.applyBindings(mainMenu);
+            console.log('✓ Main Menu created and bindings applied');
+
+            // ====================================================================
+            // STEP 3: Create Nested Sub-Menu (Accordion)
+            // ====================================================================
+
+            console.log('\n=== Creating Nested SubMenu ===');
+            nestedSubMenu = await newComponent('ui-overlay', {
+                name: 'Nested SubMenu',
+                overrideKey: 'accordion',
+                html: `
+                    <div class="accordion-content">
+                        <div>📄 Menu Item 1</div>
+                        <div>📊 Menu Item 2</div>
+                        <div>⚙️ Menu Item 3</div>
+                        <div>📌 Menu Item 4</div>
+                    </div>
+                `,
+                cssOverrides: {
+                    pointerEvents: 'auto',
+                    position: 'relative',
+                    width: '100%',
+                    top: '0',
+                    left: '0',
+                    zIndex: '1001',
+                    display: 'none',
+                    alignItems: 'flex-start',
+                    justifyContent: 'flex-start'
+                }
+            });
+
+            if (!nestedSubMenu) {
+                console.error('ERROR: Failed to create Nested SubMenu');
+                return;
+            }
+
+            // Append nested submenu to the main menu container
+            const nestedContainer = document.getElementById('nested-submenu-container');
+            if (nestedContainer && nestedSubMenu.container) {
+                nestedContainer.appendChild(nestedSubMenu.container);
+                // Override the body-level positioning since this is nested
+                nestedSubMenu.container.style.position = 'relative';
+                nestedSubMenu.container.style.width = '100%';
+            }
+
+            console.log('✓ Nested SubMenu created (initially hidden)');
+
+            // ====================================================================
+            // STEP 4: Create Three Secondary Menus (Shared overrideKey)
+            // ====================================================================
+
+            console.log('\n=== Creating Secondary Menus ===');
+            console.log('Note: All three menus share overrideKey "secondaryMenu"');
+
+            // Menu A
+            menuA = await newComponent('ui-overlay', {
+                name: 'Secondary Menu A',
+                overrideKey: 'secondaryMenu',
+                previousOverlay: mainMenu,
+                html: `
+                    <div class="secondary-menu menu-a">
+                        <h2>🅰️ Menu A</h2>
+                        <p>This is the content for Menu A. It demonstrates the custom fade and scale animation using the shared "secondaryMenu" override key.</p>
+                        <button class="back-btn" id="back-btn-a">← Back to Main Menu</button>
+                    </div>
+                `,
+                cssOverrides: {
+                    pointerEvents: 'auto',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                },
+                bindings: [
+                    {
+                        selector: '#back-btn-a',
+                        onActions: ['click'],
+                        method: (e) => {
+                            console.log('\n--- Back button clicked (Menu A) ---');
+                            $.back(menuA);
+                        }
+                    }
+                ]
+            });
+
+            if (menuA) {
+                $.applyBindings(menuA);
+                $.hide(menuA);
+                console.log('✓ Menu A created (shared overrideKey: secondaryMenu)');
+            }
+
+            // Menu B
+            menuB = await newComponent('ui-overlay', {
+                name: 'Secondary Menu B',
+                overrideKey: 'secondaryMenu',
+                previousOverlay: mainMenu,
+                html: `
+                    <div class="secondary-menu menu-b">
+                        <h2>🅱️ Menu B</h2>
+                        <p>This is the content for Menu B. Notice how it uses the same animation as Menu A because they share the same overrideKey.</p>
+                        <button class="back-btn" id="back-btn-b">← Back to Main Menu</button>
+                    </div>
+                `,
+                cssOverrides: {
+                    pointerEvents: 'auto',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                },
+                bindings: [
+                    {
+                        selector: '#back-btn-b',
+                        onActions: ['click'],
+                        method: (e) => {
+                            console.log('\n--- Back button clicked (Menu B) ---');
+                            $.back(menuB);
+                        }
+                    }
+                ]
+            });
+
+            if (menuB) {
+                $.applyBindings(menuB);
+                $.hide(menuB);
+                console.log('✓ Menu B created (shared overrideKey: secondaryMenu)');
+            }
+
+            // Menu C
+            menuC = await newComponent('ui-overlay', {
+                name: 'Secondary Menu C',
+                overrideKey: 'secondaryMenu',
+                previousOverlay: mainMenu,
+                html: `
+                    <div class="secondary-menu menu-c">
+                        <h2>🌟 Menu C</h2>
+                        <p>This is the content for Menu C. All three secondary menus (A, B, C) demonstrate efficient function reuse through shared override keys.</p>
+                        <button class="back-btn" id="back-btn-c">← Back to Main Menu</button>
+                    </div>
+                `,
+                cssOverrides: {
+                    pointerEvents: 'auto',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                },
+                bindings: [
+                    {
+                        selector: '#back-btn-c',
+                        onActions: ['click'],
+                        method: (e) => {
+                            console.log('\n--- Back button clicked (Menu C) ---');
+                            $.back(menuC);
+                        }
+                    }
+                ]
+            });
+
+            if (menuC) {
+                $.applyBindings(menuC);
+                $.hide(menuC);
+                console.log('✓ Menu C created (shared overrideKey: secondaryMenu)');
+            }
+
+            // ====================================================================
+            // STEP 5: Initialize - Show Main Menu
+            // ====================================================================
+
+            console.log('\n=== Initialization Complete ===');
+            $.show(mainMenu);
+            console.log('✓ Main Menu displayed');
+
+            // Add info panel
+            const infoPanel = document.createElement('div');
+            infoPanel.className = 'info-panel';
+            infoPanel.innerHTML = `
+                <h3>Custom Override Demo</h3>
+                <ul>
+                    <li>Main Menu: Custom fade</li>
+                    <li>Dropdown: Accordion animation</li>
+                    <li>Menus A/B/C: Shared overrides</li>
+                    <li>Back buttons: previousOverlay</li>
+                    <li>All use applyBindings()</li>
+                </ul>
+                <p style="margin-top: 10px; font-size: 12px; opacity: 0.7;">Open browser console to see custom override method calls</p>
+            `;
+            document.body.appendChild(infoPanel);
+
+            console.log('\n🎉 All UI overlays initialized successfully!');
+            console.log('📌 Check browser console for custom override method execution logs');
+        }
+
+        // Run initialization when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initializeUI);
+        } else {
+            initializeUI();
+        }
+    </script>
+</body>
+</html>

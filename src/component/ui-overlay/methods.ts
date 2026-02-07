@@ -1,11 +1,15 @@
 import { ComponentData, ComponentMethods } from '../types';
 import { UIOverlayT, UIBinding } from './data';
+import { getHtmlConstructor } from '../registry';
+import { getActiveScene } from '../../scene';
 
 export interface UIOverlayMethods extends ComponentMethods {
   hide?: (u: UIOverlayT) => void;
   show?: (u: UIOverlayT) => void;
   back: (u: UIOverlayT) => void;
   applyBindings: (u: UIOverlayT) => void;
+  init: (component: ComponentData) => void;
+  update: (component: ComponentData, deltaTime: number) => void;
 }
 
 export const UIOverlay: UIOverlayMethods = {
@@ -63,34 +67,104 @@ export const UIOverlay: UIOverlayMethods = {
       UIOverlay.hide(u);
     }
 
-    // Show previous overlay
-    if (u.previousOverlay) {
-      if (u.previousOverlay.showOverride) {
+    // Show previous overlay (look up by ID)
+    if (u.previousOverlayId !== undefined) {
+      const scene = getActiveScene();
+      if (!scene) {
+        console.warn(
+          `[ui-overlay] Cannot navigate back from '${u.name}' - no active scene`,
+        );
+        return;
+      }
+
+      // @ts-expect-error - getComponentById exists but not in type def yet
+      const previousOverlay = scene.getComponentById(
+        u.previousOverlayId,
+        true,
+      ) as UIOverlayT | null;
+
+      if (!previousOverlay) {
+        console.warn(
+          `[ui-overlay] Previous overlay with ID ${u.previousOverlayId} not found for '${u.name}'`,
+        );
+        return;
+      }
+
+      if (previousOverlay.showOverride) {
         // @ts-expect-error - Dynamic method access via registered override
-        const overrideMethod = UIOverlay[u.previousOverlay.showOverride];
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const overrideMethod = UIOverlay[previousOverlay.showOverride];
         if (overrideMethod && typeof overrideMethod === 'function') {
-          overrideMethod(u.previousOverlay);
+          overrideMethod(previousOverlay);
         } else {
           console.warn(
-            `[ui-overlay] Custom show method '${u.previousOverlay.showOverride}' not found for '${u.previousOverlay.name}'. Using default behavior.`,
+            `[ui-overlay] Custom show method '${previousOverlay.showOverride}' not found for '${previousOverlay.name}'. Using default behavior.`,
           );
           if (UIOverlay.show) {
-            UIOverlay.show(u.previousOverlay);
+            UIOverlay.show(previousOverlay);
           }
         }
       } else if (UIOverlay.show) {
-        UIOverlay.show(u.previousOverlay);
+        UIOverlay.show(previousOverlay);
+      }
+    }
+  },
+
+  init(component: ComponentData) {
+    const u = component as UIOverlayT;
+    // Append container to DOM during init (after scene is loaded)
+    if (u.container && !u.container.parentNode) {
+      document.body.appendChild(u.container);
+    }
+  },
+
+  update(component: ComponentData, _deltaTime: number) {
+    const u = component as UIOverlayT;
+
+    // Construct HTML on first update if htmlConstructorKey is set
+    if (!u._htmlConstructed && u.htmlConstructorKey) {
+      const constructor = getHtmlConstructor(u.htmlConstructorKey);
+      if (constructor) {
+        try {
+          const html = constructor(u);
+          u.container.innerHTML = html;
+          // Apply bindings automatically after HTML construction
+          UIOverlay.applyBindings(u);
+          u._htmlConstructed = true;
+        } catch (error) {
+          console.error(
+            `[ui-overlay] Failed to construct HTML for '${u.name}' using constructor '${u.htmlConstructorKey}':`,
+            error,
+          );
+        }
+      } else {
+        console.warn(
+          `[ui-overlay] HTML constructor '${u.htmlConstructorKey}' not found for component '${u.name}'. ` +
+            `Call registerHtmlConstructor('${u.htmlConstructorKey}', func) before loading this component.`,
+        );
+        u._htmlConstructed = true; // Don't keep trying
       }
     }
   },
 
   applyBindings(u: UIOverlayT) {
     u.bindings.forEach((binding: UIBinding) => {
+      if (!binding._methodFunc) {
+        console.warn(
+          `[ui-overlay] Skipping binding for '${binding.selector}' - method '${binding.methodKey}' not found`,
+        );
+        return;
+      }
+
       const elements = Array.from(document.querySelectorAll(binding.selector));
       if (!elements.length) return;
+
       elements.forEach((element: Element) =>
         binding.onActions.forEach((action: string) =>
-          element.addEventListener(action, binding.method),
+          element.addEventListener(
+            action,
+            binding._methodFunc as EventListener,
+          ),
         ),
       );
     });
@@ -100,10 +174,15 @@ export const UIOverlay: UIOverlayMethods = {
     // Remove event listeners
     const u = c as UIOverlayT;
     u.bindings.forEach((binding) => {
+      if (!binding._methodFunc) return;
+
       const elements = document.querySelectorAll(binding.selector);
       elements.forEach((element) => {
         binding.onActions.forEach((action) => {
-          element.removeEventListener(action, binding.method);
+          element.removeEventListener(
+            action,
+            binding._methodFunc as EventListener,
+          );
         });
       });
     });

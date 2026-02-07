@@ -5,7 +5,7 @@ import {
   ComponentUnique,
   ComponentInstanceMethods,
 } from '../types';
-import { hasComponentMethod } from '../registry';
+import { hasMethod, getBinding } from '../registry';
 import type { UIOverlayMethods } from './methods';
 
 type UIAction =
@@ -108,7 +108,9 @@ type UIAction =
 export interface UIBinding {
   selector: string;
   onActions: UIAction[];
-  method: (e: Event) => void;
+  methodKey: string;
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+  _methodFunc?: Function; // Internal: actual function reference for event listeners
 }
 
 export interface UIOverlayT
@@ -118,17 +120,19 @@ export interface UIOverlayT
   element: HTMLDivElement | null;
   bindings: UIBinding[];
   cssOverrides: Record<string, string>;
-  previousOverlay?: UIOverlayT;
+  previousOverlayId?: number;
   container: HTMLElement;
   showOverride?: string;
   hideOverride?: string;
+  htmlConstructorKey?: string;
+  _htmlConstructed: boolean;
 }
 
 export interface UIOverlayOptions extends ComponentOptions {
-  html?: string;
+  htmlConstructorKey?: string;
   cssOverrides?: Record<string, string>;
   bindings?: UIBinding[];
-  previousOverlay?: UIOverlayT;
+  previousOverlayId?: number;
 }
 
 export function builder(options: UIOverlayOptions): UIOverlayT {
@@ -142,11 +146,6 @@ export function builder(options: UIOverlayOptions): UIOverlayT {
   container.style.pointerEvents = 'none'; // Allow clicks to pass through to canvas
   container.style.zIndex = '1000'; // Ensure it's above the canvas
 
-  // Set innerHTML if provided
-  if (options.html) {
-    container.innerHTML = options.html;
-  }
-
   container.id = options.name.replace(/\s/g, '');
 
   // Apply CSS overrides if provided
@@ -158,8 +157,22 @@ export function builder(options: UIOverlayOptions): UIOverlayT {
     });
   }
 
-  // Add the container to the document body
-  document.body.appendChild(container);
+  // Look up binding functions and store internal references
+  const bindings: UIBinding[] = (options.bindings || []).map((binding) => {
+    const func = getBinding(binding.methodKey);
+    if (!func) {
+      console.warn(
+        `[ui-overlay] Binding method '${binding.methodKey}' is not registered for component '${options.name}'. ` +
+          `Call registerBinding('${binding.methodKey}', func) before creating this component.`,
+      );
+    }
+    return {
+      selector: binding.selector,
+      onActions: binding.onActions,
+      methodKey: binding.methodKey,
+      _methodFunc: func || undefined,
+    };
+  });
 
   // Create data-only object. Methods will be added by Proxy wrapper in newComponent()
   const overlay = {
@@ -176,31 +189,33 @@ export function builder(options: UIOverlayOptions): UIOverlayT {
       : undefined,
     _disposed: false,
     element: container,
-    bindings: options.bindings || [],
+    bindings: bindings,
     cssOverrides: options.cssOverrides || {},
-    previousOverlay: options.previousOverlay,
+    previousOverlayId: options.previousOverlayId,
     container: container,
+    htmlConstructorKey: options.htmlConstructorKey,
+    _htmlConstructed: false,
   };
 
   // Validate that override methods are registered if overrideKey is set
   if (overlay.overrideKey) {
     if (
       overlay.showOverride &&
-      !hasComponentMethod('ui-overlay', overlay.showOverride)
+      !hasMethod('ui-overlay', overlay.showOverride)
     ) {
       console.warn(
         `[ui-overlay] Custom show method '${overlay.showOverride}' is not registered for component '${overlay.name}'. ` +
-          `Call registerComponentMethod('ui-overlay', '${overlay.showOverride}', func) before creating this component. ` +
+          `Call registerMethod('ui-overlay', '${overlay.showOverride}', func) before creating this component. ` +
           `Falling back to default show behavior.`,
       );
     }
     if (
       overlay.hideOverride &&
-      !hasComponentMethod('ui-overlay', overlay.hideOverride)
+      !hasMethod('ui-overlay', overlay.hideOverride)
     ) {
       console.warn(
         `[ui-overlay] Custom hide method '${overlay.hideOverride}' is not registered for component '${overlay.name}'. ` +
-          `Call registerComponentMethod('ui-overlay', '${overlay.hideOverride}', func) before creating this component. ` +
+          `Call registerMethod('ui-overlay', '${overlay.hideOverride}', func) before creating this component. ` +
           `Falling back to default hide behavior.`,
       );
     }
@@ -212,68 +227,73 @@ export function builder(options: UIOverlayOptions): UIOverlayT {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function serialize(component: ComponentData): any {
   const uiOverlay = component as UIOverlayT;
-  const container = uiOverlay.element;
-  const bindingFactoryString = `function bindingFactory() {
-    return [
-      ${uiOverlay.bindings
-        .map(
-          (binding) => `{
-          selector: "${binding.selector}",
-          onActions: ["${binding.onActions.join('","')}"],
-          method: "${binding.method.toString()}"
-        }`,
-        )
-        .join(',')}
-    ]
-  }`;
+
+  // Serialize bindings as method keys (no function serialization)
+  const serializedBindings = uiOverlay.bindings.map((binding) => ({
+    selector: binding.selector,
+    onActions: binding.onActions,
+    methodKey: binding.methodKey,
+  }));
+
+  // Validate all bindings have registered methods
+  const invalidBindings = uiOverlay.bindings.filter((b) => !b._methodFunc);
+  if (invalidBindings.length > 0) {
+    console.warn(
+      `[ui-overlay] Component '${uiOverlay.name}' has unregistered binding methods: ` +
+        invalidBindings.map((b) => b.methodKey).join(', '),
+    );
+  }
+
   return {
     type: 'ui-overlay',
     name: uiOverlay.name,
     unique: ComponentUnique.FALSE,
+    overrideKey: uiOverlay.overrideKey,
     cssOverrides: Object.keys(uiOverlay.cssOverrides).length
       ? uiOverlay.cssOverrides
       : undefined,
-    html: container?.innerHTML || null,
-    bindingFactoryString,
+    previousOverlayId: uiOverlay.previousOverlayId,
+    htmlConstructorKey: uiOverlay.htmlConstructorKey,
+    bindings: serializedBindings,
   };
 }
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deserialize(data: any): UIOverlayT {
-  const { type, name, html, cssOverrides, overrideKey, bindingFactoryString } =
-    data;
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const {
+    type,
+    name,
+    cssOverrides,
+    overrideKey,
+    htmlConstructorKey,
+    bindings,
+    previousOverlayId,
+  } = data;
+
   const errors = [];
-  if (type !== 'ui-overlay')
+  if (type !== 'ui-overlay') {
     errors.push(`type ${type} does not match "ui-overlay"`);
-  if (!name) errors.push(`UIOverlay requires a name`);
-  if (errors.length) throw new Error(errors.join('\n'));
-  eval(bindingFactoryString);
-  let serializedBindings;
-  try {
-    // @ts-expect-error bindingFactory-via-eval
-    // eslint-disable-next-line no-undef
-    serializedBindings = bindingFactory();
-  } catch (e) {
-    console.warn(e);
-    serializedBindings = [];
+  }
+  if (!name) {
+    errors.push(`UIOverlay requires a name`);
+  }
+  if (errors.length) {
+    throw new Error(errors.join('\n'));
   }
 
   return builder({
-    name,
+    name: name as string,
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     cssOverrides,
-    html,
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     overrideKey,
-    bindings: serializedBindings.map((binding: UIBinding) => {
-      const selector = binding.selector;
-      const onActions = binding.onActions;
-      eval(
-        binding.method
-          .toString()
-          .replace(/function\s*\(\)/, 'function deserializedMethod()'),
-      );
-      // @ts-expect-error deserializedMethod-via-eval
-      // eslint-disable-next-line no-undef, @typescript-eslint/no-unsafe-assignment
-      return { selector, onActions, method: deserializedMethod };
-    }),
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    htmlConstructorKey,
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    previousOverlayId,
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    bindings: bindings || [],
   });
 }
 
@@ -290,8 +310,10 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'element',
   'bindings',
   'cssOverrides',
-  'previousOverlay',
+  'previousOverlayId',
   'container',
   'showOverride',
   'hideOverride',
+  'htmlConstructorKey',
+  '_htmlConstructed',
 ];

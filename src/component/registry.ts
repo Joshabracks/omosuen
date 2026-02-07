@@ -18,7 +18,13 @@ import {
   builder as flagManagerBuilder,
   PROPERTY_ALLOWLIST as FlagManagerPropertyAllowlist,
 } from './flag-manager';
-import type { COMPONENT_TYPE, ComponentMethods } from './types';
+import type { COMPONENT_TYPE } from './types';
+
+/**
+ * Method type registry for non-component functions.
+ * Used for UI bindings, HTML constructors, and other registered functions.
+ */
+export type METHOD_TYPE = 'ui-binding' | 'html-constructor';
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
 export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
@@ -28,11 +34,22 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   'flag-manager': flagManagerBuilder,
 };
 
-export const ComponentMethod: Record<COMPONENT_TYPE, ComponentMethods> = {
+/**
+ * Unified method registry for component methods and registered functions.
+ * - Component types (nexus, ui-overlay, etc.) contain component methods
+ * - Method types (ui-binding, html-constructor) contain registered functions
+ */
+export const MethodRegistry: Record<
+  COMPONENT_TYPE | METHOD_TYPE,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  Record<string, any>
+> = {
   nexus: Nexus,
   'ui-overlay': UIOverlay,
   'data-layer': DataLayer,
   'flag-manager': FlagManager,
+  'ui-binding': {},
+  'html-constructor': {},
 };
 
 /**
@@ -50,92 +67,180 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
 const methodTypeCache: Record<string, Record<string, Function>> = {};
 
 export function invalidateMethodCache(): void {
-  for (let key in methodTypeCache) {
+  for (const key in methodTypeCache) {
     delete methodTypeCache[key];
   }
 }
 
 /**
- * Registers a custom method for a specific component type.
- * This allows developers to add custom override methods (e.g., custom show/hide for ui-overlay)
- * that can be shared across multiple component instances via an overrideKey.
+ * Registers a method in the unified method registry.
+ * Can be used for component methods, UI bindings, HTML constructors, etc.
  *
- * @param type - The component type to register the method for
- * @param key - The unique key for this method (e.g., "fadeButton-show")
+ * @param type - The component or method type to register for
+ * @param key - The unique key for this method
  * @param func - The function implementation
  *
  * @example
  * ```typescript
- * registerComponentMethod('ui-overlay', 'fadeButton-show', (u) => {
- *   // Custom fade-in animation
- *   u.container.style.opacity = '0';
- *   u.container.style.display = 'block';
- *   // ... fade animation
- * });
+ * // Register a UI binding
+ * registerMethod('ui-binding', 'closeMenu', (e) => { ... });
+ *
+ * // Register a component method
+ * registerMethod('ui-overlay', 'fadeButton-show', (u) => { ... });
+ *
+ * // Register an HTML constructor
+ * registerMethod('html-constructor', 'myOverlay', (overlay) => '<div>...</div>');
  * ```
  */
-export function registerComponentMethod(
-  type: COMPONENT_TYPE,
+export function registerMethod(
+  type: COMPONENT_TYPE | METHOD_TYPE,
   key: string,
   // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
   func: Function,
 ): void {
-  if (!ComponentMethod[type]) {
+  if (!MethodRegistry[type]) {
     console.error(
-      `Cannot register method '${key}': component type '${type}' does not exist`,
+      `Cannot register method '${key}': type '${type}' does not exist in registry`,
     );
     return;
   }
-  // @ts-expect-error - Dynamic method registration
-  ComponentMethod[type][key] = func;
+  MethodRegistry[type][key] = func;
   invalidateMethodCache();
 }
 
 /**
- * Unregisters a custom method for a specific component type.
- * Use this to clean up custom override methods when they are no longer needed.
+ * Unregisters a method from the unified method registry.
  *
- * @param type - The component type to unregister the method from
+ * @param type - The component or method type to unregister from
  * @param key - The unique key for the method to remove
  *
  * @example
  * ```typescript
- * unregisterComponentMethod('ui-overlay', 'fadeButton-show');
+ * unregisterMethod('ui-binding', 'closeMenu');
  * ```
  */
-export function unregisterComponentMethod(
-  type: COMPONENT_TYPE,
+export function unregisterMethod(
+  type: COMPONENT_TYPE | METHOD_TYPE,
   key: string,
 ): void {
-  if (!ComponentMethod[type]) {
+  if (!MethodRegistry[type]) {
     console.error(
-      `Cannot unregister method '${key}': component type '${type}' does not exist`,
+      `Cannot unregister method '${key}': type '${type}' does not exist in registry`,
     );
     return;
   }
-  // @ts-expect-error - Dynamic method access
-  delete ComponentMethod[type][key];
+  delete MethodRegistry[type][key];
   invalidateMethodCache();
 }
 
 /**
- * Checks if a custom method exists for a specific component type.
+ * Checks if a method exists in the unified method registry.
  *
- * @param type - The component type to check
+ * @param type - The component or method type to check
  * @param key - The unique key for the method
  * @returns True if the method exists, false otherwise
  *
  * @example
  * ```typescript
- * if (hasComponentMethod('ui-overlay', 'fadeButton-show')) {
+ * if (hasMethod('ui-binding', 'closeMenu')) {
  *   // Method is registered and ready to use
  * }
  * ```
  */
-export function hasComponentMethod(type: COMPONENT_TYPE, key: string): boolean {
-  if (!ComponentMethod[type]) {
+export function hasMethod(
+  type: COMPONENT_TYPE | METHOD_TYPE,
+  key: string,
+): boolean {
+  if (!MethodRegistry[type]) {
     return false;
   }
-  // @ts-expect-error - Dynamic method access
-  return typeof ComponentMethod[type][key] === 'function';
+  return typeof MethodRegistry[type][key] === 'function';
+}
+
+/**
+ * Registers a UI binding event handler.
+ * Convenience wrapper around registerMethod('ui-binding', ...).
+ *
+ * @param key - The unique key for this binding
+ * @param func - The event handler function (signature: (e: Event) => void)
+ *
+ * @example
+ * ```typescript
+ * registerBinding('closeMenu', (e) => {
+ *   document.getElementById('menu').style.display = 'none';
+ * });
+ * ```
+ */
+export function registerBinding(key: string, func: (e: Event) => void): void {
+  registerMethod('ui-binding', key, func);
+}
+
+/**
+ * Retrieves a UI binding event handler.
+ *
+ * @param key - The unique key for the binding
+ * @returns The binding function, or null if not found
+ */
+export function getBinding(key: string): ((e: Event) => void) | null {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const func = MethodRegistry['ui-binding'][key];
+  return typeof func === 'function' ? (func as (e: Event) => void) : null;
+}
+
+/**
+ * Checks if a UI binding exists.
+ *
+ * @param key - The unique key for the binding
+ * @returns True if the binding exists, false otherwise
+ */
+export function hasBinding(key: string): boolean {
+  return hasMethod('ui-binding', key);
+}
+
+/**
+ * Registers an HTML constructor function.
+ * Convenience wrapper around registerMethod('html-constructor', ...).
+ *
+ * @param key - The unique key for this constructor
+ * @param func - The constructor function (signature: (overlay: UIOverlayT) => string)
+ *
+ * @example
+ * ```typescript
+ * registerHtmlConstructor('myOverlay', (overlay) => {
+ *   return `<div id="${overlay.name}">Hello World</div>`;
+ * });
+ * ```
+ */
+export function registerHtmlConstructor(
+  key: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  func: (overlay: any) => string,
+): void {
+  registerMethod('html-constructor', key, func);
+}
+
+/**
+ * Retrieves an HTML constructor function.
+ *
+ * @param key - The unique key for the constructor
+ * @returns The constructor function, or null if not found
+ */
+export function getHtmlConstructor(
+  key: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): ((overlay: any) => string) | null {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const func = MethodRegistry['html-constructor'][key];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return typeof func === 'function' ? (func as (overlay: any) => string) : null;
+}
+
+/**
+ * Checks if an HTML constructor exists.
+ *
+ * @param key - The unique key for the constructor
+ * @returns True if the constructor exists, false otherwise
+ */
+export function hasHtmlConstructor(key: string): boolean {
+  return hasMethod('html-constructor', key);
 }

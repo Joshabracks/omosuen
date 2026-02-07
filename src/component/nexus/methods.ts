@@ -1,5 +1,5 @@
 import { ComponentData, ComponentMethods, ComponentUnique } from '../types';
-import { ComponentMethod } from '../registry';
+import { MethodRegistry } from '../registry';
 import { NexusT } from './data';
 
 export interface NexusMethods extends ComponentMethods {
@@ -60,7 +60,7 @@ export const Nexus: NexusMethods = {
       // LOCAL: Dispose existing components of same type in THIS Nexus only
       const existing = n.components.filter((c) => c.type === component.type);
       existing.forEach((c) => {
-        const C = ComponentMethod[c.type];
+        const C = MethodRegistry[c.type];
         if (C.dispose && typeof C.dispose === 'function') {
           C.dispose(c);
         }
@@ -83,7 +83,7 @@ export const Nexus: NexusMethods = {
         true,
       );
       allInstances.forEach((c) => {
-        const C = ComponentMethod[c.type];
+        const C = MethodRegistry[c.type];
         if (C.dispose && typeof C.dispose === 'function') {
           C.dispose(c);
         }
@@ -291,7 +291,7 @@ export const Nexus: NexusMethods = {
     const n = component as NexusT;
     // Recursively dispose all child components (depth-first)
     n.components.forEach((c) => {
-      const C = ComponentMethod[c.type];
+      const C = MethodRegistry[c.type];
       if (C.dispose && typeof C.dispose === 'function') {
         C.dispose(c);
       } else {

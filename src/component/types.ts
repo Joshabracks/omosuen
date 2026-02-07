@@ -1,12 +1,25 @@
-import {
-  BUILDERS,
-  ComponentMethod,
-  registerComponentMethod,
-  PROPERTY_ALLOWLIST,
-} from './registry';
+import { BUILDERS, MethodRegistry, PROPERTY_ALLOWLIST } from './registry';
 import { queueInit } from '../loop/init';
 
 let COMPONENT_COUNT = 0;
+
+/**
+ * Resets the component ID counter.
+ * Used when loading serialized scenes to ensure predictable IDs.
+ */
+export function resetComponentCount(): void {
+  COMPONENT_COUNT = 0;
+}
+
+/**
+ * Sets the component ID counter to a specific value.
+ * Used after deserialization to continue ID generation from the highest deserialized ID.
+ *
+ * @param count - The new counter value
+ */
+export function setComponentCount(count: number): void {
+  COMPONENT_COUNT = count;
+}
 
 /**
  * Defines the uniqueness constraints for components.
@@ -30,7 +43,7 @@ export type COMPONENT_TYPE =
 export interface ComponentOptions {
   name: string;
   overrideKey?: string;
-  update?: (deltaTime: number) => void;
+  updateOverride?: string;
 }
 
 export interface ComponentData {
@@ -97,29 +110,18 @@ export async function newComponent(
   }
   component.id = COMPONENT_COUNT++;
 
-  // Register custom update method if provided
-  if (options.update && typeof options.update === 'function') {
-    // Generate unique key for this component's update method
-    const updateKey = `${component.name}-${component.id}-update`;
-
-    // Create wrapper that matches ComponentMethods.update signature
-    const updateWrapper = (_comp: ComponentData, deltaTime: number): void => {
-      // Call the user's update function with deltaTime only
-      // The component is available via closure
-      options.update!(deltaTime);
-    };
-
-    // Register the method
-    registerComponentMethod(type, updateKey, updateWrapper);
-
-    // Store the key so we can find it later
-    component.updateOverride = updateKey;
+  // Preserve ComponentData base fields from options
+  if (options.overrideKey !== undefined) {
+    component.overrideKey = options.overrideKey;
+  }
+  if (options.updateOverride !== undefined) {
+    component.updateOverride = options.updateOverride;
   }
 
   // Automatically queue for initialization
   queueInit(component.id);
 
-  const proxyKeys = Object.keys(ComponentMethod[component.type]);
+  const proxyKeys = Object.keys(MethodRegistry[component.type]);
 
   // Base ComponentData properties (always allowed)
   const baseProperties = [
@@ -163,9 +165,8 @@ export async function newComponent(
 
       // Return method wrapper
       return (...args: unknown[]) => {
-        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-        // @ts-expect-error
-        return ComponentMethod[c.type][prop](c, ...args);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
+        return MethodRegistry[c.type][prop](c, ...args);
       };
     },
   };

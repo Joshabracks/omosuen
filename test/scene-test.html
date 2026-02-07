@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omosuen Scene System Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #00ff00;
+        }
+        #output {
+            white-space: pre-wrap;
+            background: #000;
+            padding: 15px;
+            border: 1px solid #00ff00;
+            min-height: 400px;
+            margin-top: 20px;
+        }
+        button {
+            background: #00ff00;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        button:hover {
+            background: #00cc00;
+        }
+        .controls {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Scene Management System Test</h1>
+
+    <div class="controls">
+        <button onclick="testMemoryScene()">Test Memory Scene</button>
+        <button onclick="testSceneSwitching()">Test Scene Switching</button>
+        <button onclick="testSceneQuery()">Test Scene Query</button>
+        <button onclick="clearOutput()">Clear Output</button>
+    </div>
+
+    <div id="output"></div>
+
+    <script src="./dev/omosuen.js"></script>
+    <script>
+        const {
+            newComponent,
+            registerScene,
+            registerSceneModule,
+            registerSceneSerialized,
+            hasScene,
+            listScenes,
+            switchScene,
+            getActiveScene,
+            unloadScene,
+            $
+        } = Omosuen;
+
+        function log(message) {
+            const output = document.getElementById('output');
+            const timestamp = new Date().toLocaleTimeString();
+            output.textContent += `[${timestamp}] ${message}\n`;
+        }
+
+        function clearOutput() {
+            document.getElementById('output').textContent = '';
+            log('Output cleared');
+        }
+
+        async function testMemoryScene() {
+            log('=== Testing Memory Scene Registration ===');
+
+            try {
+                // Create a simple scene (root nexus)
+                const mainMenuRoot = await newComponent('nexus', { name: 'MainMenuRoot' });
+                log(`Created nexus: ${mainMenuRoot.name}`);
+
+                // Create child components
+                const titleNexus = await newComponent('nexus', { name: 'Title' });
+                const buttonsNexus = await newComponent('nexus', { name: 'Buttons' });
+
+                $.addComponents(mainMenuRoot, [titleNexus, buttonsNexus]);
+                log(`Added ${mainMenuRoot.components.length} child components`);
+
+                // Register as scene
+                registerScene('MainMenu', mainMenuRoot);
+                log('Scene registered: MainMenu');
+
+                // Load the scene
+                const scene = await switchScene('MainMenu');
+                if (scene) {
+                    log(`Scene loaded successfully: ${scene.name}`);
+                    log(`Scene has ${scene.components.length} components`);
+                } else {
+                    log('ERROR: Failed to load scene');
+                }
+
+                // Check active scene
+                const active = getActiveScene();
+                if (active) {
+                    log(`Active scene: ${active.name}`);
+                }
+
+            } catch (error) {
+                log(`ERROR: ${error.message}`);
+            }
+        }
+
+        async function testSceneSwitching() {
+            log('=== Testing Scene Switching ===');
+
+            try {
+                // Create and register Scene 1
+                const scene1 = await newComponent('nexus', { name: 'Scene1Root' });
+                const scene1Child = await newComponent('nexus', { name: 'Scene1Child' });
+                $.addComponent(scene1, scene1Child);
+                registerScene('Scene1', scene1);
+                log('Registered Scene1');
+
+                // Create and register Scene 2
+                const scene2 = await newComponent('nexus', { name: 'Scene2Root' });
+                const scene2Child1 = await newComponent('nexus', { name: 'Scene2Child1' });
+                const scene2Child2 = await newComponent('nexus', { name: 'Scene2Child2' });
+                $.addComponents(scene2, [scene2Child1, scene2Child2]);
+                registerScene('Scene2', scene2);
+                log('Registered Scene2');
+
+                // Switch to Scene 1
+                await switchScene('Scene1');
+                let active = getActiveScene();
+                log(`Active scene: ${active.name} (${active.components.length} children)`);
+
+                // Switch to Scene 2
+                await switchScene('Scene2');
+                active = getActiveScene();
+                log(`Active scene: ${active.name} (${active.components.length} children)`);
+
+                // Switch back to Scene 1
+                await switchScene('Scene1');
+                active = getActiveScene();
+                log(`Active scene: ${active.name} (${active.components.length} children)`);
+
+            } catch (error) {
+                log(`ERROR: ${error.message}`);
+            }
+        }
+
+        async function testSceneQuery() {
+            log('=== Testing Scene Query Functions ===');
+
+            try {
+                // Register some test scenes
+                const testScene1 = await newComponent('nexus', { name: 'TestScene1' });
+                const testScene2 = await newComponent('nexus', { name: 'TestScene2' });
+                const testScene3 = await newComponent('nexus', { name: 'TestScene3' });
+
+                registerScene('Test1', testScene1);
+                registerScene('Test2', testScene2);
+                registerScene('Test3', testScene3);
+
+                // List all scenes
+                const scenes = listScenes();
+                log(`Registered scenes: ${scenes.join(', ')}`);
+
+                // Check if scenes exist
+                log(`hasScene('Test1'): ${hasScene('Test1')}`);
+                log(`hasScene('Test2'): ${hasScene('Test2')}`);
+                log(`hasScene('NonExistent'): ${hasScene('NonExistent')}`);
+
+                // Try to load non-existent scene
+                const invalid = await switchScene('NonExistent');
+                log(`Loading non-existent scene returned: ${invalid}`);
+
+                // Load valid scene
+                await switchScene('Test2');
+                const active = getActiveScene();
+                log(`Active scene: ${active ? active.name : 'null'}`);
+
+            } catch (error) {
+                log(`ERROR: ${error.message}`);
+            }
+        }
+
+        // Initialize
+        log('Omosuen Scene Management System Loaded');
+        log('Click buttons above to run tests');
+        log('Open browser console to see additional logs');
+    </script>
+</body>
+</html>

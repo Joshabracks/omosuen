@@ -108,49 +108,22 @@
       const memorySceneDefinition = {
         name: 'MemoryScene',
         async build() {
-          const { newComponent } = window.Omosuen;
+          const { newComponent, registerMethod, registerHtmlConstructor } = window.Omosuen;
 
-        const root = await newComponent('nexus', { name: 'MemorySceneRoot' });
-        if (!root) {
-          console.error('[Memory Scene] Failed to create root nexus');
-          return null;
-        }
+          const root = await newComponent('nexus', { name: 'MemorySceneRoot' });
+          if (!root) {
+            console.error('[Memory Scene] Failed to create root nexus');
+            return null;
+          }
 
+          // State for countdown logic
           let countdown = 10;
           let accumulatedTime = 0;
           let isComplete = false;
 
-          const overlay = await newComponent('ui-overlay', {
-            name: 'MemoryOverlay',
-            update: function (deltaTime) {
-              if (isComplete) return;
-
-              accumulatedTime += deltaTime;
-
-              // Update countdown every 1000ms
-              if (accumulatedTime >= 1000) {
-                accumulatedTime -= 1000;
-                countdown--;
-
-                // Update display
-                const countdownEl = document.getElementById('countdown');
-                if (countdownEl) {
-                  countdownEl.textContent = countdown;
-                }
-
-                // Countdown complete
-                if (countdown <= 0 && !isComplete) {
-                  isComplete = true;
-                  console.info('countdown complete');
-
-                  // Trigger scene switch after brief delay
-                  setTimeout(async () => {
-                    await window.switchToDeserializedScene();
-                  }, 500);
-                }
-              }
-            },
-            html: `
+          // Register HTML constructor for memory overlay
+          registerHtmlConstructor('memoryOverlay', function(container) {
+            container.innerHTML = `
               <div style="
                 position: fixed;
                 top: 0;
@@ -186,7 +159,44 @@
                   seconds remaining...
                 </div>
               </div>
-            `,
+            `;
+          });
+
+          // Register update method for countdown logic
+          registerMethod('ui-overlay', 'memory-update', function(component, deltaTime) {
+            if (isComplete) return;
+
+            accumulatedTime += deltaTime;
+
+            // Update countdown every 1000ms
+            if (accumulatedTime >= 1000) {
+              accumulatedTime -= 1000;
+              countdown--;
+
+              // Update display
+              const countdownEl = document.getElementById('countdown');
+              if (countdownEl) {
+                countdownEl.textContent = countdown;
+              }
+
+              // Countdown complete
+              if (countdown <= 0 && !isComplete) {
+                isComplete = true;
+                console.info('countdown complete');
+
+                // Trigger scene switch after brief delay
+                setTimeout(async () => {
+                  await window.switchToDeserializedScene();
+                }, 500);
+              }
+            }
+          });
+
+          // Create overlay with new pattern
+          const overlay = await newComponent('ui-overlay', {
+            name: 'MemoryOverlay',
+            htmlConstructorKey: 'memoryOverlay',
+            updateOverride: 'memory-update',
             cssOverrides: {
               display: 'block',
               pointerEvents: 'auto',

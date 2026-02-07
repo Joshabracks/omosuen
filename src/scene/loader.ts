@@ -7,6 +7,7 @@ import { FlagManagerSerializer } from '../component/flag-manager/data';
 import { Nexus } from '../component/nexus/methods';
 import { getSceneEntry, hasScene } from './registry';
 import type { ComponentData } from '../component/types';
+import { resetComponentCount, setComponentCount } from '../component/types';
 
 /**
  * Currently active scene (root nexus component)
@@ -149,6 +150,9 @@ async function loadFromModule(
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function serializeComponentRecursive(component: ComponentData): any {
+  // Get component-specific serialized data
+  let componentData;
+
   if (component.type === 'nexus') {
     const nexus = component as NexusT;
     const serializedChildren = [];
@@ -158,35 +162,57 @@ export function serializeComponentRecursive(component: ComponentData): any {
       serializedChildren.push(serializeComponentRecursive(child));
     }
 
-    return {
+    componentData = {
       type: 'nexus',
       name: nexus.name,
       unique: nexus.unique,
       components: serializedChildren,
     };
   } else if (component.type === 'ui-overlay') {
-    return UIOverlaySerializer.serialize(component);
+    componentData = UIOverlaySerializer.serialize(component);
   } else if (component.type === 'data-layer') {
-    return DataLayerSerializer.serialize(component);
+    componentData = DataLayerSerializer.serialize(component);
   } else if (component.type === 'flag-manager') {
-    return FlagManagerSerializer.serialize(component);
+    componentData = FlagManagerSerializer.serialize(component);
   } else {
     console.warn(
       `[SCENE LOADER] Unknown component type for serialization: ${component.type}`,
     );
-    return {
+    componentData = {
       type: component.type,
       name: component.name,
     };
   }
+
+  // Merge generic ComponentData fields with component-specific data
+  return {
+    ...componentData,
+    // Generic fields (overwrite component-specific if they set them)
+    id: component.id,
+    overrideKey: component.overrideKey,
+    updateOverride: component.updateOverride,
+    loader: component.loader,
+  };
 }
 
 /**
- * Recursively deserializes a component and its children
+ * Recursively deserializes a component and its children.
+ * Restores generic ComponentData fields and tracks max ID for counter reset.
+ *
+ * @param data - Serialized component data
+ * @param maxId - Track the maximum ID seen during deserialization (passed by reference via object)
+ * @returns Deserialized component or null on error
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function deserializeComponentRecursive(data: any): ComponentData | null {
+export function deserializeComponentRecursive(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data: any,
+  maxId: { value: number } = { value: -1 },
+): ComponentData | null {
   try {
+    let component: ComponentData | null = null;
+
+    // Call component-specific deserializer
     if (data.type === 'nexus') {
       // Deserialize the nexus itself (creates empty nexus)
       const nexusComp = NexusSerializer.deserialize(data) as NexusT;
@@ -194,7 +220,7 @@ export function deserializeComponentRecursive(data: any): ComponentData | null {
       // Recursively deserialize child components if they exist
       if (data.components && Array.isArray(data.components)) {
         for (const childData of data.components) {
-          const child = deserializeComponentRecursive(childData);
+          const child = deserializeComponentRecursive(childData, maxId);
           if (child) {
             // Use Nexus methods directly to add child (nexusComp doesn't have Proxy methods yet)
             Nexus.addComponent(nexusComp, child);
@@ -202,22 +228,59 @@ export function deserializeComponentRecursive(data: any): ComponentData | null {
         }
       }
 
-      return nexusComp;
+      component = nexusComp;
     } else if (data.type === 'ui-overlay') {
       // Deserialize UI Overlay
-      return UIOverlaySerializer.deserialize(data) as UIOverlayT;
+      component = UIOverlaySerializer.deserialize(data) as UIOverlayT;
     } else if (data.type === 'data-layer') {
       // Deserialize Data Layer
-      return DataLayerSerializer.deserialize(data) as ComponentData;
+      component = DataLayerSerializer.deserialize(data) as ComponentData;
     } else if (data.type === 'flag-manager') {
       // Deserialize Flag Manager
-      return FlagManagerSerializer.deserialize(data) as ComponentData;
+      component = FlagManagerSerializer.deserialize(data) as ComponentData;
     } else {
       console.error(
         `[SCENE LOADER ERROR] Unknown component type: ${data.type}`,
       );
       return null;
     }
+
+    if (!component) {
+      return null;
+    }
+
+    // Restore generic ComponentData fields
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    if (typeof data.id === 'number') {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+      component.id = data.id;
+      // Track maximum ID
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      if (data.id > maxId.value) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+        maxId.value = data.id;
+      }
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    if (data.overrideKey !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+      component.overrideKey = data.overrideKey;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    if (data.updateOverride !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+      component.updateOverride = data.updateOverride;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    if (data.loader !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+      component.loader = data.loader;
+    }
+
+    return component;
   } catch (error) {
     const errorMessage =
       error instanceof Error
@@ -240,6 +303,9 @@ async function loadFromSerialized(
   console.info(`[SCENE LOADER] Loading scene "${name}" from file: ${filePath}`);
 
   try {
+    // Reset component ID counter before deserialization
+    resetComponentCount();
+
     // Fetch the file
     const response = await fetch(filePath);
 
@@ -253,14 +319,25 @@ async function loadFromSerialized(
     // Parse JSON
     const data = await response.json();
 
+    // Track maximum ID during deserialization
+    const maxId = { value: -1 };
+
     // Recursively deserialize the entire scene hierarchy
-    const scene = deserializeComponentRecursive(data) as NexusT;
+    const scene = deserializeComponentRecursive(data, maxId) as NexusT;
 
     if (!scene || scene.type !== 'nexus') {
       console.error(
         `[SCENE LOADER ERROR] Deserialized data from "${filePath}" is not a valid nexus component`,
       );
       return null;
+    }
+
+    // Set component counter to continue from max deserialized ID
+    if (maxId.value >= 0) {
+      setComponentCount(maxId.value + 1);
+      console.info(
+        `[SCENE LOADER] Component ID counter set to ${maxId.value + 1} (highest deserialized ID: ${maxId.value})`,
+      );
     }
 
     console.info(

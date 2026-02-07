@@ -7,8 +7,7 @@
 
 import type { COMPONENT_TYPE, ComponentData } from '../component/types';
 import type { NexusT } from '../component/nexus/data';
-import { unregisterComponentMethod } from '../component/registry';
-import { ComponentMethod } from '../component/registry';
+import { unregisterMethod, MethodRegistry } from '../component/registry';
 
 /**
  * Set of component IDs flagged for disposal.
@@ -97,11 +96,11 @@ export function processDisposeQueue(scene: NexusT): void {
 
     // Clean up custom update method if it exists
     if (component.updateOverride) {
-      unregisterComponentMethod(component.type, component.updateOverride);
+      unregisterMethod(component.type, component.updateOverride);
       component.updateOverride = undefined;
     }
 
-    const method = ComponentMethod[component.type as COMPONENT_TYPE];
+    const method = MethodRegistry[component.type as COMPONENT_TYPE];
     if (method.dispose && typeof method.dispose === 'function') {
       method.dispose(component);
     } else {

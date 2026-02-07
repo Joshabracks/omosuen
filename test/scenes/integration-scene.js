@@ -4,126 +4,28 @@
  * Tests:
  * - Data-layer component with time tracking
  * - Flag-manager component with random flag toggling
- * - UI-overlay with dynamic updates
+ * - UI-overlay with dynamic updates using htmlConstructor
  * - Scene serialization/deserialization
  */
 
 export default async function createIntegrationScene() {
-  const { newComponent } = window.Omosuen;
-
-  // Create root nexus
-  const root = await newComponent('nexus', { name: 'IntegrationSceneRoot' });
-  if (!root) {
-    console.error('[Integration Scene] Failed to create root nexus');
-    return null;
-  }
+  const { newComponent, registerHtmlConstructor, registerMethod, registerBinding } =
+    window.Omosuen;
 
   // =========================================================================
-  // Data Layer - Track time of day
+  // Register button click handler
   // =========================================================================
-  const dataLayer = await newComponent('data-layer', {
-    name: 'TimeTracker',
+  registerBinding('nextSceneClick', () => {
+    if (window.onNextSceneClick) {
+      window.onNextSceneClick();
+    }
   });
 
-  if (!dataLayer) {
-    console.error('[Integration Scene] Failed to create data-layer');
-    return root;
-  }
-
-  // Initialize time of day
-  function formatTime() {
-    const now = new Date();
-    return now.toLocaleTimeString('en-US', {
-      hour12: true,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  }
-
-  dataLayer.set('timeOfDay', formatTime());
-
   // =========================================================================
-  // Flag Manager - Random flag toggling
+  // Register HTML constructor for the integration overlay
   // =========================================================================
-  const flagManager = await newComponent('flag-manager', {
-    name: 'FruitFlags',
-  });
-
-  if (!flagManager) {
-    console.error('[Integration Scene] Failed to create flag-manager');
-    return root;
-  }
-
-  // Initialize flags (all start unset)
-  let flagToggleAccumulator = 0;
-
-  // =========================================================================
-  // UI Overlay - Display time and flags
-  // =========================================================================
-  const overlay = await newComponent('ui-overlay', {
-    name: 'IntegrationOverlay',
-    update: function (deltaTime) {
-      // Update time every frame
-      dataLayer.set('timeOfDay', formatTime());
-
-      // Update time display
-      const timeDisplay = document.getElementById('time-display');
-      if (timeDisplay) {
-        const currentTime = dataLayer.get('timeOfDay');
-        timeDisplay.textContent = currentTime;
-      }
-
-      // Toggle flags randomly every second
-      flagToggleAccumulator += deltaTime;
-      if (flagToggleAccumulator >= 1000) {
-        flagToggleAccumulator -= 1000;
-
-        // Each flag independently has 50% chance to toggle
-        if (Math.random() < 0.5) {
-          if (flagManager.hasFlag('banana')) {
-            flagManager.removeFlag('banana');
-          } else {
-            flagManager.addFlag('banana');
-          }
-        }
-        if (Math.random() < 0.5) {
-          if (flagManager.hasFlag('strawberry')) {
-            flagManager.removeFlag('strawberry');
-          } else {
-            flagManager.addFlag('strawberry');
-          }
-        }
-        if (Math.random() < 0.5) {
-          if (flagManager.hasFlag('avocado')) {
-            flagManager.removeFlag('avocado');
-          } else {
-            flagManager.addFlag('avocado');
-          }
-        }
-      }
-
-      // Update emoji display based on flags
-      const bananaEl = document.getElementById('banana-emoji');
-      const strawberryEl = document.getElementById('strawberry-emoji');
-      const avocadoEl = document.getElementById('avocado-emoji');
-
-      if (bananaEl) {
-        const hasFlag = flagManager.hasFlag('banana');
-        bananaEl.style.filter = hasFlag ? 'none' : 'grayscale(100%) opacity(50%)';
-      }
-
-      if (strawberryEl) {
-        const hasFlag = flagManager.hasFlag('strawberry');
-        strawberryEl.style.filter = hasFlag ? 'none' : 'grayscale(100%) opacity(50%)';
-      }
-
-      if (avocadoEl) {
-        const hasFlag = flagManager.hasFlag('avocado');
-        avocadoEl.style.filter = hasFlag ? 'none' : 'grayscale(100%) opacity(50%)';
-      }
-    },
-    html: `
+  registerHtmlConstructor('integrationOverlay', (overlay) => {
+    return `
       <div style="
         position: fixed;
         top: 0;
@@ -207,7 +109,7 @@ export default async function createIntegrationScene() {
             ">(Flags toggle randomly every second)</div>
           </div>
 
-          <button onclick="window.onNextSceneClick()" style="
+          <button id="next-scene-button" style="
             background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
             color: white;
             border: none;
@@ -218,14 +120,163 @@ export default async function createIntegrationScene() {
             cursor: pointer;
             box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
             transition: transform 0.2s, box-shadow 0.2s;
-          "
-          onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 12px 30px rgba(0, 0, 0, 0.4)';"
-          onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 8px 20px rgba(0, 0, 0, 0.3)';">
+          ">
             Next Scene →
           </button>
         </div>
       </div>
-    `,
+    `;
+  });
+
+  // =========================================================================
+  // Register update method for integration overlay
+  // =========================================================================
+  let flagToggleAccumulator = 0;
+
+  registerMethod('ui-overlay', 'integration-update', (component, deltaTime) => {
+    // Get scene components
+    const scene = window.Omosuen.getActiveScene();
+    if (!scene) return;
+
+    const dataLayer = scene.getComponentByName('TimeTracker');
+    const flagManager = scene.getComponentByName('FruitFlags');
+    if (!dataLayer || !flagManager) return;
+
+    // Helper function for time formatting
+    function formatTime() {
+      const now = new Date();
+      return now.toLocaleTimeString('en-US', {
+        hour12: true,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+    }
+
+    // Update time every frame
+    dataLayer.set('timeOfDay', formatTime());
+
+    // Update time display
+    const timeDisplay = document.getElementById('time-display');
+    if (timeDisplay) {
+      const currentTime = dataLayer.get('timeOfDay');
+      timeDisplay.textContent = currentTime;
+    }
+
+    // Toggle flags randomly every second
+    flagToggleAccumulator += deltaTime;
+    if (flagToggleAccumulator >= 1000) {
+      flagToggleAccumulator -= 1000;
+
+      // Each flag independently has 50% chance to toggle
+      if (Math.random() < 0.5) {
+        if (flagManager.hasFlag('banana')) {
+          flagManager.removeFlag('banana');
+        } else {
+          flagManager.addFlag('banana');
+        }
+      }
+      if (Math.random() < 0.5) {
+        if (flagManager.hasFlag('strawberry')) {
+          flagManager.removeFlag('strawberry');
+        } else {
+          flagManager.addFlag('strawberry');
+        }
+      }
+      if (Math.random() < 0.5) {
+        if (flagManager.hasFlag('avocado')) {
+          flagManager.removeFlag('avocado');
+        } else {
+          flagManager.addFlag('avocado');
+        }
+      }
+    }
+
+    // Update emoji display based on flags
+    const bananaEl = document.getElementById('banana-emoji');
+    const strawberryEl = document.getElementById('strawberry-emoji');
+    const avocadoEl = document.getElementById('avocado-emoji');
+
+    if (bananaEl) {
+      const hasFlag = flagManager.hasFlag('banana');
+      bananaEl.style.filter = hasFlag
+        ? 'none'
+        : 'grayscale(100%) opacity(50%)';
+    }
+
+    if (strawberryEl) {
+      const hasFlag = flagManager.hasFlag('strawberry');
+      strawberryEl.style.filter = hasFlag
+        ? 'none'
+        : 'grayscale(100%) opacity(50%)';
+    }
+
+    if (avocadoEl) {
+      const hasFlag = flagManager.hasFlag('avocado');
+      avocadoEl.style.filter = hasFlag
+        ? 'none'
+        : 'grayscale(100%) opacity(50%)';
+    }
+  });
+
+  // Create root nexus
+  const root = await newComponent('nexus', { name: 'IntegrationSceneRoot' });
+  if (!root) {
+    console.error('[Integration Scene] Failed to create root nexus');
+    return null;
+  }
+
+  // =========================================================================
+  // Data Layer - Track time of day
+  // =========================================================================
+  const dataLayer = await newComponent('data-layer', {
+    name: 'TimeTracker',
+  });
+
+  if (!dataLayer) {
+    console.error('[Integration Scene] Failed to create data-layer');
+    return root;
+  }
+
+  // Initialize time of day
+  function formatTime() {
+    const now = new Date();
+    return now.toLocaleTimeString('en-US', {
+      hour12: true,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  }
+
+  dataLayer.set('timeOfDay', formatTime());
+
+  // =========================================================================
+  // Flag Manager - Random flag toggling
+  // =========================================================================
+  const flagManager = await newComponent('flag-manager', {
+    name: 'FruitFlags',
+  });
+
+  if (!flagManager) {
+    console.error('[Integration Scene] Failed to create flag-manager');
+    return root;
+  }
+
+  // =========================================================================
+  // UI Overlay - Display time and flags
+  // =========================================================================
+  const overlay = await newComponent('ui-overlay', {
+    name: 'IntegrationOverlay',
+    htmlConstructorKey: 'integrationOverlay',
+    updateOverride: 'integration-update',
+    bindings: [
+      {
+        selector: '#next-scene-button',
+        onActions: ['click'],
+        methodKey: 'nextSceneClick',
+      },
+    ],
     cssOverrides: {
       display: 'block',
       pointerEvents: 'auto',
@@ -243,8 +294,7 @@ export default async function createIntegrationScene() {
   root.addComponent(flagManager);
   root.addComponent(overlay);
 
-  // Apply UI bindings
-  overlay.applyBindings();
+  // Note: applyBindings() is now called automatically after HTML construction
 
   return root;
 }

@@ -7,7 +7,7 @@
 
 import type { ComponentData } from '../component/types';
 import type { NexusT } from '../component/nexus/data';
-import { ComponentMethod } from '../component/registry';
+import { MethodRegistry } from '../component/registry';
 import { isInitializing } from './init';
 
 /**
@@ -73,7 +73,7 @@ function traverseAndUpdate(
   }
 
   // Get component method registry entry
-  const method = ComponentMethod[component.type];
+  const method = MethodRegistry[component.type];
 
   if (!method) {
     console.error(
@@ -82,9 +82,14 @@ function traverseAndUpdate(
     return;
   }
 
-  // Check for instance-specific update override first
+  // Always call base update first (for initialization, HTML construction, etc.)
+  if (method.update && typeof method.update === 'function') {
+    method.update(component, deltaTime);
+  }
+
+  // Then call instance-specific update override if set
   if (component.updateOverride) {
-    // @ts-expect-error - Dynamic method access via registered override
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const overrideMethod = method[component.updateOverride];
     if (overrideMethod && typeof overrideMethod === 'function') {
       overrideMethod(component, deltaTime);
@@ -92,11 +97,6 @@ function traverseAndUpdate(
       console.warn(
         `[UPDATE] Custom update method '${component.updateOverride}' not found for component '${component.name}'`,
       );
-    }
-  } else {
-    // Fall back to type-level update
-    if (method.update && typeof method.update === 'function') {
-      method.update(component, deltaTime);
     }
   }
 

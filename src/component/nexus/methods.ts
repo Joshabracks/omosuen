@@ -13,11 +13,6 @@ export interface NexusMethods extends ComponentMethods {
     id: number,
     recursive?: boolean,
   ) => ComponentData | null;
-  getComponentsById: (
-    n: NexusT,
-    id: number,
-    recursive?: boolean,
-  ) => ComponentData[];
   getComponentByType: (
     n: NexusT,
     type: string,
@@ -264,28 +259,6 @@ export const Nexus: NexusMethods = {
       if (childMatch) return childMatch;
     }
     return null;
-  },
-  getComponentsById: (n: NexusT, id: number, recursive: boolean = false) => {
-    const matches: ComponentData[] = [];
-
-    // Collect matches in this nexus (no filter allocation)
-    for (let i = 0; i < n.components.length; i++) {
-      const c = n.components[i];
-      if (c.id === id) matches.push(c);
-    }
-
-    if (!recursive) return matches;
-
-    // Recurse into child nexuses only (no intermediate array, no spread operator)
-    for (let i = 0; i < n.components.length; i++) {
-      const c = n.components[i];
-      if (c.type !== 'nexus') continue;
-      const childMatches = Nexus.getComponentsById(c as NexusT, id, true);
-      for (let j = 0; j < childMatches.length; j++) {
-        matches.push(childMatches[j]);
-      }
-    }
-    return matches;
   },
   dispose: (component: ComponentData) => {
     const n = component as NexusT;

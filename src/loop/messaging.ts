@@ -1,31 +1,33 @@
 /**
- * Message System (Stub)
+ * Message System
  *
- * This module will handle inter-component messaging in the future.
- * Currently it's a stub to earmark the messaging phase in the game loop.
+ * Processes inter-component messages via the messenger component system.
+ * Messages are queued during component updates and processed here at the
+ * start of each update loop.
  */
+
+import { processMessageQueue } from '../component/messenger/processor';
 
 /**
  * Polls and processes inter-component messages.
  *
- * FUTURE IMPLEMENTATION:
- * - Pub/sub messaging system
- * - Event queuing and dispatch
- * - Message filtering by type/target
- * - Priority message handling
- * - Message history/replay for debugging
- * - Wildcard subscription patterns
- * - Message throttling/debouncing
- * - Cross-scene messaging
+ * Called automatically by the game loop at the start of each update cycle.
+ * Processes all queued messages by finding matching listeners, filtering
+ * by receiver options, and invoking registered callbacks.
+ *
+ * Features:
+ * - Targeted message delivery (filter by names, types, ids)
+ * - Broadcast messaging (send to all listeners)
+ * - Pattern matching (string, RegExp, ALL_MESSAGES, ANY_MESSAGES)
+ * - Off-scene messenger support (manually initialized messengers)
+ * - Direct component references (no tree traversal)
  *
  * Use Cases:
- * - Enemy death notification
- * - Player score updates
- * - Collision events
+ * - Inter-component communication (attack, damage, death events)
+ * - Multiplayer/websocket messaging
+ * - Large-scale event triggers (dialogue, cutscenes)
  * - UI state changes
  * - Game state transitions
- *
- * Current Status: Stub function (no messaging implemented)
  *
  * @example
  * ```typescript
@@ -35,15 +37,29 @@
  *
  * @example
  * ```typescript
- * // Future API example
- * subscribe('enemy:killed', (data) => {
- *   updateScore(data.points);
+ * // Developer usage (in component code)
+ * import { newComponent, registerMethod } from 'omosuen';
+ *
+ * // Register callback
+ * registerMethod('message-listener', 'handleAttack', (envelope) => {
+ *   console.log('Attack received!', envelope.body.data);
  * });
  *
- * publish('enemy:killed', { enemyId: 123, points: 100 });
+ * // Create messenger with listener
+ * const messenger = await newComponent('messenger', {
+ *   name: "Player Messenger",
+ *   listeners: [
+ *     { pattern: "attack", callbackKey: "handleAttack" }
+ *   ]
+ * });
+ *
+ * // Send message
+ * messenger.send("attack", {
+ *   mode: 'match-any',
+ *   names: ["Enemy"]
+ * }, { data: { damage: 10 } });
  * ```
  */
 export function pollMessages(): void {
-  // Stub - no messaging system yet
-  // Future implementation will process queued messages
+  processMessageQueue();
 }

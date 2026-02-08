@@ -38,7 +38,8 @@ export type COMPONENT_TYPE =
   | 'nexus'
   | 'ui-overlay'
   | 'data-layer'
-  | 'flag-manager';
+  | 'flag-manager'
+  | 'messenger';
 
 export interface ComponentOptions {
   name: string;

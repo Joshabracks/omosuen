@@ -203,7 +203,7 @@ export function serializeComponentRecursive(component: ComponentData): any {
  * @param maxId - Track the maximum ID seen during deserialization (passed by reference via object)
  * @returns Deserialized component or null on error
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
 export function deserializeComponentRecursive(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: any,

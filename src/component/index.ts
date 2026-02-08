@@ -17,12 +17,17 @@ export type {
   FlagManagerT as flag_manager,
   FlagManagerMethods,
 } from './flag-manager';
+export type { MessengerT as messenger, MessengerMethods } from './messenger';
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';
+
+// Export messenger constants for developer use
+export { ALL_MESSAGES, ANY_MESSAGES } from './messenger/types';
 
 // Export serializers for scene management
 export { NexusSerializer } from './nexus/data';
 export { UIOverlaySerializer } from './ui-overlay/data';
 export { DataLayerSerializer } from './data-layer/data';
 export { FlagManagerSerializer } from './flag-manager/data';
+export { MessengerSerializer } from './messenger/data';

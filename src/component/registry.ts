@@ -18,13 +18,21 @@ import {
   builder as flagManagerBuilder,
   PROPERTY_ALLOWLIST as FlagManagerPropertyAllowlist,
 } from './flag-manager';
+import {
+  Messenger,
+  builder as messengerBuilder,
+  PROPERTY_ALLOWLIST as MessengerPropertyAllowlist,
+} from './messenger';
 import type { COMPONENT_TYPE } from './types';
 
 /**
  * Method type registry for non-component functions.
- * Used for UI bindings, HTML constructors, and other registered functions.
+ * Used for UI bindings, HTML constructors, message listeners, and other registered functions.
  */
-export type METHOD_TYPE = 'ui-binding' | 'html-constructor';
+export type METHOD_TYPE =
+  | 'ui-binding'
+  | 'html-constructor'
+  | 'message-listener';
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
 export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
@@ -32,12 +40,13 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   'ui-overlay': uiOverlayBuilder,
   'data-layer': dataLayerBuilder,
   'flag-manager': flagManagerBuilder,
+  messenger: messengerBuilder,
 };
 
 /**
  * Unified method registry for component methods and registered functions.
  * - Component types (nexus, ui-overlay, etc.) contain component methods
- * - Method types (ui-binding, html-constructor) contain registered functions
+ * - Method types (ui-binding, html-constructor, message-listener) contain registered functions
  */
 export const MethodRegistry: Record<
   COMPONENT_TYPE | METHOD_TYPE,
@@ -48,8 +57,10 @@ export const MethodRegistry: Record<
   'ui-overlay': UIOverlay,
   'data-layer': DataLayer,
   'flag-manager': FlagManager,
+  messenger: Messenger,
   'ui-binding': {},
   'html-constructor': {},
+  'message-listener': {},
 };
 
 /**
@@ -61,6 +72,7 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   'ui-overlay': UIOverlayPropertyAllowlist,
   'data-layer': DataLayerPropertyAllowlist,
   'flag-manager': FlagManagerPropertyAllowlist,
+  messenger: MessengerPropertyAllowlist,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

@@ -33,8 +33,7 @@ export interface AtlasManagerConfig {
 }
 
 export interface AtlasManagerT
-  extends ComponentData,
-    ComponentInstanceMethods<AtlasManagerMethods> {
+  extends ComponentData, ComponentInstanceMethods<AtlasManagerMethods> {
   type: 'atlas-manager';
   unique: ComponentUnique.GLOBAL;
 

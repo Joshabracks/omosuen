@@ -138,12 +138,12 @@ export interface UIOverlayOptions extends ComponentOptions {
 export function builder(options: UIOverlayOptions): UIOverlayT {
   // Create the container element
   const container = document.createElement('div');
-  container.style.position = 'absolute';
-  container.style.top = '0';
-  container.style.left = '0';
-  container.style.width = '100%';
-  container.style.height = '100%';
-  container.style.pointerEvents = 'none'; // Allow clicks to pass through to canvas
+  // container.style.position = 'absolute';
+  // container.style.top = '0';
+  // container.style.left = '0';
+  // container.style.width = '100%';
+  // container.style.height = '100%';
+  // container.style.pointerEvents = 'none'; // Allow clicks to pass through to canvas
   container.style.zIndex = '1000'; // Ensure it's above the canvas
 
   container.id = options.name.replace(/\s/g, '');

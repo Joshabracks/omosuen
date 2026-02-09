@@ -4,8 +4,7 @@ import type { ImageRegistryMethods } from './methods';
 import type { ComponentInstanceMethods } from '../types';
 
 export interface ImageRegistryT
-  extends ComponentData,
-    ComponentInstanceMethods<ImageRegistryMethods> {
+  extends ComponentData, ComponentInstanceMethods<ImageRegistryMethods> {
   type: 'image-registry';
   unique: ComponentUnique.GLOBAL;
 

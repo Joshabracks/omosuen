@@ -9,11 +9,10 @@ import type {
 import { isFrameMap, isGridConfig } from './types';
 import type { TextureMapMethods } from './methods';
 import type { ComponentInstanceMethods } from '../types';
-import { Vector2D, Vector4D } from '../../math';
+import { Vector2D } from '../../math';
 
 export interface TextureMapT
-  extends ComponentData,
-    ComponentInstanceMethods<TextureMapMethods> {
+  extends ComponentData, ComponentInstanceMethods<TextureMapMethods> {
   type: 'texture-map';
   unique: ComponentUnique.FALSE;
 

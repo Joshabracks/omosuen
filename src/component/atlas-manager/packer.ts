@@ -136,9 +136,10 @@ export function packFrames(
     // Remove allocated space from available spaces
     removeSpaceFromBuckets(spaceBuckets, space);
 
-    // Add any new available spaces from subdivision
-    if (space['1']) {
-      addSpaceToBuckets(spaceBuckets, space['1']);
+    // Collect and add all new available spaces from subdivision tree
+    const newSpaces = collectAvailableSpaces(space);
+    for (const newSpace of newSpaces) {
+      addSpaceToBuckets(spaceBuckets, newSpace);
     }
   }
 
@@ -372,4 +373,41 @@ function addSpaceToBuckets(spaceBuckets: SpaceBuckets, space: AtlasSpace): void 
   spaceBuckets.h.push(space);
   spaceBuckets.s.push(space);
   sortSpaceBuckets(spaceBuckets);
+}
+
+/**
+ * Collects all available (unallocated) spaces from a subdivision tree.
+ * Recursively walks the tree and returns all leaf spaces that can still be used.
+ *
+ * @param space - The root space to collect from
+ * @returns Array of available AtlasSpace objects
+ */
+function collectAvailableSpaces(space: AtlasSpace): AtlasSpace[] {
+  const spaces: AtlasSpace[] = [];
+
+  // If this is a leaf space (no children), it's not available (occupied by frame)
+  if (!space['0'] && !space['1']) {
+    return spaces;
+  }
+
+  // Check child '0' (allocated side)
+  if (space['0']) {
+    // Check if it's an AtlasSpace (has 'position' property) or a frame
+    if (typeof space['0'] === 'object' && 'position' in space['0']) {
+      // It's an AtlasSpace, recurse to find any nested remainder spaces
+      spaces.push(...collectAvailableSpaces(space['0'] as AtlasSpace));
+    }
+    // If it's a frame (UnpackedFrame), skip it - it's allocated
+  }
+
+  // Check child '1' (remainder side)
+  if (space['1']) {
+    // Child '1' is always an AtlasSpace (the remainder from subdivision)
+    // Add it directly as an available space
+    spaces.push(space['1']);
+    // Also check if child '1' has its own subdivisions
+    spaces.push(...collectAvailableSpaces(space['1']));
+  }
+
+  return spaces;
 }

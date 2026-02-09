@@ -28,6 +28,21 @@ import {
   builder as viewportBuilder,
   PROPERTY_ALLOWLIST as ViewportPropertyAllowlist,
 } from './viewport';
+import {
+  TextureMap,
+  builder as textureMapBuilder,
+  PROPERTY_ALLOWLIST as TextureMapPropertyAllowlist,
+} from './texture-map';
+import {
+  ImageRegistry,
+  builder as imageRegistryBuilder,
+  PROPERTY_ALLOWLIST as ImageRegistryPropertyAllowlist,
+} from './image-registry';
+import {
+  AtlasManager,
+  builder as atlasManagerBuilder,
+  PROPERTY_ALLOWLIST as AtlasManagerPropertyAllowlist,
+} from './atlas-manager';
 import type { COMPONENT_TYPE } from './types';
 
 /**
@@ -47,6 +62,9 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   'flag-manager': flagManagerBuilder,
   messenger: messengerBuilder,
   viewport: viewportBuilder,
+  'texture-map': textureMapBuilder,
+  'image-registry': imageRegistryBuilder,
+  'atlas-manager': atlasManagerBuilder,
 };
 
 /**
@@ -65,6 +83,9 @@ export const MethodRegistry: Record<
   'flag-manager': FlagManager,
   messenger: Messenger,
   viewport: Viewport,
+  'texture-map': TextureMap,
+  'image-registry': ImageRegistry,
+  'atlas-manager': AtlasManager,
   'ui-binding': {},
   'html-constructor': {},
   'message-listener': {},
@@ -81,6 +102,9 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   'flag-manager': FlagManagerPropertyAllowlist,
   messenger: MessengerPropertyAllowlist,
   viewport: ViewportPropertyAllowlist,
+  'texture-map': TextureMapPropertyAllowlist,
+  'image-registry': ImageRegistryPropertyAllowlist,
+  'atlas-manager': AtlasManagerPropertyAllowlist,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

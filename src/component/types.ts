@@ -40,7 +40,10 @@ export type COMPONENT_TYPE =
   | 'data-layer'
   | 'flag-manager'
   | 'messenger'
-  | 'viewport';
+  | 'viewport'
+  | 'texture-map'
+  | 'image-registry'
+  | 'atlas-manager';
 
 export interface ComponentOptions {
   name: string;

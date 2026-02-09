@@ -19,6 +19,25 @@ export type {
 } from './flag-manager';
 export type { MessengerT as messenger, MessengerMethods } from './messenger';
 export type { ViewportT as viewport, ViewportMethods } from './viewport';
+export type {
+  TextureMapT as texture_map,
+  TextureMapMethods,
+  FrameMap,
+  GridConfig,
+  ImageType,
+  OriginalFrame,
+  PackedFrame,
+} from './texture-map';
+export type {
+  ImageRegistryT as image_registry,
+  ImageRegistryMethods,
+} from './image-registry';
+export type {
+  AtlasManagerT as atlas_manager,
+  AtlasManagerMethods,
+  AtlasSize,
+  AtlasManagerConfig,
+} from './atlas-manager';
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';

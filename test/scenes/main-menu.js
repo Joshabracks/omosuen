@@ -15,7 +15,7 @@ Omosuen.registerHtmlConstructor('mainMenu', (overlay) => {
             <h2 class="subtitle center">Test Game Menu</h2>
             <div class="margin-top">
                 <button id="btn-message-test" class="menu-button">Message Test Scene</button>
-                <button id="btn-future1" class="menu-button" disabled>Future Test 1</button>
+                <button id="btn-viewport-test" class="menu-button">Viewport Test Scene</button>
                 <button id="btn-future2" class="menu-button" disabled>Future Test 2</button>
             </div>
             <p class="text center margin-top">
@@ -31,6 +31,11 @@ Omosuen.registerHtmlConstructor('mainMenu', (overlay) => {
 Omosuen.registerBinding('loadMessageTest', async (event) => {
     console.log('Loading Message Test scene...');
     await Omosuen.switchScene('message-test');
+});
+
+Omosuen.registerBinding('loadViewportTest', async (event) => {
+    console.log('Loading Viewport Test scene...');
+    await Omosuen.switchScene('viewport-test');
 });
 
 /**
@@ -51,6 +56,11 @@ export async function createScene() {
                 selector: '#btn-message-test',
                 onActions: ['click'],
                 methodKey: 'loadMessageTest'
+            },
+            {
+                selector: '#btn-viewport-test',
+                onActions: ['click'],
+                methodKey: 'loadViewportTest'
             }
         ]
     });

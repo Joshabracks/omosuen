@@ -6,7 +6,13 @@ export interface ViewportMethods extends ComponentMethods {
   update: (component: ComponentData, deltaTime: number) => void;
   resize: (v: ViewportT, width: number, height: number) => void;
   clear: (v: ViewportT) => void;
-  setBackgroundColor: (v: ViewportT, r: number, g: number, b: number, a: number) => void;
+  setBackgroundColor: (
+    v: ViewportT,
+    r: number,
+    g: number,
+    b: number,
+    a: number,
+  ) => void;
   setOffset: (v: ViewportT, x: number, y: number) => void;
 }
 
@@ -35,7 +41,7 @@ export const Viewport: ViewportMethods = {
         v.backgroundColor.r,
         v.backgroundColor.g,
         v.backgroundColor.b,
-        v.backgroundColor.a
+        v.backgroundColor.a,
       );
 
       // Enable depth testing (common for 3D rendering)
@@ -59,7 +65,9 @@ export const Viewport: ViewportMethods = {
    */
   resize(v: ViewportT, width: number, height: number) {
     if (!v.canvas || !v.gl) {
-      console.warn(`[viewport] Cannot resize '${v.name}' - canvas or gl context missing`);
+      console.warn(
+        `[viewport] Cannot resize '${v.name}' - canvas or gl context missing`,
+      );
       return;
     }
 

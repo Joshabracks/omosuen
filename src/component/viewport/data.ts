@@ -77,13 +77,13 @@ export function builder(options: ViewportOptions): ViewportT {
     if (!gl) {
       console.error(
         `[viewport] Failed to get WebGL2 context for '${options.name}'. ` +
-        `WebGL2 may not be supported in this browser.`
+          `WebGL2 may not be supported in this browser.`,
       );
     }
   } catch (error) {
     console.error(
       `[viewport] Error getting WebGL2 context for '${options.name}':`,
-      error
+      error,
     );
   }
 
@@ -156,12 +156,15 @@ function deserialize(data: any): ViewportT {
   // Reconstruct backgroundColor Vector4D
   let bgColor = new Vector4D(0, 0, 0, 1);
   if (backgroundColor && typeof backgroundColor === 'object') {
-    if ('_vectorType' in backgroundColor && backgroundColor._vectorType === 'Vector4D') {
+    if (
+      '_vectorType' in backgroundColor &&
+      backgroundColor._vectorType === 'Vector4D'
+    ) {
       bgColor = new Vector4D(
         backgroundColor.x,
         backgroundColor.y,
         backgroundColor.z,
-        backgroundColor.w
+        backgroundColor.w,
       );
     }
   }

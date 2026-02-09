@@ -16,6 +16,7 @@ Omosuen.registerHtmlConstructor('messageTest', (overlay) => {
     return `
         <div class="container screen scan-lines">
             <button id="btn-back" class="back-button">← Back to Menu</button>
+            <button id="btn-viewport-test" class="back-button" style="left: 140px;">→ Viewport Test</button>
 
             <h1 class="title">Message Test Scene</h1>
 
@@ -48,6 +49,14 @@ Omosuen.registerHtmlConstructor('messageTest', (overlay) => {
 Omosuen.registerBinding('backToMenu', async (event) => {
     console.log('Returning to main menu...');
     await Omosuen.switchScene('main-menu');
+});
+
+/**
+ * Register UI binding for viewport test button
+ */
+Omosuen.registerBinding('goToViewportTest', async (event) => {
+    console.log('Going to viewport test...');
+    await Omosuen.switchScene('viewport-test');
 });
 
 /**
@@ -250,6 +259,11 @@ export async function createScene() {
                 selector: '#btn-back',
                 onActions: ['click'],
                 methodKey: 'backToMenu'
+            },
+            {
+                selector: '#btn-viewport-test',
+                onActions: ['click'],
+                methodKey: 'goToViewportTest'
             },
             {
                 selector: '#message-input',

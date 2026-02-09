@@ -23,6 +23,11 @@ import {
   builder as messengerBuilder,
   PROPERTY_ALLOWLIST as MessengerPropertyAllowlist,
 } from './messenger';
+import {
+  Viewport,
+  builder as viewportBuilder,
+  PROPERTY_ALLOWLIST as ViewportPropertyAllowlist,
+} from './viewport';
 import type { COMPONENT_TYPE } from './types';
 
 /**
@@ -41,6 +46,7 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   'data-layer': dataLayerBuilder,
   'flag-manager': flagManagerBuilder,
   messenger: messengerBuilder,
+  viewport: viewportBuilder,
 };
 
 /**
@@ -58,6 +64,7 @@ export const MethodRegistry: Record<
   'data-layer': DataLayer,
   'flag-manager': FlagManager,
   messenger: Messenger,
+  viewport: Viewport,
   'ui-binding': {},
   'html-constructor': {},
   'message-listener': {},
@@ -73,6 +80,7 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   'data-layer': DataLayerPropertyAllowlist,
   'flag-manager': FlagManagerPropertyAllowlist,
   messenger: MessengerPropertyAllowlist,
+  viewport: ViewportPropertyAllowlist,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

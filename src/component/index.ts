@@ -18,6 +18,7 @@ export type {
   FlagManagerMethods,
 } from './flag-manager';
 export type { MessengerT as messenger, MessengerMethods } from './messenger';
+export type { ViewportT as viewport, ViewportMethods } from './viewport';
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';
@@ -31,3 +32,4 @@ export { UIOverlaySerializer } from './ui-overlay/data';
 export { DataLayerSerializer } from './data-layer/data';
 export { FlagManagerSerializer } from './flag-manager/data';
 export { MessengerSerializer } from './messenger/data';
+export { ViewportSerializer } from './viewport/data';

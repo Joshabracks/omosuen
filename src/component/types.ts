@@ -39,7 +39,8 @@ export type COMPONENT_TYPE =
   | 'ui-overlay'
   | 'data-layer'
   | 'flag-manager'
-  | 'messenger';
+  | 'messenger'
+  | 'viewport';
 
 export interface ComponentOptions {
   name: string;

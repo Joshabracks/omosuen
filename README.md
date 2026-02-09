@@ -1,105 +1,116 @@
 # Omosuen Engine
 
-An axonometric game engine with a static z-axis camera, designed for tile-based games with fixed perspective rendering.
+**An axonometric game engine with a fixed z-axis camera**
 
-## Features
+---
 
-- 🎮 Axonometric/isometric rendering with locked camera rotation
-- 📦 Zero runtime dependencies
-- 🔧 TypeScript-first development
-- 📚 Importable as ES module or standalone bundle
-- 🌐 Browser-ready UMD builds
+## Overview
+
+**Omosuen** is a browser-based, TypeScript-powered game engine specifically designed for axonometric (isometric-style) games. Built with performance and developer experience in mind, it combines a clean, intuitive API inspired by Godot with internal optimizations for 60fps gameplay.
+
+**Etymology:** Omos (Greek: shoulder/axis) + Suen (Mesopotamian moon deity/measurement)
+
+### Key Features
+
+- **Hierarchical Component System** - Nexus-based scene graph with familiar parent-child relationships
+- **Data-Oriented Design** - Optimized internal architecture hidden behind developer-friendly APIs
+- **Performance-Critical** - Module-level memory pools, minimal GC pressure, 60fps target
+- **Full Scene Management** - Load from memory, JavaScript modules, or serialized JSON
+- **Progressive Initialization** - Time-budgeted component initialization across frames
+- **Immutable Math Library** - Vector2D/3D/4D, Array2D/3D with RLE compression (Array3Dc)
+- **Built-in Messaging System** - Global message queue for inter-component communication
+- **TypeScript-First** - Strict typing with full IDE autocomplete support
+
+---
+
+## Quick Start
+
+```typescript
+import * as Omosuen from 'omosuen';
+
+// Create a scene
+const scene = await Omosuen.newComponent('nexus', { name: 'Main Scene' });
+
+// Add components to the scene
+const player = await Omosuen.newComponent('nexus', { name: 'Player' });
+scene.addComponent(player);
+
+// Register and load the scene
+Omosuen.registerScene('main', scene);
+await Omosuen.switchScene('main');
+
+// Start the game loop
+Omosuen.start(60);
+```
+
+---
+
+## Documentation
+
+### Core Documentation
+- [Getting Started](docs/getting-started.md) - Installation, first project, and basic workflow
+- [Architecture](docs/architecture.md) - Core concepts: Nexus, Components, DOD, and Proxy pattern
+- [Component System](docs/component-system.md) - Component lifecycle, creating custom components
+- [Scenes](docs/scenes.md) - Scene management, loading strategies, and serialization
+- [Game Loop](docs/game-loop.md) - Loop phases, timing, initialization, and disposal
+- [API Reference](docs/api-reference.md) - Quick reference of main exports and functions
+- [Contributing](docs/contributing.md) - Development guidelines (see also: [CLAUDE.md](CLAUDE.md))
+
+### Built-in Components
+- [Nexus](docs/components/nexus.md) - Container component for building hierarchies
+- [UI Overlay](docs/components/ui-overlay.md) - UI binding system for HTML elements
+- [Data Layer](docs/components/data-layer.md) - Generic data storage component
+- [Flag Manager](docs/components/flag-manager.md) - Global flag/state management
+- [Messenger](docs/components/messenger.md) - Message queue and event system
+
+### Math Library
+- [Vector2D](docs/math/vector2d.md) - 2D vector operations
+- [Vector3D](docs/math/vector3d.md) - 3D vector operations with color getters (RGB)
+- [Vector4D](docs/math/vector4d.md) - 4D vector operations with color getters (RGBA)
+- [Array2D](docs/math/array2d.md) - 2D grid/array structure with optimized iteration
+- [Array3D](docs/math/array3d.md) - 3D voxel/array structure with optimized iteration
+- [Array3Dc](docs/math/array3dc.md) - RLE-compressed 3D arrays for large static datasets
+- [Utilities](docs/math/utilities.md) - Helper functions (lerp, etc.)
+
+---
 
 ## Installation
-
-### As a Node Module
 
 ```bash
 npm install omosuen
 ```
 
-```typescript
-import { Omosuen } from 'omosuen';
+Or clone and build from source:
 
-Omosuen.init();
+```bash
+git clone https://github.com/yourusername/omosuen.git
+cd omosuen
+npm install
+npm run build
 ```
 
-### As a Standalone Script
-
-Include the bundled JavaScript file in your HTML:
-
-```html
-<script src="omosuen.min.js"></script>
-<script>
-  Omosuen.init();
-</script>
-```
+---
 
 ## Development
 
-### Setup
-
 ```bash
-npm install
-```
-
-### Build
-
-```bash
-# Build both development and production bundles
-npm run build
-
-# Build development version (with source maps)
+# Build development version
 npm run build:dev
 
-# Build production version (minified)
+# Build production version
 npm run build:prod
-```
 
-Build outputs:
-- `dev/omosuen.js` - Development bundle with source maps
-- `dev/omosuen.min.js` - Production minified bundle
-- `dist/` - TypeScript declaration files for module imports
-
-### Testing
-
-Run the test HTML page:
-
-```bash
+# Run test server (http://localhost:3000)
 npm test
-```
 
-Then open [http://localhost:3000](http://localhost:3000) in your browser.
-
-### Linting
-
-```bash
+# Lint code
 npm run lint
+
+# Format code
+npm run format
 ```
 
-## Project Structure
-
-```
-omosuen/
-├── src/
-│   └── index.ts          # Main entry point
-├── test/
-│   └── index.html        # Test page
-├── dev/                  # Webpack build outputs (gitignored)
-├── dist/                 # TypeScript compilation outputs (gitignored)
-├── package.json
-├── tsconfig.json
-├── webpack.config.js
-└── README.md
-```
-
-## Technical Specifications
-
-- **Target**: ES2020
-- **Module System**: ES Modules
-- **Build Tool**: Webpack 5
-- **Compiler**: TypeScript 5
-- **Bundle Format**: UMD (works in browsers and Node.js)
+---
 
 ## License
 
@@ -107,51 +118,14 @@ ISC
 
 ---
 
-## The Story Behind the Name
+## Philosophy
 
-### Etymology
+Omosuen follows a **"simple API, optimized internals"** philosophy inspired by Godot. The engine prioritizes:
 
-The name **Omosuen** is a portmanteau derived from ancient linguistic roots that perfectly capture the essence of axonometric projection:
+1. **Developer Experience** - Clean, intuitive APIs over maximum theoretical performance
+2. **Composition Over Inheritance** - Flexible component hierarchies
+3. **Graceful Degradation** - Log errors, don't crash; games should keep running
+4. **Performance Where It Matters** - Zero allocations in update loops, data locality
+5. **Predictable Behavior** - Explicit is better than implicit
 
-**Omos** (ὦμος) - Greek for "shoulder"
-- The ancient Greeks used "omos" (shoulder) as a metaphor for load-bearing rotation points
-- This metaphor evolved into words for "axis" and "axle" across Indo-European languages
-- Proto-Indo-European root: *aks- (axis/axle) originally meant "shoulder"
-- The connection: a shoulder bears weight while enabling rotation, just like an axle
-- This is the "axon" part of "axonometric" - measurement along axes
-
-**Suen** (𒂗𒍪𒂗) - Mesopotamian moon deity (also known as Sin or Nanna)
-- One of the oldest recorded gods in human civilization
-- Represented the moon as a celestial timekeeper
-- The moon's phases were humanity's earliest universal measurement system
-- Ancient peoples used lunar cycles to track seasons, predict tides, and measure time
-- This connects to "metric" in "axonometric" - the measurement aspect
-- Proto-Indo-European root: *me(n)ses- (moon/month) derives from *meh₁- (to measure)
-
-### The Concept
-
-**Axonometric** projection literally means "measuring along axes" - a perfect description of how this engine works:
-
-1. **Load-bearing axes** (omos/shoulder) - Fixed rotation points that define the view
-2. **Cyclical measurement** (Suen/moon) - Regular, predictable patterns for positioning
-
-The engine forces an axonometric viewpoint with a static z-axis, meaning the camera cannot rotate - it maintains a fixed "shoulder" position from which all measurements are taken.
-
-### The Accidental Wordplay
-
-Entirely by coincidence, when transliterated into Japanese, "Omosu" (置場所) can be written in Kanji meaning "**layer place**" or "**placement location**" - a serendipitous connection to the engine's tile-based, layered rendering system.
-
-So you could call it the "**Omosu Engine**" - the "**Layer Place Engine**" - which perfectly describes its technical implementation, while "**Omosuen**" honors the deep etymological roots of axonometric projection itself.
-
-### Historical Context
-
-The components of this name span over 4,000 years of human civilization:
-- **2130 BC**: Ancient Mesopotamian worship of Suen/Sin begins
-- **~1500 BC**: Proto-Indo-European *aks- (shoulder/axis) in use
-- **~800 BC**: Greek omos (shoulder) recorded in Homer
-- **~150 BC**: Hipparchus uses orthographic projection (precursor to axonometric)
-- **1613 AD**: François d'Aguilon formalizes "orthographic" terminology
-- **1822 AD**: William Farish publishes first treatise on isometric/axonometric drawing
-- **2026 AD**: Omosuen Engine created
-
-The name connects ancient human understanding of measurement, rotation, and time into a modern game engine framework.
+If you're building axonometric games and value a clean TypeScript workflow with solid performance, Omosuen might be for you.

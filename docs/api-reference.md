@@ -415,7 +415,7 @@ class Vector4D {
 ### Array Classes
 
 ```typescript
-import { Array2D, Array3D, Array3Dc } from 'omosuen';
+import { Array2D, Array3D, Array3Dc, Array3Di } from 'omosuen';
 
 // Array2D<T>
 class Array2D<T> {
@@ -464,6 +464,35 @@ class Array3Dc<T> {
     expand(): Array3D<T>
     flush(): void
     setOnFlushCallback(callback: (() => void) | null): void
+}
+
+// Array3Di (Integer array with optional bit packing)
+class Array3Di {
+    constructor(
+        data: Array3D<number>,
+        bitWidth?: 8 | 16 | 32,
+        bitPackingConfig?: Array<1 | 2 | 4 | 8 | 16>,
+        overflow?: 'mod' | 'clamp' | 'fail'
+    )
+    size: Vector3D
+    data: Uint8Array | Uint16Array | Uint32Array
+    get width(): number
+    get depth(): number
+    get height(): number
+
+    // Methods for non-packed mode
+    set(coordinates: Vector3D, value: number): void
+    get(coordinates: Vector3D): number
+    indexSet(index: number, value: number): void
+    indexGet(index: number): number
+
+    // Methods for packed mode
+    setPacked(coordinates: Vector3D, values: number[]): void
+    getUnpacked(coordinates: Vector3D): number[]
+
+    // Universal methods
+    forEach(callback: (cell: number, x: number, y: number, z: number, index: number) => void): void
+    expand(): Array3D<number>
 }
 ```
 
@@ -615,6 +644,64 @@ if (getFPS() < 30) {
 stop();
 ```
 
+### Array3Di Usage
+
+```typescript
+import { Array3D, Array3Di, Vector3D } from 'omosuen';
+
+// Example 1: Basic integer storage (no bit packing)
+const simpleData = new Array3D<number>(new Vector3D(10, 10, 10), 0);
+// Fill with some values...
+for (let i = 0; i < simpleData.value.length; i++) {
+    simpleData.value[i] = i % 256;
+}
+
+// Create 8-bit integer array with modulo overflow
+const intArray = new Array3Di(simpleData, 8, undefined, 'mod');
+
+// Access values
+const value = intArray.get(new Vector3D(5, 5, 5));
+intArray.set(new Vector3D(5, 5, 5), 200);
+
+// Example 2: Bit packing for RGBA color storage
+// Pack RGBA values (8,8,8,8) into 32-bit integers
+const colorData = new Array3D<number>(new Vector3D(2, 2, 1), 0);
+// RGBA values: [R, G, B, A, R, G, B, A, ...]
+colorData.value = [255, 128, 64, 255, 0, 255, 0, 128]; // 2 pixels
+
+const packedColors = new Array3Di(
+    colorData,
+    32,
+    [8, 8, 8, 8], // R, G, B, A
+    'clamp'
+);
+
+// Access packed color at position
+const rgba = packedColors.getUnpacked(new Vector3D(0, 0, 0)); // [255, 128, 64, 255]
+
+// Set new color
+packedColors.setPacked(new Vector3D(1, 0, 0), [100, 200, 50, 255]);
+
+// Example 3: Custom bit packing for game data
+// Pack entity data: [health (8 bits), stamina (8 bits), level (8 bits), flags (4 bits), type (2 bits), state (2 bits)]
+const entityData = new Array3D<number>(new Vector3D(6, 1, 1), 0);
+entityData.value = [100, 80, 5, 3, 1, 2]; // One entity's data
+
+const packedEntities = new Array3Di(
+    entityData,
+    32,
+    [8, 8, 8, 4, 2, 2], // health, stamina, level, flags, type, state
+    'fail' // Throw error on invalid values
+);
+
+// Unpack entity data
+const [health, stamina, level, flags, type, state] =
+    packedEntities.getUnpacked(new Vector3D(0, 0, 0));
+
+// Expand back to Array3D
+const expanded = packedEntities.expand();
+```
+
 ---
 
 ## Next Steps
@@ -635,6 +722,7 @@ stop();
   - [Array2D](math/array2d.md)
   - [Array3D](math/array3d.md)
   - [Array3Dc](math/array3dc.md)
+  - [Array3Di](math/array3di.md)
 
 ---
 

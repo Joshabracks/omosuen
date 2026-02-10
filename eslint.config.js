@@ -97,7 +97,7 @@ export default [
       '@typescript-eslint/no-unsafe-return': 'warn',
 
       // Prettier integration - runs Prettier as an ESLint rule
-      'prettier/prettier': 'error',
+      'prettier/prettier': ['error', { "endOfLine": "auto" }]
     },
   },
 

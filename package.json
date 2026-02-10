@@ -10,7 +10,7 @@
     "build:dev": "webpack --config webpack.config.js --env mode=development",
     "build:prod": "webpack --config webpack.config.js --env mode=production",
     "test": "start http://localhost:3000/ && node test/integration-test-server.js",
-    "test:cli": "tsx test/nexus.test.ts",
+    "test:cli": "tsx test/cli.test.ts",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write \"src/**/*.ts\" \"*.js\" \"*.json\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"*.js\" \"*.json\""

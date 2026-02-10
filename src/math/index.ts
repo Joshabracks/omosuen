@@ -543,6 +543,354 @@ export class Array3Dc<T> {
   };
 }
 
+export class Array3Di {
+  size: Vector3D;
+  data: Uint8Array | Uint16Array | Uint32Array;
+  private bitWidth: 8 | 16 | 32;
+  private bitPackingConfig: Array<1 | 2 | 4 | 8 | 16> | null;
+  private overflow: 'mod' | 'clamp' | 'fail';
+
+  get width(): number {
+    return this.size.x;
+  }
+  get depth(): number {
+    return this.size.y;
+  }
+  get height(): number {
+    return this.size.z;
+  }
+
+  constructor(
+    data: Array3D<number>,
+    bitWidth: 8 | 16 | 32 = 8,
+    bitPackingConfig?: Array<1 | 2 | 4 | 8 | 16>,
+    overflow: 'mod' | 'clamp' | 'fail' = 'mod',
+  ) {
+    this.size = data.size;
+    this.bitWidth = bitWidth;
+    this.overflow = overflow;
+
+    // Validate bit packing configuration
+    if (bitPackingConfig && bitPackingConfig.length > 0) {
+      const sum = bitPackingConfig.reduce((acc, val) => acc + val, 0);
+      if (sum !== bitWidth) {
+        throw new Error(
+          `bitPackingConfig sum (${sum}) must equal bitWidth (${bitWidth})`,
+        );
+      }
+
+      // Validate input array length is multiple of pattern length
+      if (data.value.length % bitPackingConfig.length !== 0) {
+        throw new Error(
+          `Input array length (${data.value.length}) must be a multiple of bitPackingConfig length (${bitPackingConfig.length})`,
+        );
+      }
+
+      this.bitPackingConfig = bitPackingConfig;
+
+      // Calculate packed size - each pattern packs into one value
+      const packRatio = bitPackingConfig.length;
+      const packedLength = data.value.length / packRatio;
+
+      // Create typed array for packed data
+      this.data = this.createTypedArray(packedLength);
+
+      // Pack the data
+      for (let i = 0; i < packedLength; i++) {
+        const values: number[] = [];
+        for (let j = 0; j < packRatio; j++) {
+          const idx = i * packRatio + j;
+          values.push(data.value[idx]);
+        }
+        this.data[i] = this.packValues(values);
+      }
+    } else {
+      // No bit packing - direct storage
+      this.bitPackingConfig = null;
+
+      // Create typed array
+      this.data = this.createTypedArray(data.value.length);
+
+      // Copy and validate values
+      for (let i = 0; i < data.value.length; i++) {
+        const maxValue = (1 << bitWidth) - 1;
+        const processedValue = this.applyOverflow(data.value[i], maxValue);
+        this.data[i] = processedValue;
+      }
+    }
+  }
+
+  private createTypedArray(
+    length: number,
+  ): Uint8Array | Uint16Array | Uint32Array {
+    switch (this.bitWidth) {
+      case 8:
+        return new Uint8Array(length);
+      case 16:
+        return new Uint16Array(length);
+      case 32:
+        return new Uint32Array(length);
+    }
+  }
+
+  private packValues(values: number[]): number {
+    if (!this.bitPackingConfig) {
+      throw new Error('Bit packing config not set');
+    }
+
+    let packed = 0;
+    let offset = 0;
+
+    for (let i = 0; i < values.length; i++) {
+      const bits = this.bitPackingConfig[i];
+      const maxValue = (1 << bits) - 1;
+      const processedValue = this.applyOverflow(values[i], maxValue);
+
+      packed |= processedValue << offset;
+      offset += bits;
+    }
+
+    return packed;
+  }
+
+  private unpackValue(packed: number): number[] {
+    if (!this.bitPackingConfig) {
+      throw new Error('Bit packing config not set');
+    }
+
+    const values: number[] = [];
+    let offset = 0;
+
+    for (let i = 0; i < this.bitPackingConfig.length; i++) {
+      const bits = this.bitPackingConfig[i];
+      const mask = (1 << bits) - 1;
+      const value = (packed >> offset) & mask;
+      values.push(value);
+      offset += bits;
+    }
+
+    return values;
+  }
+
+  private applyOverflow(value: number, maxValue: number): number {
+    switch (this.overflow) {
+      case 'mod':
+        // Handle negative values correctly
+        if (value < 0) {
+          return ((value % (maxValue + 1)) + (maxValue + 1)) % (maxValue + 1);
+        }
+        return value % (maxValue + 1);
+
+      case 'clamp':
+        return Math.max(0, Math.min(value, maxValue));
+
+      case 'fail':
+        if (value < 0 || value > maxValue) {
+          throw new Error(
+            `Value ${value} out of range [0, ${maxValue}] (overflow mode: fail)`,
+          );
+        }
+        return value;
+    }
+  }
+
+  set = (coordinates: Vector3D, value: number): void => {
+    if (this.bitPackingConfig) {
+      throw new Error(
+        'Cannot use set() with bit packing enabled. Use setPacked() instead.',
+      );
+    }
+
+    const index =
+      coordinates.z * this.size.y * this.size.x +
+      coordinates.y * this.size.x +
+      coordinates.x;
+
+    const maxValue = (1 << this.bitWidth) - 1;
+    const processedValue = this.applyOverflow(value, maxValue);
+    this.data[index] = processedValue;
+  };
+
+  get = (coordinates: Vector3D): number => {
+    if (this.bitPackingConfig) {
+      throw new Error(
+        'Cannot use get() with bit packing enabled. Use getUnpacked() instead.',
+      );
+    }
+
+    const index =
+      coordinates.z * this.size.y * this.size.x +
+      coordinates.y * this.size.x +
+      coordinates.x;
+
+    return this.data[index];
+  };
+
+  indexSet = (index: number, value: number): void => {
+    if (this.bitPackingConfig) {
+      throw new Error(
+        'Cannot use indexSet() with bit packing enabled. Use setPacked() with coordinates instead.',
+      );
+    }
+
+    const maxValue = (1 << this.bitWidth) - 1;
+    const processedValue = this.applyOverflow(value, maxValue);
+    this.data[index] = processedValue;
+  };
+
+  indexGet = (index: number): number => {
+    if (this.bitPackingConfig) {
+      throw new Error(
+        'Cannot use indexGet() with bit packing enabled. Use getUnpacked() with coordinates instead.',
+      );
+    }
+
+    return this.data[index];
+  };
+
+  setPacked = (coordinates: Vector3D, values: number[]): void => {
+    if (!this.bitPackingConfig) {
+      throw new Error(
+        'Bit packing not enabled. Use set() for direct value assignment.',
+      );
+    }
+
+    if (values.length !== this.bitPackingConfig.length) {
+      throw new Error(
+        `Expected ${this.bitPackingConfig.length} values, got ${values.length}`,
+      );
+    }
+
+    // Calculate which packed value this corresponds to
+    const linearIndex =
+      coordinates.z * this.size.y * this.size.x +
+      coordinates.y * this.size.x +
+      coordinates.x;
+
+    const packRatio = this.bitPackingConfig.length;
+    const packedIndex = Math.floor(linearIndex / packRatio);
+
+    const packed = this.packValues(values);
+    this.data[packedIndex] = packed;
+  };
+
+  getUnpacked = (coordinates: Vector3D): number[] => {
+    if (!this.bitPackingConfig) {
+      throw new Error(
+        'Bit packing not enabled. Use get() for direct value retrieval.',
+      );
+    }
+
+    // Calculate which packed value this corresponds to
+    const linearIndex =
+      coordinates.z * this.size.y * this.size.x +
+      coordinates.y * this.size.x +
+      coordinates.x;
+
+    const packRatio = this.bitPackingConfig.length;
+    const packedIndex = Math.floor(linearIndex / packRatio);
+
+    const packed = this.data[packedIndex];
+    return this.unpackValue(packed);
+  };
+
+  forEach = (
+    callback: (
+      cell: number,
+      x: number,
+      y: number,
+      z: number,
+      index: number,
+    ) => void,
+  ): void => {
+    if (this.bitPackingConfig) {
+      // For packed data, iterate through logical (unpacked) positions
+      const width = this.size.x;
+      const height = this.size.y;
+      const packRatio = this.bitPackingConfig.length;
+
+      let x = 0;
+      let y = 0;
+      let z = 0;
+      let index = 0;
+
+      while (index < this.size.x * this.size.y * this.size.z) {
+        const packedIndex = Math.floor(index / packRatio);
+        const packed = this.data[packedIndex];
+        const unpacked = this.unpackValue(packed);
+        const offsetInPack = index % packRatio;
+        const value = unpacked[offsetInPack];
+
+        callback(value, x, y, z, index);
+
+        x += 1;
+        if (x >= width) {
+          y += 1;
+          x = 0;
+        }
+        if (y >= height) {
+          z += 1;
+          y = 0;
+        }
+        index += 1;
+      }
+    } else {
+      // For unpacked data, direct iteration
+      const width = this.size.x;
+      const height = this.size.y;
+      let x = 0;
+      let y = 0;
+      let z = 0;
+      let i = 0;
+
+      while (i < this.data.length) {
+        callback(this.data[i], x, y, z, i);
+
+        x += 1;
+        if (x >= width) {
+          y += 1;
+          x = 0;
+        }
+        if (y >= height) {
+          z += 1;
+          y = 0;
+        }
+        i += 1;
+      }
+    }
+  };
+
+  expand = (): Array3D<number> => {
+    const result = new Array3D<number>(this.size);
+
+    if (this.bitPackingConfig) {
+      // Unpack all values
+      let index = 0;
+
+      for (let packedIndex = 0; packedIndex < this.data.length; packedIndex++) {
+        const packed = this.data[packedIndex];
+        const unpacked = this.unpackValue(packed);
+
+        for (
+          let i = 0;
+          i < unpacked.length && index < result.value.length;
+          i++
+        ) {
+          result.value[index] = unpacked[i];
+          index += 1;
+        }
+      }
+    } else {
+      // Direct copy
+      for (let i = 0; i < this.data.length; i++) {
+        result.value[i] = this.data[i];
+      }
+    }
+
+    return result;
+  };
+}
+
 export function lerp(a: number, b: number, t: number): number {
   return a + t * (b - a);
 }

@@ -46,7 +46,8 @@ export type COMPONENT_TYPE =
   | 'atlas-manager'
   | 'sprite'
   | 'transform'
-  | 'animation-controller';
+  | 'animation-controller'
+  | 'cell-map';
 
 export interface ComponentOptions {
   name: string;

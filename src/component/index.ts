@@ -47,6 +47,12 @@ export type {
   TransformT as transform,
   TransformMethods,
 } from './transform';
+export type {
+  AnimationControllerT as animation_controller,
+  AnimationControllerMethods,
+  Animation,
+  AnimationState,
+} from './animation-controller';
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';
@@ -63,3 +69,4 @@ export { MessengerSerializer } from './messenger/data';
 export { ViewportSerializer } from './viewport/data';
 export { SpriteSerializer } from './sprite/data';
 export { TransformSerializer } from './transform/data';
+export { AnimationControllerSerializer } from './animation-controller/data';

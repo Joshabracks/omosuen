@@ -45,7 +45,8 @@ export type COMPONENT_TYPE =
   | 'image-registry'
   | 'atlas-manager'
   | 'sprite'
-  | 'transform';
+  | 'transform'
+  | 'animation-controller';
 
 export interface ComponentOptions {
   name: string;

@@ -38,6 +38,11 @@ export type {
   AtlasSize,
   AtlasManagerConfig,
 } from './atlas-manager';
+export type {
+  SpriteT as sprite,
+  SpriteMethods,
+  ChannelType,
+} from './sprite';
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';
@@ -52,3 +57,4 @@ export { DataLayerSerializer } from './data-layer/data';
 export { FlagManagerSerializer } from './flag-manager/data';
 export { MessengerSerializer } from './messenger/data';
 export { ViewportSerializer } from './viewport/data';
+export { SpriteSerializer } from './sprite/data';

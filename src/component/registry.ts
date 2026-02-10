@@ -43,6 +43,11 @@ import {
   builder as atlasManagerBuilder,
   PROPERTY_ALLOWLIST as AtlasManagerPropertyAllowlist,
 } from './atlas-manager';
+import {
+  Sprite,
+  builder as spriteBuilder,
+  PROPERTY_ALLOWLIST as SpritePropertyAllowlist,
+} from './sprite';
 import type { COMPONENT_TYPE } from './types';
 
 /**
@@ -65,6 +70,7 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   'texture-map': textureMapBuilder,
   'image-registry': imageRegistryBuilder,
   'atlas-manager': atlasManagerBuilder,
+  sprite: spriteBuilder,
 };
 
 /**
@@ -86,6 +92,7 @@ export const MethodRegistry: Record<
   'texture-map': TextureMap,
   'image-registry': ImageRegistry,
   'atlas-manager': AtlasManager,
+  sprite: Sprite,
   'ui-binding': {},
   'html-constructor': {},
   'message-listener': {},
@@ -105,6 +112,7 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   'texture-map': TextureMapPropertyAllowlist,
   'image-registry': ImageRegistryPropertyAllowlist,
   'atlas-manager': AtlasManagerPropertyAllowlist,
+  sprite: SpritePropertyAllowlist,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

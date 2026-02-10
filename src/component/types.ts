@@ -43,7 +43,8 @@ export type COMPONENT_TYPE =
   | 'viewport'
   | 'texture-map'
   | 'image-registry'
-  | 'atlas-manager';
+  | 'atlas-manager'
+  | 'sprite';
 
 export interface ComponentOptions {
   name: string;

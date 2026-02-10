@@ -48,6 +48,11 @@ import {
   builder as spriteBuilder,
   PROPERTY_ALLOWLIST as SpritePropertyAllowlist,
 } from './sprite';
+import {
+  Transform,
+  builder as transformBuilder,
+  PROPERTY_ALLOWLIST as TransformPropertyAllowlist,
+} from './transform';
 import type { COMPONENT_TYPE } from './types';
 
 /**
@@ -71,6 +76,7 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   'image-registry': imageRegistryBuilder,
   'atlas-manager': atlasManagerBuilder,
   sprite: spriteBuilder,
+  transform: transformBuilder,
 };
 
 /**
@@ -93,6 +99,7 @@ export const MethodRegistry: Record<
   'image-registry': ImageRegistry,
   'atlas-manager': AtlasManager,
   sprite: Sprite,
+  transform: Transform,
   'ui-binding': {},
   'html-constructor': {},
   'message-listener': {},
@@ -113,6 +120,7 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   'image-registry': ImageRegistryPropertyAllowlist,
   'atlas-manager': AtlasManagerPropertyAllowlist,
   sprite: SpritePropertyAllowlist,
+  transform: TransformPropertyAllowlist,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

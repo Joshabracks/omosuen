@@ -43,6 +43,10 @@ export type {
   SpriteMethods,
   ChannelType,
 } from './sprite';
+export type {
+  TransformT as transform,
+  TransformMethods,
+} from './transform';
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';
@@ -58,3 +62,4 @@ export { FlagManagerSerializer } from './flag-manager/data';
 export { MessengerSerializer } from './messenger/data';
 export { ViewportSerializer } from './viewport/data';
 export { SpriteSerializer } from './sprite/data';
+export { TransformSerializer } from './transform/data';

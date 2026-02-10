@@ -44,7 +44,8 @@ export type COMPONENT_TYPE =
   | 'texture-map'
   | 'image-registry'
   | 'atlas-manager'
-  | 'sprite';
+  | 'sprite'
+  | 'transform';
 
 export interface ComponentOptions {
   name: string;

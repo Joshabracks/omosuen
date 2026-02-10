@@ -314,7 +314,7 @@ function runTest(
 }
 
 // Print test results
-function printResults(results: TestResult[]): void {
+function printResults(results: TestResult[]): boolean {
   console.log(
     `\n${colors.bright}${colors.cyan}${'='.repeat(80)}${colors.reset}`,
   );
@@ -385,18 +385,20 @@ function printResults(results: TestResult[]): void {
   console.log(`  Success Rate: ${successRate}%`);
   console.log(`${colors.bright}${colors.cyan}${'='.repeat(80)}${colors.reset}\n`);
 
-  // Exit with appropriate code
+  // Print test summary
   if (passedTests === totalTests - skippedTests && passedTests > 0) {
     console.log(
       `${colors.green}${colors.bright}All tests passed! ✓${colors.reset}\n`,
     );
-    process.exit(0);
   } else {
     console.log(
       `${colors.red}${colors.bright}Some tests failed! ✗${colors.reset}\n`,
     );
-    process.exit(1);
+    // Return false to indicate failure (but don't exit)
+    return false;
   }
+
+  return true;
 }
 
 // Detailed size comparison report
@@ -456,7 +458,7 @@ function printSizeComparison(results: TestResult[]): void {
 }
 
 // Main test execution
-export function runArray3DiTests(): void {
+export function runArray3DiTests(): boolean {
   console.log(
     `\n${colors.bright}${colors.cyan}Starting Array3Di Comprehensive Unit Tests...${colors.reset}\n`,
   );
@@ -488,10 +490,11 @@ export function runArray3DiTests(): void {
   printSizeComparison(results);
 
   // Print test results
-  printResults(results);
+  return printResults(results);
 }
 
 // Run tests if this file is executed directly
 if (import.meta.url === `file://${process.argv[1]}`) {
-  runArray3DiTests();
+  const success = runArray3DiTests();
+  process.exit(success ? 0 : 1);
 }

@@ -415,7 +415,7 @@ class Vector4D {
 ### Array Classes
 
 ```typescript
-import { Array2D, Array3D, Array3Dc, Array3Di } from 'omosuen';
+import { Array2D, Array3D, Array3Dc, Array3Di, Array3Dic } from 'omosuen';
 
 // Array2D<T>
 class Array2D<T> {
@@ -493,6 +493,40 @@ class Array3Di {
     // Universal methods
     forEach(callback: (cell: number, x: number, y: number, z: number, index: number) => void): void
     expand(): Array3D<number>
+}
+
+// Array3Dic (Bit-packed + RLE compressed integer array)
+class Array3Dic {
+    constructor(
+        data: Array3D<number>,
+        bitWidth?: 8 | 16 | 32,
+        bitPackingConfig?: Array<1 | 2 | 4 | 8 | 16>,
+        overflow?: 'mod' | 'clamp' | 'fail',
+        maxMemoryThreshold?: number
+    )
+    size: Vector3D  // Bit-packed dimensions
+    values: number[]  // RLE compressed packed integers
+    counts: Uint32Array  // RLE counts
+    get width(): number  // Packed width
+    get depth(): number  // Packed depth
+    get height(): number  // Packed height
+    get logicalWidth(): number  // Original logical width
+    get logicalDepth(): number  // Original logical depth
+    get logicalHeight(): number  // Original logical height
+
+    // Methods for packed integer access
+    set(coordinates: Vector3D, packedValue: number): void
+    get(coordinates: Vector3D): number
+
+    // Methods for unpacked value access (requires bit packing)
+    setPacked(coordinates: Vector3D, values: number[]): void
+    getUnpacked(coordinates: Vector3D): number[]
+
+    // Universal methods
+    forEach(callback: (cell: number, x: number, y: number, z: number, index: number) => void): void
+    expand(): Array3D<number>
+    flush(): void
+    setOnFlushCallback(callback: (() => void) | null): void
 }
 ```
 
@@ -702,6 +736,127 @@ const [health, stamina, level, flags, type, state] =
 const expanded = packedEntities.expand();
 ```
 
+### Array3Dic Usage
+
+```typescript
+import { Array3D, Array3Dic, Vector3D } from 'omosuen';
+
+// Example 1: Maximum compression for sparse tilemap
+// Imagine a 100x100x10 voxel world with mostly air (value 0) and occasional blocks
+const tilemapData = new Array3D<number>(new Vector3D(100, 100, 10), 0);
+
+// Add some blocks scattered throughout
+for (let i = 0; i < 1000; i++) {
+    const x = Math.floor(Math.random() * 100);
+    const y = Math.floor(Math.random() * 100);
+    const z = Math.floor(Math.random() * 10);
+    tilemapData.value[z * 100 * 100 + y * 100 + x] = Math.floor(Math.random() * 16) + 1; // Block types 1-16
+}
+
+// Bit-pack into 8-bit values, then RLE compress
+// For sparse data with lots of zeros, this can achieve >100x compression!
+const compressedMap = new Array3Dic(
+    tilemapData,
+    8,     // 8-bit storage
+    undefined,  // No bit packing (values already fit in 8 bits)
+    'clamp',
+    0.05   // 5% dirty threshold before flush
+);
+
+console.log(`Original: ${tilemapData.value.length * 8} bytes`);
+console.log(`Compressed: ${compressedMap.values.length * 4 + compressedMap.counts.byteLength} bytes`);
+
+// Example 2: Bit-packed RGBA with RLE compression
+// Perfect for images with large solid color regions
+const imageData = new Array3D<number>(new Vector3D(256, 256, 1), 0);
+
+// Fill with gradient (lots of repeated colors in rows)
+for (let y = 0; y < 256; y++) {
+    for (let x = 0; x < 256; x++) {
+        const idx = y * 256 * 4 + x * 4;
+        imageData.value[idx] = x;     // R
+        imageData.value[idx + 1] = y; // G
+        imageData.value[idx + 2] = 0; // B
+        imageData.value[idx + 3] = 255; // A
+    }
+}
+
+// Bit-pack RGBA, then RLE compress
+const compressedImage = new Array3Dic(
+    imageData,
+    32,
+    [8, 8, 8, 8], // RGBA packing
+    'clamp'
+);
+
+// Access pixel at coordinates
+const pixel = compressedImage.getUnpacked(new Vector3D(128, 128, 0)); // [128, 128, 0, 255]
+
+// Modify pixel
+compressedImage.setPacked(new Vector3D(100, 100, 0), [255, 0, 0, 255]); // Red pixel
+
+// Example 3: Game entity storage with dirty map
+const entityData = new Array3D<number>(new Vector3D(6, 1000, 1), 0);
+
+// Initialize 1000 entities: [health, stamina, level, flags, type, state]
+for (let i = 0; i < 1000; i++) {
+    const offset = i * 6;
+    entityData.value[offset] = 100;   // health
+    entityData.value[offset + 1] = 100; // stamina
+    entityData.value[offset + 2] = 1;   // level
+    entityData.value[offset + 3] = 0;   // flags
+    entityData.value[offset + 4] = 0;   // type
+    entityData.value[offset + 5] = 0;   // state (idle)
+}
+
+// Pack and compress
+const entities = new Array3Dic(
+    entityData,
+    32,
+    [8, 8, 8, 4, 2, 2],
+    'clamp',
+    0.02 // 2% dirty threshold
+);
+
+// Update entity health (stored in dirty map until flush)
+const entity50 = entities.getUnpacked(new Vector3D(0, 50, 0));
+entity50[0] = 75; // Damage entity
+entities.setPacked(new Vector3D(0, 50, 0), entity50);
+
+// Automatic flush when 2% of entities are modified
+// Or manual flush
+entities.flush();
+
+// Example 4: Pattern-based terrain chunks
+// Terrain with repeating patterns compresses extremely well
+const chunkSize = new Vector3D(16, 16, 16);
+const terrainChunk = new Array3D<number>(chunkSize, 0);
+
+// Create layers of different materials
+for (let z = 0; z < 16; z++) {
+    const material = z < 5 ? 1 : z < 10 ? 2 : z < 15 ? 3 : 4; // Layers
+    for (let y = 0; y < 16; y++) {
+        for (let x = 0; x < 16; x++) {
+            terrainChunk.value[z * 256 + y * 16 + x] = material;
+        }
+    }
+}
+
+// With RLE, this highly repetitive data compresses to just 4 RLE pairs!
+const compressedChunk = new Array3Dic(terrainChunk, 8);
+
+console.log(`RLE pairs: ${compressedChunk.values.length}`); // Just 4!
+console.log(`Compression ratio: ${(terrainChunk.value.length * 8) / (compressedChunk.values.length * 4)}x`);
+
+// Iterate through chunk
+compressedChunk.forEach((voxel, x, y, z, index) => {
+    // Process each voxel in logical coordinates
+    if (voxel !== 0) {
+        console.log(`Block type ${voxel} at (${x}, ${y}, ${z})`);
+    }
+});
+```
+
 ---
 
 ## Next Steps
@@ -723,6 +878,7 @@ const expanded = packedEntities.expand();
   - [Array3D](math/array3d.md)
   - [Array3Dc](math/array3dc.md)
   - [Array3Di](math/array3di.md)
+  - [Array3Dic](math/array3dic.md)
 
 ---
 

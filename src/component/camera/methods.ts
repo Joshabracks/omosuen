@@ -592,19 +592,20 @@ async function init(component: ComponentData): Promise<void> {
   camera.glResources.quadVertexBuffer = quadVertexBuffer;
 
   // UV coordinates (0,0 to 1,1)
+  // Note: V coordinates are flipped (0 at bottom, 1 at top) to match ImageData Y-axis orientation
   const uvs = new Float32Array([
     0,
-    1, // bottom-left
+    0, // bottom-left
     1,
-    1, // bottom-right
+    0, // bottom-right
     1,
-    0, // top-right
+    1, // top-right
     0,
-    1, // bottom-left
+    0, // bottom-left
     1,
-    0, // top-right
+    1, // top-right
     0,
-    0, // top-left
+    1, // top-left
   ]);
 
   const quadUVBuffer = gl.createBuffer();

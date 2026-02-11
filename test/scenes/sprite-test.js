@@ -20,10 +20,7 @@ Omosuen.registerHtmlConstructor('spriteTest', (overlay) => {
             <h1 class="sidebar-title">Sprite Test</h1>
 
             <div class="sidebar-section">
-                <button id="btn-compile" class="sidebar-button primary">
-                    Compile & Init
-                </button>
-                <div id="status" class="sidebar-status" style="display: none;"></div>
+                <div id="init-status" class="sidebar-status"></div>
             </div>
 
             <div id="controls" class="sidebar-section" style="display: none;">
@@ -59,21 +56,6 @@ Omosuen.registerHtmlConstructor('spriteTest', (overlay) => {
 Omosuen.registerBinding('backToMenuFromSprite', async (event) => {
     console.log('Returning to main menu...');
     await Omosuen.switchScene('main-menu');
-});
-
-/**
- * Register UI binding for compile button
- */
-Omosuen.registerBinding('compileAndInitialize', async () => {
-    console.log('[Sprite Test] Compile button clicked');
-
-    const scene = Omosuen.getActiveScene();
-    if (!scene) {
-        console.error('[Sprite Test] No active scene found');
-        return;
-    }
-
-    await runInitialization(scene);
 });
 
 /**
@@ -154,73 +136,65 @@ function updateAnimStatus(animName, status) {
 }
 
 /**
- * Updates the status message
+ * Updates the initialization status display
  */
-function updateStatus(message) {
-    const statusEl = document.getElementById('status');
+function updateInitStatus(message) {
+    const statusEl = document.getElementById('init-status');
     if (statusEl) {
         statusEl.textContent = message;
     }
-    console.log('[Sprite Test]', message);
 }
 
 /**
- * Runs the initialization process
+ * Polls initialization progress and updates UI
  */
-async function runInitialization(scene) {
-    console.log('[Sprite Test] Starting initialization...');
+let pollIntervalId = null;
 
-    // Hide compile button and show status
-    const compileBtn = document.getElementById('btn-compile');
-    const statusEl = document.getElementById('status');
-    if (compileBtn) compileBtn.style.display = 'none';
-    if (statusEl) statusEl.style.display = 'block';
+function pollInitializationProgress() {
+    const queueLength = Omosuen.getInitQueueLength();
+    const queueSize = Omosuen.getInitQueueSize();
 
-    // Get components
-    const imageRegistry = scene.getComponentByType('image-registry');
-    const atlasManager = scene.getComponentByType('atlas-manager');
-    const textureMap = scene.getComponentByType('texture-map');
+    // If queueLength is -1, initialization hasn't started or is complete
+    if (queueLength === -1) {
+        // Check if scene is active and initialization is done
+        const scene = Omosuen.getActiveScene();
+        if (scene) {
+            // Initialization is complete
+            updateInitStatus('✓ Initialization complete!');
 
-    if (!imageRegistry || !atlasManager || !textureMap) {
-        updateStatus('✗ Error: Required components not found');
-        console.error('[Sprite Test] Missing required components');
-        return;
+            // Show controls
+            const controlsEl = document.getElementById('controls');
+            if (controlsEl) controlsEl.style.display = 'block';
+
+            console.log('[Sprite Test] Initialization complete');
+
+            // Stop polling
+            if (pollIntervalId) {
+                clearInterval(pollIntervalId);
+                pollIntervalId = null;
+            }
+            return;
+        } else {
+            updateInitStatus('Waiting for scene...');
+        }
+    } else {
+        // Initialization in progress
+        const completed = queueLength - queueSize;
+        updateInitStatus(`Initializing ${completed} / ${queueLength} components...`);
     }
-
-    // Load image
-    updateStatus('Loading objects.png...');
-    try {
-        await imageRegistry.loadImage('./assets/objects.png');
-        updateStatus('Image loaded successfully');
-    } catch (error) {
-        updateStatus(`✗ Error loading image: ${error.message}`);
-        console.error('[Sprite Test] Image loading failed:', error);
-        return;
-    }
-
-    // Add texture map to atlas manager
-    updateStatus('Adding texture map to atlas manager...');
-    atlasManager.addTextureMap(textureMap);
-
-    // Compile atlases
-    updateStatus('Compiling atlas...');
-    try {
-        await atlasManager.processTextureMaps();
-        updateStatus('✓ Atlas compiled successfully!');
-        console.log('[Sprite Test] Atlas compilation successful');
-    } catch (error) {
-        updateStatus(`✗ Atlas compilation failed: ${error.message}`);
-        console.error('[Sprite Test] Compilation failed:', error);
-        return;
-    }
-
-    // Show controls
-    const controlsEl = document.getElementById('controls');
-    if (controlsEl) controlsEl.style.display = 'block';
-
-    updateStatus('✓ Initialization complete! Use controls to animate sprite.');
-    console.log('[Sprite Test] Initialization complete');
 }
+
+/**
+ * Start polling automatically after scene loads
+ */
+setTimeout(() => {
+    // Start polling if not already running
+    if (!pollIntervalId) {
+        pollIntervalId = setInterval(pollInitializationProgress, 100);
+        // Call immediately to show initial status
+        pollInitializationProgress();
+    }
+}, 500); // Wait 500ms for UI to be ready
 
 /**
  * Create and export the sprite test scene
@@ -287,6 +261,12 @@ export async function createScene() {
     });
     scene.addComponent(objectsTexture);
     console.log('[Sprite Test] TextureMap created');
+
+    // Load the image and add texture map to atlas manager
+    // This will trigger auto-compilation during AtlasManager init
+    await imageRegistry.loadImage('./assets/objects.png');
+    atlasManager.addTextureMap(objectsTexture);
+    console.log('[Sprite Test] Image loaded and added to atlas manager');
 
     // 4. Create Viewport (400x400, centered on screen)
     const viewport = await Omosuen.newComponent('viewport', {
@@ -406,11 +386,6 @@ export async function createScene() {
                 selector: '#btn-back',
                 onActions: ['click'],
                 methodKey: 'backToMenuFromSprite',
-            },
-            {
-                selector: '#btn-compile',
-                onActions: ['click'],
-                methodKey: 'compileAndInitialize',
             },
             {
                 selector: '#btn-walk-up',

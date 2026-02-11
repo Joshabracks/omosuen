@@ -3,7 +3,7 @@ import { TransformT } from './data';
 import { Vector2D } from '../../math';
 
 export interface TransformMethods extends ComponentMethods {
-  init: (component: ComponentData) => void;
+  init: (component: ComponentData) => Promise<void>;
   setPosition: (transform: TransformT, x: number, y: number) => void;
   translate: (transform: TransformT, dx: number, dy: number) => void;
   getPosition: (transform: TransformT) => Vector2D;
@@ -22,7 +22,7 @@ export const Transform: TransformMethods = {
    * Initializes the transform component.
    * No initialization needed for transform data.
    */
-  init(_component: ComponentData) {
+  async init(_component: ComponentData): Promise<void> {
     // No-op
   },
 

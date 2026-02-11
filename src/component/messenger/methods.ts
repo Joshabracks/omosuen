@@ -59,7 +59,7 @@ export interface MessengerMethods extends ComponentMethods {
     callbackKey: string,
   ) => ListenerHandle;
   removeListener: (m: MessengerT, handle: ListenerHandle) => void;
-  init: (component: ComponentData) => void;
+  init: (component: ComponentData) => Promise<void>;
   dispose: (component: ComponentData) => void;
 }
 
@@ -302,7 +302,7 @@ export const Messenger: MessengerMethods = {
    * Messenger.init(messenger);
    * ```
    */
-  init: (component: ComponentData): void => {
+  init: async (component: ComponentData): Promise<void> => {
     const m = component as MessengerT;
 
     // Register all declared listeners

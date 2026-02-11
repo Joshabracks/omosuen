@@ -8,19 +8,18 @@
 import type { NexusT } from '../component/nexus/data';
 
 /**
- * Renders the active scene.
+ * Renders the active scene by calling render() on all camera components.
  *
- * FUTURE IMPLEMENTATION:
- * - WebGL rendering pipeline
- * - Axonometric projection with fixed z-axis camera
+ * Cameras are responsible for:
+ * - Collecting renderable components (sprites, cell maps)
+ * - Managing WebGL state and shaders
+ * - Rendering to their assigned viewports
+ *
+ * FUTURE ENHANCEMENTS:
  * - Sprite batching for performance
  * - Depth sorting for proper rendering order
- * - Canvas fallback for compatibility
  * - Render layer management
- * - Camera transforms and viewport
  * - Post-processing effects
- *
- * Current Status: Stub function (no rendering implemented)
  *
  * @param scene - The scene to render
  *
@@ -30,8 +29,21 @@ import type { NexusT } from '../component/nexus/data';
  * renderScene(activeScene);
  * ```
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function renderScene(scene: NexusT): void {
-  // Stub - no rendering yet
-  // Future implementation will render all visible components
+  // Import nexus methods dynamically to avoid circular dependencies
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { getComponentsByType } = require('../component/nexus/methods').Nexus;
+
+  // Find all camera components in the scene (recursive search)
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+  const cameras = getComponentsByType(scene, 'camera', true);
+
+  // Render from each camera
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  for (const camera of cameras) {
+    // Each camera has a render() method that handles its own rendering
+    // Delta time is not needed for rendering (only for animations/updates)
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+    camera.render(0);
+  }
 }

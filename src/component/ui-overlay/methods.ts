@@ -8,7 +8,7 @@ export interface UIOverlayMethods extends ComponentMethods {
   show?: (u: UIOverlayT) => void;
   back: (u: UIOverlayT) => void;
   applyBindings: (u: UIOverlayT) => void;
-  init: (component: ComponentData) => void;
+  init: (component: ComponentData) => Promise<void>;
   update: (component: ComponentData, deltaTime: number) => void;
 }
 
@@ -110,7 +110,7 @@ export const UIOverlay: UIOverlayMethods = {
     }
   },
 
-  init(component: ComponentData) {
+  async init(component: ComponentData): Promise<void> {
     const u = component as UIOverlayT;
     // Append container to DOM during init (after scene is loaded)
     if (u.container && !u.container.parentNode) {

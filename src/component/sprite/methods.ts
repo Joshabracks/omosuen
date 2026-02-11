@@ -7,7 +7,7 @@ import type { TextureMapT } from '../texture-map/data';
 export type ChannelType = 'albedo' | 'normal' | 'material' | 'emission';
 
 export interface SpriteMethods extends ComponentMethods {
-  init: (component: ComponentData) => void;
+  init: (component: ComponentData) => Promise<void>;
   setFrame: (
     sprite: SpriteT,
     index: number,
@@ -30,7 +30,7 @@ export const Sprite: SpriteMethods = {
    * Initializes the sprite component.
    * Validates that referenced texture maps exist in the scene.
    */
-  init(component: ComponentData) {
+  async init(component: ComponentData): Promise<void> {
     const s = component as SpriteT;
     const scene = getActiveScene();
 

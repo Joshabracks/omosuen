@@ -12,6 +12,15 @@ export interface AtlasManagerMethods extends ComponentMethods {
   type: 'atlas-manager';
 
   /**
+   * Initializes the AtlasManager and auto-compiles texture atlases if needed.
+   * Called automatically during component initialization.
+   *
+   * @param component - The atlas manager component
+   * @returns Promise that resolves when initialization is complete
+   */
+  init: (component: ComponentData) => Promise<void>;
+
+  /**
    * Adds a TextureMap to the processing queue.
    * Sets compiled flag to false.
    *
@@ -160,6 +169,27 @@ function extractFrameImageData(
 
 export const AtlasManager: AtlasManagerMethods = {
   type: 'atlas-manager',
+
+  init: async (component: ComponentData): Promise<void> => {
+    const am = component as AtlasManagerT;
+
+    // Only compile if not already compiled and has pending texture maps
+    if (!am.compiled && am.textureMapIds.size > 0) {
+      console.log(
+        '[atlas-manager] Auto-compiling texture atlases during initialization...',
+      );
+      try {
+        await AtlasManager.processTextureMaps(am);
+        console.log('[atlas-manager] Auto-compilation complete');
+      } catch (error) {
+        console.error(
+          '[atlas-manager] Auto-compilation failed during init:',
+          error,
+        );
+        throw error; // Re-throw to prevent camera from initializing
+      }
+    }
+  },
 
   addTextureMap: (am: AtlasManagerT, textureMap: TextureMapT): void => {
     am.textureMapIds.add(textureMap.textureMapKey);

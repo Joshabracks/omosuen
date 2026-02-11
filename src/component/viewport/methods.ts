@@ -2,7 +2,7 @@ import { ComponentData, ComponentMethods } from '../types';
 import { ViewportT } from './data';
 
 export interface ViewportMethods extends ComponentMethods {
-  init: (component: ComponentData) => void;
+  init: (component: ComponentData) => Promise<void>;
   update: (component: ComponentData, deltaTime: number) => void;
   resize: (v: ViewportT, width: number, height: number) => void;
   clear: (v: ViewportT) => void;
@@ -23,7 +23,7 @@ export const Viewport: ViewportMethods = {
    * Initializes the viewport component.
    * Appends canvas to DOM and sets up initial WebGL state.
    */
-  init(component: ComponentData) {
+  async init(component: ComponentData): Promise<void> {
     const v = component as ViewportT;
 
     // Append container to DOM during init (after scene is loaded)

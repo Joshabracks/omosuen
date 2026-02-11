@@ -75,7 +75,10 @@ export function queueInit(id: number): void {
  * processInitQueue(activeScene, 16.67);
  * ```
  */
-export function processInitQueue(scene: NexusT, targetFrameTime: number): void {
+export async function processInitQueue(
+  scene: NexusT,
+  targetFrameTime: number,
+): Promise<void> {
   // Start new init cycle
   if (INIT_QUEUE_LENGTH === -1 && INIT_QUEUE.length > 0) {
     INIT_QUEUE_LENGTH = INIT_QUEUE.length;
@@ -131,10 +134,11 @@ export function processInitQueue(scene: NexusT, targetFrameTime: number): void {
       continue;
     }
 
-    // Call init if it exists
+    // Call init if it exists (async)
     const method = MethodRegistry[component.type];
     if (method.init && typeof method.init === 'function') {
-      method.init(component);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+      await method.init(component);
     }
 
     // Mark as initialized

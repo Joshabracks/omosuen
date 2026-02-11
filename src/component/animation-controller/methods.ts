@@ -8,7 +8,7 @@ import type { SpriteT } from '../sprite/data';
 import { MethodRegistry } from '../registry';
 
 export interface AnimationControllerMethods extends ComponentMethods {
-  init: (component: ComponentData) => void;
+  init: (component: ComponentData) => Promise<void>;
   update: (component: ComponentData, deltaTime: number) => void;
   addAnimation: (controller: AnimationControllerT, animation: Animation) => void;
   removeAnimation: (controller: AnimationControllerT, name: string) => void;
@@ -42,7 +42,7 @@ export const AnimationController: AnimationControllerMethods = {
    * Initializes the animation controller.
    * Validates that the target sprite exists.
    */
-  init(component: ComponentData) {
+  async init(component: ComponentData): Promise<void> {
     const ac = component as AnimationControllerT;
     const scene = getActiveScene();
 

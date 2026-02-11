@@ -55,17 +55,17 @@ let animationFrameId = 0;
  * Called once per frame by requestAnimationFrame. Performs the following
  * operations in order:
  * 1. Calculate delta time and FPS
- * 2. Process initialization queue (progressive, time-limited)
+ * 2. Process initialization queue (progressive, time-limited, async)
  * 3. Update all components (respects pause state and loader flags)
  * 4. Process disposal queue (batched)
- * 5. Render scene (stub)
+ * 5. Render scene
  * 6. Poll messages (stub)
  * 7. Poll flags (stub)
  * 8. Schedule next frame
  *
  * @param currentTime - Current timestamp from requestAnimationFrame
  */
-function gameLoop(currentTime: number): void {
+async function gameLoop(currentTime: number): Promise<void> {
   // Calculate deltaTime (uncapped - reflects actual elapsed time)
   if (lastFrameTime === 0) {
     // First frame - initialize lastFrameTime
@@ -90,8 +90,8 @@ function gameLoop(currentTime: number): void {
   // Calculate target frame time for progressive init
   const targetFrameTime = 1000 / targetFPS; // e.g., 16.67ms for 60fps
 
-  // 1. Progressive initialization (time-limited)
-  processInitQueue(activeScene, targetFrameTime);
+  // 1. Progressive initialization (time-limited, async)
+  await processInitQueue(activeScene, targetFrameTime);
 
   // 2. Update components (skip if paused)
   if (!loopPaused) {
@@ -110,8 +110,12 @@ function gameLoop(currentTime: number): void {
   // 6. Poll flags (stub)
   pollFlags();
 
-  // Schedule next frame
-  animationFrameId = requestAnimationFrame(gameLoop);
+  // Schedule next frame (wrap async gameLoop to handle errors)
+  animationFrameId = requestAnimationFrame((time) => {
+    gameLoop(time).catch((err) => {
+      console.error('[GAME LOOP] Async error in game loop:', err);
+    });
+  });
 }
 
 /**
@@ -147,8 +151,12 @@ export function start(fps: number = 60): void {
 
   console.info(`[GAME LOOP] Starting game loop (target: ${targetFPS} FPS)`);
 
-  // Start the loop
-  animationFrameId = requestAnimationFrame(gameLoop);
+  // Start the loop (wrap async gameLoop to handle errors)
+  animationFrameId = requestAnimationFrame((time) => {
+    gameLoop(time).catch((err) => {
+      console.error('[GAME LOOP] Async error in game loop:', err);
+    });
+  });
 }
 
 /**

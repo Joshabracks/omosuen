@@ -109,7 +109,7 @@ export interface ComponentMethods {
   type: COMPONENT_TYPE;
   dispose?: (component: ComponentData) => void;
   update?: (component: ComponentData, deltaTime: number) => void;
-  init?: (component: ComponentData) => void;
+  init?: (component: ComponentData) => Promise<void>;
 }
 
 /**

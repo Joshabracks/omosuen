@@ -53,6 +53,7 @@ export type {
   Animation,
   AnimationState,
 } from './animation-controller';
+export type { CameraT as camera, CameraMethods } from './camera';
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';
@@ -70,3 +71,4 @@ export { ViewportSerializer } from './viewport/data';
 export { SpriteSerializer } from './sprite/data';
 export { TransformSerializer } from './transform/data';
 export { AnimationControllerSerializer } from './animation-controller/data';
+export { CameraSerializer } from './camera/data';

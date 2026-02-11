@@ -47,7 +47,8 @@ export type COMPONENT_TYPE =
   | 'sprite'
   | 'transform'
   | 'animation-controller'
-  | 'cell-map';
+  | 'cell-map'
+  | 'camera';
 
 export interface ComponentOptions {
   name: string;

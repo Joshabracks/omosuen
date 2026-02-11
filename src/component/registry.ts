@@ -63,6 +63,11 @@ import {
   builder as cellMapBuilder,
   PROPERTY_ALLOWLIST as CellMapPropertyAllowlist,
 } from './cell-map';
+import {
+  Camera,
+  builder as cameraBuilder,
+  PROPERTY_ALLOWLIST as CameraPropertyAllowlist,
+} from './camera';
 import type { COMPONENT_TYPE } from './types';
 
 /**
@@ -89,6 +94,7 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   transform: transformBuilder,
   'animation-controller': animationControllerBuilder,
   'cell-map': cellMapBuilder,
+  camera: cameraBuilder,
 };
 
 /**
@@ -114,6 +120,7 @@ export const MethodRegistry: Record<
   transform: Transform,
   'animation-controller': AnimationController,
   'cell-map': CellMap,
+  camera: Camera,
   'ui-binding': {},
   'html-constructor': {},
   'message-listener': {},
@@ -137,6 +144,7 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   transform: TransformPropertyAllowlist,
   'animation-controller': AnimationControllerPropertyAllowlist,
   'cell-map': CellMapPropertyAllowlist,
+  camera: CameraPropertyAllowlist,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

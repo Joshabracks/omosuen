@@ -1,4 +1,4 @@
-import { ComponentData, ComponentMethods } from '../types';
+import { ComponentData, ComponentMethods, getProxiedComponent } from '../types';
 import { CameraT } from './data';
 import { NexusT } from '../nexus/data';
 import { TransformT } from '../transform/data';
@@ -8,9 +8,10 @@ import { CellMapT } from '../cell-map/data';
 
 export interface CameraMethods extends ComponentMethods {
   render: (camera: CameraT, deltaTime: number) => void;
-  collectRenderables: (
-    camera: CameraT,
-  ) => { sprites: SpriteT[]; cellMaps: CellMapT[] };
+  collectRenderables: (camera: CameraT) => {
+    sprites: SpriteT[];
+    cellMaps: CellMapT[];
+  };
   pan: (camera: CameraT, offsetX: number, offsetY: number) => void;
   setZoom: (camera: CameraT, zoom: number) => void;
   init: (component: ComponentData) => void;
@@ -32,13 +33,14 @@ function render(camera: CameraT, deltaTime: number): void {
     return;
   }
 
-  const parentNexus = camera.parent as NexusT;
+  const parentNexus = getProxiedComponent(camera.parent!) as unknown as NexusT;
 
   // Get sibling transform for camera position
-  // @ts-expect-error - getComponentByType exists at runtime via Proxy
-  const transform = parentNexus.getComponentByType('transform', false) as
-    | TransformT
-    | null;
+  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
+  const transform = parentNexus.getComponentByType(
+    'transform',
+    false,
+  ) as TransformT | null;
 
   if (!transform) {
     console.warn(
@@ -47,11 +49,16 @@ function render(camera: CameraT, deltaTime: number): void {
     return;
   }
 
-  // Get viewport to render to
-  // @ts-expect-error - getComponentByName exists at runtime via Proxy
-  const viewport = parentNexus.getComponentByName(camera.viewportRef, false) as
-    | ViewportT
-    | null;
+  // Get viewport to render to (search from scene root, not parent)
+  // Viewport is typically a sibling of the camera's parent nexus
+  const sceneRoot = getProxiedComponent(
+    parentNexus.parent!,
+  ) as unknown as NexusT;
+  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
+  const viewport = sceneRoot.getComponentByName(
+    camera.viewportRef,
+    true,
+  ) as ViewportT | null;
 
   if (!viewport || !viewport.gl) {
     console.warn(
@@ -104,21 +111,22 @@ function render(camera: CameraT, deltaTime: number): void {
  * @param camera - The camera component
  * @returns Object containing arrays of sprites and cell maps
  */
-function collectRenderables(
-  camera: CameraT,
-): { sprites: SpriteT[]; cellMaps: CellMapT[] } {
+function collectRenderables(camera: CameraT): {
+  sprites: SpriteT[];
+  cellMaps: CellMapT[];
+} {
   if (!camera.parent || camera.parent.type !== 'nexus') {
     return { sprites: [], cellMaps: [] };
   }
 
-  const parentNexus = camera.parent as NexusT;
+  const parentNexus = getProxiedComponent(camera.parent!) as unknown as NexusT;
 
   // Recursively collect all sprites from the tree
-  // @ts-expect-error - getComponentsByType exists at runtime via Proxy
+  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const sprites = parentNexus.getComponentsByType('sprite', true) as SpriteT[];
 
   // Recursively collect all cell maps from the tree
-  // @ts-expect-error - getComponentsByType exists at runtime via Proxy
+  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const cellMaps = parentNexus.getComponentsByType(
     'cell-map',
     true,
@@ -142,11 +150,12 @@ function pan(camera: CameraT, offsetX: number, offsetY: number): void {
     return;
   }
 
-  const parentNexus = camera.parent as NexusT;
-  // @ts-expect-error - getComponentByType exists at runtime via Proxy
-  const transform = parentNexus.getComponentByType('transform', false) as
-    | TransformT
-    | null;
+  const parentNexus = getProxiedComponent(camera.parent!) as unknown as NexusT;
+  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
+  const transform = parentNexus.getComponentByType(
+    'transform',
+    false,
+  ) as TransformT | null;
 
   if (!transform) {
     console.warn(
@@ -194,11 +203,17 @@ function init(component: ComponentData): void {
     return;
   }
 
-  const parentNexus = camera.parent as NexusT;
-  // @ts-expect-error - getComponentByName exists at runtime via Proxy
-  const viewport = parentNexus.getComponentByName(camera.viewportRef, false) as
-    | ViewportT
-    | null;
+  const parentNexus = getProxiedComponent(camera.parent!) as unknown as NexusT;
+
+  // Get viewport from scene root (viewport is typically a sibling of camera's parent)
+  const sceneRoot = getProxiedComponent(
+    parentNexus.parent!,
+  ) as unknown as NexusT;
+  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
+  const viewport = sceneRoot.getComponentByName(
+    camera.viewportRef,
+    true,
+  ) as ViewportT | null;
 
   if (!viewport || !viewport.gl) {
     console.warn(

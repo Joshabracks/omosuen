@@ -79,6 +79,7 @@ export function builder(options: CameraOptions): CameraT {
     unique: ComponentUnique.LOCAL,
     parent: null,
     _disposed: false,
+    _initDefer: 1,
 
     zoom: options.zoom ?? 1.0,
     axonometricAngle: options.axonometricAngle ?? 30,

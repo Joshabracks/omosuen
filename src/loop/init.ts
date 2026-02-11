@@ -99,6 +99,22 @@ export function processInitQueue(scene: NexusT, targetFrameTime: number): void {
   const startTime = performance.now();
   let componentsInitialized = 0;
 
+  INIT_QUEUE.sort((a, b) => {
+    // @ts-expect-error - proxy wrapper has methods
+    const componentA: ComponentData = scene.getComponentById(
+      a,
+      true,
+    ) as ComponentData;
+    // @ts-expect-error - proxy wrapper has methods
+    const componentB: ComponentData = scene.getComponentById(
+      b,
+      true,
+    ) as ComponentData;
+    const deferA = componentA?._initDefer || 0;
+    const deferB = componentB?._initDefer || 0;
+    return deferA - deferB;
+  });
+
   while (INIT_QUEUE.length > 0) {
     const id = INIT_QUEUE.shift()!;
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment

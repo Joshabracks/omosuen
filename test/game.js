@@ -40,6 +40,7 @@ async function initGame() {
     Omosuen.registerSceneModule('message-test', '/scenes/message-test.js');
     Omosuen.registerSceneModule('viewport-test', '/scenes/viewport-test.js');
     Omosuen.registerSceneModule('atlas-test', '/scenes/atlas-test.js');
+    Omosuen.registerSceneModule('sprite-test', '/scenes/sprite-test.js');
 
     // Switch to main menu
     await Omosuen.switchScene('main-menu');

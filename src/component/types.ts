@@ -1,6 +1,41 @@
 import { BUILDERS, MethodRegistry, PROPERTY_ALLOWLIST } from './registry';
 import { queueInit } from '../loop/init';
 
+/**
+ * Registry mapping raw component objects to their Proxy wrappers.
+ * This solves the JavaScript limitation where Proxy wrappers are lost
+ * when stored as object properties (like component.parent).
+ *
+ * Using WeakMap ensures:
+ * - No memory leaks (entries are GC'd when components are disposed)
+ * - Fast O(1) lookup
+ * - Components can be used as keys
+ */
+const PROXY_REGISTRY = new WeakMap<ComponentData, ComponentData>();
+
+/**
+ * Gets the Proxy wrapper for a component.
+ *
+ * This function is needed because when components store references to other
+ * components (like parent), the Proxy wrapper is lost and only the raw target
+ * object remains. This function retrieves the original Proxy wrapper.
+ *
+ * @param component - The component (may be raw or already proxied)
+ * @returns The proxied version of the component
+ *
+ * @example
+ * ```typescript
+ * // In camera init:
+ * const parentNexus = getProxiedComponent(camera.parent!) as NexusT;
+ * const viewport = parentNexus.getComponentByName('My Viewport', false);
+ * ```
+ */
+export function getProxiedComponent(component: ComponentData): ComponentData {
+  // Look up in registry - if not found, component might already be a Proxy or never registered
+  const proxy = PROXY_REGISTRY.get(component);
+  return proxy || component;
+}
+
 let COMPONENT_COUNT = 0;
 
 /**
@@ -67,6 +102,7 @@ export interface ComponentData {
   overrideKey?: string;
   updateOverride?: string;
   _initialized?: boolean;
+  _initDefer?: number;
 }
 
 export interface ComponentMethods {
@@ -145,6 +181,7 @@ export async function newComponent(
     'overrideKey',
     'updateOverride',
     '_initialized',
+    '_initDefer',
   ];
 
   // Component-specific properties
@@ -182,6 +219,11 @@ export async function newComponent(
   };
 
   const proxy = new Proxy(component, handler);
+
+  // Register the proxy in the registry so it can be retrieved later
+  // This is crucial for components that store references to other components
+  PROXY_REGISTRY.set(component, proxy);
+
   return proxy;
 }
 

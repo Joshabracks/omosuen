@@ -17,6 +17,7 @@ Omosuen.registerHtmlConstructor('mainMenu', (overlay) => {
                 <button id="btn-message-test" class="menu-button">Message Test Scene</button>
                 <button id="btn-viewport-test" class="menu-button">Viewport Test Scene</button>
                 <button id="btn-atlas-test" class="menu-button">Atlas Manager Test</button>
+                <button id="btn-sprite-test" class="menu-button">Sprite Rendering Test</button>
             </div>
             <p class="text center margin-top">
                 Press a button to load a test scene
@@ -41,6 +42,11 @@ Omosuen.registerBinding('loadViewportTest', async (event) => {
 Omosuen.registerBinding('loadAtlasTest', async (event) => {
     console.log('Loading Atlas Test scene...');
     await Omosuen.switchScene('atlas-test');
+});
+
+Omosuen.registerBinding('loadSpriteTest', async (event) => {
+    console.log('Loading Sprite Test scene...');
+    await Omosuen.switchScene('sprite-test');
 });
 
 /**
@@ -71,6 +77,11 @@ export async function createScene() {
                 selector: '#btn-atlas-test',
                 onActions: ['click'],
                 methodKey: 'loadAtlasTest'
+            },
+            {
+                selector: '#btn-sprite-test',
+                onActions: ['click'],
+                methodKey: 'loadSpriteTest'
             }
         ]
     });

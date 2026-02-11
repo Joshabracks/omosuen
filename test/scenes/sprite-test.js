@@ -23,6 +23,11 @@ Omosuen.registerHtmlConstructor('spriteTest', (overlay) => {
                 <div id="init-status" class="sidebar-status"></div>
             </div>
 
+            <div id="atlas-display" class="sidebar-section" style="display: none;">
+                <h3 style="color: #ff6600; margin: 10px 0;">Compiled Atlas</h3>
+                <div id="atlas-image-container"></div>
+            </div>
+
             <div id="controls" class="sidebar-section" style="display: none;">
                 <div style="text-align: center; color: #ff6600; font-size: 14px; margin-bottom: 10px; text-transform: uppercase;">
                     Animation
@@ -62,67 +67,118 @@ Omosuen.registerBinding('backToMenuFromSprite', async (event) => {
  * Register UI bindings for animation controls
  */
 Omosuen.registerBinding('setWalkUp', () => {
+    console.log('[Sprite Test] Walk Up button clicked');
+    logDebugInfo('Before Walk Up');
+
     const scene = Omosuen.getActiveScene();
-    if (!scene) return;
+    if (!scene) {
+        console.log('[Sprite Test] No active scene found');
+        return;
+    }
 
     const animController = scene.getComponentByType('animation-controller', true);
     if (animController) {
         animController.play('walk-up');
         updateAnimStatus('walk-up', animController.isPlaying ? 'Playing' : 'Stopped');
+        logDebugInfo('After Walk Up');
+    } else {
+        console.log('[Sprite Test] Animation controller not found');
     }
 });
 
 Omosuen.registerBinding('setWalkDown', () => {
+    console.log('[Sprite Test] Walk Down button clicked');
+    logDebugInfo('Before Walk Down');
+
     const scene = Omosuen.getActiveScene();
-    if (!scene) return;
+    if (!scene) {
+        console.log('[Sprite Test] No active scene found');
+        return;
+    }
 
     const animController = scene.getComponentByType('animation-controller', true);
     if (animController) {
         animController.play('walk-down');
         updateAnimStatus('walk-down', animController.isPlaying ? 'Playing' : 'Stopped');
+        logDebugInfo('After Walk Down');
+    } else {
+        console.log('[Sprite Test] Animation controller not found');
     }
 });
 
 Omosuen.registerBinding('setWalkLeft', () => {
+    console.log('[Sprite Test] Walk Left button clicked');
+    logDebugInfo('Before Walk Left');
+
     const scene = Omosuen.getActiveScene();
-    if (!scene) return;
+    if (!scene) {
+        console.log('[Sprite Test] No active scene found');
+        return;
+    }
 
     const animController = scene.getComponentByType('animation-controller', true);
     if (animController) {
         animController.play('walk-left');
         updateAnimStatus('walk-left', animController.isPlaying ? 'Playing' : 'Stopped');
+        logDebugInfo('After Walk Left');
+    } else {
+        console.log('[Sprite Test] Animation controller not found');
     }
 });
 
 Omosuen.registerBinding('setWalkRight', () => {
+    console.log('[Sprite Test] Walk Right button clicked');
+    logDebugInfo('Before Walk Right');
+
     const scene = Omosuen.getActiveScene();
-    if (!scene) return;
+    if (!scene) {
+        console.log('[Sprite Test] No active scene found');
+        return;
+    }
 
     const animController = scene.getComponentByType('animation-controller', true);
     if (animController) {
         animController.play('walk-right');
         updateAnimStatus('walk-right', animController.isPlaying ? 'Playing' : 'Stopped');
+        logDebugInfo('After Walk Right');
+    } else {
+        console.log('[Sprite Test] Animation controller not found');
     }
 });
 
 Omosuen.registerBinding('toggleAnimation', () => {
+    console.log('[Sprite Test] Toggle Animation button clicked');
+    logDebugInfo('Before Toggle');
+
     const scene = Omosuen.getActiveScene();
-    if (!scene) return;
+    if (!scene) {
+        console.log('[Sprite Test] No active scene found');
+        return;
+    }
 
     const animController = scene.getComponentByType('animation-controller', true);
-    if (!animController) return;
+    if (!animController) {
+        console.log('[Sprite Test] Animation controller not found');
+        return;
+    }
 
     const btn = document.getElementById('btn-toggle-animation');
+
+    console.log(`[Sprite Test] Animation state before toggle: ${animController.state}`);
 
     if (animController.isPlaying) {
         animController.stop();
         if (btn) btn.textContent = 'Start';
         updateAnimStatus(animController.currentAnimation || 'walk-down', 'Stopped');
+        console.log('[Sprite Test] Animation stopped');
     } else {
         animController.resume();
         if (btn) btn.textContent = 'Stop';
         updateAnimStatus(animController.currentAnimation || 'walk-down', 'Playing');
+        console.log('[Sprite Test] Animation resumed');
     }
+
+    logDebugInfo('After Toggle');
 });
 
 /**
@@ -133,6 +189,172 @@ function updateAnimStatus(animName, status) {
     if (statusEl) {
         statusEl.innerHTML = `Animation: ${animName}<br>Status: ${status}`;
     }
+}
+
+/**
+ * Converts ImageData to a displayable Image element
+ */
+function imageDataToImage(imageData) {
+    const canvas = document.createElement('canvas');
+    canvas.width = imageData.width;
+    canvas.height = imageData.height;
+
+    const ctx = canvas.getContext('2d');
+    ctx.putImageData(imageData, 0, 0);
+
+    const img = document.createElement('img');
+    img.src = canvas.toDataURL('image/png');
+    img.style.border = '2px solid #ff6600';
+    img.style.imageRendering = 'pixelated';
+    img.style.maxWidth = '220px';
+    img.style.height = 'auto';
+
+    return img;
+}
+
+/**
+ * Displays the compiled atlas image
+ */
+function displayCompiledAtlas() {
+    console.log('[Sprite Test] Displaying compiled atlas...');
+
+    const scene = Omosuen.getActiveScene();
+    if (!scene) {
+        console.warn('[Sprite Test] No active scene for atlas display');
+        return;
+    }
+
+    const atlasManager = scene.getComponentByType('atlas-manager', true);
+    if (!atlasManager) {
+        console.warn('[Sprite Test] No atlas manager found');
+        return;
+    }
+
+    const atlasCount = atlasManager.getAtlasCount();
+    console.log(`[Sprite Test] Found ${atlasCount} compiled atlases`);
+
+    const container = document.getElementById('atlas-image-container');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    for (let i = 0; i < atlasCount; i++) {
+        const atlas = atlasManager.getAtlas(i);
+        if (atlas) {
+            const wrapper = document.createElement('div');
+            wrapper.style.marginBottom = '10px';
+
+            const label = document.createElement('div');
+            label.textContent = `Atlas ${i} (${atlas.width}x${atlas.height})`;
+            label.style.color = '#ff6600';
+            label.style.marginBottom = '5px';
+            label.style.fontSize = '12px';
+
+            const img = imageDataToImage(atlas);
+
+            wrapper.appendChild(label);
+            wrapper.appendChild(img);
+            container.appendChild(wrapper);
+
+            console.log(`[Sprite Test] Displayed atlas ${i}: ${atlas.width}x${atlas.height}`);
+        }
+    }
+
+    // Show the atlas display section
+    const atlasDisplay = document.getElementById('atlas-display');
+    if (atlasDisplay) atlasDisplay.style.display = 'block';
+}
+
+/**
+ * Logs TextureMap packed frames for verification
+ */
+function logTextureMapFrames() {
+    console.log('\n===== [Sprite Test] TextureMap Frame Data =====');
+
+    const scene = Omosuen.getActiveScene();
+    if (!scene) {
+        console.warn('[Sprite Test] No active scene');
+        return;
+    }
+
+    // Look up by textureMapKey, not name
+    const textureMaps = scene.getComponentsByType('texture-map', true);
+    const textureMap = textureMaps.find(tm => tm.textureMapKey === 'objects');
+    if (!textureMap) {
+        console.warn('[Sprite Test] TextureMap with textureMapKey "objects" not found');
+        return;
+    }
+
+    console.log(`TextureMap: ${textureMap.name} (key: ${textureMap.textureMapKey})`);
+    console.log(`Total frames: ${textureMap.packedFrames.length}`);
+
+    // Log frames 11-18 (walk animations) for visual verification
+    const walkFrames = [11, 12, 13, 14, 15, 16, 17, 18];
+    console.log('\nWalk animation frames (11-18):');
+
+    for (const frameIndex of walkFrames) {
+        const packed = textureMap.packedFrames.find(f => f.frameIndex === frameIndex);
+        if (packed) {
+            console.log(`  Frame ${frameIndex}: atlas=${packed.atlasIndex}, pos=(${packed.atlasPosition.x}, ${packed.atlasPosition.y}), size=(${packed.size.x}x${packed.size.y})`);
+        } else {
+            console.warn(`  Frame ${frameIndex}: NOT FOUND in packedFrames`);
+        }
+    }
+
+    console.log('==============================================\n');
+}
+
+/**
+ * Logs comprehensive debug information about scene state
+ */
+function logDebugInfo(label) {
+    console.log(`\n===== [Sprite Test Debug] ${label} =====`);
+
+    const scene = Omosuen.getActiveScene();
+    if (!scene) {
+        console.log('[Debug] No active scene');
+        return;
+    }
+
+    // Find camera nexus and transform
+    const cameraNexus = scene.getComponentByName('Camera Nexus', true);
+    if (cameraNexus) {
+        const cameraTransform = cameraNexus.getComponentByType('transform', false);
+        if (cameraTransform) {
+            console.log(`[Debug] Camera Transform: pos=(${cameraTransform.position.x}, ${cameraTransform.position.y}), rot=${cameraTransform.rotation}, scale=(${cameraTransform.scale.x}, ${cameraTransform.scale.y})`);
+        }
+        const camera = cameraNexus.getComponentByType('camera', false);
+        if (camera) {
+            console.log(`[Debug] Camera: zoom=${camera.zoom}, initialized=${camera._initialized}`);
+        }
+    }
+
+    // Find sprite nexus and transform
+    const spriteNexus = scene.getComponentByName('Character Sprite', true);
+    if (spriteNexus) {
+        const spriteTransform = spriteNexus.getComponentByType('transform', false);
+        if (spriteTransform) {
+            console.log(`[Debug] Sprite Transform: pos=(${spriteTransform.position.x}, ${spriteTransform.position.y}), rot=${spriteTransform.rotation}, scale=(${spriteTransform.scale.x}, ${spriteTransform.scale.y})`);
+        }
+        const sprite = spriteNexus.getComponentByType('sprite', false);
+        if (sprite) {
+            console.log(`[Debug] Sprite: frame=${sprite.frame.albedo}, opacity=${sprite.opacity}, tint=(${sprite.tint.x}, ${sprite.tint.y}, ${sprite.tint.z}, ${sprite.tint.w})`);
+        }
+    }
+
+    // Find viewport
+    const viewport = scene.getComponentByName('Sprite Viewport', true);
+    if (viewport) {
+        console.log(`[Debug] Viewport: ${viewport.width}x${viewport.height} at offset (${viewport.offsetX}, ${viewport.offsetY})`);
+    }
+
+    // Find animation controller
+    const animController = scene.getComponentByType('animation-controller', true);
+    if (animController) {
+        console.log(`[Debug] AnimController: current='${animController.currentAnimation}', state='${animController.state}', frameIndex=${animController.currentFrameIndex}, speed=${animController.speed}`);
+    }
+
+    console.log('========================================\n');
 }
 
 /**
@@ -161,6 +383,12 @@ function pollInitializationProgress() {
         if (scene) {
             // Initialization is complete
             updateInitStatus('✓ Initialization complete!');
+
+            // Display compiled atlas for visual verification
+            displayCompiledAtlas();
+
+            // Log texture map frames for verification
+            logTextureMapFrames();
 
             // Show controls
             const controlsEl = document.getElementById('controls');

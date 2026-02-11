@@ -28,6 +28,12 @@ export interface CameraMethods extends ComponentMethods {
  * @param deltaTime - Time elapsed since last frame in milliseconds
  */
 function render(camera: CameraT, deltaTime: number): void {
+  // Skip rendering if camera hasn't finished initializing
+  // This is normal during progressive initialization
+  if (!camera._initialized) {
+    return;
+  }
+
   if (!camera.parent || camera.parent.type !== 'nexus') {
     console.warn(
       `[camera] Camera '${camera.name}' has no parent nexus, cannot render`,
@@ -69,11 +75,6 @@ function render(camera: CameraT, deltaTime: number): void {
     return;
   }
 
-  // Skip rendering if no redraw needed (optimization for future)
-  if (!camera.needsRedraw) {
-    return;
-  }
-
   // Collect all renderable components from the tree
   const { sprites } = Camera.collectRenderables(camera);
 
@@ -98,13 +99,32 @@ function render(camera: CameraT, deltaTime: number): void {
 
   // No sprites to render
   if (sprites.length === 0) {
-    camera.needsRedraw = false;
     return;
+  }
+
+  // Build TextureMap lookup cache by textureMapKey
+  // Sprites reference TextureMaps by textureMapKey, not name
+  // @ts-expect-error - Proxy methods exist at runtime
+  const allTextureMaps = sceneRoot.getComponentsByType(
+    'texture-map',
+    true,
+  ) as TextureMapT[];
+  const textureMapCache = new Map<string, TextureMapT>();
+  for (const tm of allTextureMaps) {
+    textureMapCache.set(tm.textureMapKey, tm);
   }
 
   // Enable blending for transparency
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  // Disable depth testing for 2D sprite rendering
+  // 2D sprites don't need depth testing - they're sorted by render order
+  gl.disable(gl.DEPTH_TEST);
+
+  // Disable backface culling for 2D sprites
+  // Quads should render regardless of triangle winding order
+  gl.disable(gl.CULL_FACE);
 
   // Use sprite shader program
   gl.useProgram(program);
@@ -116,6 +136,10 @@ function render(camera: CameraT, deltaTime: number): void {
   const a_uv = gl.getAttribLocation(program, 'a_uv');
   // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_viewportSize = gl.getUniformLocation(program, 'u_viewportSize');
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  const u_cameraPosition = gl.getUniformLocation(program, 'u_cameraPosition');
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  const u_zoom = gl.getUniformLocation(program, 'u_zoom');
   // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_spritePosition = gl.getUniformLocation(program, 'u_spritePosition');
   // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -137,8 +161,10 @@ function render(camera: CameraT, deltaTime: number): void {
   // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_uvBounds = gl.getUniformLocation(program, 'u_uvBounds');
 
-  // Set viewport size uniform (constant for all sprites)
+  // Set constant uniforms (same for all sprites)
   gl.uniform2f(u_viewportSize, viewport.width, viewport.height);
+  gl.uniform2f(u_cameraPosition, transform.position.x, transform.position.y);
+  gl.uniform1f(u_zoom, camera.zoom);
 
   // Bind vertex buffers (shared for all sprites)
   gl.bindBuffer(gl.ARRAY_BUFFER, camera.glResources.quadVertexBuffer);
@@ -179,12 +205,15 @@ function render(camera: CameraT, deltaTime: number): void {
       continue;
     }
 
-    // @ts-expect-error - Proxy methods exist at runtime
-    const albedoTextureMap = sceneRoot.getComponentByName(
-      sprite.textureMapKeys.albedo,
-      true,
-    ) as TextureMapT | null;
-    if (!albedoTextureMap || albedoTextureMap.packedFrames.length === 0) {
+    // Look up texture map by textureMapKey (not name!)
+    const albedoTextureMap = textureMapCache.get(sprite.textureMapKeys.albedo);
+    if (!albedoTextureMap) {
+      console.warn(
+        `[camera] Sprite '${sprite.name}' references textureMapKey '${sprite.textureMapKeys.albedo}' which was not found`,
+      );
+      continue;
+    }
+    if (albedoTextureMap.packedFrames.length === 0) {
       continue;
     }
 
@@ -252,9 +281,6 @@ function render(camera: CameraT, deltaTime: number): void {
     // Draw the sprite quad (6 vertices = 2 triangles)
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
-
-  // Mark as rendered
-  camera.needsRedraw = false;
 }
 
 /**
@@ -273,13 +299,19 @@ function collectRenderables(camera: CameraT): {
 
   const parentNexus = getProxiedComponent(camera.parent!) as unknown as NexusT;
 
-  // Recursively collect all sprites from the tree
-  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
-  const sprites = parentNexus.getComponentsByType('sprite', true) as SpriteT[];
+  // Search from scene root to find ALL sprites in the entire scene tree
+  // This allows the camera to find sprites in sibling branches, not just children
+  const sceneRoot = getProxiedComponent(
+    parentNexus.parent!,
+  ) as unknown as NexusT;
 
-  // Recursively collect all cell maps from the tree
+  // Recursively collect all sprites from the scene root
   // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
-  const cellMaps = parentNexus.getComponentsByType(
+  const sprites = sceneRoot.getComponentsByType('sprite', true) as SpriteT[];
+
+  // Recursively collect all cell maps from the scene root
+  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
+  const cellMaps = sceneRoot.getComponentsByType(
     'cell-map',
     true,
   ) as CellMapT[];
@@ -319,9 +351,6 @@ function pan(camera: CameraT, offsetX: number, offsetY: number): void {
   // Update transform position
   transform.position.x += offsetX;
   transform.position.y += offsetY;
-
-  // Mark for redraw
-  camera.needsRedraw = true;
 }
 
 /**
@@ -337,7 +366,6 @@ function setZoom(camera: CameraT, zoom: number): void {
   }
 
   camera.zoom = zoom;
-  camera.needsRedraw = true;
 }
 
 /**
@@ -468,6 +496,8 @@ async function init(component: ComponentData): Promise<void> {
     uniform vec2 u_spriteSize;
     uniform float u_rotation;
     uniform vec2 u_viewportSize;
+    uniform vec2 u_cameraPosition;
+    uniform float u_zoom;
     varying vec2 v_uv;
 
     void main() {
@@ -479,8 +509,10 @@ async function init(component: ComponentData): Promise<void> {
         a_position.x * s + a_position.y * c
       );
 
-      // Scale and translate
-      vec2 pos = rotated * u_spriteSize + u_spritePosition;
+      // Scale by sprite size and zoom, then translate to world position
+      // Subtract camera position to convert from world space to view space
+      vec2 viewPos = (u_spritePosition - u_cameraPosition);
+      vec2 pos = rotated * (u_spriteSize * u_zoom) + viewPos;
 
       // Convert to clip space
       vec2 clipSpace = (pos / u_viewportSize) * 2.0 - 1.0;
@@ -643,7 +675,7 @@ async function init(component: ComponentData): Promise<void> {
     `[camera] Camera '${camera.name}' initialized with WebGL context`,
   );
 
-  camera.needsRedraw = true;
+  camera._initialized = true;
 }
 
 /**

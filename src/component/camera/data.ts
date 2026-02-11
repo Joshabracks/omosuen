@@ -35,11 +35,6 @@ export interface CameraT
   viewportRef: string;
 
   /**
-   * Flag indicating the scene needs to be redrawn.
-   */
-  needsRedraw: boolean;
-
-  /**
    * WebGL rendering resources (shader programs, buffers, etc.)
    */
   glResources: {
@@ -87,7 +82,6 @@ export function builder(options: CameraOptions): CameraT {
     zoom: options.zoom ?? 1.0,
     axonometricAngle: options.axonometricAngle ?? 30,
     viewportRef: options.viewportRef,
-    needsRedraw: true,
 
     glResources: {
       cellMapProgram: null,
@@ -162,6 +156,5 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'zoom',
   'axonometricAngle',
   'viewportRef',
-  'needsRedraw',
   'glResources',
 ];

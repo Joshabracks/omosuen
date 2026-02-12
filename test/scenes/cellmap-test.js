@@ -382,7 +382,11 @@ function generateHeightmap(width, depth, maxHeight) {
 
             // Fill cells from ground up to calculated height
             for (let y = 0; y <= height; y++) {
-                materialMap.set(new Omosuen.Vector3D(x, y, z), 0); // Material 0 = grass
+                if (x >= width * .25 && x <= width * .75 && z >= depth * .25 && z <= depth * .75) {
+                    materialMap.set(new Omosuen.Vector3D(x, y, z), 1); // Material 1 = dirt
+                } else {
+                    materialMap.set(new Omosuen.Vector3D(x, y, z), 0); // Material 0 = grass
+                }
                 shapeMap.set(new Omosuen.Vector3D(x, y, z), 1); // Shape 1 = cube (solid)
             }
             // Cells above height remain as 0 (air) in shapeMap
@@ -440,13 +444,32 @@ export async function createScene() {
         imageType: undefined, // Undefined = entire image is single frame
     });
     scene.addComponent(grassNormalTexture);
+    const dirtAlbedoTexture = await Omosuen.newComponent('texture-map', {
+        textureMapKey: 'dirt-albedo',
+        name: 'Dirt Albedo Texture',
+        filePath: './assets/dirt.jpg',
+        imageType: undefined
+    })
+    scene.addComponent(dirtAlbedoTexture)
+    const dirtNormalTexture = await Omosuen.newComponent('texture-map', {
+        textureMapKey: 'dirt-normal',
+        name: 'Dirt Normal Texture',
+        filePath: './assets/dirt_n.png',
+        imageType: undefined
+    })
+    scene.addComponent(dirtNormalTexture)
     console.log('[CellMap Test] TextureMaps created');
 
     // Load images and add to atlas manager
     await imageRegistry.loadImage('./assets/seamless-textured-grass-natural-grass-pattern_172107-1308.jpg');
     await imageRegistry.loadImage('./assets/seamless-textured-grass-natural-grass-pattern_172107-1308_n.png');
+    await imageRegistry.loadImage(dirtAlbedoTexture.filePath);
+    await imageRegistry.loadImage(dirtNormalTexture.filePath);
+
     atlasManager.addTextureMap(grassAlbedoTexture);
     atlasManager.addTextureMap(grassNormalTexture);
+    atlasManager.addTextureMap(dirtNormalTexture);
+    atlasManager.addTextureMap(dirtAlbedoTexture);
     console.log('[CellMap Test] Images loaded and added to atlas manager');
 
     // 4. Create Viewport (800x600, centered on screen for better 3D view)
@@ -508,9 +531,16 @@ export async function createScene() {
         materialTextureKey: '', // No material/PBR texture
     };
 
+    const dirtMaterial = {
+        albedoTextureKey: 'dirt-albedo',
+        normalTextureKey: 'dirt-normal',
+        emissionTextureKey: '',
+        materialTextureKey: '',
+    }
+
     const cellMap = await Omosuen.newComponent('cell-map', {
         name: 'Terrain Heightmap',
-        materials: [grassMaterial],
+        materials: [grassMaterial, dirtMaterial],
         materialMap: materialMap,
         shapeMap: shapeMap, // Explicitly provide shapeMap (0 = air, 1 = solid cube)
         cellSize: new Omosuen.Vector3D(CELL_WIDTH, CELL_HEIGHT, CELL_DEPTH),

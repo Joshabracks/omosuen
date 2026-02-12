@@ -350,11 +350,19 @@ setTimeout(() => {
 /**
  * Generates a heightmap that creates a dome/pyramid shape
  * Height increases towards the center of the map
+ * Returns both materialMap (which material to use) and shapeMap (solid vs air)
  */
 function generateHeightmap(width, depth, maxHeight) {
+    // Material map: which material index to use (0 = grass)
     const materialMap = new Omosuen.Array3D(
         new Omosuen.Vector3D(width, maxHeight, depth),
-        -1 // -1 = air/empty by default
+        0 // Default to material 0 (grass) for all cells
+    );
+
+    // Shape map: which mesh to use (0 = air/empty, 1 = cube/solid)
+    const shapeMap = new Omosuen.Array3D(
+        new Omosuen.Vector3D(width, maxHeight, depth),
+        0 // Default to 0 (air/empty) for all cells
     );
 
     const centerX = width / 2;
@@ -375,11 +383,13 @@ function generateHeightmap(width, depth, maxHeight) {
             // Fill cells from ground up to calculated height
             for (let y = 0; y <= height; y++) {
                 materialMap.set(new Omosuen.Vector3D(x, y, z), 0); // Material 0 = grass
+                shapeMap.set(new Omosuen.Vector3D(x, y, z), 1); // Shape 1 = cube (solid)
             }
+            // Cells above height remain as 0 (air) in shapeMap
         }
     }
 
-    return materialMap;
+    return { materialMap, shapeMap };
 }
 
 /**
@@ -404,7 +414,7 @@ export async function createScene() {
     const atlasManager = await Omosuen.newComponent('atlas-manager', {
         name: 'AtlasManager',
         config: {
-            atlasSize: 2048,
+            atlasSize: 1024,
             maxAtlases: 4,
             padding: 1,
         },
@@ -457,44 +467,38 @@ export async function createScene() {
     });
     scene.addComponent(cameraNexus);
 
-    // Camera transform (positioned to view single cube at origin)
-    // Single 64x64x64px cube at (0,0,0)
+    // Camera transform (positioned to view flat plane)
+    // 20x20x1 cells at 32x16x32px - single layer for spacing verification
     // Standard isometric projection (top-down, 30-degree angles)
-    // Cube center projects to (0, 32) in screen space (half its height up)
     const cameraTransform = await Omosuen.newComponent('transform', {
         name: 'Camera Transform',
-        position: new Omosuen.Vector2D(0, -32), // Adjusted to center cube vertically
+        position: new Omosuen.Vector2D(0, 0), // Center on flat plane at ground level
         rotation: 0,
         scale: new Omosuen.Vector2D(1, 1),
     });
     cameraNexus.addComponent(cameraTransform);
 
-    // Camera component with normal zoom for single cube examination
+    // Camera component with zoom to fit plane in view
     const camera = await Omosuen.newComponent('camera', {
         name: 'Main Camera',
         viewportRef: 'CellMap Viewport',
-        zoom: 1.0, // Normal zoom for single cube
+        zoom: 0.5, // Zoom out to see full 20x20 plane
         axonometricAngle: 30, // 30-degree isometric projection
     });
     cameraNexus.addComponent(camera);
     console.log('[CellMap Test] Camera created');
 
-    // 6. Create Cell-Map with single cube for testing
-    const MAP_WIDTH = 1;   // Single cell wide
-    const MAP_DEPTH = 1;   // Single cell deep
-    const MAP_HEIGHT = 1;  // Single cell tall
-    const CELL_WIDTH = 64; // Larger cube for better visibility
-    const CELL_DEPTH = 64;
-    const CELL_HEIGHT = 64;
+    // 6. Create Cell-Map with dome-shaped heightmap
+    const MAP_WIDTH = 20;   // 20 cells wide
+    const MAP_DEPTH = 20;   // 20 cells deep
+    const MAP_HEIGHT = 20;  // 20 layers tall (dome gets taller towards center)
+    const CELL_WIDTH = 32;  // Standard cell width
+    const CELL_DEPTH = 32;  // Standard cell depth
+    const CELL_HEIGHT = 16; // Standard cell height
 
-    // Create simple single-cube material map
-    const materialMap = new Omosuen.Array3D(
-        new Omosuen.Vector3D(MAP_WIDTH, MAP_HEIGHT, MAP_DEPTH),
-        -1 // -1 = air/empty
-    );
-    // Set single cell at (0, 0, 0) to use grass material
-    materialMap.set(new Omosuen.Vector3D(0, 0, 0), 0);
-    console.log('[CellMap Test] Single cube created');
+    // Generate dome-shaped heightmap (taller towards center)
+    const { materialMap, shapeMap } = generateHeightmap(MAP_WIDTH, MAP_DEPTH, MAP_HEIGHT);
+    console.log('[CellMap Test] Dome-shaped heightmap generated (20x20x20)');
 
     // Create material definition for grass
     const grassMaterial = {
@@ -508,9 +512,9 @@ export async function createScene() {
         name: 'Terrain Heightmap',
         materials: [grassMaterial],
         materialMap: materialMap,
+        shapeMap: shapeMap, // Explicitly provide shapeMap (0 = air, 1 = solid cube)
         cellSize: new Omosuen.Vector3D(CELL_WIDTH, CELL_HEIGHT, CELL_DEPTH),
         mapSize: new Omosuen.Vector3D(MAP_WIDTH, MAP_HEIGHT, MAP_DEPTH),
-        // shapeMap: default (all cubes)
         // emissionMap: default (no emission)
         // visibilityMap: default (all visible)
     });

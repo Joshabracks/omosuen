@@ -881,10 +881,28 @@ async function init(component: ComponentData): Promise<void> {
       // Convert to clip space
       vec2 clipSpace = (isoPos / u_viewportSize) * 2.0 - 1.0;
 
-      // TEMPORARY: Use constant depth to debug visibility issues
-      // TODO: Implement proper isometric depth sorting once geometry is visible
-      float depth = 0.0;
-      gl_Position = vec4(clipSpace * vec2(1, -1), depth, 1);
+      // Calculate isometric depth for proper back-to-front rendering
+      // In isometric view, depth is determined by diagonal rows on screen
+      // Primary factor: horizontal row = gridX + gridZ (same row = same diagonal line on screen)
+      // Secondary factor: height within row = gridY / mapHeight (fractional, < 1.0)
+      // Convert world coordinates to grid indices
+      vec3 gridPos = worldPos / u_cellSize;
+
+      // Calculate z-depth using isometric formula (adapted from Kalifo Shores)
+      // (gridX + gridZ) * mapHeight + gridY * 2.0
+      // - (gridX + gridZ) = horizontal diagonal row (0-38 for 20x20 map)
+      // - Multiply by mapHeight to ensure proper depth separation between rows
+      // - gridY * 2.0 = vertical layer offset within the same horizontal row
+      float zDepth = (gridPos.x + gridPos.z) * 10.0 + gridPos.y * 2.0;
+
+      // Calculate maxDepth for normalization
+      // For 20x20x10 map: (19+19)*10 + 9*2 = 398
+      float maxDepth = 38.0 * 10.0 + 9.0 * 2.0;  // = 398.0
+
+      // Invert and normalize: 1.0 - (depth/max) ensures back cells render first
+      // This creates proper back-to-front occlusion with gl.LESS depth test
+      float clipDepth = 1.0 - (zDepth / maxDepth);
+      gl_Position = vec4(clipSpace * vec2(1, -1), clipDepth, 1);
 
       // Transform normal to isometric screen space (same transformation as position)
       // This allows lighting to work correctly in 2D isometric view

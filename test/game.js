@@ -17,6 +17,11 @@ const Omosuen = window.Omosuen;
 async function initGame() {
     console.log('Initializing Omosuen Test Game...');
 
+    // Initialize Omosuen with log suppression
+    Omosuen.init({
+        logSuppression: 5  // Suppress logs after 5 occurrences
+    });
+
     // Create root-level messenger to log all messages
     const rootMessenger = await Omosuen.newComponent('messenger', {
         name: 'Root Message Logger'
@@ -41,6 +46,7 @@ async function initGame() {
     Omosuen.registerSceneModule('viewport-test', '/scenes/viewport-test.js');
     Omosuen.registerSceneModule('atlas-test', '/scenes/atlas-test.js');
     Omosuen.registerSceneModule('sprite-test', '/scenes/sprite-test.js');
+    Omosuen.registerSceneModule('cellmap-test', '/scenes/cellmap-test.js');
 
     // Switch to main menu
     await Omosuen.switchScene('main-menu');

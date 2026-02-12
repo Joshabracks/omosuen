@@ -54,12 +54,22 @@ export type {
   AnimationState,
 } from './animation-controller';
 export type { CameraT as camera, CameraMethods } from './camera';
+export type {
+  CellMapT as cell_map,
+  CellMapMethods,
+  Material,
+  Mesh,
+  CellData,
+} from './cell-map';
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';
 
 // Export messenger constants for developer use
 export { ALL_MESSAGES, ANY_MESSAGES } from './messenger/types';
+
+// Export cell-map utility functions
+export { createDefaultCellData, packCell, unpackCell } from './cell-map';
 
 // Export serializers for scene management
 export { NexusSerializer } from './nexus/data';

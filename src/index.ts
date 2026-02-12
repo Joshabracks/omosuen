@@ -3,6 +3,8 @@
  * An axonometric game engine with a static z-axis camera.
  */
 
+import { setConfig as applyConfig } from './config';
+
 // ============================================================================
 // Component Exports
 // ============================================================================
@@ -24,6 +26,12 @@ export * from './scene';
 export * from './loop';
 
 // ============================================================================
+// Config Exports
+// ============================================================================
+export { getConfig, setConfig } from './config';
+export type { OmosuenConfig } from './config';
+
+// ============================================================================
 // Engine Core
 // ============================================================================
 
@@ -39,8 +47,12 @@ export const name = 'Omosuen';
 
 /**
  * Initialize the Omosuen engine
+ * @param config - Optional global configuration
  */
-export function init(): void {
+export function init(config?: import('./config').OmosuenConfig): void {
+  if (config) {
+    applyConfig(config);
+  }
   console.log(`${name} Engine v${version} initialized`);
 }
 
@@ -73,4 +85,5 @@ export default {
   version,
   name,
   init,
+  setConfig: applyConfig,
 };

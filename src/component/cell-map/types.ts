@@ -6,24 +6,28 @@ import { Vector3D } from '../../math';
  */
 export interface Material {
   /**
-   * TextureMap component ID for albedo (diffuse color) texture
+   * TextureMap key for albedo (diffuse color) texture
+   * References TextureMap.textureMapKey field
    */
-  albedoTextureId: number;
+  albedoTextureKey: string;
 
   /**
-   * TextureMap component ID for normal map texture
+   * TextureMap key for normal map texture
+   * References TextureMap.textureMapKey field
    */
-  normalTextureId: number;
+  normalTextureKey: string;
 
   /**
-   * TextureMap component ID for emission (emissive) texture
+   * TextureMap key for emission (emissive) texture
+   * References TextureMap.textureMapKey field
    */
-  emissionTextureId: number;
+  emissionTextureKey: string;
 
   /**
-   * TextureMap component ID for material (PBR properties) texture
+   * TextureMap key for material (PBR properties) texture
+   * References TextureMap.textureMapKey field
    */
-  materialTextureId: number;
+  materialTextureKey: string;
 }
 
 /**

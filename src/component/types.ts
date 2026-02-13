@@ -83,7 +83,8 @@ export type COMPONENT_TYPE =
   | 'transform'
   | 'animation-controller'
   | 'cell-map'
-  | 'camera';
+  | 'camera'
+  | 'input-controller';
 
 export interface ComponentOptions {
   name: string;

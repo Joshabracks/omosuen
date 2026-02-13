@@ -39,18 +39,9 @@ Omosuen.registerHtmlConstructor('cellmapTest', (overlay) => {
                     Camera Controls
                 </div>
 
-                <div class="sidebar-controls">
-                    <div class="sidebar-controls-wide">
-                        <button id="btn-pan-up" class="sidebar-button">↑ Pan Up</button>
-                    </div>
-                    <button id="btn-pan-left" class="sidebar-button">← Pan Left</button>
-                    <button id="btn-pan-down" class="sidebar-button">↓ Pan Down</button>
-                    <button id="btn-pan-right" class="sidebar-button">→ Pan Right</button>
-                </div>
-
-                <div style="display: flex; gap: 5px; margin-top: 10px;">
-                    <button id="btn-zoom-in" class="sidebar-button primary" style="flex: 1;">+ Zoom In</button>
-                    <button id="btn-zoom-out" class="sidebar-button primary" style="flex: 1;">− Zoom Out</button>
+                <div class="sidebar-status" style="font-size: 12px; line-height: 1.6;">
+                    <strong>Pan:</strong> Middle-click + drag<br>
+                    <strong>Zoom:</strong> Mouse wheel
                 </div>
 
                 <div id="camera-status" class="sidebar-status" style="margin-top: 10px;"></div>
@@ -73,78 +64,12 @@ Omosuen.registerBinding('backToMenuFromCellmap', async (event) => {
 });
 
 /**
- * Register UI bindings for camera controls
+ * Camera control constants
  */
-const PAN_AMOUNT = 50;
-const ZOOM_STEP = 0.1;
-
-Omosuen.registerBinding('panCameraUp', () => {
-    const scene = Omosuen.getActiveScene();
-    if (!scene) return;
-
-    const camera = scene.getComponentByType('camera', true);
-    if (camera) {
-        camera.pan(0, -PAN_AMOUNT);
-        updateCameraStatus();
-    }
-});
-
-Omosuen.registerBinding('panCameraDown', () => {
-    const scene = Omosuen.getActiveScene();
-    if (!scene) return;
-
-    const camera = scene.getComponentByType('camera', true);
-    if (camera) {
-        camera.pan(0, PAN_AMOUNT);
-        updateCameraStatus();
-    }
-});
-
-Omosuen.registerBinding('panCameraLeft', () => {
-    const scene = Omosuen.getActiveScene();
-    if (!scene) return;
-
-    const camera = scene.getComponentByType('camera', true);
-    if (camera) {
-        camera.pan(-PAN_AMOUNT, 0);
-        updateCameraStatus();
-    }
-});
-
-Omosuen.registerBinding('panCameraRight', () => {
-    const scene = Omosuen.getActiveScene();
-    if (!scene) return;
-
-    const camera = scene.getComponentByType('camera', true);
-    if (camera) {
-        camera.pan(PAN_AMOUNT, 0);
-        updateCameraStatus();
-    }
-});
-
-Omosuen.registerBinding('zoomCameraIn', () => {
-    const scene = Omosuen.getActiveScene();
-    if (!scene) return;
-
-    const camera = scene.getComponentByType('camera', true);
-    if (camera) {
-        const newZoom = Math.min(camera.zoom + ZOOM_STEP, 3.0);
-        camera.setZoom(newZoom);
-        updateCameraStatus();
-    }
-});
-
-Omosuen.registerBinding('zoomCameraOut', () => {
-    const scene = Omosuen.getActiveScene();
-    if (!scene) return;
-
-    const camera = scene.getComponentByType('camera', true);
-    if (camera) {
-        const newZoom = Math.max(camera.zoom - ZOOM_STEP, 0.1);
-        camera.setZoom(newZoom);
-        updateCameraStatus();
-    }
-});
+const PAN_SENSITIVITY = 1.0; // Pixels of camera movement per pixel of mouse movement
+const ZOOM_SENSITIVITY = 0.001; // Zoom change per pixel of wheel delta
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 3.0;
 
 /**
  * Converts ImageData to a displayable Image element
@@ -513,7 +438,83 @@ export async function createScene() {
     cameraNexus.addComponent(camera);
     console.log('[CellMap Test] Camera created');
 
-    // 6. Create Cell-Map with dome-shaped heightmap
+    // 6. Create InputController for camera controls
+    const inputController = await Omosuen.newComponent('input-controller', {
+        name: 'Camera Input Controller',
+        preventDefault: false, // Don't prevent default for scroll (page might need it)
+    });
+    scene.addComponent(inputController);
+
+    // Track mouse state for middle-click panning
+    let isPanning = false;
+    let lastMouseX = 0;
+    let lastMouseY = 0;
+
+    // Mouse pan: middle button + drag
+    inputController.onAction('middleMouseDown', (event) => {
+        isPanning = true;
+        lastMouseX = event.clientX;
+        lastMouseY = event.clientY;
+    });
+
+    inputController.onAction('middleMouseUp', () => {
+        isPanning = false;
+    });
+
+    inputController.onAction('mouseMove', (event) => {
+        if (!isPanning) return;
+
+        // Calculate mouse delta
+        const deltaX = event.clientX - lastMouseX;
+        const deltaY = event.clientY - lastMouseY;
+
+        // Update last position
+        lastMouseX = event.clientX;
+        lastMouseY = event.clientY;
+
+        const zoom = Omosuen.getActiveScene().getComponentByType('camera', true).zoom
+
+        // Pan camera (no inversion - camera moves opposite to create drag-to-pan effect)
+        camera.pan(deltaX * -PAN_SENSITIVITY / zoom, deltaY * -PAN_SENSITIVITY / zoom);
+        updateCameraStatus();
+    });
+
+    // Mouse wheel: zoom in/out
+    inputController.onAction('mouseWheel', (_event, deltaY) => {
+        // deltaY > 0 = scroll down = zoom out
+        // deltaY < 0 = scroll up = zoom in
+        const zoomChange = -deltaY * ZOOM_SENSITIVITY;
+        const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, camera.zoom + zoomChange));
+        camera.setZoom(newZoom);
+        updateCameraStatus();
+    });
+
+    // Bind input actions
+    inputController.bindAction({
+        eventType: 'mousedown',
+        button: 1, // Middle mouse button
+        action: 'middleMouseDown',
+    });
+
+    inputController.bindAction({
+        eventType: 'mouseup',
+        button: 1, // Middle mouse button
+        action: 'middleMouseUp',
+    });
+
+    inputController.bindAction({
+        eventType: 'mousemove',
+        action: 'mouseMove',
+    });
+
+    inputController.bindAction({
+        eventType: 'wheel',
+        action: 'mouseWheel',
+    });
+
+    console.log('[CellMap Test] InputController created with mouse pan and zoom');
+
+    // 7. Create Cell-Map with dome-shaped heightmap
     const MAP_WIDTH = 20;   // 20 cells wide
     const MAP_DEPTH = 20;   // 20 cells deep
     const MAP_HEIGHT = 20;  // 20 layers tall (dome gets taller towards center)
@@ -553,7 +554,7 @@ export async function createScene() {
     scene.addComponent(cellMap);
     console.log('[CellMap Test] CellMap created with dimensions:', MAP_WIDTH, 'x', MAP_DEPTH, 'x', MAP_HEIGHT);
 
-    // 7. Create UI overlay
+    // 8. Create UI overlay
     const ui = await Omosuen.newComponent('ui-overlay', {
         name: 'CellMap Test UI',
         htmlConstructorKey: 'cellmapTest',
@@ -562,36 +563,6 @@ export async function createScene() {
                 selector: '#btn-back',
                 onActions: ['click'],
                 methodKey: 'backToMenuFromCellmap',
-            },
-            {
-                selector: '#btn-pan-up',
-                onActions: ['click'],
-                methodKey: 'panCameraUp',
-            },
-            {
-                selector: '#btn-pan-down',
-                onActions: ['click'],
-                methodKey: 'panCameraDown',
-            },
-            {
-                selector: '#btn-pan-left',
-                onActions: ['click'],
-                methodKey: 'panCameraLeft',
-            },
-            {
-                selector: '#btn-pan-right',
-                onActions: ['click'],
-                methodKey: 'panCameraRight',
-            },
-            {
-                selector: '#btn-zoom-in',
-                onActions: ['click'],
-                methodKey: 'zoomCameraIn',
-            },
-            {
-                selector: '#btn-zoom-out',
-                onActions: ['click'],
-                methodKey: 'zoomCameraOut',
             },
         ],
     });

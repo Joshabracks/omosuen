@@ -387,9 +387,15 @@ function renderCellMaps(
   // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_albedoTexture = gl.getUniformLocation(program, 'u_albedoTexture');
   // eslint-disable-next-line @typescript-eslint/naming-convention
+  const u_normalTexture = gl.getUniformLocation(program, 'u_normalTexture');
+  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_uvBounds = gl.getUniformLocation(program, 'u_uvBounds');
   // eslint-disable-next-line @typescript-eslint/naming-convention
+  const u_normalUVBounds = gl.getUniformLocation(program, 'u_normalUVBounds');
+  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_textureSize = gl.getUniformLocation(program, 'u_textureSize');
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  const u_hasNormal = gl.getUniformLocation(program, 'u_hasNormal');
 
   // Set constant uniforms (same for all cells)
   gl.uniform2f(u_viewportSize, viewport.width, viewport.height);
@@ -435,8 +441,11 @@ function renderCellMaps(
       u_cellPosition,
       u_cellSize,
       u_albedoTexture,
+      u_normalTexture,
       u_uvBounds,
+      u_normalUVBounds,
       u_textureSize,
+      u_hasNormal,
     );
   }
 
@@ -469,8 +478,11 @@ function renderSingleCellMap(
   u_cellPosition: WebGLUniformLocation | null,
   u_cellSize: WebGLUniformLocation | null,
   u_albedoTexture: WebGLUniformLocation | null,
+  u_normalTexture: WebGLUniformLocation | null,
   u_uvBounds: WebGLUniformLocation | null,
+  u_normalUVBounds: WebGLUniformLocation | null,
   u_textureSize: WebGLUniformLocation | null,
+  u_hasNormal: WebGLUniformLocation | null,
 ): void {
   console.log(
     `[camera] renderSingleCellMap() - rendering cell-map '${cellMap.name}'`,
@@ -552,6 +564,45 @@ function renderSingleCellMap(
 
     // Set texture size for world-space pixel-perfect sampling
     gl.uniform2f(u_textureSize, albedoFrame.size.x, albedoFrame.size.y);
+
+    // Bind normal texture if available
+    const normalTextureMap = textureMapCache.get(material.normalTextureKey);
+    if (normalTextureMap && normalTextureMap.packedFrames.length > 0) {
+      const normalFrame = normalTextureMap.packedFrames[0];
+      const normalAtlasTexture =
+        camera.glResources.atlasTextures[normalFrame.atlasIndex];
+
+      if (normalAtlasTexture) {
+        // Bind normal texture to TEXTURE1
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, normalAtlasTexture);
+        gl.uniform1i(u_normalTexture, 1);
+
+        // Calculate normal UV bounds in atlas
+        const normalMinU = normalFrame.atlasPosition.x / atlasSize;
+        const normalMinV = normalFrame.atlasPosition.y / atlasSize;
+        const normalMaxU =
+          (normalFrame.atlasPosition.x + normalFrame.size.x) / atlasSize;
+        const normalMaxV =
+          (normalFrame.atlasPosition.y + normalFrame.size.y) / atlasSize;
+        gl.uniform4f(
+          u_normalUVBounds,
+          normalMinU,
+          normalMinV,
+          normalMaxU,
+          normalMaxV,
+        );
+
+        // Enable normal mapping
+        gl.uniform1i(u_hasNormal, 1);
+      } else {
+        // No normal map available
+        gl.uniform1i(u_hasNormal, 0);
+      }
+    } else {
+      // No normal map available
+      gl.uniform1i(u_hasNormal, 0);
+    }
 
     // Set cell world position
     gl.uniform3f(
@@ -937,8 +988,11 @@ async function init(component: ComponentData): Promise<void> {
     precision mediump float;
 
     uniform sampler2D u_albedoTexture;
+    uniform sampler2D u_normalTexture;
     uniform vec4 u_uvBounds;
+    uniform vec4 u_normalUVBounds;
     uniform vec2 u_textureSize;
+    uniform bool u_hasNormal;
 
     varying vec2 v_uv;
     varying vec3 v_normal;
@@ -981,16 +1035,41 @@ async function init(component: ComponentData): Promise<void> {
       vec2 atlasUV_XY = mix(u_uvBounds.xy, u_uvBounds.zw, normalizedUV_XY);
       vec4 albedoXY = texture2D(u_albedoTexture, atlasUV_XY);
 
-      // Blend the three samples using normal weights
+      // Blend the three albedo samples using normal weights
       // X weight → YZ plane, Y weight → XZ plane, Z weight → XY plane
       vec4 albedo = albedoYZ * blendWeights.x + albedoXZ * blendWeights.y + albedoXY * blendWeights.z;
 
+      // TRIPLANAR NORMAL MAPPING (if normal map is available)
+      vec3 finalNormal;
+      if (u_hasNormal) {
+        // Sample normal map from three planes using same UVs as albedo
+        vec2 normalAtlasUV_YZ = mix(u_normalUVBounds.xy, u_normalUVBounds.zw, normalizedUV_YZ);
+        vec2 normalAtlasUV_XZ = mix(u_normalUVBounds.xy, u_normalUVBounds.zw, normalizedUV_XZ);
+        vec2 normalAtlasUV_XY = mix(u_normalUVBounds.xy, u_normalUVBounds.zw, normalizedUV_XY);
+
+        vec3 normalMapYZ = texture2D(u_normalTexture, normalAtlasUV_YZ).rgb;
+        vec3 normalMapXZ = texture2D(u_normalTexture, normalAtlasUV_XZ).rgb;
+        vec3 normalMapXY = texture2D(u_normalTexture, normalAtlasUV_XY).rgb;
+
+        // Blend normal maps
+        vec3 normalMap = normalMapYZ * blendWeights.x + normalMapXZ * blendWeights.y + normalMapXY * blendWeights.z;
+
+        // Convert from [0,1] range to [-1,1] range
+        normalMap = normalMap * 2.0 - 1.0;
+
+        // Combine with geometry normal (perturb the normal)
+        // Scale normal map strength to avoid over-exaggerated bumps
+        finalNormal = normalize(v_normal + normalMap * 0.5);
+      } else {
+        // Use geometry normal if no normal map available
+        finalNormal = normalize(v_normal);
+      }
+
       // Directional light in screen space (top-right, typical for isometric)
       vec3 lightDir = normalize(vec3(0.5, -0.7, 0.0));
-      vec3 normal = normalize(v_normal);
 
-      // Diffuse lighting with ambient
-      float diffuse = max(dot(normal, lightDir), 0.0);
+      // Diffuse lighting with ambient (use final normal from normal mapping)
+      float diffuse = max(dot(finalNormal, lightDir), 0.0);
       float ambient = 0.4;  // 40% ambient light
       float lighting = ambient + diffuse * 0.6;  // 60% directional contribution
 

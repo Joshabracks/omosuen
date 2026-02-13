@@ -431,7 +431,7 @@ export async function createScene() {
     const grassAlbedoTexture = await Omosuen.newComponent('texture-map', {
         textureMapKey: 'grass-albedo',
         name: 'Grass Albedo Texture',
-        filePath: './assets/seamless-textured-grass-natural-grass-pattern_172107-1308.jpg',
+        filePath: './assets/green-background.jpg',
         imageType: undefined, // Undefined = entire image is single frame
     });
     scene.addComponent(grassAlbedoTexture);
@@ -461,7 +461,9 @@ export async function createScene() {
     console.log('[CellMap Test] TextureMaps created');
 
     // Load images and add to atlas manager
-    await imageRegistry.loadImage('./assets/seamless-textured-grass-natural-grass-pattern_172107-1308.jpg');
+    await imageRegistry.loadImage('./assets/green-background.jpg');
+    // await imageRegistry.loadImage('./assets/seamless-textured-grass-natural-grass-pattern_172107-1308.jpg');
+
     await imageRegistry.loadImage('./assets/seamless-textured-grass-natural-grass-pattern_172107-1308_n.png');
     await imageRegistry.loadImage(dirtAlbedoTexture.filePath);
     await imageRegistry.loadImage(dirtNormalTexture.filePath);

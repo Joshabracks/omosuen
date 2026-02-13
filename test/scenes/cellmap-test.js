@@ -495,7 +495,7 @@ export async function createScene() {
     // Standard isometric projection (top-down, 30-degree angles)
     const cameraTransform = await Omosuen.newComponent('transform', {
         name: 'Camera Transform',
-        position: new Omosuen.Vector2D(0, 0), // Center on flat plane at ground level
+        position: new Omosuen.Vector2D(-800, -300), // Center on flat plane at ground level
         rotation: 0,
         scale: new Omosuen.Vector2D(1, 1),
     });

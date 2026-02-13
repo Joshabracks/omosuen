@@ -388,6 +388,8 @@ function renderCellMaps(
   const u_albedoTexture = gl.getUniformLocation(program, 'u_albedoTexture');
   // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_uvBounds = gl.getUniformLocation(program, 'u_uvBounds');
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  const u_textureSize = gl.getUniformLocation(program, 'u_textureSize');
 
   // Set constant uniforms (same for all cells)
   gl.uniform2f(u_viewportSize, viewport.width, viewport.height);
@@ -434,6 +436,7 @@ function renderCellMaps(
       u_cellSize,
       u_albedoTexture,
       u_uvBounds,
+      u_textureSize,
     );
   }
 
@@ -467,6 +470,7 @@ function renderSingleCellMap(
   u_cellSize: WebGLUniformLocation | null,
   u_albedoTexture: WebGLUniformLocation | null,
   u_uvBounds: WebGLUniformLocation | null,
+  u_textureSize: WebGLUniformLocation | null,
 ): void {
   console.log(
     `[camera] renderSingleCellMap() - rendering cell-map '${cellMap.name}'`,
@@ -545,6 +549,9 @@ function renderSingleCellMap(
     const maxU = (albedoFrame.atlasPosition.x + albedoFrame.size.x) / atlasSize;
     const maxV = (albedoFrame.atlasPosition.y + albedoFrame.size.y) / atlasSize;
     gl.uniform4f(u_uvBounds, minU, minV, maxU, maxV);
+
+    // Set texture size for world-space pixel-perfect sampling
+    gl.uniform2f(u_textureSize, albedoFrame.size.x, albedoFrame.size.y);
 
     // Set cell world position
     gl.uniform3f(
@@ -859,6 +866,8 @@ async function init(component: ComponentData): Promise<void> {
     varying vec2 v_uv;
     varying vec3 v_normal;
     varying vec3 v_worldPos;
+    varying vec2 v_screenPos;
+    varying vec3 v_worldNormal;
 
     void main() {
       // Scale vertex by cell size and translate to world position
@@ -878,8 +887,14 @@ async function init(component: ComponentData): Promise<void> {
       // Convert to view space (subtract camera) and apply zoom
       vec2 isoPos = (isoProjected - u_cameraPosition) * u_zoom;
 
-      // Convert to clip space
-      vec2 clipSpace = (isoPos / u_viewportSize) * 2.0 - 1.0;
+      // PIXEL SNAPPING: Round to nearest pixel for perfect alignment
+      // This eliminates sub-pixel misalignment, texture seams, and creates
+      // consistent pixelation at all zoom levels (classic isometric look)
+      vec2 pixelPos = floor(isoPos + 0.5);  // Round to nearest integer pixel
+      v_screenPos = pixelPos;  // Pass to fragment shader for world-space texture sampling
+
+      // Convert snapped pixel position to clip space
+      vec2 clipSpace = (pixelPos / u_viewportSize) * 2.0 - 1.0;
 
       // Calculate isometric depth for proper back-to-front rendering
       // In isometric view, depth is determined by diagonal rows on screen
@@ -914,6 +929,7 @@ async function init(component: ComponentData): Promise<void> {
       v_uv = a_uv;
       v_normal = normalize(isoNormal);
       v_worldPos = worldPos;
+      v_worldNormal = a_normal;
     }
   `;
 
@@ -922,15 +938,52 @@ async function init(component: ComponentData): Promise<void> {
 
     uniform sampler2D u_albedoTexture;
     uniform vec4 u_uvBounds;
+    uniform vec2 u_textureSize;
 
     varying vec2 v_uv;
     varying vec3 v_normal;
     varying vec3 v_worldPos;
+    varying vec2 v_screenPos;
+    varying vec3 v_worldNormal;
 
     void main() {
-      // Sample albedo texture
-      vec2 atlasUV = mix(u_uvBounds.xy, u_uvBounds.zw, v_uv);
-      vec4 albedo = texture2D(u_albedoTexture, atlasUV);
+      // TRIPLANAR WORLD-SPACE TEXTURE MAPPING
+      // Sample texture from three world-space planes (XY, XZ, YZ) and blend
+      // based on surface normal to prevent warping on side faces
+
+      // Calculate blend weights from WORLD-SPACE normal (how much each plane contributes)
+      // Use world-space normal (not isometric-transformed normal) to align with world axes
+      vec3 blendWeights = abs(normalize(v_worldNormal));
+      // Normalize so weights sum to 1.0
+      blendWeights = blendWeights / (blendWeights.x + blendWeights.y + blendWeights.z);
+
+      // Sample YZ plane (for X-facing sides: left/right walls)
+      // Horizontal: Z-axis, Vertical: Y-axis (makes texture "upright")
+      vec2 worldPixelYZ = floor(vec2(v_worldPos.z, v_worldPos.y));
+      vec2 texelCoordYZ = mod(worldPixelYZ, u_textureSize);
+      vec2 normalizedUV_YZ = (texelCoordYZ + 0.5) / u_textureSize;
+      vec2 atlasUV_YZ = mix(u_uvBounds.xy, u_uvBounds.zw, normalizedUV_YZ);
+      vec4 albedoYZ = texture2D(u_albedoTexture, atlasUV_YZ);
+
+      // Sample XZ plane (for Y-facing sides: top/bottom faces)
+      // Uses both horizontal axes (X and Z)
+      vec2 worldPixelXZ = floor(vec2(v_worldPos.x, v_worldPos.z));
+      vec2 texelCoordXZ = mod(worldPixelXZ, u_textureSize);
+      vec2 normalizedUV_XZ = (texelCoordXZ + 0.5) / u_textureSize;
+      vec2 atlasUV_XZ = mix(u_uvBounds.xy, u_uvBounds.zw, normalizedUV_XZ);
+      vec4 albedoXZ = texture2D(u_albedoTexture, atlasUV_XZ);
+
+      // Sample XY plane (for Z-facing sides: front/back walls)
+      // Horizontal: X-axis, Vertical: Y-axis (makes texture "upright")
+      vec2 worldPixelXY = floor(vec2(v_worldPos.x, v_worldPos.y));
+      vec2 texelCoordXY = mod(worldPixelXY, u_textureSize);
+      vec2 normalizedUV_XY = (texelCoordXY + 0.5) / u_textureSize;
+      vec2 atlasUV_XY = mix(u_uvBounds.xy, u_uvBounds.zw, normalizedUV_XY);
+      vec4 albedoXY = texture2D(u_albedoTexture, atlasUV_XY);
+
+      // Blend the three samples using normal weights
+      // X weight → YZ plane, Y weight → XZ plane, Z weight → XY plane
+      vec4 albedo = albedoYZ * blendWeights.x + albedoXZ * blendWeights.y + albedoXY * blendWeights.z;
 
       // Directional light in screen space (top-right, typical for isometric)
       vec3 lightDir = normalize(vec3(0.5, -0.7, 0.0));

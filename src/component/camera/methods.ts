@@ -111,7 +111,28 @@ function render(camera: CameraT, _deltaTime: number): void {
     textureMapCache.set(tm.textureMapKey, tm);
   }
 
-  // Render sprites if any exist
+  // Render cell-maps FIRST (before sprites) with depth writes enabled
+  // This populates the depth buffer with solid geometry
+  if (cellMaps.length > 0) {
+    console.log(
+      `[camera] render() - calling renderCellMaps with ${cellMaps.length} cell-maps`,
+    );
+    renderCellMaps(
+      camera,
+      viewport,
+      cellMaps,
+      transform,
+      sceneRoot,
+      gl,
+      textureMapCache,
+    );
+  } else {
+    console.log('[camera] render() - no cell-maps to render');
+  }
+
+  // Render sprites SECOND (after cells) without depth writes
+  // Sprites test against the depth buffer but don't write to it
+  // This allows transparency to work correctly while still depth-sorting with cells
   if (sprites.length > 0) {
     const program = camera.glResources.spriteProgram;
     if (!program) {
@@ -123,9 +144,15 @@ function render(camera: CameraT, _deltaTime: number): void {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-      // Disable depth testing for 2D sprite rendering
-      // 2D sprites don't need depth testing - they're sorted by render order
-      gl.disable(gl.DEPTH_TEST);
+      // Enable depth testing for proper 3D isometric depth sorting
+      // Sprites now calculate depth the same way as cells
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LESS);
+
+      // Disable depth writes for sprites (but keep depth testing)
+      // Transparent sprites should test against the depth buffer but not write to it
+      // This prevents transparent pixels from blocking objects behind them
+      gl.depthMask(false);
 
       // Disable backface culling for 2D sprites
       // Quads should render regardless of triangle winding order
@@ -155,6 +182,8 @@ function render(camera: CameraT, _deltaTime: number): void {
       );
       // eslint-disable-next-line @typescript-eslint/naming-convention
       const u_spriteSize = gl.getUniformLocation(program, 'u_spriteSize');
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      const u_anchor = gl.getUniformLocation(program, 'u_anchor');
       // eslint-disable-next-line @typescript-eslint/naming-convention
       const u_rotation = gl.getUniformLocation(program, 'u_rotation');
       // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -277,16 +306,19 @@ function render(camera: CameraT, _deltaTime: number): void {
         gl.uniform4f(u_uvBounds, minU, minV, maxU, maxV);
 
         // Set sprite transformation uniforms
-        gl.uniform2f(
+        // Pass 3D world position: (x, y=height/vertical, z)
+        gl.uniform3f(
           u_spritePosition,
           spriteTransform.position.x,
-          spriteTransform.position.y,
+          spriteTransform.z,  // y component = vertical height (worldY)
+          spriteTransform.position.y,  // z component = worldZ
         );
         gl.uniform2f(
           u_spriteSize,
           albedoFrame.size.x * spriteTransform.scale.x,
           albedoFrame.size.y * spriteTransform.scale.y,
         );
+        gl.uniform2f(u_anchor, sprite.anchor.x, sprite.anchor.y);
         gl.uniform1f(u_rotation, spriteTransform.rotation);
 
         // Set sprite appearance uniforms
@@ -302,25 +334,9 @@ function render(camera: CameraT, _deltaTime: number): void {
         // Draw the sprite quad (6 vertices = 2 triangles)
         gl.drawArrays(gl.TRIANGLES, 0, 6);
       }
-    }
-  }
 
-  // Render cell-maps (after sprites, with depth testing)
-  if (cellMaps.length > 0) {
-    console.log(
-      `[camera] render() - calling renderCellMaps with ${cellMaps.length} cell-maps`,
-    );
-    renderCellMaps(
-      camera,
-      viewport,
-      cellMaps,
-      transform,
-      sceneRoot,
-      gl,
-      textureMapCache,
-    );
-  } else {
-    console.log('[camera] render() - no cell-maps to render');
+      // Note: No need to restore gl.depthMask(true) since cell-maps already rendered
+    }
   }
 }
 
@@ -831,8 +847,9 @@ async function init(component: ComponentData): Promise<void> {
   const vertexShaderSource = `
     attribute vec2 a_position;
     attribute vec2 a_uv;
-    uniform vec2 u_spritePosition;
+    uniform vec3 u_spritePosition;  // 3D world position (x, y, z)
     uniform vec2 u_spriteSize;
+    uniform vec2 u_anchor;          // Anchor offset in pixels (from top-left)
     uniform float u_rotation;
     uniform vec2 u_viewportSize;
     uniform vec2 u_cameraPosition;
@@ -840,7 +857,25 @@ async function init(component: ComponentData): Promise<void> {
     varying vec2 v_uv;
 
     void main() {
-      // Apply rotation
+      // Apply isometric projection to sprite's 3D world position
+      // +X projects right-down at 30° from horizontal
+      // +Y projects straight up (vertical)
+      // +Z projects left-down at 30° from horizontal (mirrored from X)
+      vec2 isoX = u_spritePosition.x * vec2(0.866, 0.5);      // cos(30°), sin(30°)
+      vec2 isoY = u_spritePosition.y * vec2(0.0, -1.0);       // straight up
+      vec2 isoZ = u_spritePosition.z * vec2(-0.866, 0.5);     // cos(150°), sin(150°)
+
+      // Combine isometric axes to get 2D projection
+      vec2 isoProjected = isoX + isoY + isoZ;
+
+      // Apply anchor offset in screen space (after projection, before camera transform)
+      // Anchor is in pixels relative to sprite size
+      // Scale anchor by sprite scale (account for transform.scale)
+      // Subtract anchor to shift sprite position (anchor at 0,0 = top-left corner)
+      vec2 scaledAnchor = u_anchor * (u_spriteSize / vec2(16.0, 16.0));  // Normalize to sprite's actual size
+      vec2 anchoredPosition = isoProjected - scaledAnchor;
+
+      // Apply rotation to sprite quad vertices
       float c = cos(u_rotation);
       float s = sin(u_rotation);
       vec2 rotated = vec2(
@@ -848,14 +883,30 @@ async function init(component: ComponentData): Promise<void> {
         a_position.x * s + a_position.y * c
       );
 
-      // Scale by sprite size and zoom, then translate to world position
-      // Subtract camera position to convert from world space to view space
-      vec2 viewPos = (u_spritePosition - u_cameraPosition);
-      vec2 pos = rotated * (u_spriteSize * u_zoom) + viewPos;
+      // Scale sprite vertices by size and zoom
+      vec2 scaledVertex = rotated * u_spriteSize * u_zoom;
+
+      // Convert to view space (subtract camera) and add scaled vertex offset
+      vec2 viewPos = (anchoredPosition - u_cameraPosition) * u_zoom + scaledVertex;
 
       // Convert to clip space
-      vec2 clipSpace = (pos / u_viewportSize) * 2.0 - 1.0;
-      gl_Position = vec4(clipSpace * vec2(1, -1), 0, 1);
+      vec2 clipSpace = (viewPos / u_viewportSize) * 2.0 - 1.0;
+
+      // Calculate isometric depth for proper front-to-back rendering with cell-map
+      // Assume standard cell size (32x16x32) for depth calculation
+      vec3 cellSize = vec3(32.0, 16.0, 32.0);
+      vec3 gridPos = u_spritePosition / cellSize;
+
+      // Use same depth formula as cell-map shader
+      // (gridX + gridZ) * mapHeight + gridY * 2.0
+      // For 20x20x20 map: maxDepth = (19+19)*20 + 19*2 = 798
+      float zDepth = (gridPos.x + gridPos.z) * 20.0 + gridPos.y * 2.0;
+      float maxDepth = 38.0 * 20.0 + 19.0 * 2.0;  // = 798.0
+
+      // Invert and normalize to match cell-map depth range
+      float clipDepth = 1.0 - (zDepth / maxDepth);
+
+      gl_Position = vec4(clipSpace * vec2(1, -1), clipDepth, 1);
       v_uv = a_uv;
     }
   `;
@@ -881,11 +932,21 @@ async function init(component: ComponentData): Promise<void> {
       // Albedo (always required)
       vec4 albedo = texture2D(u_albedoTexture, atlasUV);
 
+      // Discard fully transparent pixels early
+      // This prevents transparent pixels from affecting the depth buffer
+      // and skips unnecessary fragment processing
+      if (albedo.a < 0.01) discard;
+
       // Optional channels (placeholder for now - just pass through albedo)
       // TODO: Implement normal mapping, material properties, emission
 
-      // Apply tint and opacity
-      gl_FragColor = albedo * u_tint * vec4(1, 1, 1, u_opacity);
+      // Apply tint to both RGB and alpha
+      vec4 tinted = albedo * u_tint;
+
+      // Apply opacity to final alpha channel
+      // This ensures transparent pixels (albedo.a = 0) stay transparent
+      // and opacity correctly modulates overall transparency
+      gl_FragColor = vec4(tinted.rgb, tinted.a * u_opacity);
     }
   `;
 

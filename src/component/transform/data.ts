@@ -9,8 +9,13 @@ import { Vector2D } from '../../math';
 import type { TransformMethods } from './methods';
 
 /**
- * Transform component for 2D spatial transformations.
+ * Transform component for 2D/3D spatial transformations.
  * Stores position, rotation, and scale for rendering and physics.
+ *
+ * For 3D isometric rendering:
+ * - position.x = world X coordinate
+ * - position.y = world Z coordinate
+ * - z = world Y coordinate (vertical/height)
  */
 export interface TransformT
   extends ComponentData, ComponentInstanceMethods<TransformMethods> {
@@ -18,9 +23,15 @@ export interface TransformT
   unique: ComponentUnique.FALSE;
 
   /**
-   * Position in 2D world space.
+   * Position in 2D world space (or XZ plane for 3D isometric).
    */
   position: Vector2D;
+
+  /**
+   * Z-coordinate for 3D isometric rendering (world Y / vertical height).
+   * Defaults to 0 for purely 2D sprites.
+   */
+  z: number;
 
   /**
    * Rotation angle in radians.
@@ -37,6 +48,7 @@ export interface TransformT
 
 export interface TransformOptions extends ComponentOptions {
   position?: Vector2D;
+  z?: number;
   rotation?: number;
   scale?: Vector2D;
 }
@@ -53,6 +65,7 @@ export function builder(options: TransformOptions): TransformT {
     _disposed: false,
 
     position: options.position ?? new Vector2D(0, 0),
+    z: options.z ?? 0,
     rotation: options.rotation ?? 0,
     scale: options.scale ?? new Vector2D(1, 1),
   };
@@ -76,6 +89,7 @@ function serialize(component: ComponentData): any {
       x: t.position.x,
       y: t.position.y,
     },
+    z: t.z,
     rotation: t.rotation,
     scale: {
       _vectorType: 'Vector2D',
@@ -91,7 +105,7 @@ function serialize(component: ComponentData): any {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deserialize(data: any): TransformT {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-  const { type, name, position, rotation, scale } = data;
+  const { type, name, position, z, rotation, scale } = data;
 
   const errors = [];
   if (type !== 'transform') {
@@ -123,6 +137,7 @@ function deserialize(data: any): TransformT {
   return builder({
     name: name as string,
     position: positionVec,
+    z: (z as number) ?? 0,
     rotation: rotation as number,
     scale: scaleVec,
   });
@@ -136,4 +151,4 @@ export const TransformSerializer: ComponentSerializer = {
 /**
  * Allowlist of transform-specific properties accessible via component Proxy.
  */
-export const PROPERTY_ALLOWLIST: string[] = ['position', 'rotation', 'scale'];
+export const PROPERTY_ALLOWLIST: string[] = ['position', 'z', 'rotation', 'scale'];

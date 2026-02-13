@@ -641,25 +641,11 @@ export async function createScene() {
             continue;
         }
 
-        // Calculate world position
+        // Calculate 3D world position
         // Place sprite one cell height above the terrain for "standing on top" appearance
-        const worldX = randomX * CELL_WIDTH;
+        const worldX = (randomX * CELL_WIDTH) + (CELL_WIDTH / 2);
         const worldY = (highestY + 1) * CELL_HEIGHT;
-        const worldZ = randomZ * CELL_DEPTH;
-
-        // Apply isometric projection to get 2D screen position
-        // isoX = worldPos.x * vec2(0.866, 0.5)
-        // isoY = worldPos.y * vec2(0.0, -1.0)
-        // isoZ = worldPos.z * vec2(-0.866, 0.5)
-        const isoX = worldX * 0.866;
-        const isoY_x = 0;
-        const isoZ_x = worldZ * -0.866;
-        const screenX = isoX + isoY_x + isoZ_x;
-
-        const isoX_y = worldX * 0.5;
-        const isoY_y = worldY * -1.0;
-        const isoZ_y = worldZ * 0.5;
-        const screenY = isoX_y + isoY_y + isoZ_y;
+        const worldZ = (randomZ * CELL_DEPTH) + (CELL_DEPTH / 2);
 
         // Create sprite nexus
         const spriteNexus = await Omosuen.newComponent('nexus', {
@@ -667,10 +653,12 @@ export async function createScene() {
         });
         scene.addComponent(spriteNexus);
 
-        // Create transform
+        // Create transform with 3D world position
+        // position.x = worldX, position.y = worldZ, z = worldY (vertical)
         const spriteTransform = await Omosuen.newComponent('transform', {
             name: `Character ${i + 1} Transform`,
-            position: new Omosuen.Vector2D(screenX, screenY),
+            position: new Omosuen.Vector2D(worldX, worldZ),
+            z: worldY,
             rotation: 0,
             scale: new Omosuen.Vector2D(2, 2), // 2x scale for visibility (same as sprite-test)
         });
@@ -691,7 +679,7 @@ export async function createScene() {
                 emission: 0,
                 material: 0,
             },
-            anchor: new Omosuen.Vector2D(8, 8), // Center anchor (16x16 sprite)
+            anchor: new Omosuen.Vector2D(0, 8), // Center anchor (16x16 sprite)
             tint: new Omosuen.Vector4D(1, 1, 1, 1),
             opacity: 1.0,
         });
@@ -735,7 +723,7 @@ export async function createScene() {
         });
         spriteNexus.addComponent(animController);
 
-        console.log(`[CellMap Test] Created sprite ${i + 1} at grid (${randomX}, ${highestY}, ${randomZ}) -> world (${worldX}, ${worldY}, ${worldZ}) -> screen (${screenX.toFixed(1)}, ${screenY.toFixed(1)})`);
+        console.log(`[CellMap Test] Created sprite ${i + 1} at grid (${randomX}, ${highestY}, ${randomZ}) -> world (${worldX}, ${worldY}, ${worldZ})`);
     }
 
     console.log('[CellMap Test] All character sprites created');

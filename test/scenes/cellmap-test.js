@@ -273,6 +273,25 @@ setTimeout(() => {
 }, 500); // Wait 500ms for UI to be ready
 
 /**
+ * Finds the highest solid cell (shapeIndex !== 0) at a given X,Z coordinate
+ * @param {Array3D} shapeMap - The shape map from the cell-map
+ * @param {number} x - X grid coordinate
+ * @param {number} z - Z grid coordinate
+ * @param {number} maxHeight - Maximum height to search
+ * @returns {number} The Y coordinate of the highest solid cell, or -1 if none found
+ */
+function findHighestCellY(shapeMap, x, z, maxHeight) {
+    // Search from top down
+    for (let y = maxHeight - 1; y >= 0; y--) {
+        const shapeIndex = shapeMap.get(new Omosuen.Vector3D(x, y, z));
+        if (shapeIndex !== 0) {
+            return y;
+        }
+    }
+    return -1; // No solid cell found
+}
+
+/**
  * Generates a heightmap that creates a dome/pyramid shape
  * Height increases towards the center of the map
  * Returns both materialMap (which material to use) and shapeMap (solid vs air)
@@ -351,7 +370,7 @@ export async function createScene() {
     scene.addComponent(atlasManager);
     console.log('[CellMap Test] AtlasManager created');
 
-    // 3. Create TextureMaps for grass textures
+    // 3. Create TextureMaps for grass textures and sprite textures
     // Grass Albedo - treat entire image as single tile (no frames)
     const grassAlbedoTexture = await Omosuen.newComponent('texture-map', {
         textureMapKey: 'grass-albedo',
@@ -383,20 +402,65 @@ export async function createScene() {
         imageType: undefined
     })
     scene.addComponent(dirtNormalTexture)
+
+    // Sprite TextureMaps - same frame map as sprite-test.js
+    const objectsFrameMap = [
+        new Omosuen.Vector4D(0, 0, 16, 32),    // Frame 0: Tree (16x32)
+        new Omosuen.Vector4D(16, 0, 16, 16),   // Frame 1
+        new Omosuen.Vector4D(32, 0, 16, 16),   // Frame 2
+        new Omosuen.Vector4D(48, 0, 16, 16),   // Frame 3
+        new Omosuen.Vector4D(64, 0, 16, 16),   // Frame 4
+        new Omosuen.Vector4D(80, 0, 16, 16),   // Frame 5
+        new Omosuen.Vector4D(16, 16, 16, 16),  // Frame 6
+        new Omosuen.Vector4D(32, 16, 16, 16),  // Frame 7
+        new Omosuen.Vector4D(48, 16, 16, 16),  // Frame 8
+        new Omosuen.Vector4D(64, 16, 16, 16),  // Frame 9
+        new Omosuen.Vector4D(80, 16, 16, 16),  // Frame 10
+        new Omosuen.Vector4D(0, 32, 16, 16),   // Frame 11: Walk Down 1
+        new Omosuen.Vector4D(16, 32, 16, 16),  // Frame 12: Walk Down 2
+        new Omosuen.Vector4D(32, 32, 16, 16),  // Frame 13: Walk Left 1
+        new Omosuen.Vector4D(48, 32, 16, 16),  // Frame 14: Walk Left 2
+        new Omosuen.Vector4D(64, 32, 16, 16),  // Frame 15: Walk Right 1
+        new Omosuen.Vector4D(80, 32, 16, 16),  // Frame 16: Walk Right 2
+        new Omosuen.Vector4D(0, 48, 16, 16),   // Frame 17: Walk Up 1
+        new Omosuen.Vector4D(16, 48, 16, 16),  // Frame 18: Walk Up 2
+        new Omosuen.Vector4D(32, 48, 16, 16),  // Frame 19
+        new Omosuen.Vector4D(48, 48, 16, 16),  // Frame 20
+        new Omosuen.Vector4D(64, 48, 16, 16),  // Frame 21
+    ];
+
+    const objectsAlbedoTexture = await Omosuen.newComponent('texture-map', {
+        textureMapKey: 'objects',
+        name: 'Objects Tileset',
+        filePath: './assets/objects.png',
+        imageType: objectsFrameMap,
+    });
+    scene.addComponent(objectsAlbedoTexture);
+
+    const objectsNormalTexture = await Omosuen.newComponent('texture-map', {
+        textureMapKey: 'objects-normal',
+        name: 'Objects Normal Map',
+        filePath: './assets/objects_n.png',
+        imageType: objectsFrameMap,
+    });
+    scene.addComponent(objectsNormalTexture);
+
     console.log('[CellMap Test] TextureMaps created');
 
     // Load images and add to atlas manager
     await imageRegistry.loadImage('./assets/green-background.jpg');
-    // await imageRegistry.loadImage('./assets/seamless-textured-grass-natural-grass-pattern_172107-1308.jpg');
-
     await imageRegistry.loadImage('./assets/seamless-textured-grass-natural-grass-pattern_172107-1308_n.png');
     await imageRegistry.loadImage(dirtAlbedoTexture.filePath);
     await imageRegistry.loadImage(dirtNormalTexture.filePath);
+    await imageRegistry.loadImage('./assets/objects.png');
+    await imageRegistry.loadImage('./assets/objects_n.png');
 
     atlasManager.addTextureMap(grassAlbedoTexture);
     atlasManager.addTextureMap(grassNormalTexture);
     atlasManager.addTextureMap(dirtNormalTexture);
     atlasManager.addTextureMap(dirtAlbedoTexture);
+    atlasManager.addTextureMap(objectsAlbedoTexture);
+    atlasManager.addTextureMap(objectsNormalTexture);
     console.log('[CellMap Test] Images loaded and added to atlas manager');
 
     // 4. Create Viewport (800x600, centered on screen for better 3D view)
@@ -553,6 +617,128 @@ export async function createScene() {
     });
     scene.addComponent(cellMap);
     console.log('[CellMap Test] CellMap created with dimensions:', MAP_WIDTH, 'x', MAP_DEPTH, 'x', MAP_HEIGHT);
+
+    // 7. Create 10 character sprites placed on the terrain
+    const animationConfigs = [
+        { name: 'walk-down', frames: [11, 12] },
+        { name: 'walk-left', frames: [13, 14] },
+        { name: 'walk-right', frames: [15, 16] },
+        { name: 'walk-up', frames: [17, 18] },
+    ];
+
+    console.log('[CellMap Test] Creating 10 character sprites on terrain...');
+
+    for (let i = 0; i < 10; i++) {
+        // Generate random X,Z position within map bounds
+        const randomX = Math.floor(Math.random() * MAP_WIDTH);
+        const randomZ = Math.floor(Math.random() * MAP_DEPTH);
+
+        // Find the highest solid cell at this X,Z position
+        const highestY = findHighestCellY(shapeMap, randomX, randomZ, MAP_HEIGHT);
+
+        if (highestY === -1) {
+            console.warn(`[CellMap Test] No solid cell found at (${randomX}, ${randomZ}), skipping sprite ${i}`);
+            continue;
+        }
+
+        // Calculate world position
+        // Place sprite one cell height above the terrain for "standing on top" appearance
+        const worldX = randomX * CELL_WIDTH;
+        const worldY = (highestY + 1) * CELL_HEIGHT;
+        const worldZ = randomZ * CELL_DEPTH;
+
+        // Apply isometric projection to get 2D screen position
+        // isoX = worldPos.x * vec2(0.866, 0.5)
+        // isoY = worldPos.y * vec2(0.0, -1.0)
+        // isoZ = worldPos.z * vec2(-0.866, 0.5)
+        const isoX = worldX * 0.866;
+        const isoY_x = 0;
+        const isoZ_x = worldZ * -0.866;
+        const screenX = isoX + isoY_x + isoZ_x;
+
+        const isoX_y = worldX * 0.5;
+        const isoY_y = worldY * -1.0;
+        const isoZ_y = worldZ * 0.5;
+        const screenY = isoX_y + isoY_y + isoZ_y;
+
+        // Create sprite nexus
+        const spriteNexus = await Omosuen.newComponent('nexus', {
+            name: `Character ${i + 1}`,
+        });
+        scene.addComponent(spriteNexus);
+
+        // Create transform
+        const spriteTransform = await Omosuen.newComponent('transform', {
+            name: `Character ${i + 1} Transform`,
+            position: new Omosuen.Vector2D(screenX, screenY),
+            rotation: 0,
+            scale: new Omosuen.Vector2D(2, 2), // 2x scale for visibility (same as sprite-test)
+        });
+        spriteNexus.addComponent(spriteTransform);
+
+        // Create sprite
+        const sprite = await Omosuen.newComponent('sprite', {
+            name: `Character ${i + 1} Sprite`,
+            textureMapKeys: {
+                albedo: 'objects',
+                normal: 'objects-normal',
+                material: '',
+                emission: '',
+            },
+            frame: {
+                albedo: 11, // Start with walk-down frame 1
+                normal: 11,
+                emission: 0,
+                material: 0,
+            },
+            anchor: new Omosuen.Vector2D(8, 8), // Center anchor (16x16 sprite)
+            tint: new Omosuen.Vector4D(1, 1, 1, 1),
+            opacity: 1.0,
+        });
+        spriteNexus.addComponent(sprite);
+
+        // Pick a random starting animation
+        const randomAnim = animationConfigs[Math.floor(Math.random() * animationConfigs.length)];
+
+        // Create animation controller
+        const animController = await Omosuen.newComponent('animation-controller', {
+            name: `Character ${i + 1} Animator`,
+            spriteId: sprite.id,
+            animations: [
+                {
+                    name: 'walk-down',
+                    frames: [11, 12],
+                    frameTime: 200, // 5 FPS
+                    loop: true,
+                },
+                {
+                    name: 'walk-left',
+                    frames: [13, 14],
+                    frameTime: 200,
+                    loop: true,
+                },
+                {
+                    name: 'walk-right',
+                    frames: [15, 16],
+                    frameTime: 200,
+                    loop: true,
+                },
+                {
+                    name: 'walk-up',
+                    frames: [17, 18],
+                    frameTime: 200,
+                    loop: true,
+                },
+            ],
+            initialAnimation: randomAnim.name,
+            autoPlay: true, // Auto-play for immediate visual interest
+        });
+        spriteNexus.addComponent(animController);
+
+        console.log(`[CellMap Test] Created sprite ${i + 1} at grid (${randomX}, ${highestY}, ${randomZ}) -> world (${worldX}, ${worldY}, ${worldZ}) -> screen (${screenX.toFixed(1)}, ${screenY.toFixed(1)})`);
+    }
+
+    console.log('[CellMap Test] All character sprites created');
 
     // 8. Create UI overlay
     const ui = await Omosuen.newComponent('ui-overlay', {

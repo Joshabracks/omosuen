@@ -435,14 +435,7 @@ export async function createScene() {
         name: 'Sprite Test Scene',
     });
 
-    // 1. Create ImageRegistry (global singleton)
-    const imageRegistry = await Omosuen.newComponent('image-registry', {
-        name: 'ImageRegistry',
-    });
-    scene.addComponent(imageRegistry);
-    console.log('[Sprite Test] ImageRegistry created');
-
-    // 2. Create AtlasManager (global singleton)
+    // 1. Create AtlasManager (global singleton with built-in image loading)
     const atlasManager = await Omosuen.newComponent('atlas-manager', {
         name: 'AtlasManager',
         config: {
@@ -454,8 +447,9 @@ export async function createScene() {
     scene.addComponent(atlasManager);
     console.log('[Sprite Test] AtlasManager created');
 
-    // 3. Create TextureMap for objects.png
+    // 2. Create TextureMap for objects.png
     // Frame map from atlas-test.js (frames 11-18 are the walk animations)
+    // Auto-registers with atlas manager
     const objectsFrameMap = [
         new Omosuen.Vector4D(0, 0, 16, 32),    // Frame 0: Tree (16x32)
         new Omosuen.Vector4D(16, 0, 16, 16),   // Frame 1
@@ -486,17 +480,12 @@ export async function createScene() {
         name: 'Objects Tileset',
         filePath: './assets/objects.png',
         imageType: objectsFrameMap,
+        atlasManager, // Auto-registers with atlas manager
     });
     scene.addComponent(objectsTexture);
-    console.log('[Sprite Test] TextureMap created');
+    console.log('[Sprite Test] TextureMap created and auto-registered with atlas manager');
 
-    // Load the image and add texture map to atlas manager
-    // This will trigger auto-compilation during AtlasManager init
-    await imageRegistry.loadImage('./assets/objects.png');
-    atlasManager.addTextureMap(objectsTexture);
-    console.log('[Sprite Test] Image loaded and added to atlas manager');
-
-    // 4. Create Viewport (400x400, centered on screen)
+    // 3. Create Viewport (400x400, centered on screen)
     const viewport = await Omosuen.newComponent('viewport', {
         name: 'Sprite Viewport',
         width: 400,
@@ -508,7 +497,7 @@ export async function createScene() {
     scene.addComponent(viewport);
     console.log('[Sprite Test] Viewport created');
 
-    // 5. Create Camera Nexus with Transform and Camera
+    // 4. Create Camera Nexus with Transform and Camera
     const cameraNexus = await Omosuen.newComponent('nexus', {
         name: 'Camera Nexus',
     });
@@ -533,7 +522,7 @@ export async function createScene() {
     cameraNexus.addComponent(camera);
     console.log('[Sprite Test] Camera created');
 
-    // 6. Create Sprite Nexus with Transform, Sprite, and AnimationController
+    // 5. Create Sprite Nexus with Transform, Sprite, and AnimationController
     const spriteNexus = await Omosuen.newComponent('nexus', {
         name: 'Character Sprite',
     });
@@ -605,7 +594,7 @@ export async function createScene() {
     spriteNexus.addComponent(animController);
     console.log('[Sprite Test] Sprite with AnimationController created');
 
-    // 7. Create UI overlay
+    // 6. Create UI overlay
     const ui = await Omosuen.newComponent('ui-overlay', {
         name: 'Sprite Test UI',
         htmlConstructorKey: 'spriteTest',

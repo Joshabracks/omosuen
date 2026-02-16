@@ -351,14 +351,7 @@ export async function createScene() {
         name: 'CellMap Test Scene',
     });
 
-    // 1. Create ImageRegistry (global singleton)
-    const imageRegistry = await Omosuen.newComponent('image-registry', {
-        name: 'ImageRegistry',
-    });
-    scene.addComponent(imageRegistry);
-    console.log('[CellMap Test] ImageRegistry created');
-
-    // 2. Create AtlasManager (global singleton)
+    // 1. Create AtlasManager (global singleton with built-in image loading)
     const atlasManager = await Omosuen.newComponent('atlas-manager', {
         name: 'AtlasManager',
         config: {
@@ -366,43 +359,8 @@ export async function createScene() {
             maxAtlases: 4,
             padding: 1,
         },
-    });
-    scene.addComponent(atlasManager);
+    }, scene);
     console.log('[CellMap Test] AtlasManager created');
-
-    // 3. Create TextureMaps for grass textures and sprite textures
-    // Grass Albedo - treat entire image as single tile (no frames)
-    const grassAlbedoTexture = await Omosuen.newComponent('texture-map', {
-        textureMapKey: 'grass-albedo',
-        name: 'Grass Albedo Texture',
-        filePath: './assets/green-background.jpg',
-        imageType: undefined, // Undefined = entire image is single frame
-    });
-    scene.addComponent(grassAlbedoTexture);
-
-    // Grass Normal - treat entire image as single tile (no frames)
-    const grassNormalTexture = await Omosuen.newComponent('texture-map', {
-        textureMapKey: 'grass-normal',
-        name: 'Grass Normal Texture',
-        filePath: './assets/seamless-textured-grass-natural-grass-pattern_172107-1308_n.png',
-        imageType: undefined, // Undefined = entire image is single frame
-    });
-    scene.addComponent(grassNormalTexture);
-    const dirtAlbedoTexture = await Omosuen.newComponent('texture-map', {
-        textureMapKey: 'dirt-albedo',
-        name: 'Dirt Albedo Texture',
-        filePath: './assets/dirt.jpg',
-        imageType: undefined
-    })
-    scene.addComponent(dirtAlbedoTexture)
-    const dirtNormalTexture = await Omosuen.newComponent('texture-map', {
-        textureMapKey: 'dirt-normal',
-        name: 'Dirt Normal Texture',
-        filePath: './assets/dirt_n.png',
-        imageType: undefined
-    })
-    scene.addComponent(dirtNormalTexture)
-
     // Sprite TextureMaps - same frame map as sprite-test.js
     const objectsFrameMap = [
         new Omosuen.Vector4D(0, 0, 16, 32),    // Frame 0: Tree (16x32)
@@ -428,86 +386,92 @@ export async function createScene() {
         new Omosuen.Vector4D(48, 48, 16, 16),  // Frame 20
         new Omosuen.Vector4D(64, 48, 16, 16),  // Frame 21
     ];
+    // 2. Create TextureMaps for grass textures and sprite textures
+    // Auto-registers with atlas manager and auto-loads images
+    // Grass Albedo - treat entire image as single tile (no frames)
+    await Promise.all([
+        Omosuen.newComponent('texture-map', {
+            textureMapKey: 'grass-albedo',
+            name: 'Grass Albedo Texture',
+            filePath: './assets/green-background.jpg',
+            imageType: undefined, // Undefined = entire image is single frame
+            atlasManager, // Auto-registers with atlas manager
+        }, scene),
+        Omosuen.newComponent('texture-map', {
+            textureMapKey: 'grass-normal',
+            name: 'Grass Normal Texture',
+            filePath: './assets/seamless-textured-grass-natural-grass-pattern_172107-1308_n.png',
+            imageType: undefined, // Undefined = entire image is single frame
+            atlasManager,
+        }, scene),
+        Omosuen.newComponent('texture-map', {
+            textureMapKey: 'dirt-albedo',
+            name: 'Dirt Albedo Texture',
+            filePath: './assets/dirt.jpg',
+            imageType: undefined,
+            atlasManager,
+        }, scene),
+        Omosuen.newComponent('texture-map', {
+            textureMapKey: 'dirt-normal',
+            name: 'Dirt Normal Texture',
+            filePath: './assets/dirt_n.png',
+            imageType: undefined,
+            atlasManager,
+        }, scene),
+        Omosuen.newComponent('texture-map', {
+            textureMapKey: 'objects',
+            name: 'Objects Tileset',
+            filePath: './assets/objects.png',
+            imageType: objectsFrameMap,
+            atlasManager,
+        }, scene),
+        Omosuen.newComponent('texture-map', {
+            textureMapKey: 'objects-normal',
+            name: 'Objects Normal Map',
+            filePath: './assets/objects_n.png',
+            imageType: objectsFrameMap,
+            atlasManager,
+        }, scene),
+        // 3. Create Viewport (800x600, centered on screen for better 3D view)
+        Omosuen.newComponent('viewport', {
+            name: 'CellMap Viewport',
+            width: 800,
+            height: 600,
+            offsetX: window.innerWidth / 2 - 400,
+            offsetY: window.innerHeight / 2 - 300,
+            backgroundColor: new Omosuen.Vector4D(0.05, 0.05, 0.1, 1.0), // Dark blue background
+        }, scene),
+    ])
 
-    const objectsAlbedoTexture = await Omosuen.newComponent('texture-map', {
-        textureMapKey: 'objects',
-        name: 'Objects Tileset',
-        filePath: './assets/objects.png',
-        imageType: objectsFrameMap,
-    });
-    scene.addComponent(objectsAlbedoTexture);
-
-    const objectsNormalTexture = await Omosuen.newComponent('texture-map', {
-        textureMapKey: 'objects-normal',
-        name: 'Objects Normal Map',
-        filePath: './assets/objects_n.png',
-        imageType: objectsFrameMap,
-    });
-    scene.addComponent(objectsNormalTexture);
-
-    console.log('[CellMap Test] TextureMaps created');
-
-    // Load images and add to atlas manager
-    await imageRegistry.loadImage('./assets/green-background.jpg');
-    await imageRegistry.loadImage('./assets/seamless-textured-grass-natural-grass-pattern_172107-1308_n.png');
-    await imageRegistry.loadImage(dirtAlbedoTexture.filePath);
-    await imageRegistry.loadImage(dirtNormalTexture.filePath);
-    await imageRegistry.loadImage('./assets/objects.png');
-    await imageRegistry.loadImage('./assets/objects_n.png');
-
-    atlasManager.addTextureMap(grassAlbedoTexture);
-    atlasManager.addTextureMap(grassNormalTexture);
-    atlasManager.addTextureMap(dirtNormalTexture);
-    atlasManager.addTextureMap(dirtAlbedoTexture);
-    atlasManager.addTextureMap(objectsAlbedoTexture);
-    atlasManager.addTextureMap(objectsNormalTexture);
-    console.log('[CellMap Test] Images loaded and added to atlas manager');
-
-    // 4. Create Viewport (800x600, centered on screen for better 3D view)
-    const viewport = await Omosuen.newComponent('viewport', {
-        name: 'CellMap Viewport',
-        width: 800,
-        height: 600,
-        offsetX: window.innerWidth / 2 - 400,
-        offsetY: window.innerHeight / 2 - 300,
-        backgroundColor: new Omosuen.Vector4D(0.05, 0.05, 0.1, 1.0), // Dark blue background
-    });
-    scene.addComponent(viewport);
-    console.log('[CellMap Test] Viewport created');
-
-    // 5. Create Camera Nexus with Transform and Camera
+    // 4. Create Camera Nexus with Transform and Camera
     const cameraNexus = await Omosuen.newComponent('nexus', {
         name: 'Camera Nexus',
-    });
-    scene.addComponent(cameraNexus);
+    }, scene);
 
     // Camera transform (positioned to view flat plane)
     // 20x20x1 cells at 32x16x32px - single layer for spacing verification
     // Standard isometric projection (top-down, 30-degree angles)
-    const cameraTransform = await Omosuen.newComponent('transform', {
+    await Omosuen.newComponent('transform', {
         name: 'Camera Transform',
         position: new Omosuen.Vector2D(-800, -300), // Center on flat plane at ground level
         rotation: 0,
         scale: new Omosuen.Vector2D(1, 1),
-    });
-    cameraNexus.addComponent(cameraTransform);
-
+    }, cameraNexus)
     // Camera component with zoom to fit plane in view
     const camera = await Omosuen.newComponent('camera', {
         name: 'Main Camera',
         viewportRef: 'CellMap Viewport',
         zoom: 0.5, // Zoom out to see full 20x20 plane
         axonometricAngle: 30, // 30-degree isometric projection
-    });
-    cameraNexus.addComponent(camera);
+    }, cameraNexus)
+
     console.log('[CellMap Test] Camera created');
 
-    // 6. Create InputController for camera controls
+    // 5. Create InputController for camera controls
     const inputController = await Omosuen.newComponent('input-controller', {
         name: 'Camera Input Controller',
         preventDefault: false, // Don't prevent default for scroll (page might need it)
-    });
-    scene.addComponent(inputController);
+    }, scene);
 
     // Track mouse state for middle-click panning
     let isPanning = false;
@@ -515,70 +479,73 @@ export async function createScene() {
     let lastMouseY = 0;
 
     // Mouse pan: middle button + drag
-    inputController.onAction('middleMouseDown', (event) => {
-        isPanning = true;
-        lastMouseX = event.clientX;
-        lastMouseY = event.clientY;
-    });
+    const onActions = [
+        ['middleMouseDown', (event) => {
+            isPanning = true;
+            lastMouseX = event.clientX;
+            lastMouseY = event.clientY;
+        }],
+        ['middleMouseUp', () => {
+            isPanning = false;
+        }],
+        ['mouseMove', (event) => {
+            if (!isPanning) return;
 
-    inputController.onAction('middleMouseUp', () => {
-        isPanning = false;
-    });
+            // Calculate mouse delta
+            const deltaX = event.clientX - lastMouseX;
+            const deltaY = event.clientY - lastMouseY;
 
-    inputController.onAction('mouseMove', (event) => {
-        if (!isPanning) return;
+            // Update last position
+            lastMouseX = event.clientX;
+            lastMouseY = event.clientY;
 
-        // Calculate mouse delta
-        const deltaX = event.clientX - lastMouseX;
-        const deltaY = event.clientY - lastMouseY;
+            const zoom = Omosuen.getActiveScene().getComponentByType('camera', true).zoom
 
-        // Update last position
-        lastMouseX = event.clientX;
-        lastMouseY = event.clientY;
-
-        const zoom = Omosuen.getActiveScene().getComponentByType('camera', true).zoom
-
-        // Pan camera (no inversion - camera moves opposite to create drag-to-pan effect)
-        camera.pan(deltaX * -PAN_SENSITIVITY / zoom, deltaY * -PAN_SENSITIVITY / zoom);
-        updateCameraStatus();
-    });
-
-    // Mouse wheel: zoom in/out
-    inputController.onAction('mouseWheel', (_event, deltaY) => {
-        // deltaY > 0 = scroll down = zoom out
-        // deltaY < 0 = scroll up = zoom in
-        const zoomChange = -deltaY * ZOOM_SENSITIVITY;
-        const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, camera.zoom + zoomChange));
-        camera.setZoom(newZoom);
-        updateCameraStatus();
-    });
+            // Pan camera (no inversion - camera moves opposite to create drag-to-pan effect)
+            camera.pan(deltaX * -PAN_SENSITIVITY / zoom, deltaY * -PAN_SENSITIVITY / zoom);
+            updateCameraStatus();
+        }],
+        // Mouse wheel: zoom in/out
+        ['mouseWheel', (_event, deltaY) => {
+            // deltaY > 0 = scroll down = zoom out
+            // deltaY < 0 = scroll up = zoom in
+            const zoomChange = -deltaY * ZOOM_SENSITIVITY;
+            const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, camera.zoom + zoomChange));
+            camera.setZoom(newZoom);
+            updateCameraStatus();
+        }]
+    ];
+    onActions.forEach((a) => inputController.onAction(...a))
 
     // Bind input actions
-    inputController.bindAction({
-        eventType: 'mousedown',
-        button: 1, // Middle mouse button
-        action: 'middleMouseDown',
-    });
+    const bindActions = [
+        {
+            eventType: 'mousedown',
+            button: 1, // Middle mouse button
+            action: 'middleMouseDown',
+        },
 
-    inputController.bindAction({
-        eventType: 'mouseup',
-        button: 1, // Middle mouse button
-        action: 'middleMouseUp',
-    });
+        {
+            eventType: 'mouseup',
+            button: 1, // Middle mouse button
+            action: 'middleMouseUp',
+        },
 
-    inputController.bindAction({
-        eventType: 'mousemove',
-        action: 'mouseMove',
-    });
+        {
+            eventType: 'mousemove',
+            action: 'mouseMove',
+        },
 
-    inputController.bindAction({
-        eventType: 'wheel',
-        action: 'mouseWheel',
-    });
+        {
+            eventType: 'wheel',
+            action: 'mouseWheel',
+        },
+    ];
+    bindActions.forEach(inputController.bindAction);
 
     console.log('[CellMap Test] InputController created with mouse pan and zoom');
 
-    // 7. Create Cell-Map with dome-shaped heightmap
+    // 6. Create Cell-Map with dome-shaped heightmap
     const MAP_WIDTH = 20;   // 20 cells wide
     const MAP_DEPTH = 20;   // 20 cells deep
     const MAP_HEIGHT = 20;  // 20 layers tall (dome gets taller towards center)
@@ -605,7 +572,7 @@ export async function createScene() {
         materialTextureKey: '',
     }
 
-    const cellMap = await Omosuen.newComponent('cell-map', {
+    await Omosuen.newComponent('cell-map', {
         name: 'Terrain Heightmap',
         materials: [grassMaterial, dirtMaterial],
         materialMap: materialMap,
@@ -614,8 +581,7 @@ export async function createScene() {
         mapSize: new Omosuen.Vector3D(MAP_WIDTH, MAP_HEIGHT, MAP_DEPTH),
         // emissionMap: default (no emission)
         // visibilityMap: default (all visible)
-    });
-    scene.addComponent(cellMap);
+    }, scene);
     console.log('[CellMap Test] CellMap created with dimensions:', MAP_WIDTH, 'x', MAP_DEPTH, 'x', MAP_HEIGHT);
 
     // 7. Create 10 character sprites placed on the terrain
@@ -650,19 +616,17 @@ export async function createScene() {
         // Create sprite nexus
         const spriteNexus = await Omosuen.newComponent('nexus', {
             name: `Character ${i + 1}`,
-        });
-        scene.addComponent(spriteNexus);
+        }, scene);
 
         // Create transform with 3D world position
         // position.x = worldX, position.y = worldZ, z = worldY (vertical)
-        const spriteTransform = await Omosuen.newComponent('transform', {
+        await Omosuen.newComponent('transform', {
             name: `Character ${i + 1} Transform`,
             position: new Omosuen.Vector2D(worldX, worldZ),
             z: worldY,
             rotation: 0,
             scale: new Omosuen.Vector2D(2, 2), // 2x scale for visibility (same as sprite-test)
-        });
-        spriteNexus.addComponent(spriteTransform);
+        }, spriteNexus);
 
         // Create sprite
         const sprite = await Omosuen.newComponent('sprite', {
@@ -682,14 +646,13 @@ export async function createScene() {
             anchor: new Omosuen.Vector2D(0, 8), // Center anchor (16x16 sprite)
             tint: new Omosuen.Vector4D(1, 1, 1, 1),
             opacity: 1.0,
-        });
-        spriteNexus.addComponent(sprite);
+        }, spriteNexus);
 
         // Pick a random starting animation
         const randomAnim = animationConfigs[Math.floor(Math.random() * animationConfigs.length)];
 
         // Create animation controller
-        const animController = await Omosuen.newComponent('animation-controller', {
+        await Omosuen.newComponent('animation-controller', {
             name: `Character ${i + 1} Animator`,
             spriteId: sprite.id,
             animations: [
@@ -720,8 +683,7 @@ export async function createScene() {
             ],
             initialAnimation: randomAnim.name,
             autoPlay: true, // Auto-play for immediate visual interest
-        });
-        spriteNexus.addComponent(animController);
+        }, spriteNexus);
 
         console.log(`[CellMap Test] Created sprite ${i + 1} at grid (${randomX}, ${highestY}, ${randomZ}) -> world (${worldX}, ${worldY}, ${worldZ})`);
     }
@@ -739,8 +701,7 @@ export async function createScene() {
                 methodKey: 'backToMenuFromCellmap',
             },
         ],
-    });
-    scene.addComponent(ui);
+    }, scene);
     console.log('[CellMap Test] UI overlay created');
 
     console.log('[CellMap Test] Scene created successfully');

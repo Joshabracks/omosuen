@@ -29,10 +29,6 @@ export type {
   PackedFrame,
 } from './texture-map';
 export type {
-  ImageRegistryT as image_registry,
-  ImageRegistryMethods,
-} from './image-registry';
-export type {
   AtlasManagerT as atlas_manager,
   AtlasManagerMethods,
   AtlasSize,

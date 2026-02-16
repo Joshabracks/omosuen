@@ -1,5 +1,6 @@
 import { BUILDERS, MethodRegistry, PROPERTY_ALLOWLIST } from './registry';
 import { queueInit } from '../loop/init';
+import { Nexus, NexusT } from './nexus';
 
 /**
  * Registry mapping raw component objects to their Proxy wrappers.
@@ -77,7 +78,6 @@ export type COMPONENT_TYPE =
   | 'messenger'
   | 'viewport'
   | 'texture-map'
-  | 'image-registry'
   | 'atlas-manager'
   | 'sprite'
   | 'transform'
@@ -140,6 +140,7 @@ export type ComponentInstanceMethods<T extends ComponentMethods> = {
 export async function newComponent(
   type: COMPONENT_TYPE,
   options: ComponentOptions,
+  parent: NexusT | null = null,
 ): Promise<ComponentData | null> {
   const builder = BUILDERS[type];
   if (!builder) {
@@ -224,6 +225,9 @@ export async function newComponent(
   // Register the proxy in the registry so it can be retrieved later
   // This is crucial for components that store references to other components
   PROXY_REGISTRY.set(component, proxy);
+  if (parent) {
+    Nexus.addComponent(parent, proxy);
+  }
 
   return proxy;
 }

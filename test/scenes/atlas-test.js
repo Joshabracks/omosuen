@@ -78,13 +78,12 @@ async function runAtlasCompilation(scene) {
     if (statusEl) statusEl.style.display = 'block';
 
     // Get components from scene
-    const imageRegistry = scene.getComponentByType('image-registry');
     const atlasManager = scene.getComponentByType('atlas-manager');
     const textureMaps = scene.getComponentsByType('texture-map');
 
-    if (!imageRegistry || !atlasManager) {
-        updateStatus('✗ Error: Required components not found');
-        console.error('[Atlas Test] Missing required components');
+    if (!atlasManager) {
+        updateStatus('✗ Error: AtlasManager not found');
+        console.error('[Atlas Test] Missing atlas manager component');
         return;
     }
 
@@ -96,30 +95,13 @@ async function runAtlasCompilation(scene) {
 
     console.log(`[Atlas Test] Found ${textureMaps.length} texture maps`);
 
-    // Load images (cache handles duplicates automatically)
-    updateStatus('Loading images...');
-    try {
-        await Promise.all([
-            imageRegistry.loadImage('./assets/objects.png'),
-            imageRegistry.loadImage('./assets/iso_tiles.png'),
-            imageRegistry.loadImage('./assets/door.png'),
-        ]);
-        updateStatus('Images loaded successfully');
-        console.log('[Atlas Test] All images loaded');
-    } catch (error) {
-        updateStatus(`✗ Error loading images: ${error.message}`);
-        console.error('[Atlas Test] Image loading failed:', error);
-        return;
-    }
-
-    // Add all texture maps to atlas manager
-    updateStatus(`Adding ${textureMaps.length} texture maps to atlas manager...`);
+    // Count total frames
+    updateStatus(`Compiling ${textureMaps.length} texture maps...`);
     let totalFrames = 0;
     for (const tm of textureMaps) {
-        atlasManager.addTextureMap(tm);
         totalFrames += tm.getFrameCount();
     }
-    console.log(`[Atlas Test] Added ${textureMaps.length} texture maps (${totalFrames} total frames)`);
+    console.log(`[Atlas Test] Processing ${textureMaps.length} texture maps (${totalFrames} total frames)`);
 
     // Process texture maps (compile atlases)
     updateStatus('Compiling atlases... (this may take a moment)');
@@ -269,14 +251,7 @@ export async function createScene() {
         name: 'Atlas Test Scene',
     });
 
-    // 1. Create ImageRegistry (global singleton)
-    const imageRegistry = await Omosuen.newComponent('image-registry', {
-        name: 'ImageRegistry',
-    });
-    scene.addComponent(imageRegistry);
-    console.log('[Atlas Test] ImageRegistry created');
-
-    // 2. Create AtlasManager (global singleton)
+    // 1. Create AtlasManager (global singleton with built-in image loading)
     const atlasManager = await Omosuen.newComponent('atlas-manager', {
         name: 'AtlasManager',
         config: {
@@ -288,7 +263,8 @@ export async function createScene() {
     scene.addComponent(atlasManager);
     console.log('[Atlas Test] AtlasManager created');
 
-    // 3. Create 50 copies of TextureMap for objects.png (FrameMap)
+    // 2. Create 250 copies of TextureMap for objects.png (FrameMap)
+    // Auto-registers with atlas manager
     // objects.png frame map (22 frames total)
     // Layout:
     // tooooo  (row 0: y=0)  - tree + frames 1-5
@@ -327,12 +303,13 @@ export async function createScene() {
             name: `Objects Tileset ${i}`,
             filePath: './assets/objects.png',
             imageType: objectsFrameMap,
+            atlasManager, // Auto-registers with atlas manager
         });
         scene.addComponent(objectsTexture);
     }
-    console.log('[Atlas Test] Created 50 copies of objects.png TextureMap (1,100 total frames)');
+    console.log('[Atlas Test] Created 250 copies of objects.png TextureMap (5,500 total frames)');
 
-    // 4. Create 50 copies of TextureMap for iso_tiles.png (GridConfig)
+    // 3. Create 250 copies of TextureMap for iso_tiles.png (GridConfig)
     for (let i = 0; i < 250; i++) {
         const tilesTexture = await Omosuen.newComponent('texture-map', {
             textureMapKey: `iso-tiles_${i}`,
@@ -343,24 +320,26 @@ export async function createScene() {
                 gridSize: new Omosuen.Vector2D(3, 3),
                 cellCount: 8,  // Only first 8 cells are valid (last one is empty)
             },
+            atlasManager, // Auto-registers with atlas manager
         });
         scene.addComponent(tilesTexture);
     }
-    console.log('[Atlas Test] Created 50 copies of iso_tiles.png TextureMap (400 total frames)');
+    console.log('[Atlas Test] Created 250 copies of iso_tiles.png TextureMap (2,000 total frames)');
 
-    // 5. Create 50 copies of TextureMap for door.png (undefined - single image)
+    // 4. Create 250 copies of TextureMap for door.png (undefined - single image)
     for (let i = 0; i < 250; i++) {
         const doorTexture = await Omosuen.newComponent('texture-map', {
             textureMapKey: `door_${i}`,
             name: `Door Sprite ${i}`,
             filePath: './assets/door.png',
             // No imageType - entire image is one frame
+            atlasManager, // Auto-registers with atlas manager
         });
         scene.addComponent(doorTexture);
     }
-    console.log('[Atlas Test] Created 50 copies of door.png TextureMap (50 total frames)');
+    console.log('[Atlas Test] Created 250 copies of door.png TextureMap (250 total frames)');
 
-    // 6. Create UI overlay
+    // 5. Create UI overlay
     const ui = await Omosuen.newComponent('ui-overlay', {
         name: 'Atlas Test UI',
         htmlConstructorKey: 'atlasTest',

@@ -1,7 +1,6 @@
 import type { ComponentData, ComponentMethods } from '../types';
 import type { AtlasManagerT } from './data';
 import type { TextureMapT } from '../texture-map/data';
-import type { ImageRegistryT } from '../image-registry/data';
 import type { NexusT } from '../nexus/data';
 import type { UnpackedFrame } from './types';
 import { packFrames } from './packer';
@@ -33,7 +32,7 @@ export interface AtlasManagerMethods extends ComponentMethods {
    * Processes all pending texture maps and compiles atlases.
    * This is an async operation that:
    * 1. Retrieves all pending TextureMap components
-   * 2. Loads source images via ImageRegistry
+   * 2. Loads source images (internal image cache)
    * 3. Extracts frame image data
    * 4. Packs frames into atlases
    * 5. Updates TextureMap.packedFrames
@@ -68,6 +67,69 @@ export interface AtlasManagerMethods extends ComponentMethods {
    * @param am - AtlasManager component
    */
   clear: (am: AtlasManagerT) => void;
+
+  /**
+   * Loads an image asynchronously.
+   * If the image is already loaded, returns it immediately from cache.
+   * If the image is currently loading, returns the existing promise.
+   * Otherwise, initiates a new load.
+   * (Merged from image-registry component)
+   *
+   * @param am - AtlasManager component
+   * @param filePath - Path to the image file
+   * @returns Promise that resolves to the loaded HTMLImageElement
+   */
+  loadImage: (am: AtlasManagerT, filePath: string) => Promise<HTMLImageElement>;
+
+  /**
+   * Synchronously retrieves an image from the cache.
+   * Returns null if the image is not loaded.
+   * (Merged from image-registry component)
+   *
+   * @param am - AtlasManager component
+   * @param filePath - Path to the image file
+   * @returns The cached HTMLImageElement, or null if not found
+   */
+  getImage: (am: AtlasManagerT, filePath: string) => HTMLImageElement | null;
+
+  /**
+   * Checks if an image is loaded in the cache.
+   * (Merged from image-registry component)
+   *
+   * @param am - AtlasManager component
+   * @param filePath - Path to the image file
+   * @returns True if the image is cached, false otherwise
+   */
+  hasImage: (am: AtlasManagerT, filePath: string) => boolean;
+
+  /**
+   * Checks if an image is currently being loaded.
+   * (Merged from image-registry component)
+   *
+   * @param am - AtlasManager component
+   * @param filePath - Path to the image file
+   * @returns True if the image is loading, false otherwise
+   */
+  isLoading: (am: AtlasManagerT, filePath: string) => boolean;
+
+  /**
+   * Removes an image from the cache.
+   * Useful for freeing memory when an image is no longer needed.
+   * (Merged from image-registry component)
+   *
+   * @param am - AtlasManager component
+   * @param filePath - Path to the image file
+   */
+  removeImage: (am: AtlasManagerT, filePath: string) => void;
+
+  /**
+   * Gets the number of cached images.
+   * (Merged from image-registry component)
+   *
+   * @param am - AtlasManager component
+   * @returns Number of images in cache
+   */
+  getImageCacheSize: (am: AtlasManagerT) => number;
 
   /**
    * Disposes of the AtlasManager.
@@ -125,13 +187,6 @@ function getTextureMaps(
   return textureMaps;
 }
 
-/**
- * Helper function to get the ImageRegistry component.
- */
-function getImageRegistry(rootNexus: NexusT): ImageRegistryT | null {
-  const { getComponentByType } = require('../nexus/methods').Nexus;
-  return getComponentByType(rootNexus, 'image-registry', true) as ImageRegistryT | null;
-}
 
 /**
  * Extracts image data for a frame from a source image.
@@ -220,20 +275,9 @@ export const AtlasManager: AtlasManagerMethods = {
       return;
     }
 
-    // Get image registry
-    const imageRegistry = getImageRegistry(rootNexus);
-    if (!imageRegistry) {
-      throw new Error(
-        '[atlas-manager] ImageRegistry component not found in scene',
-      );
-    }
-
-    // Import ImageRegistry methods
-    const { loadImage } = require('../image-registry/methods').ImageRegistry;
-
-    // Load all images
+    // Load all images using internal image cache
     const imageLoadPromises = textureMaps.map((tm) =>
-      loadImage(imageRegistry, tm.filePath),
+      AtlasManager.loadImage(am, tm.filePath),
     );
 
     let images: HTMLImageElement[];
@@ -399,6 +443,74 @@ export const AtlasManager: AtlasManagerMethods = {
     am.textureMapIds.clear();
     am.atlases = [];
     am.compiled = false;
+    am.imageCache.clear();
+    am.imageLoading.clear();
+  },
+
+  loadImage: async (
+    am: AtlasManagerT,
+    filePath: string,
+  ): Promise<HTMLImageElement> => {
+    // Check if already loaded
+    if (am.imageCache.has(filePath)) {
+      return am.imageCache.get(filePath)!;
+    }
+
+    // Check if currently loading
+    if (am.imageLoading.has(filePath)) {
+      return am.imageLoading.get(filePath)!;
+    }
+
+    // Start new load
+    const loadPromise = new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+
+      img.onload = () => {
+        // Add to cache
+        am.imageCache.set(filePath, img);
+        // Remove from loading map
+        am.imageLoading.delete(filePath);
+        resolve(img);
+      };
+
+      img.onerror = (error) => {
+        // Remove from loading map
+        am.imageLoading.delete(filePath);
+        console.error(
+          `[atlas-manager] Failed to load image: ${filePath}`,
+          error,
+        );
+        reject(new Error(`Failed to load image: ${filePath}`));
+      };
+
+      img.src = filePath;
+    });
+
+    // Store the promise to prevent duplicate loads
+    am.imageLoading.set(filePath, loadPromise);
+
+    return loadPromise;
+  },
+
+  getImage: (am: AtlasManagerT, filePath: string): HTMLImageElement | null => {
+    return am.imageCache.get(filePath) || null;
+  },
+
+  hasImage: (am: AtlasManagerT, filePath: string): boolean => {
+    return am.imageCache.has(filePath);
+  },
+
+  isLoading: (am: AtlasManagerT, filePath: string): boolean => {
+    return am.imageLoading.has(filePath);
+  },
+
+  removeImage: (am: AtlasManagerT, filePath: string): void => {
+    am.imageCache.delete(filePath);
+    am.imageLoading.delete(filePath);
+  },
+
+  getImageCacheSize: (am: AtlasManagerT): number => {
+    return am.imageCache.size;
   },
 
   dispose: (component: ComponentData): void => {
@@ -406,6 +518,8 @@ export const AtlasManager: AtlasManagerMethods = {
     am.textureMapIds.clear();
     am.atlases = [];
     am.compiled = false;
+    am.imageCache.clear();
+    am.imageLoading.clear();
     am._disposed = true;
   },
 };

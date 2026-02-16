@@ -57,6 +57,19 @@ export interface AtlasManagerT
    * Configuration for atlas management
    */
   config: Required<AtlasManagerConfig>;
+
+  /**
+   * Cache of loaded images, indexed by file path.
+   * Merged from image-registry component.
+   */
+  imageCache: Map<string, HTMLImageElement>;
+
+  /**
+   * Map of in-flight image load promises, indexed by file path.
+   * Prevents duplicate simultaneous loads of the same image.
+   * Merged from image-registry component.
+   */
+  imageLoading: Map<string, Promise<HTMLImageElement>>;
 }
 
 export const PROPERTY_ALLOWLIST = [
@@ -64,6 +77,8 @@ export const PROPERTY_ALLOWLIST = [
   'atlases',
   'compiled',
   'config',
+  'imageCache',
+  'imageLoading',
 ];
 
 /**
@@ -112,5 +127,7 @@ export function builder(options: AtlasManagerOptions): AtlasManagerT {
     atlases: [],
     compiled: false,
     config,
+    imageCache: new Map<string, HTMLImageElement>(),
+    imageLoading: new Map<string, Promise<HTMLImageElement>>(),
   } as unknown as AtlasManagerT;
 }

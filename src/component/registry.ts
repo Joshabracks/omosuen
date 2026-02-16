@@ -34,11 +34,6 @@ import {
   PROPERTY_ALLOWLIST as TextureMapPropertyAllowlist,
 } from './texture-map';
 import {
-  ImageRegistry,
-  builder as imageRegistryBuilder,
-  PROPERTY_ALLOWLIST as ImageRegistryPropertyAllowlist,
-} from './image-registry';
-import {
   AtlasManager,
   builder as atlasManagerBuilder,
   PROPERTY_ALLOWLIST as AtlasManagerPropertyAllowlist,
@@ -93,7 +88,6 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   messenger: messengerBuilder,
   viewport: viewportBuilder,
   'texture-map': textureMapBuilder,
-  'image-registry': imageRegistryBuilder,
   'atlas-manager': atlasManagerBuilder,
   sprite: spriteBuilder,
   transform: transformBuilder,
@@ -120,7 +114,6 @@ export const MethodRegistry: Record<
   messenger: Messenger,
   viewport: Viewport,
   'texture-map': TextureMap,
-  'image-registry': ImageRegistry,
   'atlas-manager': AtlasManager,
   sprite: Sprite,
   transform: Transform,
@@ -145,7 +138,6 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   messenger: MessengerPropertyAllowlist,
   viewport: ViewportPropertyAllowlist,
   'texture-map': TextureMapPropertyAllowlist,
-  'image-registry': ImageRegistryPropertyAllowlist,
   'atlas-manager': AtlasManagerPropertyAllowlist,
   sprite: SpritePropertyAllowlist,
   transform: TransformPropertyAllowlist,

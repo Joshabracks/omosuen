@@ -222,6 +222,8 @@ function render(camera: CameraT, _deltaTime: number): void {
       // eslint-disable-next-line @typescript-eslint/naming-convention
       const u_albedoTexture = gl.getUniformLocation(program, 'u_albedoTexture');
       // eslint-disable-next-line @typescript-eslint/naming-convention
+      const u_normalTexture = gl.getUniformLocation(program, 'u_normalTexture');
+      // eslint-disable-next-line @typescript-eslint/naming-convention
       const u_hasNormal = gl.getUniformLocation(program, 'u_hasNormal');
       // eslint-disable-next-line @typescript-eslint/naming-convention
       const u_hasMaterial = gl.getUniformLocation(program, 'u_hasMaterial');
@@ -233,6 +235,8 @@ function render(camera: CameraT, _deltaTime: number): void {
       const u_opacity = gl.getUniformLocation(program, 'u_opacity');
       // eslint-disable-next-line @typescript-eslint/naming-convention
       const u_uvBounds = gl.getUniformLocation(program, 'u_uvBounds');
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      const u_normalUVBounds = gl.getUniformLocation(program, 'u_normalUVBounds');
 
       // Set constant uniforms (same for all sprites)
       gl.uniform2f(u_viewportSize, viewport.width, viewport.height);
@@ -326,11 +330,6 @@ function render(camera: CameraT, _deltaTime: number): void {
         gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
         gl.uniform1i(u_albedoTexture, 0);
 
-        // Set channel flags (only albedo supported for now)
-        gl.uniform1i(u_hasNormal, 0);
-        gl.uniform1i(u_hasMaterial, 0);
-        gl.uniform1i(u_hasEmission, 0);
-
         // Calculate UV bounds in atlas (normalized 0-1 coordinates)
         const minU = albedoFrame.atlasPosition.x / atlasSize;
         const minV = albedoFrame.atlasPosition.y / atlasSize;
@@ -339,6 +338,63 @@ function render(camera: CameraT, _deltaTime: number): void {
         const maxV =
           (albedoFrame.atlasPosition.y + albedoFrame.size.y) / atlasSize;
         gl.uniform4f(u_uvBounds, minU, minV, maxU, maxV);
+
+        // Bind normal texture if available
+        if (sprite.textureMapKeys.normal) {
+          const normalTextureMap = textureMapCache.get(
+            sprite.textureMapKeys.normal,
+          );
+          if (normalTextureMap && normalTextureMap.packedFrames.length > 0) {
+            const normalFrame = normalTextureMap.packedFrames.find(
+              (f) => f.frameIndex === sprite.frame.normal,
+            );
+            if (normalFrame) {
+              const normalAtlasTexture =
+                camera.glResources.atlasTextures[normalFrame.atlasIndex];
+
+              if (normalAtlasTexture) {
+                // Bind normal texture to TEXTURE1
+                gl.activeTexture(gl.TEXTURE1);
+                gl.bindTexture(gl.TEXTURE_2D, normalAtlasTexture);
+                gl.uniform1i(u_normalTexture, 1);
+
+                // Calculate normal UV bounds in atlas
+                const normalMinU = normalFrame.atlasPosition.x / atlasSize;
+                const normalMinV = normalFrame.atlasPosition.y / atlasSize;
+                const normalMaxU =
+                  (normalFrame.atlasPosition.x + normalFrame.size.x) / atlasSize;
+                const normalMaxV =
+                  (normalFrame.atlasPosition.y + normalFrame.size.y) / atlasSize;
+                gl.uniform4f(
+                  u_normalUVBounds,
+                  normalMinU,
+                  normalMinV,
+                  normalMaxU,
+                  normalMaxV,
+                );
+
+                // Enable normal mapping
+                gl.uniform1i(u_hasNormal, 1);
+              } else {
+                // No normal atlas texture available
+                gl.uniform1i(u_hasNormal, 0);
+              }
+            } else {
+              // Normal frame not found
+              gl.uniform1i(u_hasNormal, 0);
+            }
+          } else {
+            // No normal texture map found
+            gl.uniform1i(u_hasNormal, 0);
+          }
+        } else {
+          // Sprite has no normal texture key
+          gl.uniform1i(u_hasNormal, 0);
+        }
+
+        // Set other channel flags (not yet implemented)
+        gl.uniform1i(u_hasMaterial, 0);
+        gl.uniform1i(u_hasEmission, 0);
 
         // Set sprite transformation uniforms
         // Pass 3D world position: (x, y=height/vertical, z)
@@ -1019,10 +1075,11 @@ async function init(component: ComponentData): Promise<void> {
         gl_Position = vec4(clipSpace * vec2(1, -1), clipDepth, 1.0);
         v_uv = a_uv;
 
-        // Sprites don't use normals, set defaults
-        v_normal = vec3(0.0, 0.0, 1.0);
+        // Sprites are 2D billboards facing the camera, so they use screen-space normals
+        // Normal maps (if present) will be applied in the fragment shader for lighting
+        v_normal = vec3(0.0, 0.0, 1.0);  // Billboard facing camera
         v_worldPos = vec3(u_spritePosition.x, u_spritePosition.z, u_spritePosition.y);
-        v_worldNormal = vec3(0.0, 0.0, 1.0);
+        v_worldNormal = vec3(0.0, 0.0, 1.0);  // Screen-space normal
         v_screenPos = viewPos;
       }
     }
@@ -1122,7 +1179,7 @@ async function init(component: ComponentData): Promise<void> {
 
       } else {
         // ============================================================
-        // MODE 1: SPRITE RENDERING (Simple atlas sampling with tint/opacity)
+        // MODE 1: SPRITE RENDERING (Atlas sampling with normal mapping and lighting)
         // ============================================================
 
         // Sample UV within atlas bounds
@@ -1134,8 +1191,30 @@ async function init(component: ComponentData): Promise<void> {
         // Discard fully transparent pixels early
         if (albedo.a < 0.01) discard;
 
-        // Apply tint to both RGB and alpha
-        vec4 tinted = albedo * u_tint;
+        // Normal mapping for sprites (if available)
+        vec3 finalNormal;
+        if (u_hasNormal) {
+          // Sample normal map from same UV coords as albedo
+          vec2 normalAtlasUV = mix(u_normalUVBounds.xy, u_normalUVBounds.zw, v_uv);
+          vec3 normalMap = texture2D(u_normalTexture, normalAtlasUV).rgb;
+
+          // Convert from [0,1] range to [-1,1] range
+          normalMap = normalMap * 2.0 - 1.0;
+
+          // Perturb the base normal (billboard facing camera)
+          finalNormal = normalize(v_normal + normalMap * 0.5);
+        } else {
+          finalNormal = v_normal;
+        }
+
+        // Directional light in screen space (same as cell-maps for consistency)
+        vec3 lightDir = normalize(vec3(0.5, -0.7, 0.0));
+        float diffuse = max(dot(finalNormal, lightDir), 0.0);
+        float ambient = 0.4;
+        float lighting = ambient + diffuse * 0.6;
+
+        // Apply lighting and tint
+        vec4 tinted = albedo * u_tint * vec4(vec3(lighting), 1.0);
 
         // Apply opacity to final alpha channel
         gl_FragColor = vec4(tinted.rgb, tinted.a * u_opacity);

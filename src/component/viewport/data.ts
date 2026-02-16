@@ -70,10 +70,16 @@ export function builder(options: ViewportOptions): ViewportT {
 
   container.appendChild(canvas);
 
-  // Try to get WebGL2 context
+  // Try to get WebGL2 context with explicit depth buffer request
   let gl: WebGL2RenderingContext | null = null;
   try {
-    gl = canvas.getContext('webgl2');
+    gl = canvas.getContext('webgl2', {
+      depth: true,              // Explicitly request depth buffer for z-depth sorting
+      stencil: false,           // Stencil buffer not needed
+      alpha: true,              // Allow transparency
+      antialias: false,         // Pixel-perfect rendering (no antialiasing)
+      premultipliedAlpha: true, // Standard alpha blending
+    });
     if (!gl) {
       console.error(
         `[viewport] Failed to get WebGL2 context for '${options.name}'. ` +

@@ -85,13 +85,14 @@ function render(camera: CameraT, _deltaTime: number): void {
 
   const gl = viewport.gl;
 
-  // Clear the viewport
+  // Clear the viewport with depth buffer reset
   gl.clearColor(
     viewport.backgroundColor.x,
     viewport.backgroundColor.y,
     viewport.backgroundColor.z,
     viewport.backgroundColor.w,
   );
+  gl.clearDepth(1.0);  // Ensure depth buffer clears to far plane
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
   // Early return if nothing to render
@@ -130,36 +131,64 @@ function render(camera: CameraT, _deltaTime: number): void {
     console.log('[camera] render() - no cell-maps to render');
   }
 
-  // Render sprites SECOND (after cells) without depth writes
-  // Sprites test against the depth buffer but don't write to it
-  // This allows transparency to work correctly while still depth-sorting with cells
+  // Render sprites SECOND (after cells) with depth writes enabled
+  // Both cells and sprites now write to the depth buffer for proper interleaving
+  // This matches the Kalifo Shores unified shader approach for GPU-side batching
   if (sprites.length > 0) {
-    const program = camera.glResources.spriteProgram;
+    const program = camera.glResources.unifiedProgram;
     if (!program) {
       console.warn(
-        `[camera] Camera '${camera.name}' sprite shader program not initialized`,
+        `[camera] Camera '${camera.name}' unified shader program not initialized`,
       );
     } else {
+      // Calculate unified map bounds from all cell-maps for consistent depth sorting
+      // Sprites need to use the maximum dimensions across all maps to ensure
+      // they depth-sort correctly with all cell-maps in the scene
+      let maxMapWidth = 0;
+      let maxMapHeight = 0;
+      let maxMapDepth = 0;
+      let unifiedCellSizeX = 32; // Default cell size
+      let unifiedCellSizeY = 16;
+      let unifiedCellSizeZ = 32;
+
+      for (const cellMap of cellMaps) {
+        maxMapWidth = Math.max(maxMapWidth, cellMap.mapSize.x);
+        maxMapHeight = Math.max(maxMapHeight, cellMap.mapSize.y);
+        maxMapDepth = Math.max(maxMapDepth, cellMap.mapSize.z);
+        // Use the first cell-map's cell size (assume all maps use same cell size)
+        if (cellMap === cellMaps[0]) {
+          unifiedCellSizeX = cellMap.cellSize.x;
+          unifiedCellSizeY = cellMap.cellSize.y;
+          unifiedCellSizeZ = cellMap.cellSize.z;
+        }
+      }
+
+      // Fallback to reasonable defaults if no cell-maps found
+      if (maxMapWidth === 0) maxMapWidth = 20;
+      if (maxMapHeight === 0) maxMapHeight = 20;
+      if (maxMapDepth === 0) maxMapDepth = 20;
+
       // Enable blending for transparency
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
       // Enable depth testing for proper 3D isometric depth sorting
-      // Sprites now calculate depth the same way as cells
+      // Sprites now write to depth buffer (matching Kalifo Shores approach)
       gl.enable(gl.DEPTH_TEST);
       gl.depthFunc(gl.LESS);
-
-      // Disable depth writes for sprites (but keep depth testing)
-      // Transparent sprites should test against the depth buffer but not write to it
-      // This prevents transparent pixels from blocking objects behind them
-      gl.depthMask(false);
+      gl.depthMask(true); // Sprites WRITE to depth buffer (Kalifo Shores method)
 
       // Disable backface culling for 2D sprites
       // Quads should render regardless of triangle winding order
       gl.disable(gl.CULL_FACE);
 
-      // Use sprite shader program
+      // Use unified shader program
       gl.useProgram(program);
+
+      // Set render mode to 1 (sprites)
+      if (camera.glResources.renderModeLocation) {
+        gl.uniform1i(camera.glResources.renderModeLocation, 1);
+      }
 
       // Get attribute/uniform locations
       // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -175,6 +204,10 @@ function render(camera: CameraT, _deltaTime: number): void {
       );
       // eslint-disable-next-line @typescript-eslint/naming-convention
       const u_zoom = gl.getUniformLocation(program, 'u_zoom');
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      const u_cellSize = gl.getUniformLocation(program, 'u_cellSize');
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      const u_mapSize = gl.getUniformLocation(program, 'u_mapSize');
       // eslint-disable-next-line @typescript-eslint/naming-convention
       const u_spritePosition = gl.getUniformLocation(
         program,
@@ -209,6 +242,8 @@ function render(camera: CameraT, _deltaTime: number): void {
         transform.position.y,
       );
       gl.uniform1f(u_zoom, camera.zoom);
+      gl.uniform3f(u_cellSize, unifiedCellSizeX, unifiedCellSizeY, unifiedCellSizeZ);
+      gl.uniform3f(u_mapSize, maxMapWidth, maxMapHeight, maxMapDepth);
 
       // Bind vertex buffers (shared for all sprites)
       gl.bindBuffer(gl.ARRAY_BUFFER, camera.glResources.quadVertexBuffer);
@@ -364,22 +399,28 @@ function renderCellMaps(
   console.log('[camera] renderCellMaps() - camera pos:', cameraTransform.position.x, cameraTransform.position.y);
   console.log('[camera] renderCellMaps() - camera zoom:', camera.zoom);
 
-  const program = camera.glResources.cellMapProgram;
+  const program = camera.glResources.unifiedProgram;
   if (!program) {
-    console.warn('[camera] Cell-map shader program not initialized');
+    console.warn('[camera] Unified shader program not initialized');
     return;
   }
 
-  // Enable depth testing for 3D rendering
+  // Enable depth testing for 3D rendering with depth writes enabled
   gl.enable(gl.DEPTH_TEST);
   gl.depthFunc(gl.LESS);
+  gl.depthMask(true); // Cells WRITE to depth buffer
 
   // Enable backface culling for performance
   gl.enable(gl.CULL_FACE);
   gl.cullFace(gl.BACK);
 
-  // Use cell-map shader program
+  // Use unified shader program
   gl.useProgram(program);
+
+  // Set render mode to 0 (cells)
+  if (camera.glResources.renderModeLocation) {
+    gl.uniform1i(camera.glResources.renderModeLocation, 0);
+  }
 
   // Get attribute locations
   // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -400,6 +441,8 @@ function renderCellMaps(
   const u_cellPosition = gl.getUniformLocation(program, 'u_cellPosition');
   // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_cellSize = gl.getUniformLocation(program, 'u_cellSize');
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  const u_mapSize = gl.getUniformLocation(program, 'u_mapSize');
   // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_albedoTexture = gl.getUniformLocation(program, 'u_albedoTexture');
   // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -456,6 +499,7 @@ function renderCellMaps(
       atlasSize,
       u_cellPosition,
       u_cellSize,
+      u_mapSize,
       u_albedoTexture,
       u_normalTexture,
       u_uvBounds,
@@ -481,6 +525,7 @@ function renderCellMaps(
  * @param atlasSize - Size of the texture atlas
  * @param u_cellPosition - Uniform location for cell position
  * @param u_cellSize - Uniform location for cell size
+ * @param u_mapSize - Uniform location for map size
  * @param u_albedoTexture - Uniform location for albedo texture
  * @param u_uvBounds - Uniform location for UV bounds
  */
@@ -493,6 +538,7 @@ function renderSingleCellMap(
   atlasSize: number,
   u_cellPosition: WebGLUniformLocation | null,
   u_cellSize: WebGLUniformLocation | null,
+  u_mapSize: WebGLUniformLocation | null,
   u_albedoTexture: WebGLUniformLocation | null,
   u_normalTexture: WebGLUniformLocation | null,
   u_uvBounds: WebGLUniformLocation | null,
@@ -510,6 +556,14 @@ function renderSingleCellMap(
     cellMap.cellSize.x,
     cellMap.cellSize.y,
     cellMap.cellSize.z,
+  );
+
+  // Set map size uniform (constant for this cell-map)
+  gl.uniform3f(
+    u_mapSize,
+    cellMap.mapSize.x,
+    cellMap.mapSize.y,
+    cellMap.mapSize.z,
   );
 
   let totalCells = 0;
@@ -843,7 +897,281 @@ async function init(component: ComponentData): Promise<void> {
 
   const gl = viewport.gl;
 
-  // 1. Create sprite shader program
+  // 1. Create unified shader program (combines cell and sprite rendering)
+  const unifiedVertexShader = `
+    attribute vec3 a_position;  // Used by cells
+    attribute vec2 a_uv;
+    attribute vec3 a_normal;    // Used by cells
+
+    // Render mode selector
+    uniform lowp int u_renderMode;  // 0 = cells, 1 = sprites
+
+    // Shared uniforms
+    uniform vec2 u_viewportSize;
+    uniform vec2 u_cameraPosition;
+    uniform float u_zoom;
+    uniform vec3 u_cellSize;   // Used by both for grid calculations
+    uniform vec3 u_mapSize;    // Used by both for depth calculations
+
+    // Cell-specific uniforms (Mode 0)
+    uniform vec3 u_cellPosition;
+
+    // Sprite-specific uniforms (Mode 1)
+    uniform vec3 u_spritePosition;  // 3D world position (x, y=height, z)
+    uniform vec2 u_spriteSize;
+    uniform vec2 u_anchor;
+    uniform float u_rotation;
+
+    // Outputs
+    varying vec2 v_uv;
+    varying vec3 v_normal;
+    varying vec3 v_worldPos;
+    varying vec2 v_screenPos;
+    varying vec3 v_worldNormal;
+
+    void main() {
+      if (u_renderMode == 0) {
+        // ============================================================
+        // MODE 0: CELL RENDERING
+        // ============================================================
+
+        // Scale vertex by cell size and translate to world position
+        vec3 worldPos = a_position * u_cellSize + u_cellPosition;
+
+        // Apply standard isometric projection
+        vec2 isoX = worldPos.x * vec2(0.866, 0.5);
+        vec2 isoY = worldPos.y * vec2(0.0, -1.0);
+        vec2 isoZ = worldPos.z * vec2(-0.866, 0.5);
+        vec2 isoProjected = isoX + isoY + isoZ;
+
+        // Convert to view space and apply zoom
+        vec2 isoPos = (isoProjected - u_cameraPosition) * u_zoom;
+
+        // Pixel snapping
+        vec2 pixelPos = floor(isoPos + 0.5);
+        v_screenPos = pixelPos;
+
+        // Convert to clip space
+        vec2 clipSpace = (pixelPos / u_viewportSize) * 2.0 - 1.0;
+
+        // Calculate depth
+        vec3 gridPos = worldPos / u_cellSize;
+        float mapDepth = u_mapSize.z;
+        float maxGridSum = (u_mapSize.x - 1.0) + (u_mapSize.z - 1.0);
+        float zDepth = (gridPos.x + gridPos.z) * mapDepth + gridPos.y * 2.0;
+        float maxDepth = maxGridSum * mapDepth + (mapDepth - 1.0) * 2.0;
+        float clipDepth = 1.0 - (zDepth / maxDepth);
+
+        gl_Position = vec4(clipSpace * vec2(1, -1), clipDepth, 1.0);
+
+        // Transform normal to isometric screen space
+        vec3 isoNormalX = a_normal.x * vec3(0.866, 0.5, 0.0);
+        vec3 isoNormalY = a_normal.y * vec3(0.0, -1.0, 0.0);
+        vec3 isoNormalZ = a_normal.z * vec3(-0.866, 0.5, 0.0);
+        vec3 isoNormal = isoNormalX + isoNormalY + isoNormalZ;
+
+        v_uv = a_uv;
+        v_normal = normalize(isoNormal);
+        v_worldPos = worldPos;
+        v_worldNormal = a_normal;
+
+      } else {
+        // ============================================================
+        // MODE 1: SPRITE RENDERING
+        // ============================================================
+
+        // Apply isometric projection to sprite's 3D world position
+        vec2 isoX = u_spritePosition.x * vec2(0.866, 0.5);
+        vec2 isoY = u_spritePosition.y * vec2(0.0, -1.0);
+        vec2 isoZ = u_spritePosition.z * vec2(-0.866, 0.5);
+        vec2 isoProjected = isoX + isoY + isoZ;
+
+        // Apply anchor offset in screen space
+        vec2 scaledAnchor = u_anchor * (u_spriteSize / vec2(16.0, 16.0));
+        vec2 anchoredPosition = isoProjected - scaledAnchor;
+
+        // Apply rotation to sprite quad vertices
+        float c = cos(u_rotation);
+        float s = sin(u_rotation);
+        vec2 rotated = vec2(
+          a_position.x * c - a_position.y * s,
+          a_position.x * s + a_position.y * c
+        );
+
+        // Scale sprite vertices by size and zoom
+        vec2 scaledVertex = rotated * u_spriteSize * u_zoom;
+
+        // Convert to view space and add scaled vertex offset
+        vec2 viewPos = (anchoredPosition - u_cameraPosition) * u_zoom + scaledVertex;
+
+        // Convert to clip space
+        vec2 clipSpace = (viewPos / u_viewportSize) * 2.0 - 1.0;
+
+        // Calculate depth (cell-based, with bias)
+        vec3 cellGridPos = floor(u_spritePosition / u_cellSize);
+        float standingOnCellY = cellGridPos.y - 1.0;
+        float mapDepth = u_mapSize.z;
+        float maxGridSum = (u_mapSize.x - 1.0) + (u_mapSize.z - 1.0);
+        float zDepth = (cellGridPos.x + cellGridPos.z) * mapDepth + (standingOnCellY - 0.1) * 2.0;
+        float maxDepth = maxGridSum * mapDepth + (mapDepth - 1.0) * 2.0;
+        float clipDepth = 1.0 - (zDepth / maxDepth);
+
+        gl_Position = vec4(clipSpace * vec2(1, -1), clipDepth, 1.0);
+        v_uv = a_uv;
+
+        // Sprites don't use normals, set defaults
+        v_normal = vec3(0.0, 0.0, 1.0);
+        v_worldPos = vec3(u_spritePosition.x, u_spritePosition.z, u_spritePosition.y);
+        v_worldNormal = vec3(0.0, 0.0, 1.0);
+        v_screenPos = viewPos;
+      }
+    }
+  `;
+
+  // Unified fragment shader (combines cell and sprite fragment processing)
+  const unifiedFragmentShader = `
+    precision mediump float;
+
+    // Render mode selector
+    uniform lowp int u_renderMode;  // 0 = cells, 1 = sprites
+
+    // Shared uniforms
+    uniform sampler2D u_albedoTexture;
+    uniform sampler2D u_normalTexture;
+    uniform vec4 u_uvBounds;
+    uniform bool u_hasNormal;
+
+    // Cell-specific uniforms (Mode 0)
+    uniform vec4 u_normalUVBounds;
+    uniform vec2 u_textureSize;
+
+    // Sprite-specific uniforms (Mode 1)
+    uniform sampler2D u_materialTexture;
+    uniform sampler2D u_emissionTexture;
+    uniform bool u_hasMaterial;
+    uniform bool u_hasEmission;
+    uniform vec4 u_tint;
+    uniform float u_opacity;
+
+    // Varying inputs (shared)
+    varying vec2 v_uv;
+    varying vec3 v_normal;
+    varying vec3 v_worldPos;
+    varying vec2 v_screenPos;
+    varying vec3 v_worldNormal;
+
+    void main() {
+      if (u_renderMode == 0) {
+        // ============================================================
+        // MODE 0: CELL RENDERING (Triplanar world-space texture mapping)
+        // ============================================================
+
+        // Calculate blend weights from world-space normal
+        vec3 blendWeights = abs(normalize(v_worldNormal));
+        blendWeights = blendWeights / (blendWeights.x + blendWeights.y + blendWeights.z);
+
+        // Sample YZ plane (for X-facing sides: left/right walls)
+        vec2 worldPixelYZ = floor(vec2(v_worldPos.z, v_worldPos.y));
+        vec2 texelCoordYZ = mod(worldPixelYZ, u_textureSize);
+        vec2 normalizedUV_YZ = (texelCoordYZ + 0.5) / u_textureSize;
+        vec2 atlasUV_YZ = mix(u_uvBounds.xy, u_uvBounds.zw, normalizedUV_YZ);
+        vec4 albedoYZ = texture2D(u_albedoTexture, atlasUV_YZ);
+
+        // Sample XZ plane (for Y-facing sides: top/bottom faces)
+        vec2 worldPixelXZ = floor(vec2(v_worldPos.x, v_worldPos.z));
+        vec2 texelCoordXZ = mod(worldPixelXZ, u_textureSize);
+        vec2 normalizedUV_XZ = (texelCoordXZ + 0.5) / u_textureSize;
+        vec2 atlasUV_XZ = mix(u_uvBounds.xy, u_uvBounds.zw, normalizedUV_XZ);
+        vec4 albedoXZ = texture2D(u_albedoTexture, atlasUV_XZ);
+
+        // Sample XY plane (for Z-facing sides: front/back walls)
+        vec2 worldPixelXY = floor(vec2(v_worldPos.x, v_worldPos.y));
+        vec2 texelCoordXY = mod(worldPixelXY, u_textureSize);
+        vec2 normalizedUV_XY = (texelCoordXY + 0.5) / u_textureSize;
+        vec2 atlasUV_XY = mix(u_uvBounds.xy, u_uvBounds.zw, normalizedUV_XY);
+        vec4 albedoXY = texture2D(u_albedoTexture, atlasUV_XY);
+
+        // Blend the three albedo samples using normal weights
+        vec4 albedo = albedoYZ * blendWeights.x + albedoXZ * blendWeights.y + albedoXY * blendWeights.z;
+
+        // Triplanar normal mapping (if available)
+        vec3 finalNormal;
+        if (u_hasNormal) {
+          vec2 normalAtlasUV_YZ = mix(u_normalUVBounds.xy, u_normalUVBounds.zw, normalizedUV_YZ);
+          vec2 normalAtlasUV_XZ = mix(u_normalUVBounds.xy, u_normalUVBounds.zw, normalizedUV_XZ);
+          vec2 normalAtlasUV_XY = mix(u_normalUVBounds.xy, u_normalUVBounds.zw, normalizedUV_XY);
+
+          vec3 normalMapYZ = texture2D(u_normalTexture, normalAtlasUV_YZ).rgb;
+          vec3 normalMapXZ = texture2D(u_normalTexture, normalAtlasUV_XZ).rgb;
+          vec3 normalMapXY = texture2D(u_normalTexture, normalAtlasUV_XY).rgb;
+
+          vec3 normalMap = normalMapYZ * blendWeights.x + normalMapXZ * blendWeights.y + normalMapXY * blendWeights.z;
+          normalMap = normalMap * 2.0 - 1.0;
+          finalNormal = normalize(v_normal + normalMap * 0.5);
+        } else {
+          finalNormal = normalize(v_normal);
+        }
+
+        // Directional light in screen space
+        vec3 lightDir = normalize(vec3(0.5, -0.7, 0.0));
+        float diffuse = max(dot(finalNormal, lightDir), 0.0);
+        float ambient = 0.4;
+        float lighting = ambient + diffuse * 0.6;
+
+        gl_FragColor = vec4(albedo.rgb * lighting, albedo.a);
+
+      } else {
+        // ============================================================
+        // MODE 1: SPRITE RENDERING (Simple atlas sampling with tint/opacity)
+        // ============================================================
+
+        // Sample UV within atlas bounds
+        vec2 atlasUV = mix(u_uvBounds.xy, u_uvBounds.zw, v_uv);
+
+        // Albedo (always required)
+        vec4 albedo = texture2D(u_albedoTexture, atlasUV);
+
+        // Discard fully transparent pixels early
+        if (albedo.a < 0.01) discard;
+
+        // Apply tint to both RGB and alpha
+        vec4 tinted = albedo * u_tint;
+
+        // Apply opacity to final alpha channel
+        gl_FragColor = vec4(tinted.rgb, tinted.a * u_opacity);
+      }
+    }
+  `;
+
+  // Compile unified shader program
+  const unifiedProgram = createShaderProgram(
+    gl,
+    unifiedVertexShader,
+    unifiedFragmentShader,
+  );
+  if (!unifiedProgram) {
+    console.error(
+      `[camera] Camera '${camera.name}' failed to create unified shader program`,
+    );
+    return;
+  }
+  camera.glResources.unifiedProgram = unifiedProgram;
+
+  // Get renderMode uniform location for switching between cell/sprite modes
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  const u_renderMode = gl.getUniformLocation(unifiedProgram, 'u_renderMode');
+  if (!u_renderMode) {
+    console.warn(
+      `[camera] Camera '${camera.name}' could not find u_renderMode uniform in unified shader`,
+    );
+  }
+  camera.glResources.renderModeLocation = u_renderMode;
+
+  console.log(
+    `[camera] Camera '${camera.name}' compiled unified shader program`,
+  );
+
+  // Legacy sprite shader (will be removed after migration)
   const vertexShaderSource = `
     attribute vec2 a_position;
     attribute vec2 a_uv;
@@ -854,6 +1182,8 @@ async function init(component: ComponentData): Promise<void> {
     uniform vec2 u_viewportSize;
     uniform vec2 u_cameraPosition;
     uniform float u_zoom;
+    uniform vec3 u_cellSize;        // Cell size for grid position calculation
+    uniform vec3 u_mapSize;         // Map dimensions (width, height, depth) in cells
     varying vec2 v_uv;
 
     void main() {
@@ -893,15 +1223,24 @@ async function init(component: ComponentData): Promise<void> {
       vec2 clipSpace = (viewPos / u_viewportSize) * 2.0 - 1.0;
 
       // Calculate isometric depth for proper front-to-back rendering with cell-map
-      // Assume standard cell size (32x16x32) for depth calculation
-      vec3 cellSize = vec3(32.0, 16.0, 32.0);
-      vec3 gridPos = u_spritePosition / cellSize;
+      // Use cell-based depth calculation to match the cell the sprite is standing on
 
-      // Use same depth formula as cell-map shader
-      // (gridX + gridZ) * mapHeight + gridY * 2.0
-      // For 20x20x20 map: maxDepth = (19+19)*20 + 19*2 = 798
-      float zDepth = (gridPos.x + gridPos.z) * 20.0 + gridPos.y * 2.0;
-      float maxDepth = 38.0 * 20.0 + 19.0 * 2.0;  // = 798.0
+      // First, calculate which cell grid position the sprite is on
+      vec3 cellGridPos = floor(u_spritePosition / u_cellSize);
+
+      // Sprites are placed at (cellY + 1) * cellHeight in the scene setup,
+      // so we subtract 1 to get the Y coordinate of the cell they're standing on
+      float standingOnCellY = cellGridPos.y - 1.0;
+
+      // Calculate z-depth using the cell grid position (X, Z) and standing cell Y
+      // Add small bias (-0.1) to ensure sprite renders slightly in front of cell surface
+      // Use mapDepth (Z dimension) for multiplier to match Kalifo Shores working implementation
+      float mapHeight = u_mapSize.y;
+      float mapWidth = u_mapSize.x;
+      float mapDepth = u_mapSize.z;
+      float maxGridSum = (mapWidth - 1.0) + (mapDepth - 1.0);
+      float zDepth = (cellGridPos.x + cellGridPos.z) * mapDepth + (standingOnCellY - 0.1) * 2.0;
+      float maxDepth = maxGridSum * mapDepth + (mapDepth - 1.0) * 2.0;
 
       // Invert and normalize to match cell-map depth range
       float clipDepth = 1.0 - (zDepth / maxDepth);
@@ -974,6 +1313,7 @@ async function init(component: ComponentData): Promise<void> {
     uniform float u_zoom;
     uniform vec3 u_cellPosition;
     uniform vec3 u_cellSize;
+    uniform vec3 u_mapSize;  // Map dimensions (width, height, depth) in cells
 
     varying vec2 v_uv;
     varying vec3 v_normal;
@@ -1016,15 +1356,16 @@ async function init(component: ComponentData): Promise<void> {
       vec3 gridPos = worldPos / u_cellSize;
 
       // Calculate z-depth using isometric formula (adapted from Kalifo Shores)
-      // (gridX + gridZ) * mapHeight + gridY * 2.0
-      // - (gridX + gridZ) = horizontal diagonal row (0-38 for 20x20 map)
-      // - Multiply by mapHeight to ensure proper depth separation between rows
+      // (gridX + gridZ) * mapDepth + gridY * 2.0
+      // - (gridX + gridZ) = horizontal diagonal row
+      // - Multiply by mapDepth (Z dimension) for proper depth separation
       // - gridY * 2.0 = vertical layer offset within the same horizontal row
-      float zDepth = (gridPos.x + gridPos.z) * 10.0 + gridPos.y * 2.0;
-
-      // Calculate maxDepth for normalization
-      // For 20x20x10 map: (19+19)*10 + 9*2 = 398
-      float maxDepth = 38.0 * 10.0 + 9.0 * 2.0;  // = 398.0
+      float mapHeight = u_mapSize.y;
+      float mapWidth = u_mapSize.x;
+      float mapDepth = u_mapSize.z;
+      float maxGridSum = (mapWidth - 1.0) + (mapDepth - 1.0);
+      float zDepth = (gridPos.x + gridPos.z) * mapDepth + gridPos.y * 2.0;
+      float maxDepth = maxGridSum * mapDepth + (mapDepth - 1.0) * 2.0;
 
       // Invert and normalize: 1.0 - (depth/max) ensures back cells render first
       // This creates proper back-to-front occlusion with gl.LESS depth test

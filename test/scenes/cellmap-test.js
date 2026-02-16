@@ -292,12 +292,14 @@ function findHighestCellY(shapeMap, x, z, maxHeight) {
 }
 
 /**
- * Generates a heightmap that creates a dome/pyramid shape
- * Height increases towards the center of the map
+ * Generates a heightmap with concentric rings for depth testing
+ * Rings radiate from center using Chebyshev distance (max of |dx|, |dz|)
+ * Odd rings (1, 3, 5, ...) are at height 2 (dirt)
+ * Even rings (0, 2, 4, ...) are at height 4 (grass)
  * Returns both materialMap (which material to use) and shapeMap (solid vs air)
  */
 function generateHeightmap(width, depth, maxHeight) {
-    // Material map: which material index to use (0 = grass)
+    // Material map: which material index to use (0 = grass, 1 = dirt)
     const materialMap = new Omosuen.Array3D(
         new Omosuen.Vector3D(width, maxHeight, depth),
         0 // Default to material 0 (grass) for all cells
@@ -309,28 +311,26 @@ function generateHeightmap(width, depth, maxHeight) {
         0 // Default to 0 (air/empty) for all cells
     );
 
-    const centerX = width / 2;
-    const centerZ = depth / 2;
-    const maxDistance = Math.sqrt(centerX * centerX + centerZ * centerZ);
+    // Calculate center of map
+    const centerX = Math.floor(width / 2);
+    const centerZ = Math.floor(depth / 2);
 
     for (let x = 0; x < width; x++) {
         for (let z = 0; z < depth; z++) {
-            // Calculate distance from center
-            const dx = x - centerX;
-            const dz = z - centerZ;
-            const distance = Math.sqrt(dx * dx + dz * dz);
+            // Calculate ring index using Chebyshev distance (max of absolute differences)
+            // This creates square-shaped concentric rings
+            const dx = Math.abs(x - centerX);
+            const dz = Math.abs(z - centerZ);
+            const ring = Math.max(dx, dz);
 
-            // Height decreases with distance (dome/pyramid shape)
-            const heightRatio = 1 - (distance / maxDistance);
-            const height = Math.floor(heightRatio * maxHeight);
+            // Odd rings = height 2, Even rings = height 4
+            const height = (ring % 2 === 1) ? 2 : 4;
 
             // Fill cells from ground up to calculated height
             for (let y = 0; y <= height; y++) {
-                if (x >= width * .25 && x <= width * .75 && z >= depth * .25 && z <= depth * .75) {
-                    materialMap.set(new Omosuen.Vector3D(x, y, z), 1); // Material 1 = dirt
-                } else {
-                    materialMap.set(new Omosuen.Vector3D(x, y, z), 0); // Material 0 = grass
-                }
+                // Odd rings use dirt (material 1), even rings use grass (material 0)
+                const material = (ring % 2 === 1) ? 1 : 0;
+                materialMap.set(new Omosuen.Vector3D(x, y, z), material);
                 shapeMap.set(new Omosuen.Vector3D(x, y, z), 1); // Shape 1 = cube (solid)
             }
             // Cells above height remain as 0 (air) in shapeMap
@@ -355,7 +355,7 @@ export async function createScene() {
     const atlasManager = await Omosuen.newComponent('atlas-manager', {
         name: 'AtlasManager',
         config: {
-            atlasSize: 1024,
+            atlasSize: 2048,
             maxAtlases: 4,
             padding: 1,
         },
@@ -393,7 +393,7 @@ export async function createScene() {
         Omosuen.newComponent('texture-map', {
             textureMapKey: 'grass-albedo',
             name: 'Grass Albedo Texture',
-            filePath: './assets/green-background.jpg',
+            filePath: './assets/seamless-textured-grass-natural-grass-pattern_172107-1308.jpg',
             imageType: undefined, // Undefined = entire image is single frame
             atlasManager, // Auto-registers with atlas manager
         }, scene),
@@ -553,9 +553,9 @@ export async function createScene() {
     const CELL_DEPTH = 32;  // Standard cell depth
     const CELL_HEIGHT = 16; // Standard cell height
 
-    // Generate dome-shaped heightmap (taller towards center)
+    // Generate concentric ring heightmap for depth testing
     const { materialMap, shapeMap } = generateHeightmap(MAP_WIDTH, MAP_DEPTH, MAP_HEIGHT);
-    console.log('[CellMap Test] Dome-shaped heightmap generated (20x20x20)');
+    console.log('[CellMap Test] Concentric ring heightmap generated (20x20x20): odd rings height 2, even rings height 4');
 
     // Create material definition for grass
     const grassMaterial = {
@@ -592,10 +592,10 @@ export async function createScene() {
         { name: 'walk-up', frames: [17, 18] },
     ];
 
-    console.log('[CellMap Test] Creating 10 character sprites on terrain...');
+    console.log('[CellMap Test] Creating 10 character sprites on terrain (random placement)...');
 
     for (let i = 0; i < 10; i++) {
-        // Generate random X,Z position within map bounds
+        // Generate random X,Z position anywhere on the map
         const randomX = Math.floor(Math.random() * MAP_WIDTH);
         const randomZ = Math.floor(Math.random() * MAP_DEPTH);
 
@@ -643,7 +643,7 @@ export async function createScene() {
                 emission: 0,
                 material: 0,
             },
-            anchor: new Omosuen.Vector2D(0, 8), // Center anchor (16x16 sprite)
+            anchor: new Omosuen.Vector2D(0, 16), // Center anchor (16x16 sprite)
             tint: new Omosuen.Vector4D(1, 1, 1, 1),
             opacity: 1.0,
         }, spriteNexus);

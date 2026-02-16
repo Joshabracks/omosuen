@@ -38,6 +38,8 @@ export interface CameraT
    * WebGL rendering resources (shader programs, buffers, etc.)
    */
   glResources: {
+    unifiedProgram: WebGLProgram | null;
+    renderModeLocation: WebGLUniformLocation | null;
     cellMapProgram: WebGLProgram | null;
     spriteProgram: WebGLProgram | null;
     atlasTextures: (WebGLTexture | null)[];
@@ -88,6 +90,8 @@ export function builder(options: CameraOptions): CameraT {
     viewportRef: options.viewportRef,
 
     glResources: {
+      unifiedProgram: null,
+      renderModeLocation: null,
       cellMapProgram: null,
       spriteProgram: null,
       atlasTextures: [],

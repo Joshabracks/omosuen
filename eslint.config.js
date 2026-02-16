@@ -35,6 +35,7 @@ export default [
         Headers: 'readonly',
         Request: 'readonly',
         Response: 'readonly',
+        Image: 'readonly',
         // Node.js globals (for test files)
         process: 'readonly',
         __dirname: 'readonly',
@@ -97,7 +98,7 @@ export default [
       '@typescript-eslint/no-unsafe-return': 'warn',
 
       // Prettier integration - runs Prettier as an ESLint rule
-      'prettier/prettier': ['error', { "endOfLine": "auto" }]
+      'prettier/prettier': ['error', { endOfLine: 'auto' }],
     },
   },
 

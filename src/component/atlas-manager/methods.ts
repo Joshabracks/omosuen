@@ -6,6 +6,8 @@ import type { UnpackedFrame } from './types';
 import { packFrames } from './packer';
 import { Vector2D } from '../../math';
 import type { PackedFrame } from '../texture-map/types';
+import { Nexus } from '../nexus/methods';
+import { TextureMap } from '../texture-map';
 
 export interface AtlasManagerMethods extends ComponentMethods {
   type: 'atlas-manager';
@@ -167,11 +169,8 @@ function getTextureMaps(
 ): TextureMapT[] {
   const textureMaps: TextureMapT[] = [];
 
-  // Import Nexus methods
-  const { getComponentsByType } = require('../nexus/methods').Nexus;
-
   // Get all texture-map components recursively
-  const allTextureMaps = getComponentsByType(
+  const allTextureMaps = Nexus.getComponentsByType(
     rootNexus,
     'texture-map',
     true,
@@ -186,7 +185,6 @@ function getTextureMaps(
 
   return textureMaps;
 }
-
 
 /**
  * Extracts image data for a frame from a source image.
@@ -268,9 +266,7 @@ export const AtlasManager: AtlasManagerMethods = {
     // Get texture maps
     const textureMaps = getTextureMaps(rootNexus, am.textureMapIds);
     if (textureMaps.length === 0) {
-      console.warn(
-        '[atlas-manager] No texture maps found for pending IDs',
-      );
+      console.warn('[atlas-manager] No texture maps found for pending IDs');
       am.textureMapIds.clear();
       return;
     }
@@ -392,7 +388,6 @@ export const AtlasManager: AtlasManagerMethods = {
     }
 
     // Update texture maps with packed frames
-    const { setPackedFrames } = require('../texture-map/methods').TextureMap;
 
     for (const tm of textureMaps) {
       const tmPackedFrames: PackedFrame[] = [];
@@ -412,7 +407,7 @@ export const AtlasManager: AtlasManagerMethods = {
         }
       }
 
-      setPackedFrames(tm, tmPackedFrames);
+      TextureMap.setPackedFrames(tm, tmPackedFrames);
     }
 
     // Clear pending texture maps and set compiled flag

@@ -31,7 +31,10 @@ export function setConfig(config: Partial<OmosuenConfig>): void {
   globalConfig = { ...globalConfig, ...config };
 
   // Apply log suppression if configured
-  if (globalConfig.logSuppression !== undefined && globalConfig.logSuppression > 0) {
+  if (
+    globalConfig.logSuppression !== undefined &&
+    globalConfig.logSuppression > 0
+  ) {
     setupLogSuppression(globalConfig.logSuppression);
   } else {
     restoreOriginalConsole();
@@ -57,10 +60,10 @@ let originalConsole: {
  * Creates a suppressed version of a console method
  */
 function createSuppressedMethod(
-  originalMethod: (...args: any[]) => void,
+  originalMethod: (...args: unknown[]) => void,
   maxCount: number,
-): (...args: any[]) => void {
-  return function (...args: any[]) {
+): (...args: unknown[]) => void {
+  return function (...args: unknown[]) {
     // Create a unique key for this log message
     const key = args.map((arg) => String(arg)).join(' ');
 

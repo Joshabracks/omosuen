@@ -34,15 +34,8 @@ export type {
   AtlasSize,
   AtlasManagerConfig,
 } from './atlas-manager';
-export type {
-  SpriteT as sprite,
-  SpriteMethods,
-  ChannelType,
-} from './sprite';
-export type {
-  TransformT as transform,
-  TransformMethods,
-} from './transform';
+export type { SpriteT as sprite, SpriteMethods, ChannelType } from './sprite';
+export type { TransformT as transform, TransformMethods } from './transform';
 export type {
   AnimationControllerT as animation_controller,
   AnimationControllerMethods,

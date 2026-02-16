@@ -652,7 +652,7 @@ export async function createScene() {
         const randomAnim = animationConfigs[Math.floor(Math.random() * animationConfigs.length)];
 
         // Create animation controller
-        await Omosuen.newComponent('animation-controller', {
+        const animationController = await Omosuen.newComponent('animation-controller', {
             name: `Character ${i + 1} Animator`,
             spriteId: sprite.id,
             animations: [
@@ -684,7 +684,7 @@ export async function createScene() {
             initialAnimation: randomAnim.name,
             autoPlay: true, // Auto-play for immediate visual interest
         }, spriteNexus);
-
+        animationController.play('walk-left')
         console.log(`[CellMap Test] Created sprite ${i + 1} at grid (${randomX}, ${highestY}, ${randomZ}) -> world (${worldX}, ${worldY}, ${worldZ})`);
     }
 

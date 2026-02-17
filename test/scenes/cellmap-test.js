@@ -66,8 +66,9 @@ Omosuen.registerBinding('backToMenuFromCellmap', async (event) => {
 /**
  * Camera control constants
  */
-const PAN_SENSITIVITY = 1.0; // Pixels of camera movement per pixel of mouse movement
-const ZOOM_SENSITIVITY = 0.001; // Zoom change per pixel of wheel delta
+const PAN_SENSITIVITY = 1.0;   // Pixels of camera movement per pixel of mouse movement
+const ZOOM_ACCELERATION = 0.003; // How much each scroll tick adds to zoom velocity
+const ZOOM_ENTROPY = 10.75;       // Rate at which zoom velocity decays toward zero per frame
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 3.0;
 
@@ -479,6 +480,10 @@ export async function createScene() {
     let lastMouseX = 0;
     let lastMouseY = 0;
 
+    // Zoom velocity state
+    let zoomVelocity = 0;   // Current zoom velocity (decays to zero via entropy)
+    let scrollActive = false; // True during frames where scroll events fired
+
     // Mouse pan: middle button + drag
     const onActions = [
         ['middleMouseDown', (event) => {
@@ -506,14 +511,12 @@ export async function createScene() {
             camera.pan(deltaX * -PAN_SENSITIVITY / zoom, deltaY * -PAN_SENSITIVITY / zoom);
             updateCameraStatus();
         }],
-        // Mouse wheel: zoom in/out
+        // Mouse wheel: add to zoom velocity (applied each frame)
         ['mouseWheel', (_event, deltaY) => {
-            // deltaY > 0 = scroll down = zoom out
-            // deltaY < 0 = scroll up = zoom in
-            const zoomChange = -deltaY * ZOOM_SENSITIVITY;
-            const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, camera.zoom + zoomChange));
-            camera.setZoom(newZoom);
-            updateCameraStatus();
+            // deltaY > 0 = scroll down = zoom out (negative velocity)
+            // deltaY < 0 = scroll up = zoom in (positive velocity)
+            zoomVelocity += -deltaY * ZOOM_ACCELERATION;
+            scrollActive = true;
         }]
     ];
     onActions.forEach((a) => inputController.onAction(...a))
@@ -543,6 +546,44 @@ export async function createScene() {
         },
     ];
     bindActions.forEach(inputController.bindAction);
+
+    // Per-frame zoom velocity update loop
+    // Applies zoom velocity each frame and decays it toward zero (entropy)
+    let lastFrameTime = performance.now();
+
+    function zoomUpdateLoop() {
+        const now = performance.now();
+        const dt = Math.min((now - lastFrameTime) / 1000, 0.1); // seconds, capped at 100ms
+        lastFrameTime = now;
+
+        if (zoomVelocity !== 0) {
+            // Apply velocity to camera zoom
+            const scene = Omosuen.getActiveScene();
+            if (scene) {
+                const cam = scene.getComponentByType('camera', true);
+                if (cam) {
+                    const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, cam.zoom + zoomVelocity * dt));
+                    cam.setZoom(newZoom);
+                    updateCameraStatus();
+                }
+            }
+
+            // Entropy: decay velocity toward zero, but only when scroll is not active
+            if (!scrollActive) {
+                const decay = Math.sign(zoomVelocity) * ZOOM_ENTROPY * Math.abs(zoomVelocity) * dt;
+                zoomVelocity -= decay;
+                // Snap to zero to prevent infinite drift
+                if (Math.abs(zoomVelocity) < 0.0001) zoomVelocity = 0;
+            }
+        }
+
+        // Scroll flag is consumed each frame; wheel events set it again if still scrolling
+        scrollActive = false;
+
+        requestAnimationFrame(zoomUpdateLoop);
+    }
+
+    requestAnimationFrame(zoomUpdateLoop);
 
     console.log('[CellMap Test] InputController created with mouse pan and zoom');
 

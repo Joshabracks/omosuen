@@ -28,6 +28,10 @@ export default (env) => {
           use: 'ts-loader',
           exclude: /node_modules/,
         },
+        {
+          test: /\.(glsl|vs|fs|vert|frag)$/,
+          use: ['raw-loader'],
+        },
       ],
     },
     resolve: {

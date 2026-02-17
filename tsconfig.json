@@ -19,6 +19,6 @@
     "preserveConstEnums": true,
     "newLine": "LF"
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "custom.d.ts"],
   "exclude": ["node_modules", "dist", "dev", "test"]
 }

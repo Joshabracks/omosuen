@@ -5,14 +5,10 @@ import { ComponentData, getProxiedComponent } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { createShaderProgram } from '../shader/create-shader-program';
-import {
-  postProcessVertexShader,
-  postProcessFragmentShader,
-} from '../shader/shader-post-process';
-import {
-  unifiedVertexShader,
-  unifiedFragmentShader,
-} from '../shader/shader-unified';
+import postProcessVertexShader from '../shader/post.vert';
+import postProcessFragmentShader from '../shader/post.frag';
+import unifiedVertexShader from '../shader/unified.vert';
+import unifiedFragmentShader from '../shader/unified.frag';
 
 /**
  * Initializes WebGL resources for the camera (shader programs, buffers).

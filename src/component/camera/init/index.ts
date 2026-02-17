@@ -6,10 +6,6 @@ import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { createShaderProgram } from '../shader/create-shader-program';
 import {
-  cellMapVertexShaderSource,
-  cellMapFragmentShaderSource,
-} from '../shader/shader-cell-map';
-import {
   postProcessVertexShader,
   postProcessFragmentShader,
 } from '../shader/shader-post-process';
@@ -81,19 +77,6 @@ export async function init(component: ComponentData): Promise<void> {
   console.log(
     `[camera] Camera '${camera.name}' compiled unified shader program`,
   );
-
-  const cellMapProgram = createShaderProgram(
-    gl,
-    cellMapVertexShaderSource,
-    cellMapFragmentShaderSource,
-  );
-  if (!cellMapProgram) {
-    console.error(
-      `[camera] Camera '${camera.name}' failed to create cell-map shader program`,
-    );
-    return;
-  }
-  camera.glResources.cellMapProgram = cellMapProgram;
 
   // 3. Create quad geometry buffers
   // Vertex positions (centered quad -0.5 to 0.5)

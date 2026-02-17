@@ -49,7 +49,6 @@ export interface CameraT
   glResources: {
     unifiedProgram: WebGLProgram | null;
     renderModeLocation: WebGLUniformLocation | null;
-    cellMapProgram: WebGLProgram | null;
     atlasTextures: (WebGLTexture | null)[];
     quadVertexBuffer: WebGLBuffer | null;
     quadUVBuffer: WebGLBuffer | null;
@@ -117,7 +116,6 @@ export function builder(options: CameraOptions): CameraT {
     glResources: {
       unifiedProgram: null,
       renderModeLocation: null,
-      cellMapProgram: null,
       atlasTextures: [],
       quadVertexBuffer: null,
       quadUVBuffer: null,

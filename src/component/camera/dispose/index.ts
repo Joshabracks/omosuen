@@ -15,9 +15,6 @@ export function dispose(component: ComponentData): void {
   // explicitly call gl.deleteProgram() etc. unless we're dynamically creating/destroying
   // many cameras during runtime (which is unlikely).
 
-  // Clear shader programs
-  camera.glResources.cellMapProgram = null;
-
   // Clear buffers
   camera.glResources.quadVertexBuffer = null;
   camera.glResources.quadUVBuffer = null;

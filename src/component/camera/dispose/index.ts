@@ -17,7 +17,6 @@ export function dispose(component: ComponentData): void {
 
   // Clear shader programs
   camera.glResources.cellMapProgram = null;
-  camera.glResources.spriteProgram = null;
 
   // Clear buffers
   camera.glResources.quadVertexBuffer = null;

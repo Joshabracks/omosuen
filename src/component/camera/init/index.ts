@@ -14,10 +14,6 @@ import {
   postProcessFragmentShader,
 } from '../shader/shader-post-process';
 import {
-  vertexShaderSource,
-  fragmentShaderSource,
-} from '../shader/shader-sprite-legacy';
-import {
   unifiedVertexShader,
   unifiedFragmentShader,
 } from '../shader/shader-unified';
@@ -85,19 +81,6 @@ export async function init(component: ComponentData): Promise<void> {
   console.log(
     `[camera] Camera '${camera.name}' compiled unified shader program`,
   );
-
-  const spriteProgram = createShaderProgram(
-    gl,
-    vertexShaderSource,
-    fragmentShaderSource,
-  );
-  if (!spriteProgram) {
-    console.error(
-      `[camera] Camera '${camera.name}' failed to create sprite shader program`,
-    );
-    return;
-  }
-  camera.glResources.spriteProgram = spriteProgram;
 
   const cellMapProgram = createShaderProgram(
     gl,

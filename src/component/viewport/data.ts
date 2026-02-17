@@ -60,6 +60,8 @@ export function builder(options: ViewportOptions): ViewportT {
   canvas.width = width;
   canvas.height = height;
   canvas.style.display = 'block';
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
 
   // Create container element for positioning
   const container = document.createElement('div');

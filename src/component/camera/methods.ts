@@ -1043,7 +1043,8 @@ async function init(component: ComponentData): Promise<void> {
         vec2 isoProjected = isoX + isoY + isoZ;
 
         // Apply anchor offset in screen space
-        vec2 scaledAnchor = u_anchor * (u_spriteSize / vec2(16.0, 16.0));
+        // Anchor values are already in pixels, no additional scaling needed
+        vec2 scaledAnchor = u_anchor;
         vec2 anchoredPosition = isoProjected - scaledAnchor;
 
         // Apply rotation to sprite quad vertices
@@ -1278,10 +1279,8 @@ async function init(component: ComponentData): Promise<void> {
       vec2 isoProjected = isoX + isoY + isoZ;
 
       // Apply anchor offset in screen space (after projection, before camera transform)
-      // Anchor is in pixels relative to sprite size
-      // Scale anchor by sprite scale (account for transform.scale)
-      // Subtract anchor to shift sprite position (anchor at 0,0 = top-left corner)
-      vec2 scaledAnchor = u_anchor * (u_spriteSize / vec2(16.0, 16.0));  // Normalize to sprite's actual size
+      // Anchor values are already in pixels, no additional scaling needed
+      vec2 scaledAnchor = u_anchor;
       vec2 anchoredPosition = isoProjected - scaledAnchor;
 
       // Apply rotation to sprite quad vertices

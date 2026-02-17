@@ -625,7 +625,7 @@ export async function createScene() {
             position: new Omosuen.Vector2D(worldX, worldZ),
             z: worldY,
             rotation: 0,
-            scale: new Omosuen.Vector2D(2, 2), // 2x scale for visibility (same as sprite-test)
+            scale: new Omosuen.Vector2D(1, 1), // 2x scale for visibility (same as sprite-test)
         }, spriteNexus);
 
         // Create sprite
@@ -643,7 +643,7 @@ export async function createScene() {
                 emission: 0,
                 material: 0,
             },
-            anchor: new Omosuen.Vector2D(0, 16), // Center anchor (16x16 sprite)
+            anchor: new Omosuen.Vector2D(8, 16), // Center anchor (16x16 sprite)
             tint: new Omosuen.Vector4D(1, 1, 1, 1),
             opacity: 1.0,
         }, spriteNexus);
@@ -681,10 +681,8 @@ export async function createScene() {
                     loop: true,
                 },
             ],
-            initialAnimation: randomAnim.name,
-            autoPlay: true, // Auto-play for immediate visual interest
         }, spriteNexus);
-        animationController.play('walk-left')
+        animationController.play(randomAnim.name)
         console.log(`[CellMap Test] Created sprite ${i + 1} at grid (${randomX}, ${highestY}, ${randomZ}) -> world (${worldX}, ${worldY}, ${worldZ})`);
     }
 

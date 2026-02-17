@@ -142,9 +142,10 @@ function render(camera: CameraT, _deltaTime: number): void {
     console.log('[camera] render() - no cell-maps to render');
   }
 
-  // Render sprites SECOND (after cells) with depth writes enabled
-  // Both cells and sprites now write to the depth buffer for proper interleaving
-  // This matches the Kalifo Shores unified shader approach for GPU-side batching
+  // PHASE 2: Post-process cells to screen with pixel-perfect upscaling
+  renderPostProcess(camera, viewport, gl);
+
+  // PHASE 3: Render sprites directly to screen at full resolution (no pixelation)
   if (sprites.length > 0) {
     const program = camera.glResources.unifiedProgram;
     if (!program) {
@@ -152,6 +153,10 @@ function render(camera: CameraT, _deltaTime: number): void {
         `[camera] Camera '${camera.name}' unified shader program not initialized`,
       );
     } else {
+      // Bind default framebuffer (screen) and set full-resolution viewport
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, viewport.width, viewport.height);
+
       // Calculate unified map bounds from all cell-maps for consistent depth sorting
       // Sprites need to use the maximum dimensions across all maps to ensure
       // they depth-sort correctly with all cell-maps in the scene
@@ -179,18 +184,15 @@ function render(camera: CameraT, _deltaTime: number): void {
       if (maxMapHeight === 0) maxMapHeight = 20;
       if (maxMapDepth === 0) maxMapDepth = 20;
 
-      // Enable blending for transparency
+      // Enable blending so transparent sprite pixels show cells underneath
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-      // Enable depth testing for proper 3D isometric depth sorting
-      // Sprites now write to depth buffer (matching Kalifo Shores approach)
-      gl.enable(gl.DEPTH_TEST);
-      gl.depthFunc(gl.LESS);
-      gl.depthMask(true); // Sprites WRITE to depth buffer (Kalifo Shores method)
+      // Disable depth test — sprites composite on top of cells in painter's order
+      gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(false);
 
       // Disable backface culling for 2D sprites
-      // Quads should render regardless of triangle winding order
       gl.disable(gl.CULL_FACE);
 
       // Use unified shader program
@@ -250,8 +252,9 @@ function render(camera: CameraT, _deltaTime: number): void {
       const u_normalUVBounds = gl.getUniformLocation(program, 'u_normalUVBounds');
 
       // Set constant uniforms (same for all sprites)
-      // Use base resolution for rendering (not canvas size)
-      gl.uniform2f(u_viewportSize, baseWidth, baseHeight);
+      // Sprites must use the same logical coordinate system as cells.
+      // pixelScale only affects the physical FBO size — not the coordinate system.
+      gl.uniform2f(u_viewportSize, viewport.width / camera.zoom, viewport.height / camera.zoom);
       gl.uniform2f(
         u_cameraPosition,
         transform.position.x,
@@ -438,12 +441,10 @@ function render(camera: CameraT, _deltaTime: number): void {
         gl.drawArrays(gl.TRIANGLES, 0, 6);
       }
 
-      // Note: No need to restore gl.depthMask(true) since cell-maps already rendered
+      // Restore depth mask state
+      gl.depthMask(true);
     }
   }
-
-  // PHASE 2: Render framebuffer texture to screen with pixel-perfect upscaling
-  renderPostProcess(camera, viewport, gl);
 }
 
 /**
@@ -587,10 +588,11 @@ function renderCellMaps(
   const u_hasNormal = gl.getUniformLocation(program, 'u_hasNormal');
 
   // Set constant uniforms (same for all cells)
-  // Use base resolution from camera (not canvas size)
-  const baseWidth = camera.glResources.baseResolution.width;
-  const baseHeight = camera.glResources.baseResolution.height;
-  gl.uniform2f(u_viewportSize, baseWidth, baseHeight);
+  // Use logical resolution (viewport / zoom) for shader coordinate space.
+  // pixelScale only affects the physical FBO size — not the coordinate system.
+  const logicalWidth = viewport.width / camera.zoom;
+  const logicalHeight = viewport.height / camera.zoom;
+  gl.uniform2f(u_viewportSize, logicalWidth, logicalHeight);
   gl.uniform2f(
     u_cameraPosition,
     cameraTransform.position.x,

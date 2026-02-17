@@ -49,6 +49,16 @@ export interface CameraT
     cubeUVBuffer: WebGLBuffer | null;
     cubeNormalBuffer: WebGLBuffer | null;
     cubeIndexBuffer: WebGLBuffer | null;
+
+    // Post-processing framebuffer resources for pixel-perfect zoom
+    framebuffer: WebGLFramebuffer | null;
+    renderTexture: WebGLTexture | null;
+    depthRenderbuffer: WebGLRenderbuffer | null;
+    postProcessProgram: WebGLProgram | null;
+    fullscreenQuadBuffer: WebGLBuffer | null;
+
+    // Base rendering resolution (independent of canvas size, adjusted by zoom)
+    baseResolution: { width: number; height: number };
   };
 }
 
@@ -101,6 +111,14 @@ export function builder(options: CameraOptions): CameraT {
       cubeUVBuffer: null,
       cubeNormalBuffer: null,
       cubeIndexBuffer: null,
+
+      // Post-processing resources
+      framebuffer: null,
+      renderTexture: null,
+      depthRenderbuffer: null,
+      postProcessProgram: null,
+      fullscreenQuadBuffer: null,
+      baseResolution: { width: 800, height: 600 }, // Default, will be updated in init()
     },
   };
 

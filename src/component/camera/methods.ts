@@ -85,7 +85,15 @@ function render(camera: CameraT, _deltaTime: number): void {
 
   const gl = viewport.gl;
 
-  // Clear the viewport with depth buffer reset
+  // PHASE 1: Bind framebuffer for offscreen rendering at base resolution
+  gl.bindFramebuffer(gl.FRAMEBUFFER, camera.glResources.framebuffer);
+
+  // Set viewport to base resolution (smaller than canvas for pixel-perfect zoom)
+  const baseWidth = camera.glResources.baseResolution.width;
+  const baseHeight = camera.glResources.baseResolution.height;
+  gl.viewport(0, 0, baseWidth, baseHeight);
+
+  // Clear framebuffer with depth buffer reset
   gl.clearColor(
     viewport.backgroundColor.x,
     viewport.backgroundColor.y,
@@ -97,6 +105,8 @@ function render(camera: CameraT, _deltaTime: number): void {
 
   // Early return if nothing to render
   if (sprites.length === 0 && cellMaps.length === 0) {
+    // Still need to display the empty framebuffer
+    renderPostProcess(camera, viewport, gl);
     return;
   }
 
@@ -239,7 +249,8 @@ function render(camera: CameraT, _deltaTime: number): void {
       const u_normalUVBounds = gl.getUniformLocation(program, 'u_normalUVBounds');
 
       // Set constant uniforms (same for all sprites)
-      gl.uniform2f(u_viewportSize, viewport.width, viewport.height);
+      // Use base resolution for rendering (not canvas size)
+      gl.uniform2f(u_viewportSize, baseWidth, baseHeight);
       gl.uniform2f(
         u_cameraPosition,
         transform.position.x,
@@ -429,6 +440,68 @@ function render(camera: CameraT, _deltaTime: number): void {
       // Note: No need to restore gl.depthMask(true) since cell-maps already rendered
     }
   }
+
+  // PHASE 2: Render framebuffer texture to screen with pixel-perfect upscaling
+  renderPostProcess(camera, viewport, gl);
+}
+
+/**
+ * Renders the offscreen framebuffer to the canvas with pixel-perfect upscaling.
+ * This creates the retro pixel-art zoom effect.
+ *
+ * @param camera - The camera component
+ * @param viewport - The viewport to render to
+ * @param gl - WebGL2 rendering context
+ */
+function renderPostProcess(
+  camera: CameraT,
+  viewport: ViewportT,
+  gl: WebGL2RenderingContext,
+): void {
+  // Bind default framebuffer (screen)
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  // Reset viewport to full canvas size
+  gl.viewport(0, 0, viewport.width, viewport.height);
+
+  // Clear screen
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  // Use post-process shader
+  const postProgram = camera.glResources.postProcessProgram;
+  if (!postProgram) {
+    console.warn('[camera] Post-process program not initialized');
+    return;
+  }
+
+  gl.useProgram(postProgram);
+
+  // Bind render texture
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.renderTexture);
+  const u_renderTexture = gl.getUniformLocation(postProgram, 'u_renderTexture');
+  gl.uniform1i(u_renderTexture, 0);
+
+  // Bind fullscreen quad buffer
+  gl.bindBuffer(gl.ARRAY_BUFFER, camera.glResources.fullscreenQuadBuffer);
+
+  // Set up attributes (interleaved: position + UV)
+  const a_position = gl.getAttribLocation(postProgram, 'a_position');
+  const a_uv = gl.getAttribLocation(postProgram, 'a_uv');
+
+  gl.enableVertexAttribArray(a_position);
+  gl.vertexAttribPointer(a_position, 2, gl.FLOAT, false, 16, 0);
+
+  gl.enableVertexAttribArray(a_uv);
+  gl.vertexAttribPointer(a_uv, 2, gl.FLOAT, false, 16, 8);
+
+  // Disable depth test and blending for fullscreen quad
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.BLEND);
+
+  // Draw fullscreen quad
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
 }
 
 /**
@@ -513,7 +586,10 @@ function renderCellMaps(
   const u_hasNormal = gl.getUniformLocation(program, 'u_hasNormal');
 
   // Set constant uniforms (same for all cells)
-  gl.uniform2f(u_viewportSize, viewport.width, viewport.height);
+  // Use base resolution from camera (not canvas size)
+  const baseWidth = camera.glResources.baseResolution.width;
+  const baseHeight = camera.glResources.baseResolution.height;
+  gl.uniform2f(u_viewportSize, baseWidth, baseHeight);
   gl.uniform2f(
     u_cameraPosition,
     cameraTransform.position.x,
@@ -819,7 +895,7 @@ function pan(camera: CameraT, offsetX: number, offsetY: number): void {
 }
 
 /**
- * Sets the camera zoom level.
+ * Sets the camera zoom level and updates framebuffer resolution.
  *
  * @param camera - The camera component
  * @param zoom - New zoom level (1.0 = normal, 2.0 = 2x zoom, etc.)
@@ -831,6 +907,76 @@ function setZoom(camera: CameraT, zoom: number): void {
   }
 
   camera.zoom = zoom;
+
+  // Update framebuffer resolution based on new zoom
+  updateFramebufferForZoom(camera);
+}
+
+/**
+ * Updates framebuffer resolution when zoom changes.
+ * At higher zoom levels, renders to a smaller framebuffer for pixel-perfect effect.
+ *
+ * @param camera - The camera component
+ */
+function updateFramebufferForZoom(camera: CameraT): void {
+  if (!camera.parent || camera.parent.type !== 'nexus') {
+    return;
+  }
+
+  const parentNexus = getProxiedComponent(camera.parent!) as unknown as NexusT;
+  const sceneRoot = getProxiedComponent(
+    parentNexus.parent!,
+  ) as unknown as NexusT;
+
+  // @ts-expect-error - Proxy methods exist at runtime
+  const viewport = sceneRoot.getComponentByName(
+    camera.viewportRef,
+    true,
+  ) as ViewportT | null;
+
+  if (!viewport || !viewport.gl) {
+    return;
+  }
+
+  const gl = viewport.gl;
+
+  // Recalculate base resolution based on new zoom
+  const baseWidth = Math.floor(viewport.width / camera.zoom);
+  const baseHeight = Math.floor(viewport.height / camera.zoom);
+
+  camera.glResources.baseResolution.width = baseWidth;
+  camera.glResources.baseResolution.height = baseHeight;
+
+  if (!camera.glResources.renderTexture || !camera.glResources.depthRenderbuffer) {
+    return;
+  }
+
+  // Resize render texture
+  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.renderTexture);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA,
+    baseWidth,
+    baseHeight,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    null,
+  );
+
+  // Resize depth buffer
+  gl.bindRenderbuffer(gl.RENDERBUFFER, camera.glResources.depthRenderbuffer);
+  gl.renderbufferStorage(
+    gl.RENDERBUFFER,
+    gl.DEPTH_COMPONENT16,
+    baseWidth,
+    baseHeight,
+  );
+
+  console.log(
+    `[camera] Updated framebuffer resolution to ${baseWidth}x${baseHeight} for zoom ${camera.zoom}`,
+  );
 }
 
 /**
@@ -1679,7 +1825,186 @@ async function init(component: ComponentData): Promise<void> {
     );
   }
 
-  // 4. Create cube mesh buffers for cell-map rendering
+  // 4. Create framebuffer for pixel-perfect post-processing
+  // Determine base resolution based on current zoom level
+  const baseWidth = Math.floor(viewport.width / camera.zoom);
+  const baseHeight = Math.floor(viewport.height / camera.zoom);
+
+  camera.glResources.baseResolution = {
+    width: baseWidth,
+    height: baseHeight,
+  };
+
+  // Create framebuffer
+  const framebuffer = gl.createFramebuffer();
+  if (!framebuffer) {
+    console.error(
+      `[camera] Camera '${camera.name}' failed to create framebuffer`,
+    );
+    return;
+  }
+
+  // Create render texture (where scene renders to)
+  const renderTexture = gl.createTexture();
+  if (!renderTexture) {
+    console.error(
+      `[camera] Camera '${camera.name}' failed to create render texture`,
+    );
+    return;
+  }
+
+  gl.bindTexture(gl.TEXTURE_2D, renderTexture);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA,
+    baseWidth,
+    baseHeight,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    null,
+  );
+
+  // CRITICAL: Use NEAREST filtering for pixel-perfect scaling
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  // Create depth renderbuffer
+  const depthRenderbuffer = gl.createRenderbuffer();
+  if (!depthRenderbuffer) {
+    console.error(
+      `[camera] Camera '${camera.name}' failed to create depth renderbuffer`,
+    );
+    return;
+  }
+
+  gl.bindRenderbuffer(gl.RENDERBUFFER, depthRenderbuffer);
+  gl.renderbufferStorage(
+    gl.RENDERBUFFER,
+    gl.DEPTH_COMPONENT16,
+    baseWidth,
+    baseHeight,
+  );
+
+  // Attach to framebuffer
+  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+  gl.framebufferTexture2D(
+    gl.FRAMEBUFFER,
+    gl.COLOR_ATTACHMENT0,
+    gl.TEXTURE_2D,
+    renderTexture,
+    0,
+  );
+  gl.framebufferRenderbuffer(
+    gl.FRAMEBUFFER,
+    gl.DEPTH_ATTACHMENT,
+    gl.RENDERBUFFER,
+    depthRenderbuffer,
+  );
+
+  // Check framebuffer completeness
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+    console.error(
+      `[camera] Camera '${camera.name}' framebuffer is not complete`,
+    );
+    return;
+  }
+
+  // Unbind framebuffer
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  // Store framebuffer resources
+  camera.glResources.framebuffer = framebuffer;
+  camera.glResources.renderTexture = renderTexture;
+  camera.glResources.depthRenderbuffer = depthRenderbuffer;
+
+  console.log(
+    `[camera] Camera '${camera.name}' created framebuffer at ${baseWidth}x${baseHeight}`,
+  );
+
+  // 5. Create post-processing shader
+  const postProcessVertexShader = `
+    attribute vec2 a_position;
+    attribute vec2 a_uv;
+    varying vec2 v_uv;
+
+    void main() {
+      gl_Position = vec4(a_position, 0.0, 1.0);
+      v_uv = a_uv;
+    }
+  `;
+
+  const postProcessFragmentShader = `
+    precision mediump float;
+    uniform sampler2D u_renderTexture;
+    varying vec2 v_uv;
+
+    void main() {
+      // Sample with NEAREST filtering for pixel-perfect look
+      gl_FragColor = texture2D(u_renderTexture, v_uv);
+    }
+  `;
+
+  const postProcessProgram = createShaderProgram(
+    gl,
+    postProcessVertexShader,
+    postProcessFragmentShader,
+  );
+  if (!postProcessProgram) {
+    console.error(
+      `[camera] Camera '${camera.name}' failed to create post-process shader program`,
+    );
+    return;
+  }
+  camera.glResources.postProcessProgram = postProcessProgram;
+
+  // Create fullscreen quad buffer for post-processing
+  const fullscreenQuad = new Float32Array([
+    -1,
+    -1,
+    0,
+    0, // bottom-left
+    1,
+    -1,
+    1,
+    0, // bottom-right
+    1,
+    1,
+    1,
+    1, // top-right
+    -1,
+    -1,
+    0,
+    0, // bottom-left
+    1,
+    1,
+    1,
+    1, // top-right
+    -1,
+    1,
+    0,
+    1, // top-left
+  ]);
+
+  const fullscreenQuadBuffer = gl.createBuffer();
+  if (!fullscreenQuadBuffer) {
+    console.error(
+      `[camera] Camera '${camera.name}' failed to create fullscreen quad buffer`,
+    );
+    return;
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, fullscreenQuadBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, fullscreenQuad, gl.STATIC_DRAW);
+  camera.glResources.fullscreenQuadBuffer = fullscreenQuadBuffer;
+
+  console.log(
+    `[camera] Camera '${camera.name}' compiled post-process shader program`,
+  );
+
+  // 6. Create cube mesh buffers for cell-map rendering
   // Import default cube mesh geometry from cell-map component
   const { generateDefaultCubeMesh } = await import('../cell-map/data');
   const cubeMesh = generateDefaultCubeMesh();

@@ -17,6 +17,7 @@ export interface CameraMethods extends ComponentMethods {
   };
   pan: (camera: CameraT, offsetX: number, offsetY: number) => void;
   setZoom: (camera: CameraT, zoom: number) => void;
+  setPixelScale: (camera: CameraT, pixelScale: number) => void;
   init: (component: ComponentData) => Promise<void>;
   dispose: (component: ComponentData) => void;
 }
@@ -913,7 +914,25 @@ function setZoom(camera: CameraT, zoom: number): void {
 }
 
 /**
- * Updates framebuffer resolution when zoom changes.
+ * Sets the camera pixel scale for pixelation intensity.
+ *
+ * @param camera - The camera component
+ * @param pixelScale - Pixel scale factor (1.0 = no pixelation, 2.0 = 2x2 blocks, etc.)
+ */
+function setPixelScale(camera: CameraT, pixelScale: number): void {
+  if (pixelScale <= 0) {
+    console.warn(`[camera] Invalid pixel scale ${pixelScale}, must be > 0`);
+    return;
+  }
+
+  camera.pixelScale = pixelScale;
+
+  // Update framebuffer resolution based on new pixel scale
+  updateFramebufferForZoom(camera);
+}
+
+/**
+ * Updates framebuffer resolution when zoom or pixel scale changes.
  * At higher zoom levels, renders to a smaller framebuffer for pixel-perfect effect.
  *
  * @param camera - The camera component
@@ -940,9 +959,9 @@ function updateFramebufferForZoom(camera: CameraT): void {
 
   const gl = viewport.gl;
 
-  // Recalculate base resolution based on new zoom
-  const baseWidth = Math.floor(viewport.width / camera.zoom);
-  const baseHeight = Math.floor(viewport.height / camera.zoom);
+  // Recalculate base resolution based on new zoom and pixel scale
+  const baseWidth = Math.floor(viewport.width / (camera.zoom * camera.pixelScale));
+  const baseHeight = Math.floor(viewport.height / (camera.zoom * camera.pixelScale));
 
   camera.glResources.baseResolution.width = baseWidth;
   camera.glResources.baseResolution.height = baseHeight;
@@ -1826,9 +1845,9 @@ async function init(component: ComponentData): Promise<void> {
   }
 
   // 4. Create framebuffer for pixel-perfect post-processing
-  // Determine base resolution based on current zoom level
-  const baseWidth = Math.floor(viewport.width / camera.zoom);
-  const baseHeight = Math.floor(viewport.height / camera.zoom);
+  // Determine base resolution based on current zoom level and pixel scale
+  const baseWidth = Math.floor(viewport.width / (camera.zoom * camera.pixelScale));
+  const baseHeight = Math.floor(viewport.height / (camera.zoom * camera.pixelScale));
 
   camera.glResources.baseResolution = {
     width: baseWidth,
@@ -2119,6 +2138,7 @@ export const Camera: CameraMethods = {
   collectRenderables,
   pan,
   setZoom,
+  setPixelScale,
   init,
   dispose,
 };

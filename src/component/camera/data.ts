@@ -23,6 +23,15 @@ export interface CameraT
   zoom: number;
 
   /**
+   * Pixel scale for retro pixelation effect.
+   * Controls how chunky the pixels appear (multiplies with zoom).
+   * 1.0 = no extra pixelation, 2.0 = 2x2 pixel blocks, 4.0 = 4x4 pixel blocks
+   * Higher values = chunkier, more retro look
+   * Default: 2.0
+   */
+  pixelScale: number;
+
+  /**
    * Axonometric projection angle in degrees.
    * Typically around 30 degrees for isometric-like appearance.
    */
@@ -69,6 +78,12 @@ export interface CameraOptions extends ComponentOptions {
   zoom?: number;
 
   /**
+   * Pixel scale for retro pixelation effect (default: 2.0)
+   * Controls how chunky pixels appear. Higher = more retro/chunky.
+   */
+  pixelScale?: number;
+
+  /**
    * Axonometric angle in degrees (default: 30)
    */
   axonometricAngle?: number;
@@ -96,6 +111,7 @@ export function builder(options: CameraOptions): CameraT {
     _initDefer: 1,
 
     zoom: options.zoom ?? 1.0,
+    pixelScale: options.pixelScale ?? 2.0,
     axonometricAngle: options.axonometricAngle ?? 30,
     viewportRef: options.viewportRef,
 
@@ -138,6 +154,7 @@ function serialize(component: ComponentData): any {
     name: c.name,
     unique: ComponentUnique.LOCAL,
     zoom: c.zoom,
+    pixelScale: c.pixelScale,
     axonometricAngle: c.axonometricAngle,
     viewportRef: c.viewportRef,
   };
@@ -150,7 +167,7 @@ function serialize(component: ComponentData): any {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deserialize(data: any): CameraT {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-  const { type, name, zoom, axonometricAngle, viewportRef } = data;
+  const { type, name, zoom, pixelScale, axonometricAngle, viewportRef } = data;
 
   const errors = [];
   if (type !== 'camera') {
@@ -169,6 +186,7 @@ function deserialize(data: any): CameraT {
   return builder({
     name: name as string,
     zoom: zoom as number,
+    pixelScale: pixelScale as number,
     axonometricAngle: axonometricAngle as number,
     viewportRef: viewportRef as string,
   });
@@ -184,6 +202,7 @@ export const CameraSerializer: ComponentSerializer = {
  */
 export const PROPERTY_ALLOWLIST: string[] = [
   'zoom',
+  'pixelScale',
   'axonometricAngle',
   'viewportRef',
   'glResources',

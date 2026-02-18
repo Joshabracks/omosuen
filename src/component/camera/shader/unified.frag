@@ -28,6 +28,29 @@ varying vec3 v_worldPos;
 varying vec2 v_screenPos;
 varying vec3 v_worldNormal;
 
+// Manual bilinear interpolation for atlas-safe texel blending.
+// Prevents shimmer by smoothly transitioning between neighboring texels
+// instead of hard floor() snapping.
+vec4 sampleBilinear(sampler2D tex, vec2 worldCoord, vec2 texSize, vec4 bounds) {
+    vec2 f = fract(worldCoord);
+    vec2 base = floor(worldCoord);
+
+    // 4 neighboring texel centers
+    vec2 uv00 = (mod(base,                  texSize) + 0.5) / texSize;
+    vec2 uv10 = (mod(base + vec2(1.0, 0.0), texSize) + 0.5) / texSize;
+    vec2 uv01 = (mod(base + vec2(0.0, 1.0), texSize) + 0.5) / texSize;
+    vec2 uv11 = (mod(base + vec2(1.0, 1.0), texSize) + 0.5) / texSize;
+
+    // Map to atlas bounds
+    vec4 s00 = texture2D(tex, mix(bounds.xy, bounds.zw, uv00));
+    vec4 s10 = texture2D(tex, mix(bounds.xy, bounds.zw, uv10));
+    vec4 s01 = texture2D(tex, mix(bounds.xy, bounds.zw, uv01));
+    vec4 s11 = texture2D(tex, mix(bounds.xy, bounds.zw, uv11));
+
+    // Bilinear blend
+    return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
+}
+
 void main() {
     if(u_renderMode == 0) {
         // ============================================================
@@ -38,26 +61,15 @@ void main() {
         vec3 blendWeights = abs(normalize(v_worldNormal));
         blendWeights = blendWeights / (blendWeights.x + blendWeights.y + blendWeights.z);
 
-        // Sample YZ plane (for X-facing sides: left/right walls)
-        vec2 worldPixelYZ = floor(vec2(v_worldPos.z, v_worldPos.y));
-        vec2 texelCoordYZ = mod(worldPixelYZ, u_textureSize);
-        vec2 normalizedUV_YZ = (texelCoordYZ + 0.5) / u_textureSize;
-        vec2 atlasUV_YZ = mix(u_uvBounds.xy, u_uvBounds.zw, normalizedUV_YZ);
-        vec4 albedoYZ = texture2D(u_albedoTexture, atlasUV_YZ);
+        // Triplanar albedo sampling with bilinear interpolation to prevent shimmer
+        vec4 albedoYZ = sampleBilinear(u_albedoTexture, vec2(v_worldPos.z, v_worldPos.y), u_textureSize, u_uvBounds);
+        vec4 albedoXZ = sampleBilinear(u_albedoTexture, vec2(v_worldPos.x, v_worldPos.z), u_textureSize, u_uvBounds);
+        vec4 albedoXY = sampleBilinear(u_albedoTexture, vec2(v_worldPos.x, v_worldPos.y), u_textureSize, u_uvBounds);
 
-        // Sample XZ plane (for Y-facing sides: top/bottom faces)
-        vec2 worldPixelXZ = floor(vec2(v_worldPos.x, v_worldPos.z));
-        vec2 texelCoordXZ = mod(worldPixelXZ, u_textureSize);
-        vec2 normalizedUV_XZ = (texelCoordXZ + 0.5) / u_textureSize;
-        vec2 atlasUV_XZ = mix(u_uvBounds.xy, u_uvBounds.zw, normalizedUV_XZ);
-        vec4 albedoXZ = texture2D(u_albedoTexture, atlasUV_XZ);
-
-        // Sample XY plane (for Z-facing sides: front/back walls)
-        vec2 worldPixelXY = floor(vec2(v_worldPos.x, v_worldPos.y));
-        vec2 texelCoordXY = mod(worldPixelXY, u_textureSize);
-        vec2 normalizedUV_XY = (texelCoordXY + 0.5) / u_textureSize;
-        vec2 atlasUV_XY = mix(u_uvBounds.xy, u_uvBounds.zw, normalizedUV_XY);
-        vec4 albedoXY = texture2D(u_albedoTexture, atlasUV_XY);
+        // Floor-based UVs for normal maps (shimmer-insensitive, saves texture lookups)
+        vec2 normalizedUV_YZ = (mod(floor(vec2(v_worldPos.z, v_worldPos.y)), u_textureSize) + 0.5) / u_textureSize;
+        vec2 normalizedUV_XZ = (mod(floor(vec2(v_worldPos.x, v_worldPos.z)), u_textureSize) + 0.5) / u_textureSize;
+        vec2 normalizedUV_XY = (mod(floor(vec2(v_worldPos.x, v_worldPos.y)), u_textureSize) + 0.5) / u_textureSize;
 
         // Blend the three albedo samples using normal weights
         vec4 albedo = albedoYZ * blendWeights.x + albedoXZ * blendWeights.y + albedoXY * blendWeights.z;

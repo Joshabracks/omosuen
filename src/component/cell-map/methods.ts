@@ -2,6 +2,7 @@ import { ComponentMethods } from '../types';
 import { Vector3D } from '../../math';
 import { CellMapT } from './data';
 import { CellData, Material, Mesh, packCell, unpackCell } from './types';
+import { markChunksDirty } from './mesh-builder';
 
 export interface CellMapMethods extends ComponentMethods {
   type: 'cell-map';
@@ -121,6 +122,7 @@ export const CellMap: CellMapMethods = {
     const packed = packCell(clamped);
     component.packedData.set(coordinates, packed);
     component.needsGPUUpdate = true;
+    markChunksDirty(component, coordinates.x, coordinates.y, coordinates.z);
   },
 
   setMaterial: (
@@ -201,9 +203,7 @@ export const CellMap: CellMapMethods = {
     component.needsGPUUpdate = false;
   },
 
-  getBounds: (
-    component: CellMapT,
-  ): { min: Vector3D; max: Vector3D } => {
+  getBounds: (component: CellMapT): { min: Vector3D; max: Vector3D } => {
     const min = new Vector3D(0, 0, 0);
     const max = new Vector3D(
       component.mapSize.x * component.cellSize.x,

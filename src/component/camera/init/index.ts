@@ -1,5 +1,5 @@
 import { AtlasManagerT } from '../../atlas-manager';
-import { generateDefaultCubeMesh } from '../../cell-map';
+
 import { NexusT } from '../../nexus';
 import { ComponentData, getProxiedComponent } from '../../types';
 import { ViewportT } from '../../viewport';
@@ -344,72 +344,6 @@ export async function init(component: ComponentData): Promise<void> {
   console.log(
     `[camera] Camera '${camera.name}' compiled post-process shader program`,
   );
-
-  // 6. Create cube mesh buffers for cell-map rendering
-  const cubeMesh = generateDefaultCubeMesh();
-
-  // Cube vertices (24 vertices, 3 components each = 72 floats)
-  const cubeVertexBuffer = gl.createBuffer();
-  if (!cubeVertexBuffer) {
-    console.error(
-      `[camera] Camera '${camera.name}' failed to create cube vertex buffer`,
-    );
-    return;
-  }
-  gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, cubeMesh.vertices, gl.STATIC_DRAW);
-  camera.glResources.cubeVertexBuffer = cubeVertexBuffer;
-
-  // Cube UVs (24 vertices, 2 components each = 48 floats)
-  const cubeUVBuffer = gl.createBuffer();
-  if (!cubeUVBuffer) {
-    console.error(
-      `[camera] Camera '${camera.name}' failed to create cube UV buffer`,
-    );
-    return;
-  }
-  gl.bindBuffer(gl.ARRAY_BUFFER, cubeUVBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, cubeMesh.uvs, gl.STATIC_DRAW);
-  camera.glResources.cubeUVBuffer = cubeUVBuffer;
-
-  // Cube normals (calculate from vertices - 24 vertices, 3 components = 72 floats)
-  const cubeNormals = new Float32Array([
-    // Front face (z = 0.5) - normal pointing out (+Z)
-    0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1,
-    // Back face (z = -0.5) - normal pointing out (-Z)
-    0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1,
-    // Top face (y = 0.5) - normal pointing out (+Y)
-    0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0,
-    // Bottom face (y = -0.5) - normal pointing out (-Y)
-    0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0,
-    // Right face (x = 0.5) - normal pointing out (+X)
-    1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0,
-    // Left face (x = -0.5) - normal pointing out (-X)
-    -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0,
-  ]);
-
-  const cubeNormalBuffer = gl.createBuffer();
-  if (!cubeNormalBuffer) {
-    console.error(
-      `[camera] Camera '${camera.name}' failed to create cube normal buffer`,
-    );
-    return;
-  }
-  gl.bindBuffer(gl.ARRAY_BUFFER, cubeNormalBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, cubeNormals, gl.STATIC_DRAW);
-  camera.glResources.cubeNormalBuffer = cubeNormalBuffer;
-
-  // Cube indices (36 indices for 12 triangles)
-  const cubeIndexBuffer = gl.createBuffer();
-  if (!cubeIndexBuffer) {
-    console.error(
-      `[camera] Camera '${camera.name}' failed to create cube index buffer`,
-    );
-    return;
-  }
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndexBuffer);
-  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, cubeMesh.indices, gl.STATIC_DRAW);
-  camera.glResources.cubeIndexBuffer = cubeIndexBuffer;
 
   console.log(
     `[camera] Camera '${camera.name}' initialized with WebGL context`,

@@ -52,11 +52,6 @@ export interface CameraT
     atlasTextures: (WebGLTexture | null)[];
     quadVertexBuffer: WebGLBuffer | null;
     quadUVBuffer: WebGLBuffer | null;
-    cubeVertexBuffer: WebGLBuffer | null;
-    cubeUVBuffer: WebGLBuffer | null;
-    cubeNormalBuffer: WebGLBuffer | null;
-    cubeIndexBuffer: WebGLBuffer | null;
-
     // Post-processing framebuffer resources for pixel-perfect zoom
     framebuffer: WebGLFramebuffer | null;
     renderTexture: WebGLTexture | null;
@@ -119,11 +114,6 @@ export function builder(options: CameraOptions): CameraT {
       atlasTextures: [],
       quadVertexBuffer: null,
       quadUVBuffer: null,
-      cubeVertexBuffer: null,
-      cubeUVBuffer: null,
-      cubeNormalBuffer: null,
-      cubeIndexBuffer: null,
-
       // Post-processing resources
       framebuffer: null,
       renderTexture: null,

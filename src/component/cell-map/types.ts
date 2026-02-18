@@ -1,5 +1,3 @@
-import { Vector3D } from '../../math';
-
 /**
  * Material definition: References to 4 TextureMap components
  * Each material bundles albedo, normal, emission, and material (PBR) textures
@@ -117,4 +115,52 @@ export function unpackCell(packed: number): CellData {
     emissionIntensity: (packed >> 24) & 0x1f,
     visible: ((packed >> 29) & 0x1) === 1,
   };
+}
+
+// ============================================================
+// Chunk types for batched rendering
+// ============================================================
+
+/** Chunk size in cells per axis */
+export const CHUNK_SIZE = 16;
+
+/**
+ * A draw range within a chunk's index buffer for a specific material.
+ * All faces in this range share the same material/texture.
+ */
+export interface DrawRange {
+  /** Index into the cell map's materials array */
+  materialIndex: number;
+  /** Byte offset into the chunk's index buffer (in index count, not bytes) */
+  indexOffset: number;
+  /** Number of indices to draw */
+  indexCount: number;
+}
+
+/**
+ * Built mesh data for a single chunk, ready for GPU upload.
+ * Contains all visible faces after hidden face culling and greedy meshing.
+ */
+export interface ChunkMesh {
+  /** Chunk grid position (in chunk coordinates, not cell coordinates) */
+  cx: number;
+  cy: number;
+  cz: number;
+
+  /** Whether this chunk needs its mesh rebuilt */
+  dirty: boolean;
+
+  /** Interleaved vertex data: [posX, posY, posZ, normalX, normalY, normalZ] per vertex */
+  vertices: Float32Array | null;
+  /** Index data */
+  indices: Uint32Array | null;
+  /** Material-grouped draw ranges within the index buffer */
+  drawRanges: DrawRange[];
+
+  /** Total visible face count (for stats) */
+  faceCount: number;
+
+  /** GPU buffer references (null until uploaded) */
+  glVertexBuffer: WebGLBuffer | null;
+  glIndexBuffer: WebGLBuffer | null;
 }

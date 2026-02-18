@@ -18,10 +18,6 @@ export function dispose(component: ComponentData): void {
   // Clear buffers
   camera.glResources.quadVertexBuffer = null;
   camera.glResources.quadUVBuffer = null;
-  camera.glResources.cubeVertexBuffer = null;
-  camera.glResources.cubeUVBuffer = null;
-  camera.glResources.cubeNormalBuffer = null;
-  camera.glResources.cubeIndexBuffer = null;
 
   // Clear textures
   camera.glResources.atlasTextures = [];

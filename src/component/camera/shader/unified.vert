@@ -9,12 +9,8 @@ uniform lowp int u_renderMode;  // 0 = cells, 1 = sprites
 uniform vec2 u_viewportSize;
 uniform vec2 u_cameraPosition;
 uniform float u_zoom;
-uniform float u_pixelScale;
 uniform vec3 u_cellSize;   // Used by both for grid calculations
 uniform vec3 u_mapSize;    // Used by both for depth calculations
-
-    // Cell-specific uniforms (Mode 0)
-uniform vec3 u_cellPosition;
 
     // Sprite-specific uniforms (Mode 1)
 uniform vec3 u_spritePosition;  // 3D world position (x, y=height, z)
@@ -35,8 +31,8 @@ void main() {
         // MODE 0: CELL RENDERING
         // ============================================================
 
-        // Scale vertex by cell size and translate to world position
-        vec3 worldPos = a_position * u_cellSize + u_cellPosition;
+        // Chunk mesh builder provides world-space positions directly
+        vec3 worldPos = a_position;
 
         // Apply standard isometric projection
         vec2 isoX = worldPos.x * vec2(0.866, 0.5);
@@ -47,12 +43,10 @@ void main() {
         // Convert to view space and apply zoom
         vec2 isoPos = (isoProjected - u_cameraPosition) * u_zoom;
 
-        // Pixel snapping
-        vec2 pixelPos = floor(isoPos / u_pixelScale + 0.5) * u_pixelScale;
-        v_screenPos = pixelPos;
+        v_screenPos = isoPos;
 
         // Convert to clip space
-        vec2 clipSpace = (pixelPos / u_viewportSize) * 2.0 - 1.0;
+        vec2 clipSpace = (isoPos / u_viewportSize) * 2.0 - 1.0;
 
         // Calculate depth
         vec3 gridPos = worldPos / u_cellSize;

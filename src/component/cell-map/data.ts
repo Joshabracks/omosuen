@@ -1,6 +1,13 @@
 import { ComponentData, ComponentOptions } from '../types';
 import { Array3D, Array3Dc, Vector3D } from '../../math';
-import { Material, Mesh, packCell, createDefaultCellData } from './types';
+import {
+  Material,
+  Mesh,
+  ChunkMesh,
+  packCell,
+  createDefaultCellData,
+  CHUNK_SIZE,
+} from './types';
 
 export interface CellMapOptions extends ComponentOptions {
   /**
@@ -74,6 +81,10 @@ export interface CellMapT extends ComponentData {
 
   // GPU sync
   needsGPUUpdate: boolean;
+
+  // Chunk-based rendering
+  chunks: ChunkMesh[];
+  chunkGridSize: { x: number; y: number; z: number };
 }
 
 /**
@@ -142,6 +153,8 @@ export const PROPERTY_ALLOWLIST = [
   'mapSize',
   'packedData',
   'needsGPUUpdate',
+  'chunks',
+  'chunkGridSize',
 ];
 
 /**
@@ -260,6 +273,34 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   // Note: Array3Dic uses generic T, not bit-packed integers like Array3Di
   const packedData = new Array3Dc(packedArray, 0.05); // 5% dirty threshold
 
+  // Calculate chunk grid dimensions
+  const chunkGridSize = {
+    x: Math.ceil(mapSize.x / CHUNK_SIZE),
+    y: Math.ceil(mapSize.y / CHUNK_SIZE),
+    z: Math.ceil(mapSize.z / CHUNK_SIZE),
+  };
+
+  // Initialize chunk array with all chunks marked dirty
+  const chunks: ChunkMesh[] = [];
+  for (let cz = 0; cz < chunkGridSize.z; cz++) {
+    for (let cy = 0; cy < chunkGridSize.y; cy++) {
+      for (let cx = 0; cx < chunkGridSize.x; cx++) {
+        chunks.push({
+          cx,
+          cy,
+          cz,
+          dirty: true,
+          vertices: null,
+          indices: null,
+          drawRanges: [],
+          faceCount: 0,
+          glVertexBuffer: null,
+          glIndexBuffer: null,
+        });
+      }
+    }
+  }
+
   return {
     name: options.name,
     type: 'cell-map',
@@ -274,5 +315,7 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     mapSize,
     packedData,
     needsGPUUpdate: true,
+    chunks,
+    chunkGridSize,
   };
 }

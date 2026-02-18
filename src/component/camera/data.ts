@@ -55,7 +55,7 @@ export interface CameraT
     // Post-processing framebuffer resources for pixel-perfect zoom
     framebuffer: WebGLFramebuffer | null;
     renderTexture: WebGLTexture | null;
-    depthRenderbuffer: WebGLRenderbuffer | null;
+    depthTexture: WebGLTexture | null;
     postProcessProgram: WebGLProgram | null;
     fullscreenQuadBuffer: WebGLBuffer | null;
 
@@ -117,7 +117,7 @@ export function builder(options: CameraOptions): CameraT {
       // Post-processing resources
       framebuffer: null,
       renderTexture: null,
-      depthRenderbuffer: null,
+      depthTexture: null,
       postProcessProgram: null,
       fullscreenQuadBuffer: null,
       baseResolution: { width: 800, height: 600 }, // Default, will be updated in init()

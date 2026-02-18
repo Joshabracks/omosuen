@@ -234,22 +234,32 @@ export async function init(component: ComponentData): Promise<void> {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-  // Create depth renderbuffer
-  const depthRenderbuffer = gl.createRenderbuffer();
-  if (!depthRenderbuffer) {
+  // Create depth texture (sampleable for sprite occlusion masking)
+  const depthTexture = gl.createTexture();
+  if (!depthTexture) {
     console.error(
-      `[camera] Camera '${camera.name}' failed to create depth renderbuffer`,
+      `[camera] Camera '${camera.name}' failed to create depth texture`,
     );
     return;
   }
 
-  gl.bindRenderbuffer(gl.RENDERBUFFER, depthRenderbuffer);
-  gl.renderbufferStorage(
-    gl.RENDERBUFFER,
-    gl.DEPTH_COMPONENT16,
+  gl.bindTexture(gl.TEXTURE_2D, depthTexture);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.DEPTH_COMPONENT24,
     baseWidth,
     baseHeight,
+    0,
+    gl.DEPTH_COMPONENT,
+    gl.UNSIGNED_INT,
+    null,
   );
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.NONE);
 
   // Attach to framebuffer
   gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
@@ -260,11 +270,12 @@ export async function init(component: ComponentData): Promise<void> {
     renderTexture,
     0,
   );
-  gl.framebufferRenderbuffer(
+  gl.framebufferTexture2D(
     gl.FRAMEBUFFER,
     gl.DEPTH_ATTACHMENT,
-    gl.RENDERBUFFER,
-    depthRenderbuffer,
+    gl.TEXTURE_2D,
+    depthTexture,
+    0,
   );
 
   // Check framebuffer completeness
@@ -281,7 +292,7 @@ export async function init(component: ComponentData): Promise<void> {
   // Store framebuffer resources
   camera.glResources.framebuffer = framebuffer;
   camera.glResources.renderTexture = renderTexture;
-  camera.glResources.depthRenderbuffer = depthRenderbuffer;
+  camera.glResources.depthTexture = depthTexture;
 
   console.log(
     `[camera] Camera '${camera.name}' created framebuffer at ${baseWidth}x${baseHeight}`,

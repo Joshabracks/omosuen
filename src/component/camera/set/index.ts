@@ -77,10 +77,7 @@ function updateFramebufferForZoom(camera: CameraT): void {
   camera.glResources.baseResolution.width = baseWidth;
   camera.glResources.baseResolution.height = baseHeight;
 
-  if (
-    !camera.glResources.renderTexture ||
-    !camera.glResources.depthRenderbuffer
-  ) {
+  if (!camera.glResources.renderTexture || !camera.glResources.depthTexture) {
     return;
   }
 
@@ -98,13 +95,18 @@ function updateFramebufferForZoom(camera: CameraT): void {
     null,
   );
 
-  // Resize depth buffer
-  gl.bindRenderbuffer(gl.RENDERBUFFER, camera.glResources.depthRenderbuffer);
-  gl.renderbufferStorage(
-    gl.RENDERBUFFER,
-    gl.DEPTH_COMPONENT16,
+  // Resize depth texture
+  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.depthTexture);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.DEPTH_COMPONENT24,
     baseWidth,
     baseHeight,
+    0,
+    gl.DEPTH_COMPONENT,
+    gl.UNSIGNED_INT,
+    null,
   );
 
   console.log(

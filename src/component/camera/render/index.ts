@@ -73,6 +73,12 @@ export function render(camera: CameraT, _deltaTime: number): void {
   const gl = viewport.gl;
 
   // PHASE 1: Bind framebuffer for offscreen rendering at base resolution
+  // Ensure depth texture isn't bound as a sampler on any unit before binding the FBO.
+  // The FBO has this texture as its depth attachment — if it's also bound as a sampler,
+  // WebGL detects a feedback loop and silently fails all draw calls.
+  // This can happen from: sprite rendering (TEXTURE2), zoom resize (set/index.ts), etc.
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, null);
   gl.bindFramebuffer(gl.FRAMEBUFFER, camera.glResources.framebuffer);
 
   // Set viewport to base resolution (smaller than canvas for pixel-perfect zoom)
@@ -186,7 +192,8 @@ export function render(camera: CameraT, _deltaTime: number): void {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-      // Disable depth test — sprites composite on top of cells in painter's order
+      // Disable hardware depth test — occlusion is handled in the fragment
+      // shader by sampling the cell FBO's depth texture
       gl.disable(gl.DEPTH_TEST);
       gl.depthMask(false);
 
@@ -251,6 +258,14 @@ export function render(camera: CameraT, _deltaTime: number): void {
         program,
         'u_normalUVBounds',
       );
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      const u_depthTexture = gl.getUniformLocation(program, 'u_depthTexture');
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      const u_fboUvScale = gl.getUniformLocation(program, 'u_fboUvScale');
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      const u_fboUvOffset = gl.getUniformLocation(program, 'u_fboUvOffset');
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      const u_screenSize = gl.getUniformLocation(program, 'u_screenSize');
 
       // Set constant uniforms (same for all sprites)
       // Sprites render at full resolution to screen (not via FBO), so they use
@@ -273,6 +288,38 @@ export function render(camera: CameraT, _deltaTime: number): void {
         unifiedCellSizeZ,
       );
       gl.uniform3f(u_mapSize, maxMapWidth, maxMapHeight, maxMapDepth);
+
+      // Bind cell FBO depth texture for occlusion masking
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, camera.glResources.depthTexture);
+      gl.uniform1i(u_depthTexture, 2);
+
+      // Pass FBO UV mapping so the sprite shader can sample the depth texture
+      // Uses the same UV transform as the post-process shader
+      const fboWidth = camera.glResources.baseResolution.width;
+      const fboHeight = camera.glResources.baseResolution.height;
+      const unpaddedWidth = fboWidth - 2;
+      const unpaddedHeight = fboHeight - 2;
+      gl.uniform2f(
+        u_fboUvScale,
+        unpaddedWidth / fboWidth,
+        unpaddedHeight / fboHeight,
+      );
+
+      const fboOffsetX =
+        camera.pixelScale > 1
+          ? (subPixelOffset.remainderX * camera.zoom) / camera.pixelScale
+          : 0;
+      const fboOffsetY =
+        camera.pixelScale > 1
+          ? (subPixelOffset.remainderY * camera.zoom) / camera.pixelScale
+          : 0;
+      gl.uniform2f(
+        u_fboUvOffset,
+        fboOffsetX / fboWidth,
+        (2 - fboOffsetY) / fboHeight,
+      );
+      gl.uniform2f(u_screenSize, viewport.width, viewport.height);
 
       // Bind vertex buffers (shared for all sprites)
       gl.bindBuffer(gl.ARRAY_BUFFER, camera.glResources.quadVertexBuffer);
@@ -455,6 +502,12 @@ export function render(camera: CameraT, _deltaTime: number): void {
 
       // Restore depth mask state
       gl.depthMask(true);
+
+      // Unbind depth texture from TEXTURE2 to prevent feedback loop on next frame.
+      // The FBO uses this same texture as its depth attachment — if it's still bound
+      // as a sampler when we bindFramebuffer for cell rendering, WebGL silently fails.
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, null);
     }
   }
 }

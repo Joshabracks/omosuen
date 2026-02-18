@@ -48,13 +48,11 @@ void main() {
         // Convert to clip space
         vec2 clipSpace = (isoPos / u_viewportSize) * 2.0 - 1.0;
 
-        // Calculate depth
-        vec3 gridPos = worldPos / u_cellSize;
-        float mapDepth = u_mapSize.z;
-        float maxGridSum = (u_mapSize.x - 1.0) + (u_mapSize.z - 1.0);
-        float zDepth = (gridPos.x + gridPos.z) * mapDepth + gridPos.y * 2.0;
-        float maxDepth = maxGridSum * mapDepth + (mapDepth - 1.0) * 2.0;
-        float clipDepth = 1.0 - (zDepth / maxDepth);
+        // Depth = projection onto isometric view direction (1,1,1).
+        // Higher sum = closer to camera = lower depth buffer value.
+        float rawDepth = worldPos.x + worldPos.y + worldPos.z;
+        float maxRawDepth = u_mapSize.x * u_cellSize.x + u_mapSize.y * u_cellSize.y + u_mapSize.z * u_cellSize.z;
+        float clipDepth = 1.0 - rawDepth / maxRawDepth;
 
         gl_Position = vec4(clipSpace * vec2(1, -1), clipDepth, 1.0);
 
@@ -99,14 +97,11 @@ void main() {
         // Convert to clip space
         vec2 clipSpace = (viewPos / u_viewportSize) * 2.0 - 1.0;
 
-        // Calculate depth (cell-based, with bias)
-        vec3 cellGridPos = floor(u_spritePosition / u_cellSize);
-        float standingOnCellY = cellGridPos.y - 1.0;
-        float mapDepth = u_mapSize.z;
-        float maxGridSum = (u_mapSize.x - 1.0) + (u_mapSize.z - 1.0);
-        float zDepth = (cellGridPos.x + cellGridPos.z) * mapDepth + (standingOnCellY - 0.1) * 2.0;
-        float maxDepth = maxGridSum * mapDepth + (mapDepth - 1.0) * 2.0;
-        float clipDepth = 1.0 - (zDepth / maxDepth);
+        // Same depth formula as cells, with +1.0 bias so sprite renders
+        // just in front of the cell surface at its position.
+        float rawDepth = u_spritePosition.x + u_spritePosition.y + u_spritePosition.z + 1.0;
+        float maxRawDepth = u_mapSize.x * u_cellSize.x + u_mapSize.y * u_cellSize.y + u_mapSize.z * u_cellSize.z;
+        float clipDepth = 1.0 - rawDepth / maxRawDepth;
 
         gl_Position = vec4(clipSpace * vec2(1, -1), clipDepth, 1.0);
         v_uv = a_uv;

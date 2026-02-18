@@ -21,6 +21,12 @@ uniform bool u_hasEmission;
 uniform vec4 u_tint;
 uniform float u_opacity;
 
+    // Occlusion mask uniforms (sprite mode — samples cell FBO depth texture)
+uniform sampler2D u_depthTexture;
+uniform vec2 u_fboUvScale;
+uniform vec2 u_fboUvOffset;
+uniform vec2 u_screenSize;
+
     // Varying inputs (shared)
 varying vec2 v_uv;
 varying vec3 v_normal;
@@ -113,6 +119,13 @@ void main() {
 
         // Discard fully transparent pixels early
         if(albedo.a < 0.01)
+            discard;
+
+        // Occlusion test: discard sprite fragments behind cells
+        vec2 screenUV = gl_FragCoord.xy / u_screenSize;
+        vec2 fboUV = screenUV * u_fboUvScale + u_fboUvOffset;
+        float cellDepth = texture2D(u_depthTexture, fboUV).r;
+        if(cellDepth < gl_FragCoord.z)
             discard;
 
         // Normal mapping for sprites (if available)

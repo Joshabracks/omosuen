@@ -185,12 +185,12 @@ export async function init(component: ComponentData): Promise<void> {
 
   // 4. Create framebuffer for pixel-perfect post-processing
   // Determine base resolution based on current zoom level and pixel scale
-  const baseWidth = Math.floor(
-    viewport.width / (camera.zoom * camera.pixelScale),
-  );
-  const baseHeight = Math.floor(
-    viewport.height / (camera.zoom * camera.pixelScale),
-  );
+  // Add 2 pixels of overscan per dimension (1-pixel border on each side)
+  // so the post-process UV offset has room to slide without exceeding texture bounds
+  const baseWidth =
+    Math.floor(viewport.width / (camera.zoom * camera.pixelScale)) + 2;
+  const baseHeight =
+    Math.floor(viewport.height / (camera.zoom * camera.pixelScale)) + 2;
 
   camera.glResources.baseResolution = {
     width: baseWidth,

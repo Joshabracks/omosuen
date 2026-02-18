@@ -68,12 +68,11 @@ function updateFramebufferForZoom(camera: CameraT): void {
   const gl = viewport.gl;
 
   // Recalculate base resolution based on new zoom and pixel scale
-  const baseWidth = Math.floor(
-    viewport.width / (camera.zoom * camera.pixelScale),
-  );
-  const baseHeight = Math.floor(
-    viewport.height / (camera.zoom * camera.pixelScale),
-  );
+  // Add 2 pixels of overscan per dimension (1-pixel border on each side)
+  const baseWidth =
+    Math.floor(viewport.width / (camera.zoom * camera.pixelScale)) + 2;
+  const baseHeight =
+    Math.floor(viewport.height / (camera.zoom * camera.pixelScale)) + 2;
 
   camera.glResources.baseResolution.width = baseWidth;
   camera.glResources.baseResolution.height = baseHeight;

@@ -7,6 +7,29 @@ import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 
 /**
+ * Snaps camera position to FBO pixel boundaries so the pixel grid
+ * is locked to world space instead of screen space during panning.
+ */
+export function snapCameraPosition(
+  camX: number,
+  camY: number,
+  pixelScale: number,
+  zoom: number,
+): { x: number; y: number; remainderX: number; remainderY: number } {
+  if (pixelScale <= 1)
+    return { x: camX, y: camY, remainderX: 0, remainderY: 0 };
+  const snapSize = pixelScale / zoom;
+  const snappedX = Math.floor(camX / snapSize) * snapSize;
+  const snappedY = Math.floor(camY / snapSize) * snapSize;
+  return {
+    x: snappedX,
+    y: snappedY,
+    remainderX: camX - snappedX,
+    remainderY: camY - snappedY,
+  };
+}
+
+/**
  * Renders the offscreen framebuffer to the canvas with pixel-perfect upscaling.
  * This creates the retro pixel-art zoom effect.
  *
@@ -18,6 +41,7 @@ export function renderPostProcess(
   camera: CameraT,
   viewport: ViewportT,
   gl: WebGL2RenderingContext,
+  subPixelOffset?: { remainderX: number; remainderY: number },
 ): void {
   // Bind default framebuffer (screen)
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -25,8 +49,13 @@ export function renderPostProcess(
   // Reset viewport to full canvas size
   gl.viewport(0, 0, viewport.width, viewport.height);
 
-  // Clear screen
-  gl.clearColor(0, 0, 0, 1);
+  // Clear screen with viewport background color so edge gaps blend seamlessly
+  gl.clearColor(
+    viewport.backgroundColor.x,
+    viewport.backgroundColor.y,
+    viewport.backgroundColor.z,
+    viewport.backgroundColor.w,
+  );
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
   // Use post-process shader
@@ -43,6 +72,40 @@ export function renderPostProcess(
   gl.bindTexture(gl.TEXTURE_2D, camera.glResources.renderTexture);
   const uRenderTexture = gl.getUniformLocation(postProgram, 'u_renderTexture');
   gl.uniform1i(uRenderTexture, 0);
+
+  // Set UV scale and offset for world-locked pixelation with FBO overscan.
+  // The FBO is 2 pixels larger per dimension. The padding is ASYMMETRIC:
+  // - X: camera is at left edge (UV=0), +2 padding on RIGHT
+  // - Y: camera is at top edge (UV=1 due to Y-flip), +2 padding on BOTTOM (UV=0 side)
+  // u_uvScale maps the fullscreen quad to the unpadded viewport region.
+  // u_uvOffset slides the sampling into the right/bottom padding as needed.
+  const uUvScale = gl.getUniformLocation(postProgram, 'u_uvScale');
+  const uUvOffset = gl.getUniformLocation(postProgram, 'u_uvOffset');
+
+  const fboWidth = camera.glResources.baseResolution.width; // padded
+  const fboHeight = camera.glResources.baseResolution.height; // padded
+  const unpaddedWidth = fboWidth - 2;
+  const unpaddedHeight = fboHeight - 2;
+
+  // UV scale: map [0,1] quad UV to the unpadded viewport region
+  gl.uniform2f(uUvScale, unpaddedWidth / fboWidth, unpaddedHeight / fboHeight);
+
+  if (subPixelOffset && camera.pixelScale > 1) {
+    const fboOffsetX =
+      (subPixelOffset.remainderX * camera.zoom) / camera.pixelScale;
+    const fboOffsetY =
+      (subPixelOffset.remainderY * camera.zoom) / camera.pixelScale;
+    // X: no border on left (camera edge), offset slides right into right padding
+    // Y: skip 2-pixel bottom border, offset slides down into bottom padding
+    gl.uniform2f(
+      uUvOffset,
+      fboOffsetX / fboWidth,
+      (2 - fboOffsetY) / fboHeight,
+    );
+  } else {
+    // No offset; X starts at 0 (camera edge), Y skips 2-pixel bottom border
+    gl.uniform2f(uUvOffset, 0, 2 / fboHeight);
+  }
 
   // Bind fullscreen quad buffer
   gl.bindBuffer(gl.ARRAY_BUFFER, camera.glResources.fullscreenQuadBuffer);
@@ -156,16 +219,21 @@ export function renderCellMaps(
   const u_hasNormal = gl.getUniformLocation(program, 'u_hasNormal');
 
   // Set constant uniforms (same for all cells)
-  // Use logical resolution (viewport / zoom) for shader coordinate space.
-  // pixelScale only affects the physical FBO size — not the coordinate system.
-  const logicalWidth = viewport.width / camera.zoom;
-  const logicalHeight = viewport.height / camera.zoom;
+  // Use the padded FBO logical size so the coordinate system matches the overscan FBO.
+  const logicalWidth = camera.glResources.baseResolution.width * camera.pixelScale;
+  const logicalHeight =
+    camera.glResources.baseResolution.height * camera.pixelScale;
   gl.uniform2f(u_viewportSize, logicalWidth, logicalHeight);
-  gl.uniform2f(
-    u_cameraPosition,
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  const u_pixelScale = gl.getUniformLocation(program, 'u_pixelScale');
+  gl.uniform1f(u_pixelScale, camera.pixelScale);
+  const snapped = snapCameraPosition(
     cameraTransform.position.x,
     cameraTransform.position.y,
+    camera.pixelScale,
+    camera.zoom,
   );
+  gl.uniform2f(u_cameraPosition, snapped.x, snapped.y);
   gl.uniform1f(u_zoom, camera.zoom);
 
   // Bind cube geometry buffers (shared for all cells)

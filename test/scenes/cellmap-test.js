@@ -464,7 +464,7 @@ export async function createScene() {
         viewportRef: 'CellMap Viewport',
         zoom: 0.5, // Zoom out to see full 20x20 plane
         axonometricAngle: 30, // 30-degree isometric projection
-        pixelScale: 2,
+        pixelScale: 8,
     }, cameraNexus)
 
     console.log('[CellMap Test] Camera created');

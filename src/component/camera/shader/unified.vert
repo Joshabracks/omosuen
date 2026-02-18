@@ -9,6 +9,7 @@ uniform lowp int u_renderMode;  // 0 = cells, 1 = sprites
 uniform vec2 u_viewportSize;
 uniform vec2 u_cameraPosition;
 uniform float u_zoom;
+uniform float u_pixelScale;
 uniform vec3 u_cellSize;   // Used by both for grid calculations
 uniform vec3 u_mapSize;    // Used by both for depth calculations
 
@@ -47,7 +48,7 @@ void main() {
         vec2 isoPos = (isoProjected - u_cameraPosition) * u_zoom;
 
         // Pixel snapping
-        vec2 pixelPos = floor(isoPos + 0.5);
+        vec2 pixelPos = floor(isoPos / u_pixelScale + 0.5) * u_pixelScale;
         v_screenPos = pixelPos;
 
         // Convert to clip space

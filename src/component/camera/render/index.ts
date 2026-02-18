@@ -6,7 +6,7 @@ import { getProxiedComponent } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { Camera } from '../methods';
-import { renderCellMaps, renderPostProcess } from './utils';
+import { renderCellMaps, renderPostProcess, snapCameraPosition } from './utils';
 
 /**
  * Renders the scene from the camera's perspective.
@@ -90,10 +90,22 @@ export function render(camera: CameraT, _deltaTime: number): void {
   gl.clearDepth(1.0); // Ensure depth buffer clears to far plane
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
+  // Compute camera snap for world-locked pixelation
+  const cameraSnap = snapCameraPosition(
+    transform.position.x,
+    transform.position.y,
+    camera.pixelScale,
+    camera.zoom,
+  );
+  const subPixelOffset = {
+    remainderX: cameraSnap.remainderX,
+    remainderY: cameraSnap.remainderY,
+  };
+
   // Early return if nothing to render
   if (sprites.length === 0 && cellMaps.length === 0) {
     // Still need to display the empty framebuffer
-    renderPostProcess(camera, viewport, gl);
+    renderPostProcess(camera, viewport, gl, subPixelOffset);
     return;
   }
 
@@ -129,7 +141,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
   }
 
   // PHASE 2: Post-process cells to screen with pixel-perfect upscaling
-  renderPostProcess(camera, viewport, gl);
+  renderPostProcess(camera, viewport, gl, subPixelOffset);
 
   // PHASE 3: Render sprites directly to screen at full resolution (no pixelation)
   if (sprites.length > 0) {
@@ -241,8 +253,8 @@ export function render(camera: CameraT, _deltaTime: number): void {
       );
 
       // Set constant uniforms (same for all sprites)
-      // Sprites must use the same logical coordinate system as cells.
-      // pixelScale only affects the physical FBO size — not the coordinate system.
+      // Sprites render at full resolution to screen (not via FBO), so they use
+      // the raw camera position for smooth movement instead of the snapped position.
       gl.uniform2f(
         u_viewportSize,
         viewport.width / camera.zoom,

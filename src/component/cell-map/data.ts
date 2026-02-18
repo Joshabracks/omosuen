@@ -69,6 +69,12 @@ export interface CellMapOptions extends ComponentOptions {
    * - Array3D<number>: per-cell weights, stored as Array3Di(bitWidth:8, packing:[4,4], overflow:clamp)
    */
   smoothingWeights?: number | Array3D<number>;
+
+  /**
+   * Normal smoothing weight (0-1). 0 = flat per-face normals (default),
+   * 1 = fully averaged per-vertex normals, values in between lerp.
+   */
+  normalSmoothing?: number;
 }
 
 export interface CellMapT extends ComponentData {
@@ -94,6 +100,7 @@ export interface CellMapT extends ComponentData {
   // Smoothing
   smoothing: number;
   smoothingWeights: Array3Di;
+  normalSmoothing: number;
 
   // GPU sync
   needsGPUUpdate: boolean;
@@ -173,6 +180,7 @@ export const PROPERTY_ALLOWLIST = [
   'chunkGridSize',
   'smoothing',
   'smoothingWeights',
+  'normalSmoothing',
 ];
 
 /**
@@ -293,6 +301,10 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
 
   // Smoothing configuration
   const smoothing = options.smoothing ?? 0;
+  const normalSmoothing = Math.max(
+    0,
+    Math.min(1, options.normalSmoothing ?? 0),
+  );
 
   let weightsArray3D: Array3D<number>;
   const rawWeight = options.smoothingWeights ?? 8;
@@ -354,6 +366,7 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     packedData,
     smoothing,
     smoothingWeights,
+    normalSmoothing,
     needsGPUUpdate: true,
     chunks,
     chunkGridSize,

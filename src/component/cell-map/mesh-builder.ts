@@ -584,44 +584,46 @@ function buildSmoothedChunkMesh(
     }
   }
 
-  // ── Phase 4: Recompute per-vertex normals from smoothed face geometry ──
+  // ── Phase 4: Recompute normals from smoothed face geometry ──
 
-  const vertexNormals: [number, number, number][] = uniquePositions.map(
-    () => [0, 0, 0] as [number, number, number],
-  );
+  // Smooth normals: accumulate face normals into shared per-vertex normals
+  const normalSmoothing = cellMap.normalSmoothing;
+  let vertexNormals: [number, number, number][] | null = null;
+  if (normalSmoothing > 0) {
+    vertexNormals = uniquePositions.map(
+      () => [0, 0, 0] as [number, number, number],
+    );
 
-  for (const face of faces) {
-    const indices = face.vertexKeys.map((k) => vertexKeyToIndex.get(k)!);
-    const p0 = uniquePositions[indices[0]];
-    const p1 = uniquePositions[indices[1]];
-    const p2 = uniquePositions[indices[2]];
+    for (const face of faces) {
+      const indices = face.vertexKeys.map((k) => vertexKeyToIndex.get(k)!);
+      const p0 = uniquePositions[indices[0]];
+      const p1 = uniquePositions[indices[1]];
+      const p2 = uniquePositions[indices[2]];
 
-    // Cross product of two edges for face normal
-    const e1x = p1[0] - p0[0],
-      e1y = p1[1] - p0[1],
-      e1z = p1[2] - p0[2];
-    const e2x = p2[0] - p0[0],
-      e2y = p2[1] - p0[1],
-      e2z = p2[2] - p0[2];
-    const fnx = e1y * e2z - e1z * e2y;
-    const fny = e1z * e2x - e1x * e2z;
-    const fnz = e1x * e2y - e1y * e2x;
+      const e1x = p1[0] - p0[0],
+        e1y = p1[1] - p0[1],
+        e1z = p1[2] - p0[2];
+      const e2x = p2[0] - p0[0],
+        e2y = p2[1] - p0[1],
+        e2z = p2[2] - p0[2];
+      const fnx = e1y * e2z - e1z * e2y;
+      const fny = e1z * e2x - e1x * e2z;
+      const fnz = e1x * e2y - e1y * e2x;
 
-    // Accumulate (area-weighted — cross product magnitude is 2× triangle area)
-    for (const idx of indices) {
-      vertexNormals[idx][0] += fnx;
-      vertexNormals[idx][1] += fny;
-      vertexNormals[idx][2] += fnz;
+      for (const idx of indices) {
+        vertexNormals[idx][0] += fnx;
+        vertexNormals[idx][1] += fny;
+        vertexNormals[idx][2] += fnz;
+      }
     }
-  }
 
-  // Normalize
-  for (const vn of vertexNormals) {
-    const len = Math.sqrt(vn[0] * vn[0] + vn[1] * vn[1] + vn[2] * vn[2]);
-    if (len > 0) {
-      vn[0] /= len;
-      vn[1] /= len;
-      vn[2] /= len;
+    for (const vn of vertexNormals) {
+      const len = Math.sqrt(vn[0] * vn[0] + vn[1] * vn[1] + vn[2] * vn[2]);
+      if (len > 0) {
+        vn[0] /= len;
+        vn[1] /= len;
+        vn[2] /= len;
+      }
     }
   }
 
@@ -650,10 +652,50 @@ function buildSmoothedChunkMesh(
     const vertexBase = vertexFloats.length / 6;
     const indices = face.vertexKeys.map((k) => vertexKeyToIndex.get(k)!);
 
+    // Compute flat face normal from smoothed geometry
+    const p0 = uniquePositions[indices[0]];
+    const p1 = uniquePositions[indices[1]];
+    const p2 = uniquePositions[indices[2]];
+    const e1x = p1[0] - p0[0],
+      e1y = p1[1] - p0[1],
+      e1z = p1[2] - p0[2];
+    const e2x = p2[0] - p0[0],
+      e2y = p2[1] - p0[1],
+      e2z = p2[2] - p0[2];
+    let fnx = e1y * e2z - e1z * e2y;
+    let fny = e1z * e2x - e1x * e2z;
+    let fnz = e1x * e2y - e1y * e2x;
+    const fLen = Math.sqrt(fnx * fnx + fny * fny + fnz * fnz);
+    if (fLen > 0) {
+      fnx /= fLen;
+      fny /= fLen;
+      fnz /= fLen;
+    }
+
     for (const idx of indices) {
       const pos = uniquePositions[idx];
-      const norm = vertexNormals[idx];
-      vertexFloats.push(pos[0], pos[1], pos[2], norm[0], norm[1], norm[2]);
+      if (!vertexNormals || normalSmoothing === 0) {
+        // Pure flat
+        vertexFloats.push(pos[0], pos[1], pos[2], fnx, fny, fnz);
+      } else if (normalSmoothing === 1) {
+        // Pure smooth
+        const sn = vertexNormals[idx];
+        vertexFloats.push(pos[0], pos[1], pos[2], sn[0], sn[1], sn[2]);
+      } else {
+        // Lerp between flat and smooth
+        const sn = vertexNormals[idx];
+        const t = normalSmoothing;
+        let nx = fnx + (sn[0] - fnx) * t;
+        let ny = fny + (sn[1] - fny) * t;
+        let nz = fnz + (sn[2] - fnz) * t;
+        const nLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        if (nLen > 0) {
+          nx /= nLen;
+          ny /= nLen;
+          nz /= nLen;
+        }
+        vertexFloats.push(pos[0], pos[1], pos[2], nx, ny, nz);
+      }
     }
 
     // Two CCW triangles: 0-1-2, 0-2-3

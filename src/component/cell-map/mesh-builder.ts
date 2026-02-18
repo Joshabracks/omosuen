@@ -373,13 +373,15 @@ function buildSmoothedChunkMesh(
   const chunkEndY = Math.min(chunkStartY + CHUNK_SIZE, mapSizeY);
   const chunkEndZ = Math.min(chunkStartZ + CHUNK_SIZE, mapSizeZ);
 
-  // Expanded range with 1-cell overlap for seamless chunk borders
-  const overlapStartX = Math.max(0, chunkStartX - 1);
-  const overlapStartY = Math.max(0, chunkStartY - 1);
-  const overlapStartZ = Math.max(0, chunkStartZ - 1);
-  const overlapEndX = Math.min(mapSizeX, chunkEndX + 1);
-  const overlapEndY = Math.min(mapSizeY, chunkEndY + 1);
-  const overlapEndZ = Math.min(mapSizeZ, chunkEndZ + 1);
+  // Overlap must cover the smoothing influence radius so adjacent chunks
+  // compute identical positions for shared boundary vertices.
+  const overlap = Math.min(cellMap.smoothing, CHUNK_SIZE);
+  const overlapStartX = Math.max(0, chunkStartX - overlap);
+  const overlapStartY = Math.max(0, chunkStartY - overlap);
+  const overlapStartZ = Math.max(0, chunkStartZ - overlap);
+  const overlapEndX = Math.min(mapSizeX, chunkEndX + overlap);
+  const overlapEndY = Math.min(mapSizeY, chunkEndY + overlap);
+  const overlapEndZ = Math.min(mapSizeZ, chunkEndZ + overlap);
 
   const strideY = mapSizeX;
   const strideZ = mapSizeX * mapSizeY;

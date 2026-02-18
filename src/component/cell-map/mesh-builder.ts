@@ -112,12 +112,18 @@ const FACE_CONFIGS: FaceConfig[] = [
 /**
  * Builds the mesh for a single chunk with hidden face culling and greedy meshing.
  * Indices are grouped by material for efficient multi-material rendering.
+ * When smoothing > 0, delegates to buildSmoothedChunkMesh instead.
  */
 function buildChunkMesh(
   cellMap: CellMapT,
   chunk: ChunkMesh,
   expanded: Array3D<number>,
+  expandedWeights: Array3D<number> | null,
 ): void {
+  if (cellMap.smoothing > 0 && expandedWeights) {
+    buildSmoothedChunkMesh(cellMap, chunk, expanded, expandedWeights);
+    return;
+  }
   const { cx, cy, cz } = chunk;
   const mapSizeX = cellMap.mapSize.x;
   const mapSizeY = cellMap.mapSize.y;
@@ -337,6 +343,340 @@ function buildChunkMesh(
 }
 
 /**
+ * Builds a smoothed chunk mesh using Laplacian relaxation (surface-net style).
+ * Skips greedy meshing — emits individual quads with smoothed vertex positions
+ * and smooth per-vertex normals.
+ *
+ * Includes a 1-cell overlap zone beyond chunk boundaries so vertices on chunk
+ * edges have correct adjacency from neighboring cells (seamless chunk borders).
+ */
+function buildSmoothedChunkMesh(
+  cellMap: CellMapT,
+  chunk: ChunkMesh,
+  expanded: Array3D<number>,
+  expandedWeights: Array3D<number>,
+): void {
+  const { cx, cy, cz } = chunk;
+  const mapSizeX = cellMap.mapSize.x;
+  const mapSizeY = cellMap.mapSize.y;
+  const mapSizeZ = cellMap.mapSize.z;
+  const cellSizeX = cellMap.cellSize.x;
+  const cellSizeY = cellMap.cellSize.y;
+  const cellSizeZ = cellMap.cellSize.z;
+  const cellSizes = [cellSizeX, cellSizeY, cellSizeZ];
+
+  // Chunk cell range (actual chunk bounds)
+  const chunkStartX = cx * CHUNK_SIZE;
+  const chunkStartY = cy * CHUNK_SIZE;
+  const chunkStartZ = cz * CHUNK_SIZE;
+  const chunkEndX = Math.min(chunkStartX + CHUNK_SIZE, mapSizeX);
+  const chunkEndY = Math.min(chunkStartY + CHUNK_SIZE, mapSizeY);
+  const chunkEndZ = Math.min(chunkStartZ + CHUNK_SIZE, mapSizeZ);
+
+  // Expanded range with 1-cell overlap for seamless chunk borders
+  const overlapStartX = Math.max(0, chunkStartX - 1);
+  const overlapStartY = Math.max(0, chunkStartY - 1);
+  const overlapStartZ = Math.max(0, chunkStartZ - 1);
+  const overlapEndX = Math.min(mapSizeX, chunkEndX + 1);
+  const overlapEndY = Math.min(mapSizeY, chunkEndY + 1);
+  const overlapEndZ = Math.min(mapSizeZ, chunkEndZ + 1);
+
+  const strideY = mapSizeX;
+  const strideZ = mapSizeX * mapSizeY;
+
+  // ── Phase 1: Collect visible faces (individual quads, no greedy merging) ──
+
+  interface FaceRecord {
+    vertexKeys: string[]; // 4 position keys
+    materialIndex: number;
+    normal: [number, number, number];
+    isInterior: boolean; // true if face cell is inside chunk bounds
+  }
+
+  const faces: FaceRecord[] = [];
+
+  // Vertex dedup map: posKey → index into uniqueVertices
+  const vertexKeyToIndex = new Map<string, number>();
+  const uniquePositions: [number, number, number][] = [];
+  const originalPositions: [number, number, number][] = [];
+  const vertexWeightSums: number[] = [];
+  const vertexWeightCounts: number[] = [];
+  const adjacency: Set<number>[] = [];
+
+  function getOrCreateVertex(
+    px: number,
+    py: number,
+    pz: number,
+  ): [string, number] {
+    const key = `${px},${py},${pz}`;
+    let idx = vertexKeyToIndex.get(key);
+    if (idx === undefined) {
+      idx = uniquePositions.length;
+      vertexKeyToIndex.set(key, idx);
+      uniquePositions.push([px, py, pz]);
+      originalPositions.push([px, py, pz]);
+      vertexWeightSums.push(0);
+      vertexWeightCounts.push(0);
+      adjacency.push(new Set());
+    }
+    return [key, idx];
+  }
+
+  // Scan the overlap zone for visible faces
+  for (let z = overlapStartZ; z < overlapEndZ; z++) {
+    for (let y = overlapStartY; y < overlapEndY; y++) {
+      for (let x = overlapStartX; x < overlapEndX; x++) {
+        const cellIndex = z * strideZ + y * strideY + x;
+        const packed = expanded.value[cellIndex];
+        const cell = unpackCell(packed);
+
+        if (!cell.visible || cell.shapeIndex === 0) continue;
+
+        // Get this cell's smoothing weight (0-15)
+        const cellWeight = expandedWeights.value[cellIndex];
+
+        const isInterior =
+          x >= chunkStartX &&
+          x < chunkEndX &&
+          y >= chunkStartY &&
+          y < chunkEndY &&
+          z >= chunkStartZ &&
+          z < chunkEndZ;
+
+        // Check each face direction
+        for (let faceDir = 0; faceDir < 6; faceDir++) {
+          const dir = FACE_DIRS[faceDir];
+          const config = FACE_CONFIGS[faceDir];
+          const { uAxis, vAxis, nAxis } = config;
+
+          const neighborX = x + dir.dx;
+          const neighborY = y + dir.dy;
+          const neighborZ = z + dir.dz;
+
+          // Face visible if neighbor is out of bounds or non-solid
+          let neighborSolid = false;
+          if (
+            neighborX >= 0 &&
+            neighborX < mapSizeX &&
+            neighborY >= 0 &&
+            neighborY < mapSizeY &&
+            neighborZ >= 0 &&
+            neighborZ < mapSizeZ
+          ) {
+            const neighborPacked =
+              expanded.value[
+                neighborZ * strideZ + neighborY * strideY + neighborX
+              ];
+            const neighbor = unpackCell(neighborPacked);
+            neighborSolid = neighbor.visible && neighbor.shapeIndex !== 0;
+          }
+
+          if (neighborSolid) continue;
+
+          // Emit individual quad (no greedy merging)
+          const baseCoords = [x, y, z];
+          const vertexKeys: string[] = [];
+          const vertexIndices: number[] = [];
+
+          for (const [du, dv, dn] of config.quadVertices) {
+            const pos: [number, number, number] = [0, 0, 0];
+            pos[uAxis] = (baseCoords[uAxis] + du) * cellSizes[uAxis];
+            pos[vAxis] = (baseCoords[vAxis] + dv) * cellSizes[vAxis];
+            pos[nAxis] = (baseCoords[nAxis] + dn) * cellSizes[nAxis];
+            const [key, idx] = getOrCreateVertex(pos[0], pos[1], pos[2]);
+            vertexKeys.push(key);
+            vertexIndices.push(idx);
+
+            // Accumulate weight from this cell to the vertex
+            vertexWeightSums[idx] += cellWeight;
+            vertexWeightCounts[idx]++;
+          }
+
+          // Build adjacency from face edges: v0↔v1, v1↔v2, v2↔v3, v3↔v0
+          for (let e = 0; e < 4; e++) {
+            const a = vertexIndices[e];
+            const b = vertexIndices[(e + 1) % 4];
+            adjacency[a].add(b);
+            adjacency[b].add(a);
+          }
+
+          faces.push({
+            vertexKeys,
+            materialIndex: cell.materialIndex,
+            normal: [dir.nx, dir.ny, dir.nz],
+            isInterior,
+          });
+        }
+      }
+    }
+  }
+
+  // ── Phase 2: Compute per-vertex weights (average of contributing cells) ──
+
+  const vertexWeights: number[] = new Array(uniquePositions.length);
+  for (let i = 0; i < uniquePositions.length; i++) {
+    const count = vertexWeightCounts[i];
+    const avg = count > 0 ? vertexWeightSums[i] / count : 0;
+    vertexWeights[i] = avg / 15.0; // Map 0-15 → 0.0-1.0
+  }
+
+  // ── Phase 3: Iterative Laplacian smoothing ──
+
+  const lambda = 0.5;
+  const halfCellX = cellSizeX * 0.5;
+  const halfCellY = cellSizeY * 0.5;
+  const halfCellZ = cellSizeZ * 0.5;
+  const newPositions: [number, number, number][] = uniquePositions.map(
+    (p) => [p[0], p[1], p[2]] as [number, number, number],
+  );
+
+  for (let iter = 0; iter < cellMap.smoothing; iter++) {
+    for (let i = 0; i < uniquePositions.length; i++) {
+      const w = vertexWeights[i];
+      const neighbors = adjacency[i];
+      if (w === 0 || neighbors.size === 0) {
+        newPositions[i][0] = uniquePositions[i][0];
+        newPositions[i][1] = uniquePositions[i][1];
+        newPositions[i][2] = uniquePositions[i][2];
+        continue;
+      }
+
+      // Average neighbor positions
+      let avgX = 0,
+        avgY = 0,
+        avgZ = 0;
+      for (const ni of neighbors) {
+        avgX += uniquePositions[ni][0];
+        avgY += uniquePositions[ni][1];
+        avgZ += uniquePositions[ni][2];
+      }
+      const count = neighbors.size;
+      avgX /= count;
+      avgY /= count;
+      avgZ /= count;
+
+      // Lerp toward average
+      const t = w * lambda;
+      let nx = uniquePositions[i][0] + (avgX - uniquePositions[i][0]) * t;
+      let ny = uniquePositions[i][1] + (avgY - uniquePositions[i][1]) * t;
+      let nz = uniquePositions[i][2] + (avgZ - uniquePositions[i][2]) * t;
+
+      // Constrain: clamp to ±halfCell of original position
+      const ox = originalPositions[i][0];
+      const oy = originalPositions[i][1];
+      const oz = originalPositions[i][2];
+      nx = Math.max(ox - halfCellX, Math.min(ox + halfCellX, nx));
+      ny = Math.max(oy - halfCellY, Math.min(oy + halfCellY, ny));
+      nz = Math.max(oz - halfCellZ, Math.min(oz + halfCellZ, nz));
+
+      newPositions[i][0] = nx;
+      newPositions[i][1] = ny;
+      newPositions[i][2] = nz;
+    }
+
+    // Swap: copy newPositions into uniquePositions for next iteration
+    for (let i = 0; i < uniquePositions.length; i++) {
+      uniquePositions[i][0] = newPositions[i][0];
+      uniquePositions[i][1] = newPositions[i][1];
+      uniquePositions[i][2] = newPositions[i][2];
+    }
+  }
+
+  // ── Phase 4: Recompute per-vertex normals from smoothed face geometry ──
+
+  const vertexNormals: [number, number, number][] = uniquePositions.map(
+    () => [0, 0, 0] as [number, number, number],
+  );
+
+  for (const face of faces) {
+    const indices = face.vertexKeys.map((k) => vertexKeyToIndex.get(k)!);
+    const p0 = uniquePositions[indices[0]];
+    const p1 = uniquePositions[indices[1]];
+    const p2 = uniquePositions[indices[2]];
+
+    // Cross product of two edges for face normal
+    const e1x = p1[0] - p0[0],
+      e1y = p1[1] - p0[1],
+      e1z = p1[2] - p0[2];
+    const e2x = p2[0] - p0[0],
+      e2y = p2[1] - p0[1],
+      e2z = p2[2] - p0[2];
+    const fnx = e1y * e2z - e1z * e2y;
+    const fny = e1z * e2x - e1x * e2z;
+    const fnz = e1x * e2y - e1y * e2x;
+
+    // Accumulate (area-weighted — cross product magnitude is 2× triangle area)
+    for (const idx of indices) {
+      vertexNormals[idx][0] += fnx;
+      vertexNormals[idx][1] += fny;
+      vertexNormals[idx][2] += fnz;
+    }
+  }
+
+  // Normalize
+  for (const vn of vertexNormals) {
+    const len = Math.sqrt(vn[0] * vn[0] + vn[1] * vn[1] + vn[2] * vn[2]);
+    if (len > 0) {
+      vn[0] /= len;
+      vn[1] /= len;
+      vn[2] /= len;
+    }
+  }
+
+  // ── Phase 5: Emit mesh data (interior faces only) ──
+
+  const interiorFaces = faces.filter((f) => f.isInterior);
+  interiorFaces.sort((a, b) => a.materialIndex - b.materialIndex);
+
+  const vertexFloats: number[] = [];
+  const indexInts: number[] = [];
+  const ranges: DrawRange[] = [];
+  let currentMaterial = -1;
+  let currentRange: DrawRange | null = null;
+
+  for (const face of interiorFaces) {
+    if (face.materialIndex !== currentMaterial) {
+      currentMaterial = face.materialIndex;
+      currentRange = {
+        materialIndex: currentMaterial,
+        indexOffset: indexInts.length,
+        indexCount: 0,
+      };
+      ranges.push(currentRange);
+    }
+
+    const vertexBase = vertexFloats.length / 6;
+    const indices = face.vertexKeys.map((k) => vertexKeyToIndex.get(k)!);
+
+    for (const idx of indices) {
+      const pos = uniquePositions[idx];
+      const norm = vertexNormals[idx];
+      vertexFloats.push(pos[0], pos[1], pos[2], norm[0], norm[1], norm[2]);
+    }
+
+    // Two CCW triangles: 0-1-2, 0-2-3
+    indexInts.push(
+      vertexBase,
+      vertexBase + 1,
+      vertexBase + 2,
+      vertexBase,
+      vertexBase + 2,
+      vertexBase + 3,
+    );
+
+    currentRange!.indexCount += 6;
+  }
+
+  // Update chunk
+  chunk.vertices =
+    vertexFloats.length > 0 ? new Float32Array(vertexFloats) : null;
+  chunk.indices = indexInts.length > 0 ? new Uint32Array(indexInts) : null;
+  chunk.drawRanges = ranges;
+  chunk.faceCount = interiorFaces.length;
+  chunk.dirty = false;
+}
+
+/**
  * Rebuilds all dirty chunks in a cell map.
  * Call this before rendering when any chunks are dirty.
  */
@@ -346,10 +686,12 @@ export function rebuildDirtyChunks(cellMap: CellMapT): void {
 
   // Expand packed data once for O(1) random access during mesh building
   const expanded = cellMap.packedData.expand();
+  const expandedWeights =
+    cellMap.smoothing > 0 ? cellMap.smoothingWeights.expand() : null;
 
   for (const chunk of cellMap.chunks) {
     if (!chunk.dirty) continue;
-    buildChunkMesh(cellMap, chunk, expanded);
+    buildChunkMesh(cellMap, chunk, expanded, expandedWeights);
   }
 }
 

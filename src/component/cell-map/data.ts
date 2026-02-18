@@ -1,5 +1,5 @@
 import { ComponentData, ComponentOptions } from '../types';
-import { Array3D, Array3Dc, Vector3D } from '../../math';
+import { Array3D, Array3Dc, Array3Di, Vector3D } from '../../math';
 import {
   Material,
   Mesh,
@@ -57,6 +57,18 @@ export interface CellMapOptions extends ComponentOptions {
    * Dimensions of the map in cells (width, depth, height)
    */
   mapSize: Vector3D;
+
+  /**
+   * Number of surface-net smoothing iterations (0 or less = no smoothing)
+   */
+  smoothing?: number;
+
+  /**
+   * Per-cell smoothing weights (0-15, mapped to 0.0-1.0 internally).
+   * - number: uniform weight for all cells (default 8)
+   * - Array3D<number>: per-cell weights, stored as Array3Di(bitWidth:8, packing:[4,4], overflow:clamp)
+   */
+  smoothingWeights?: number | Array3D<number>;
 }
 
 export interface CellMapT extends ComponentData {
@@ -78,6 +90,10 @@ export interface CellMapT extends ComponentData {
 
   // Compressed storage
   packedData: Array3Dc<number>;
+
+  // Smoothing
+  smoothing: number;
+  smoothingWeights: Array3Di;
 
   // GPU sync
   needsGPUUpdate: boolean;
@@ -155,6 +171,8 @@ export const PROPERTY_ALLOWLIST = [
   'needsGPUUpdate',
   'chunks',
   'chunkGridSize',
+  'smoothing',
+  'smoothingWeights',
 ];
 
 /**
@@ -273,6 +291,26 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   // Note: Array3Dic uses generic T, not bit-packed integers like Array3Di
   const packedData = new Array3Dc(packedArray, 0.05); // 5% dirty threshold
 
+  // Smoothing configuration
+  const smoothing = options.smoothing ?? 0;
+
+  let weightsArray3D: Array3D<number>;
+  const rawWeight = options.smoothingWeights ?? 8;
+  if (typeof rawWeight === 'number') {
+    const clamped = Math.max(0, Math.min(15, Math.round(rawWeight)));
+    weightsArray3D = new Array3D<number>(mapSize, clamped);
+  } else {
+    if (
+      rawWeight.size.x !== mapSize.x ||
+      rawWeight.size.y !== mapSize.y ||
+      rawWeight.size.z !== mapSize.z
+    ) {
+      throw new Error('smoothingWeights dimensions must match mapSize');
+    }
+    weightsArray3D = rawWeight;
+  }
+  const smoothingWeights = new Array3Di(weightsArray3D, 8, [4, 4], 'clamp');
+
   // Calculate chunk grid dimensions
   const chunkGridSize = {
     x: Math.ceil(mapSize.x / CHUNK_SIZE),
@@ -314,6 +352,8 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     cellSize,
     mapSize,
     packedData,
+    smoothing,
+    smoothingWeights,
     needsGPUUpdate: true,
     chunks,
     chunkGridSize,

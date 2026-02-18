@@ -621,6 +621,7 @@ export async function createScene() {
         shapeMap: shapeMap, // Explicitly provide shapeMap (0 = air, 1 = solid cube)
         cellSize: new Omosuen.Vector3D(CELL_WIDTH, CELL_HEIGHT, CELL_DEPTH),
         mapSize: new Omosuen.Vector3D(MAP_WIDTH, MAP_HEIGHT, MAP_DEPTH),
+        smoothing: 10
         // emissionMap: default (no emission)
         // visibilityMap: default (all visible)
     }, scene);

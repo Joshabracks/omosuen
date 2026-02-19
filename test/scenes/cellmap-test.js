@@ -464,7 +464,7 @@ export async function createScene() {
         viewportRef: 'CellMap Viewport',
         zoom: 0.5, // Zoom out to see full 20x20 plane
         axonometricAngle: 30, // 30-degree isometric projection
-        pixelScale: 2.25,
+        pixelScale: 8,
     }, cameraNexus)
 
     console.log('[CellMap Test] Camera created');
@@ -511,12 +511,21 @@ export async function createScene() {
             camera.pan(deltaX * -PAN_SENSITIVITY / zoom, deltaY * -PAN_SENSITIVITY / zoom);
             updateCameraStatus();
         }],
-        // Mouse wheel: add to zoom velocity (applied each frame)
-        ['mouseWheel', (_event, deltaY) => {
+        // Mouse wheel: add to zoom velocity and set zoom target to cursor position
+        ['mouseWheel', (event, deltaY) => {
             // deltaY > 0 = scroll down = zoom out (negative velocity)
             // deltaY < 0 = scroll up = zoom in (positive velocity)
             zoomVelocity += -deltaY * ZOOM_ACCELERATION;
             scrollActive = true;
+
+            // Set zoom target to mouse position (viewport-local coordinates)
+            const viewport = Omosuen.getActiveScene().getComponentByName('CellMap Viewport', true);
+            if (viewport) {
+                camera.setZoomTarget(
+                    event.clientX - viewport.offsetX,
+                    event.clientY - viewport.offsetY,
+                );
+            }
         }]
     ];
     onActions.forEach((a) => inputController.onAction(...a))
@@ -573,7 +582,10 @@ export async function createScene() {
                 const decay = Math.sign(zoomVelocity) * ZOOM_ENTROPY * Math.abs(zoomVelocity) * dt;
                 zoomVelocity -= decay;
                 // Snap to zero to prevent infinite drift
-                if (Math.abs(zoomVelocity) < 0.0001) zoomVelocity = 0;
+                if (Math.abs(zoomVelocity) < 0.0001) {
+                    zoomVelocity = 0;
+                    camera.resetZoomTarget();
+                }
             }
         }
 
@@ -621,7 +633,7 @@ export async function createScene() {
         shapeMap: shapeMap, // Explicitly provide shapeMap (0 = air, 1 = solid cube)
         cellSize: new Omosuen.Vector3D(CELL_WIDTH, CELL_HEIGHT, CELL_DEPTH),
         mapSize: new Omosuen.Vector3D(MAP_WIDTH, MAP_HEIGHT, MAP_DEPTH),
-        smoothing: 10,
+        smoothing: 0,
         normalSmoothing: 0.75
         // emissionMap: default (no emission)
         // visibilityMap: default (all visible)

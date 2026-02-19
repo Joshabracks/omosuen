@@ -46,7 +46,7 @@ void main() {
         v_screenPos = isoPos;
 
         // Convert to clip space
-        vec2 clipSpace = (isoPos / u_viewportSize) * 2.0 - 1.0;
+        vec2 clipSpace = (isoPos / u_viewportSize) * 2.0;
 
         // Depth = projection onto isometric view direction (1,1,1).
         // Higher sum = closer to camera = lower depth buffer value.
@@ -95,7 +95,7 @@ void main() {
         vec2 viewPos = (anchoredPosition - u_cameraPosition) * u_zoom + scaledVertex;
 
         // Convert to clip space
-        vec2 clipSpace = (viewPos / u_viewportSize) * 2.0 - 1.0;
+        vec2 clipSpace = (viewPos / u_viewportSize) * 2.0;
 
         // Same depth formula as cells, with +1.0 bias so sprite renders
         // just in front of the cell surface at its position.

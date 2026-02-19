@@ -1,10 +1,13 @@
 import { NexusT } from '../../nexus';
+import { TransformT } from '../../transform';
 import { getProxiedComponent } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 
 /**
  * Sets the camera zoom level and updates framebuffer resolution.
+ * If camera.zoomTarget is set, adjusts the camera position so the world point
+ * under that screen coordinate stays fixed during the zoom change.
  *
  * @param camera - The camera component
  * @param zoom - New zoom level (1.0 = normal, 2.0 = 2x zoom, etc.)
@@ -15,10 +18,64 @@ export function setZoom(camera: CameraT, zoom: number): void {
     return;
   }
 
+  // Adjust camera position if zooming toward a non-center target
+  if (camera.zoomTarget && camera.parent && camera.parent.type === 'nexus') {
+    const parentNexus = getProxiedComponent(
+      camera.parent!,
+    ) as unknown as NexusT;
+    const sceneRoot = getProxiedComponent(
+      parentNexus.parent!,
+    ) as unknown as NexusT;
+
+    // @ts-expect-error - Proxy methods exist at runtime
+    const viewport = sceneRoot.getComponentByName(
+      camera.viewportRef,
+      true,
+    ) as ViewportT | null;
+
+    // @ts-expect-error - Proxy methods exist at runtime
+    const transform = parentNexus.getComponentByType(
+      'transform',
+      false,
+    ) as TransformT | null;
+
+    if (viewport && transform && camera.zoomTarget) {
+      const oldZoom = camera.zoom;
+      const offsetX = camera.zoomTarget.x - viewport.width / 2;
+      const offsetY = camera.zoomTarget.y - viewport.height / 2;
+      const factor = 1 / (oldZoom * oldZoom) - 1 / (zoom * zoom);
+
+      transform.position.x += offsetX * factor;
+      transform.position.y += offsetY * factor;
+    }
+  }
+
   camera.zoom = zoom;
 
   // Update framebuffer resolution based on new zoom
   updateFramebufferForZoom(camera);
+}
+
+/**
+ * Sets the zoom target to a specific viewport-local screen coordinate.
+ * Subsequent setZoom calls will zoom toward this point.
+ *
+ * @param camera - The camera component
+ * @param x - Viewport-local X coordinate (0 = left edge)
+ * @param y - Viewport-local Y coordinate (0 = top edge)
+ */
+export function setZoomTarget(camera: CameraT, x: number, y: number): void {
+  camera.zoomTarget = { x, y };
+}
+
+/**
+ * Resets the zoom target to the viewport center.
+ * Subsequent setZoom calls will zoom toward the center of the screen.
+ *
+ * @param camera - The camera component
+ */
+export function resetZoomTarget(camera: CameraT): void {
+  camera.zoomTarget = null;
 }
 
 /**

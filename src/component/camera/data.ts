@@ -44,6 +44,14 @@ export interface CameraT
   viewportRef: string;
 
   /**
+   * Zoom target in viewport-local coordinates.
+   * When set, setZoom adjusts the camera position so the world point
+   * under this screen coordinate stays fixed during zoom changes.
+   * null = viewport center (no camera position adjustment on zoom).
+   */
+  zoomTarget: { x: number; y: number } | null;
+
+  /**
    * WebGL rendering resources (shader programs, buffers, etc.)
    */
   glResources: {
@@ -107,6 +115,7 @@ export function builder(options: CameraOptions): CameraT {
     pixelScale: options.pixelScale ?? 2.0,
     axonometricAngle: options.axonometricAngle ?? 30,
     viewportRef: options.viewportRef,
+    zoomTarget: null,
 
     glResources: {
       unifiedProgram: null,
@@ -191,5 +200,6 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'pixelScale',
   'axonometricAngle',
   'viewportRef',
+  'zoomTarget',
   'glResources',
 ];

@@ -5,7 +5,7 @@ import { CellMapT } from '../cell-map/data';
 import { render } from './render';
 import { collectRenderables } from './collect-renderables';
 import { pan } from './pan';
-import { setZoom, setPixelScale } from './set';
+import { setZoom, setPixelScale, setZoomTarget, resetZoomTarget } from './set';
 import { init } from './init';
 import { dispose } from './dispose';
 
@@ -17,6 +17,8 @@ export interface CameraMethods extends ComponentMethods {
   };
   pan: (camera: CameraT, offsetX: number, offsetY: number) => void;
   setZoom: (camera: CameraT, zoom: number) => void;
+  setZoomTarget: (camera: CameraT, x: number, y: number) => void;
+  resetZoomTarget: (camera: CameraT) => void;
   setPixelScale: (camera: CameraT, pixelScale: number) => void;
   init: (component: ComponentData) => Promise<void>;
   dispose: (component: ComponentData) => void;
@@ -28,6 +30,8 @@ export const Camera: CameraMethods = {
   collectRenderables,
   pan,
   setZoom,
+  setZoomTarget,
+  resetZoomTarget,
   setPixelScale,
   init,
   dispose,

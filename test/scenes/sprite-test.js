@@ -321,7 +321,7 @@ function logDebugInfo(label) {
     if (cameraNexus) {
         const cameraTransform = cameraNexus.getComponentByType('transform', false);
         if (cameraTransform) {
-            console.log(`[Debug] Camera Transform: pos=(${cameraTransform.position.x}, ${cameraTransform.position.y}), rot=${cameraTransform.rotation}, scale=(${cameraTransform.scale.x}, ${cameraTransform.scale.y})`);
+            console.log(`[Debug] Camera Transform: pos=(${cameraTransform.position.x}, ${cameraTransform.position.y}, ${cameraTransform.position.z}), rot=(${cameraTransform.rotation.x}, ${cameraTransform.rotation.y}, ${cameraTransform.rotation.z}), scale=(${cameraTransform.scale.x}, ${cameraTransform.scale.y}, ${cameraTransform.scale.z})`);
         }
         const camera = cameraNexus.getComponentByType('camera', false);
         if (camera) {
@@ -334,7 +334,7 @@ function logDebugInfo(label) {
     if (spriteNexus) {
         const spriteTransform = spriteNexus.getComponentByType('transform', false);
         if (spriteTransform) {
-            console.log(`[Debug] Sprite Transform: pos=(${spriteTransform.position.x}, ${spriteTransform.position.y}), rot=${spriteTransform.rotation}, scale=(${spriteTransform.scale.x}, ${spriteTransform.scale.y})`);
+            console.log(`[Debug] Sprite Transform: pos=(${spriteTransform.position.x}, ${spriteTransform.position.y}, ${spriteTransform.position.z}), rot=(${spriteTransform.rotation.x}, ${spriteTransform.rotation.y}, ${spriteTransform.rotation.z}), scale=(${spriteTransform.scale.x}, ${spriteTransform.scale.y}, ${spriteTransform.scale.z})`);
         }
         const sprite = spriteNexus.getComponentByType('sprite', false);
         if (sprite) {
@@ -506,9 +506,9 @@ export async function createScene() {
     // Camera transform (centered)
     const cameraTransform = await Omosuen.newComponent('transform', {
         name: 'Camera Transform',
-        position: new Omosuen.Vector2D(0, 0),
-        rotation: 0,
-        scale: new Omosuen.Vector2D(1, 1),
+        position: new Omosuen.Vector3D(0, 0, 0),
+        rotation: new Omosuen.Vector3D(0, 0, 0),
+        scale: new Omosuen.Vector3D(1, 1, 1),
     });
     cameraNexus.addComponent(cameraTransform);
 
@@ -528,12 +528,12 @@ export async function createScene() {
     });
     scene.addComponent(spriteNexus);
 
-    // Sprite transform (centered in viewport)
+    // Sprite transform (centered in viewport, x=width, y=height, z=depth)
     const spriteTransform = await Omosuen.newComponent('transform', {
         name: 'Character Transform',
-        position: new Omosuen.Vector2D(200, 200),
-        rotation: 0,
-        scale: new Omosuen.Vector2D(2, 2), // 2x scale for visibility
+        position: new Omosuen.Vector3D(200, 0, 200),
+        rotation: new Omosuen.Vector3D(0, 0, 0),
+        scale: new Omosuen.Vector3D(2, 2, 2),
     });
     spriteNexus.addComponent(spriteTransform);
 

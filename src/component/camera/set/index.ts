@@ -46,7 +46,7 @@ export function setZoom(camera: CameraT, zoom: number): void {
       const factor = 1 / (oldZoom * oldZoom) - 1 / (zoom * zoom);
 
       transform.position.x += offsetX * factor;
-      transform.position.y += offsetY * factor;
+      transform.position.z += offsetY * factor;
     }
   }
 

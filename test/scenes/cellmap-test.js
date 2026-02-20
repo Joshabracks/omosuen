@@ -162,7 +162,7 @@ function updateCameraStatus() {
     if (cameraTransform && camera) {
         const statusEl = document.getElementById('camera-status');
         if (statusEl) {
-            statusEl.innerHTML = `Position: (${Math.round(cameraTransform.position.x)}, ${Math.round(cameraTransform.position.y)})<br>Zoom: ${camera.zoom.toFixed(2)}x`;
+            statusEl.innerHTML = `Position: (${Math.round(cameraTransform.position.x)}, ${Math.round(cameraTransform.position.z)})<br>Zoom: ${camera.zoom.toFixed(2)}x`;
         }
     }
 }
@@ -454,9 +454,9 @@ export async function createScene() {
     // Standard isometric projection (top-down, 30-degree angles)
     await Omosuen.newComponent('transform', {
         name: 'Camera Transform',
-        position: new Omosuen.Vector2D(-800, -300), // Center on flat plane at ground level
-        rotation: 0,
-        scale: new Omosuen.Vector2D(1, 1),
+        position: new Omosuen.Vector3D(-800, 0, -300), // iso offset (x=horizontal, y=0, z=vertical)
+        rotation: new Omosuen.Vector3D(0, 0, 0),
+        scale: new Omosuen.Vector3D(1, 1, 1),
     }, cameraNexus)
     // Camera component with zoom to fit plane in view
     const camera = await Omosuen.newComponent('camera', {
@@ -674,14 +674,12 @@ export async function createScene() {
             name: `Character ${i + 1}`,
         }, scene);
 
-        // Create transform with 3D world position
-        // position.x = worldX, position.y = worldZ, z = worldY (vertical)
+        // Create transform with 3D world position (x=width, y=height, z=depth)
         await Omosuen.newComponent('transform', {
             name: `Character ${i + 1} Transform`,
-            position: new Omosuen.Vector2D(worldX, worldZ),
-            z: worldY,
-            rotation: 0,
-            scale: new Omosuen.Vector2D(1, 1), // 2x scale for visibility (same as sprite-test)
+            position: new Omosuen.Vector3D(worldX, worldY, worldZ),
+            rotation: new Omosuen.Vector3D(0, 0, 0),
+            scale: new Omosuen.Vector3D(1, 1, 1),
         }, spriteNexus);
 
         // Create sprite

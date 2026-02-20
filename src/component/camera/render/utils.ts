@@ -191,7 +191,7 @@ export function renderCellMaps(
 
   const snapped = snapCameraPosition(
     cameraTransform.position.x,
-    cameraTransform.position.y,
+    cameraTransform.position.z,
     camera.pixelScale,
     camera.zoom,
   );

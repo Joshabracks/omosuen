@@ -32,7 +32,7 @@ export function pan(camera: CameraT, offsetX: number, offsetY: number): void {
     return;
   }
 
-  // Update transform position
+  // Update transform position (camera uses x=iso horizontal, z=iso vertical)
   transform.position.x += offsetX;
-  transform.position.y += offsetY;
+  transform.position.z += offsetY;
 }

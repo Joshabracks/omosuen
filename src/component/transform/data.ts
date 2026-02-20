@@ -5,17 +5,17 @@ import {
   ComponentUnique,
   ComponentInstanceMethods,
 } from '../types';
-import { Vector2D } from '../../math';
+import { Vector3D } from '../../math';
 import type { TransformMethods } from './methods';
 
 /**
- * Transform component for 2D/3D spatial transformations.
+ * Transform component for 3D spatial transformations.
  * Stores position, rotation, and scale for rendering and physics.
  *
- * For 3D isometric rendering:
- * - position.x = world X coordinate
- * - position.y = world Z coordinate
- * - z = world Y coordinate (vertical/height)
+ * Coordinate convention (matches shader world-space):
+ * - x = width (horizontal)
+ * - y = height (vertical)
+ * - z = depth
  */
 export interface TransformT
   extends ComponentData, ComponentInstanceMethods<TransformMethods> {
@@ -23,34 +23,28 @@ export interface TransformT
   unique: ComponentUnique.FALSE;
 
   /**
-   * Position in 2D world space (or XZ plane for 3D isometric).
+   * Position in 3D world space.
+   * x = width, y = height, z = depth
    */
-  position: Vector2D;
+  position: Vector3D;
 
   /**
-   * Z-coordinate for 3D isometric rendering (world Y / vertical height).
-   * Defaults to 0 for purely 2D sprites.
+   * Rotation as Euler angles in radians.
+   * x = pitch, y = yaw, z = roll
    */
-  z: number;
+  rotation: Vector3D;
 
   /**
-   * Rotation angle in radians.
-   * Positive values rotate counter-clockwise.
+   * Scale factor for each axis.
+   * (1, 1, 1) is normal size, (2, 2, 2) is double size.
    */
-  rotation: number;
-
-  /**
-   * Scale factor for x and y axes.
-   * (1, 1) is normal size, (2, 2) is double size, (0.5, 0.5) is half size.
-   */
-  scale: Vector2D;
+  scale: Vector3D;
 }
 
 export interface TransformOptions extends ComponentOptions {
-  position?: Vector2D;
-  z?: number;
-  rotation?: number;
-  scale?: Vector2D;
+  position?: Vector3D;
+  rotation?: Vector3D;
+  scale?: Vector3D;
 }
 
 /**
@@ -64,10 +58,9 @@ export function builder(options: TransformOptions): TransformT {
     parent: null,
     _disposed: false,
 
-    position: options.position ?? new Vector2D(0, 0),
-    z: options.z ?? 0,
-    rotation: options.rotation ?? 0,
-    scale: options.scale ?? new Vector2D(1, 1),
+    position: options.position ?? new Vector3D(0, 0, 0),
+    rotation: options.rotation ?? new Vector3D(0, 0, 0),
+    scale: options.scale ?? new Vector3D(1, 1, 1),
   };
 
   return transform as unknown as TransformT;
@@ -85,16 +78,22 @@ function serialize(component: ComponentData): any {
     name: t.name,
     unique: ComponentUnique.FALSE,
     position: {
-      _vectorType: 'Vector2D',
+      _vectorType: 'Vector3D',
       x: t.position.x,
       y: t.position.y,
+      z: t.position.z,
     },
-    z: t.z,
-    rotation: t.rotation,
+    rotation: {
+      _vectorType: 'Vector3D',
+      x: t.rotation.x,
+      y: t.rotation.y,
+      z: t.rotation.z,
+    },
     scale: {
-      _vectorType: 'Vector2D',
+      _vectorType: 'Vector3D',
       x: t.scale.x,
       y: t.scale.y,
+      z: t.scale.z,
     },
   };
 }
@@ -105,7 +104,7 @@ function serialize(component: ComponentData): any {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deserialize(data: any): TransformT {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-  const { type, name, position, z, rotation, scale } = data;
+  const { type, name, position, rotation, scale } = data;
 
   const errors = [];
   if (type !== 'transform') {
@@ -118,27 +117,34 @@ function deserialize(data: any): TransformT {
     throw new Error(errors.join('\n'));
   }
 
-  // Reconstruct Vector2D position
-  let positionVec = new Vector2D(0, 0);
+  // Reconstruct Vector3D position
+  let positionVec = new Vector3D(0, 0, 0);
   if (position && typeof position === 'object') {
-    if ('_vectorType' in position && position._vectorType === 'Vector2D') {
-      positionVec = new Vector2D(position.x, position.y);
+    if ('_vectorType' in position && position._vectorType === 'Vector3D') {
+      positionVec = new Vector3D(position.x, position.y, position.z);
     }
   }
 
-  // Reconstruct Vector2D scale
-  let scaleVec = new Vector2D(1, 1);
+  // Reconstruct Vector3D rotation
+  let rotationVec = new Vector3D(0, 0, 0);
+  if (rotation && typeof rotation === 'object') {
+    if ('_vectorType' in rotation && rotation._vectorType === 'Vector3D') {
+      rotationVec = new Vector3D(rotation.x, rotation.y, rotation.z);
+    }
+  }
+
+  // Reconstruct Vector3D scale
+  let scaleVec = new Vector3D(1, 1, 1);
   if (scale && typeof scale === 'object') {
-    if ('_vectorType' in scale && scale._vectorType === 'Vector2D') {
-      scaleVec = new Vector2D(scale.x, scale.y);
+    if ('_vectorType' in scale && scale._vectorType === 'Vector3D') {
+      scaleVec = new Vector3D(scale.x, scale.y, scale.z);
     }
   }
 
   return builder({
     name: name as string,
     position: positionVec,
-    z: (z as number) ?? 0,
-    rotation: rotation as number,
+    rotation: rotationVec,
     scale: scaleVec,
   });
 }
@@ -151,4 +157,4 @@ export const TransformSerializer: ComponentSerializer = {
 /**
  * Allowlist of transform-specific properties accessible via component Proxy.
  */
-export const PROPERTY_ALLOWLIST: string[] = ['position', 'z', 'rotation', 'scale'];
+export const PROPERTY_ALLOWLIST: string[] = ['position', 'rotation', 'scale'];

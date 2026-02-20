@@ -99,7 +99,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
   // Compute camera snap for world-locked pixelation
   const cameraSnap = snapCameraPosition(
     transform.position.x,
-    transform.position.y,
+    transform.position.z,
     camera.pixelScale,
     camera.zoom,
   );
@@ -278,7 +278,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
       gl.uniform2f(
         u_cameraPosition,
         transform.position.x,
-        transform.position.y,
+        transform.position.z,
       );
       gl.uniform1f(u_zoom, camera.zoom);
       gl.uniform3f(
@@ -471,12 +471,12 @@ export function render(camera: CameraT, _deltaTime: number): void {
         gl.uniform1i(u_hasEmission, 0);
 
         // Set sprite transformation uniforms
-        // Pass 3D world position: (x, y=height/vertical, z)
+        // Pass 3D world position: (x, y=height, z=depth)
         gl.uniform3f(
           u_spritePosition,
           spriteTransform.position.x,
-          spriteTransform.z, // y component = vertical height (worldY)
-          spriteTransform.position.y, // z component = worldZ
+          spriteTransform.position.y,
+          spriteTransform.position.z,
         );
         gl.uniform2f(
           u_spriteSize,
@@ -484,7 +484,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
           albedoFrame.size.y * spriteTransform.scale.y,
         );
         gl.uniform2f(u_anchor, sprite.anchor.x, sprite.anchor.y);
-        gl.uniform1f(u_rotation, spriteTransform.rotation);
+        gl.uniform1f(u_rotation, spriteTransform.rotation.y);
 
         // Set sprite appearance uniforms
         gl.uniform4f(

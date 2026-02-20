@@ -84,7 +84,8 @@ export type COMPONENT_TYPE =
   | 'animation-controller'
   | 'cell-map'
   | 'camera'
-  | 'input-controller';
+  | 'input-controller'
+  | 'collider';
 
 export interface ComponentOptions {
   name: string;

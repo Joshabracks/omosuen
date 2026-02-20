@@ -68,6 +68,11 @@ import {
   builder as inputControllerBuilder,
   PROPERTY_ALLOWLIST as InputControllerPropertyAllowlist,
 } from './input-controller';
+import {
+  Collider,
+  builder as colliderBuilder,
+  PROPERTY_ALLOWLIST as ColliderPropertyAllowlist,
+} from './collider';
 import type { COMPONENT_TYPE } from './types';
 
 /**
@@ -95,6 +100,7 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   'cell-map': cellMapBuilder,
   camera: cameraBuilder,
   'input-controller': inputControllerBuilder,
+  collider: colliderBuilder,
 };
 
 /**
@@ -121,6 +127,7 @@ export const MethodRegistry: Record<
   'cell-map': CellMap,
   camera: Camera,
   'input-controller': InputController,
+  collider: Collider,
   'ui-binding': {},
   'html-constructor': {},
   'message-listener': {},
@@ -145,6 +152,7 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   'cell-map': CellMapPropertyAllowlist,
   camera: CameraPropertyAllowlist,
   'input-controller': InputControllerPropertyAllowlist,
+  collider: ColliderPropertyAllowlist,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

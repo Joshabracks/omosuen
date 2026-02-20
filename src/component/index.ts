@@ -50,6 +50,13 @@ export type {
   Mesh,
   CellData,
 } from './cell-map';
+export type {
+  ColliderT as collider,
+  ColliderMethods,
+  CellMapCollisionResult,
+  CollisionPipelineResult,
+  ProcessCollisionsOptions,
+} from './collider';
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';
@@ -71,3 +78,4 @@ export { SpriteSerializer } from './sprite/data';
 export { TransformSerializer } from './transform/data';
 export { AnimationControllerSerializer } from './animation-controller/data';
 export { CameraSerializer } from './camera/data';
+export { ColliderSerializer } from './collider/data';

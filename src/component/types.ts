@@ -85,7 +85,8 @@ export type COMPONENT_TYPE =
   | 'cell-map'
   | 'camera'
   | 'input-controller'
-  | 'collider';
+  | 'collider'
+  | 'timer';
 
 export interface ComponentOptions {
   name: string;

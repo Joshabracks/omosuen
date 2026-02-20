@@ -57,6 +57,7 @@ export type {
   CollisionPipelineResult,
   ProcessCollisionsOptions,
 } from './collider';
+export type { TimerT as timer, TimerMethods } from './timer';
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';
@@ -79,3 +80,4 @@ export { TransformSerializer } from './transform/data';
 export { AnimationControllerSerializer } from './animation-controller/data';
 export { CameraSerializer } from './camera/data';
 export { ColliderSerializer } from './collider/data';
+export { TimerSerializer } from './timer/data';

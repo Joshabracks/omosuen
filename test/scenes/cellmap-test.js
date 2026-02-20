@@ -295,8 +295,9 @@ function findHighestCellY(shapeMap, x, z, maxHeight) {
 /**
  * Generates a heightmap with concentric rings for depth testing
  * Rings radiate from center using Chebyshev distance (max of |dx|, |dz|)
- * Odd rings (1, 3, 5, ...) are at height 2 (dirt)
- * Even rings (0, 2, 4, ...) are at height 4 (grass)
+ * Odd rings (1, 3, 5, ...) are at height 2
+ * Even rings (0, 2, 4, ...) are at height 3
+ * All cells use grass material; sprite spawn cells are marked dirt after generation
  * Returns both materialMap (which material to use) and shapeMap (solid vs air)
  */
 function generateHeightmap(width, depth, maxHeight) {
@@ -324,14 +325,12 @@ function generateHeightmap(width, depth, maxHeight) {
             const dz = Math.abs(z - centerZ);
             const ring = Math.max(dx, dz);
 
-            // Odd rings = height 2, Even rings = height 4
-            const height = (ring % 2 === 1) ? 2 : 4;
+            // Odd rings = height 2, Even rings = height 3
+            const height = (ring % 2 === 1) ? 2 : 3;
 
             // Fill cells from ground up to calculated height
             for (let y = 0; y <= height; y++) {
-                // Odd rings use dirt (material 1), even rings use grass (material 0)
-                const material = (ring % 2 === 1) ? 1 : 0;
-                materialMap.set(new Omosuen.Vector3D(x, y, z), material);
+                // All rings use grass (material 0)
                 shapeMap.set(new Omosuen.Vector3D(x, y, z), 1); // Shape 1 = cube (solid)
             }
             // Cells above height remain as 0 (air) in shapeMap
@@ -464,7 +463,7 @@ export async function createScene() {
         viewportRef: 'CellMap Viewport',
         zoom: 0.5, // Zoom out to see full 20x20 plane
         axonometricAngle: 30, // 30-degree isometric projection
-        pixelScale: 8,
+        pixelScale: 2,
     }, cameraNexus)
 
     console.log('[CellMap Test] Camera created');
@@ -609,7 +608,21 @@ export async function createScene() {
 
     // Generate concentric ring heightmap for depth testing
     const { materialMap, shapeMap } = generateHeightmap(MAP_WIDTH, MAP_DEPTH, MAP_HEIGHT);
-    console.log('[CellMap Test] Concentric ring heightmap generated (20x20x20): odd rings height 2, even rings height 4');
+    console.log('[CellMap Test] Concentric ring heightmap generated (20x20x20): odd rings height 2, even rings height 3');
+
+    // Pre-compute sprite spawn positions and mark their cells as dirt
+    const spriteSpawns = [];
+    for (let i = 0; i < 10; i++) {
+        const randomX = Math.floor(Math.random() * MAP_WIDTH);
+        const randomZ = Math.floor(Math.random() * MAP_DEPTH);
+        const highestY = findHighestCellY(shapeMap, randomX, randomZ, MAP_HEIGHT);
+        if (highestY === -1) continue;
+
+        spriteSpawns.push({ randomX, randomZ, highestY });
+
+        // Mark the top cell of this column as dirt (material 1)
+        materialMap.set(new Omosuen.Vector3D(randomX, highestY, randomZ), 1);
+    }
 
     // Create material definition for grass
     const grassMaterial = {
@@ -626,19 +639,32 @@ export async function createScene() {
         materialTextureKey: '',
     }
 
-    await Omosuen.newComponent('cell-map', {
+    const cellMap = await Omosuen.newComponent('cell-map', {
         name: 'Terrain Heightmap',
         materials: [grassMaterial, dirtMaterial],
         materialMap: materialMap,
         shapeMap: shapeMap, // Explicitly provide shapeMap (0 = air, 1 = solid cube)
         cellSize: new Omosuen.Vector3D(CELL_WIDTH, CELL_HEIGHT, CELL_DEPTH),
         mapSize: new Omosuen.Vector3D(MAP_WIDTH, MAP_HEIGHT, MAP_DEPTH),
-        smoothing: 0,
+        smoothing: 4,
         normalSmoothing: 0.75
         // emissionMap: default (no emission)
         // visibilityMap: default (all visible)
     }, scene);
     console.log('[CellMap Test] CellMap created with dimensions:', MAP_WIDTH, 'x', MAP_DEPTH, 'x', MAP_HEIGHT);
+
+    // Register collision update for sprite nexuses
+    const NUDGE_SPEED = 64; // units per second (4 cell-heights/sec at CELL_HEIGHT=16)
+    Omosuen.registerMethod('nexus', 'spriteCollisionUpdate', (nexus, deltaTime) => {
+        const transform = nexus.getComponentByType('transform', false);
+        const collider = nexus.getComponentByType('collider', false);
+        if (!transform || !collider) return;
+
+        const result = collider.intersectsCellMap(cellMap);
+        if (!result.hit) return;
+
+        transform.translate(0, NUDGE_SPEED * (deltaTime / 1000), 0);
+    });
 
     // 7. Create 10 character sprites placed on the terrain
     const animationConfigs = [
@@ -648,20 +674,10 @@ export async function createScene() {
         { name: 'walk-up', frames: [17, 18] },
     ];
 
-    console.log('[CellMap Test] Creating 10 character sprites on terrain (random placement)...');
+    console.log(`[CellMap Test] Creating ${spriteSpawns.length} character sprites on terrain (pre-computed placement)...`);
 
-    for (let i = 0; i < 10; i++) {
-        // Generate random X,Z position anywhere on the map
-        const randomX = Math.floor(Math.random() * MAP_WIDTH);
-        const randomZ = Math.floor(Math.random() * MAP_DEPTH);
-
-        // Find the highest solid cell at this X,Z position
-        const highestY = findHighestCellY(shapeMap, randomX, randomZ, MAP_HEIGHT);
-
-        if (highestY === -1) {
-            console.warn(`[CellMap Test] No solid cell found at (${randomX}, ${randomZ}), skipping sprite ${i}`);
-            continue;
-        }
+    for (let i = 0; i < spriteSpawns.length; i++) {
+        const { randomX, randomZ, highestY } = spriteSpawns[i];
 
         // Calculate 3D world position
         // Place sprite one cell height above the terrain for "standing on top" appearance
@@ -669,9 +685,10 @@ export async function createScene() {
         const worldY = (highestY + 1) * CELL_HEIGHT;
         const worldZ = (randomZ * CELL_DEPTH) + (CELL_DEPTH / 2);
 
-        // Create sprite nexus
+        // Create sprite nexus with collision update
         const spriteNexus = await Omosuen.newComponent('nexus', {
             name: `Character ${i + 1}`,
+            updateOverride: 'spriteCollisionUpdate',
         }, scene);
 
         // Create transform with 3D world position (x=width, y=height, z=depth)
@@ -680,6 +697,14 @@ export async function createScene() {
             position: new Omosuen.Vector3D(worldX, worldY, worldZ),
             rotation: new Omosuen.Vector3D(0, 0, 0),
             scale: new Omosuen.Vector3D(1, 1, 1),
+        }, spriteNexus);
+
+        // Create collider for terrain collision detection
+        await Omosuen.newComponent('collider', {
+            name: `Character ${i + 1} Collider`,
+            shape: 'box',
+            size: new Omosuen.Vector3D(4, 6, 4),
+            offset: new Omosuen.Vector3D(0, 0, 0),
         }, spriteNexus);
 
         // Create sprite
@@ -697,7 +722,7 @@ export async function createScene() {
                 emission: 0,
                 material: 0,
             },
-            anchor: new Omosuen.Vector2D(8, 16), // Center anchor (16x16 sprite)
+            anchor: new Omosuen.Vector2D(0, 8), // Center anchor (16x16 sprite)
             tint: new Omosuen.Vector4D(1, 1, 1, 1),
             opacity: 1.0,
         }, spriteNexus);

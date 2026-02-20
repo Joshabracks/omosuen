@@ -4,7 +4,7 @@ import { CellMapT } from '../cell-map';
 import { NexusT } from '../nexus';
 import { TransformT } from '../transform';
 import { Vector3D } from '../../math';
-import { unpackCell, Mesh } from '../cell-map/types';
+import { unpackCell, Mesh, CHUNK_SIZE } from '../cell-map/types';
 
 // ============================================================
 // Result types
@@ -551,6 +551,68 @@ function getMeshTrianglesWorld(
   return triangles;
 }
 
+/**
+ * Extract world-space triangles from smoothed chunk vertex/index buffers
+ * within a given AABB. Chunk vertices are already world-space, interleaved
+ * [x, y, z, nx, ny, nz] with stride 6.
+ */
+function getChunkTrianglesInBounds(
+  cellMap: CellMapT,
+  bounds: { min: Vector3D; max: Vector3D },
+): Array<[Vector3D, Vector3D, Vector3D]> {
+  const triangles: Array<[Vector3D, Vector3D, Vector3D]> = [];
+
+  // Determine which chunks overlap the bounds
+  const csX = cellMap.cellSize.x * CHUNK_SIZE;
+  const csY = cellMap.cellSize.y * CHUNK_SIZE;
+  const csZ = cellMap.cellSize.z * CHUNK_SIZE;
+  const minCx = Math.floor(bounds.min.x / csX);
+  const minCy = Math.floor(bounds.min.y / csY);
+  const minCz = Math.floor(bounds.min.z / csZ);
+  const maxCx = Math.floor(bounds.max.x / csX);
+  const maxCy = Math.floor(bounds.max.y / csY);
+  const maxCz = Math.floor(bounds.max.z / csZ);
+
+  for (const chunk of cellMap.chunks) {
+    if (
+      chunk.cx < minCx || chunk.cx > maxCx ||
+      chunk.cy < minCy || chunk.cy > maxCy ||
+      chunk.cz < minCz || chunk.cz > maxCz
+    ) continue;
+    if (!chunk.vertices || !chunk.indices) continue;
+
+    const verts = chunk.vertices;
+    const indices = chunk.indices;
+    for (let i = 0; i < indices.length; i += 3) {
+      const i0 = indices[i] * 6;
+      const i1 = indices[i + 1] * 6;
+      const i2 = indices[i + 2] * 6;
+
+      // Quick per-triangle AABB cull against collider bounds
+      const x0 = verts[i0], y0 = verts[i0 + 1], z0 = verts[i0 + 2];
+      const x1 = verts[i1], y1 = verts[i1 + 1], z1 = verts[i1 + 2];
+      const x2 = verts[i2], y2 = verts[i2 + 1], z2 = verts[i2 + 2];
+
+      if (
+        Math.max(x0, x1, x2) < bounds.min.x ||
+        Math.min(x0, x1, x2) > bounds.max.x ||
+        Math.max(y0, y1, y2) < bounds.min.y ||
+        Math.min(y0, y1, y2) > bounds.max.y ||
+        Math.max(z0, z1, z2) < bounds.min.z ||
+        Math.min(z0, z1, z2) > bounds.max.z
+      ) continue;
+
+      triangles.push([
+        new Vector3D(x0, y0, z0),
+        new Vector3D(x1, y1, z1),
+        new Vector3D(x2, y2, z2),
+      ]);
+    }
+  }
+
+  return triangles;
+}
+
 // ============================================================
 // World bounds computation
 // ============================================================
@@ -660,7 +722,12 @@ function testColliderVsCellMapMesh(
     };
   }
 
-  // Full mesh collision
+  // Smoothed cell maps: test against actual chunk geometry
+  if (cellMap.smoothing > 0) {
+    return testColliderVsSmoothedMesh(collider, cellMap, solidCells);
+  }
+
+  // Full mesh collision (unsmoothed path)
   const hitCells: Vector3D[] = [];
   const contactPoints: Vector3D[] = [];
 
@@ -752,6 +819,89 @@ function testColliderVsCellMapMesh(
   return {
     hit: true,
     cells: hitCells,
+    center: new Vector3D(cx / n, cy / n, cz / n),
+  };
+}
+
+/**
+ * Tests a collider against the smoothed chunk geometry of a cell map.
+ * Used when cellMap.smoothing > 0 so collision matches the rendered mesh.
+ */
+function testColliderVsSmoothedMesh(
+  collider: ColliderT,
+  cellMap: CellMapT,
+  solidCells: Vector3D[],
+): CellMapCollisionResult {
+  const bounds = getWorldBoundsImpl(collider);
+  const triangles = getChunkTrianglesInBounds(cellMap, bounds);
+
+  if (triangles.length === 0) {
+    return { hit: false, cells: [], center: null };
+  }
+
+  const contactPoints: Vector3D[] = [];
+
+  if (collider.shape === 'box') {
+    const obb = computeOBB(collider);
+    for (const [tv0, tv1, tv2] of triangles) {
+      const d0 = tv0.subtract(obb.center);
+      const d1 = tv1.subtract(obb.center);
+      const d2 = tv2.subtract(obb.center);
+      const lv0 = new Vector3D(
+        dot3(d0, obb.axes[0]),
+        dot3(d0, obb.axes[1]),
+        dot3(d0, obb.axes[2]),
+      );
+      const lv1 = new Vector3D(
+        dot3(d1, obb.axes[0]),
+        dot3(d1, obb.axes[1]),
+        dot3(d1, obb.axes[2]),
+      );
+      const lv2 = new Vector3D(
+        dot3(d2, obb.axes[0]),
+        dot3(d2, obb.axes[1]),
+        dot3(d2, obb.axes[2]),
+      );
+
+      if (triangleVsAABB(lv0, lv1, lv2, obb.halfExtents)) {
+        contactPoints.push(
+          closestPointOnTriangle(obb.center, tv0, tv1, tv2),
+        );
+      }
+    }
+  } else {
+    const sphere = computeSphereWorld(collider);
+    for (const [tv0, tv1, tv2] of triangles) {
+      const result = triangleVsSphere(
+        tv0,
+        tv1,
+        tv2,
+        sphere.center,
+        sphere.radius,
+      );
+      if (result.hit) {
+        contactPoints.push(result.closestPoint);
+      }
+    }
+  }
+
+  if (contactPoints.length === 0) {
+    return { hit: false, cells: [], center: null };
+  }
+
+  let cx = 0;
+  let cy = 0;
+  let cz = 0;
+  for (const cp of contactPoints) {
+    cx += cp.x;
+    cy += cp.y;
+    cz += cp.z;
+  }
+  const n = contactPoints.length;
+
+  return {
+    hit: true,
+    cells: solidCells,
     center: new Vector3D(cx / n, cy / n, cz / n),
   };
 }

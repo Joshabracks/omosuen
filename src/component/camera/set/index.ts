@@ -3,7 +3,7 @@ import { TransformT } from '../../transform';
 import { castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
-import { FBO_OVERSCAN_PX } from '../render/utils';
+import { FBO_OVERSCAN_PX } from '../render/light-uniforms';
 
 /**
  * Sets the camera zoom level and updates framebuffer resolution.

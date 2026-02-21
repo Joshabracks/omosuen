@@ -6,7 +6,8 @@ import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { Camera } from '../methods';
 import { renderSprites } from './render-sprites';
-import { renderCellMaps, renderPostProcess, snapCameraPosition } from './utils';
+import { renderPostProcess } from './post-process';
+import { renderCellMaps, snapCameraPosition } from './render-cell-maps';
 
 // TextureMap lookup cache — keyed by camera component ID
 const TEXTURE_MAP_CACHE = new Map<number, Map<string, TextureMapT>>();

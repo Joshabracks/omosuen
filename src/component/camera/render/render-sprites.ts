@@ -8,7 +8,7 @@ import { TransformT } from '../../transform';
 import { castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
-import { FBO_OVERSCAN_PX, setLightUniforms } from './utils';
+import { FBO_OVERSCAN_PX, setLightUniforms } from './light-uniforms';
 
 /** Default cell dimensions when no cell-maps are in the scene. */
 const DEFAULT_CELL_SIZE_X = 32;

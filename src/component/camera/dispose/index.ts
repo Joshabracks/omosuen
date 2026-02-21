@@ -3,7 +3,7 @@ import { ComponentData, castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { clearTextureMapCache } from '../render/index';
-import { clearLightUniformCache } from '../render/utils';
+import { clearLightUniformCache } from '../render/light-uniforms';
 
 /**
  * Disposes WebGL resources when the camera is removed.

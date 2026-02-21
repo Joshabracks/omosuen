@@ -653,6 +653,96 @@ export async function createScene() {
     }, scene);
     console.log('[CellMap Test] CellMap created with dimensions:', MAP_WIDTH, 'x', MAP_DEPTH, 'x', MAP_HEIGHT);
 
+    // 6b. Create lighting components
+
+    // Ambient light (soft yellow, pulsing brightness via sine wave)
+    const ambientNexus = await Omosuen.newComponent('nexus', {
+        name: 'Ambient Light Nexus',
+        updateOverride: 'ambientPulse',
+    }, scene);
+    const ambientLight = await Omosuen.newComponent('light', {
+        name: 'Ambient Light',
+        lightType: 'ambient',
+        color: new Omosuen.Vector3D(1.0, 0.95, 0.8),
+        brightness: 0.3,
+    }, ambientNexus);
+
+    let ambientTime = 0;
+    Omosuen.registerMethod('nexus', 'ambientPulse', (_nexus, deltaTime) => {
+        ambientTime += deltaTime / 1000;
+        // Sine wave: oscillates brightness between 0.1 and 0.5 over 1 second period
+        const t = (Math.sin(ambientTime * Math.PI * 2) + 1) / 2; // 0 to 1
+        ambientLight.setBrightness(0.1 + t * 0.4);
+    });
+
+    // Point light (soft blue, center of map)
+    const pointLightNexus = await Omosuen.newComponent('nexus', {
+        name: 'Point Light Nexus',
+    }, scene);
+    await Omosuen.newComponent('transform', {
+        name: 'Point Light Transform',
+        position: new Omosuen.Vector3D(320, 80, 320),
+    }, pointLightNexus);
+    await Omosuen.newComponent('light', {
+        name: 'Point Light',
+        lightType: 'point',
+        color: new Omosuen.Vector3D(0.4, 0.6, 1.0),
+        brightness: 0.8,
+        radius: 300,
+        hardness: 0.3,
+    }, pointLightNexus);
+
+    // Directional light (daylight blue, slow rotating via timer)
+    const dirLightNexus = await Omosuen.newComponent('nexus', {
+        name: 'Directional Light Nexus',
+    }, scene);
+    const dirLight = await Omosuen.newComponent('light', {
+        name: 'Directional Light',
+        lightType: 'directional',
+        color: new Omosuen.Vector3D(0.7, 0.85, 1.0),
+        brightness: 0.6,
+        direction: new Omosuen.Vector3D(0.5, -0.7, 0.0),
+    }, dirLightNexus);
+
+    Omosuen.registerMethod('timer', 'rotateDirectionalLight', () => {
+        const dir = dirLight.direction;
+        const angle = 5 * Math.PI / 180;
+        const cosA = Math.cos(angle);
+        const sinA = Math.sin(angle);
+        dirLight.setDirection(new Omosuen.Vector3D(
+            dir.x * cosA - dir.z * sinA,
+            dir.y,
+            dir.x * sinA + dir.z * cosA,
+        ));
+    });
+
+    const dirTimer = await Omosuen.newComponent('timer', {
+        name: 'Direction Rotate Timer',
+        duration: 1000,
+        repeat: true,
+        events: ['rotateDirectionalLight'],
+    }, dirLightNexus);
+    dirTimer.start();
+
+    // Spot light (bright red, bottom-right corner)
+    const spotLightNexus = await Omosuen.newComponent('nexus', {
+        name: 'Spot Light Nexus',
+    }, scene);
+    await Omosuen.newComponent('transform', {
+        name: 'Spot Light Transform',
+        position: new Omosuen.Vector3D(608, 60, 608),
+    }, spotLightNexus);
+    await Omosuen.newComponent('light', {
+        name: 'Spot Light',
+        lightType: 'spot',
+        color: new Omosuen.Vector3D(1.0, 0.2, 0.1),
+        brightness: 1.0,
+        radius: 200,
+        hardness: 0.5,
+    }, spotLightNexus);
+
+    console.log('[CellMap Test] Lighting components created');
+
     // Register collision update for sprite nexuses
     const NUDGE_SPEED = 64; // units per second (4 cell-heights/sec at CELL_HEIGHT=16)
     Omosuen.registerMethod('nexus', 'spriteCollisionUpdate', (nexus, deltaTime) => {

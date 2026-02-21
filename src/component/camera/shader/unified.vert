@@ -106,9 +106,10 @@ void main() {
         gl_Position = vec4(clipSpace * vec2(1, -1), clipDepth, 1.0);
         v_uv = a_uv;
 
-        // Sprites are 2D billboards facing the camera, so they use screen-space normals
-        // Normal maps (if present) will be applied in the fragment shader for lighting
-        v_normal = vec3(0.0, 0.0, 1.0);  // Billboard facing camera
+        // Sprite base normal in isometric screen space (matches a top-facing cell surface).
+        // worldDirToIso() projects light directions to the XY plane, so normals must also
+        // live in XY to produce non-zero diffuse dot products.
+        v_normal = vec3(0.0, -1.0, 0.0);  // Isometric up
         v_worldPos = u_spritePosition;
         v_worldNormal = vec3(0.0, 0.0, 1.0);  // Screen-space normal
         v_screenPos = viewPos;

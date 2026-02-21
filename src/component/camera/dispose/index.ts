@@ -2,6 +2,7 @@ import { NexusT } from '../../nexus';
 import { ComponentData, getProxiedComponent } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
+import { clearLightUniformCache } from '../render/utils';
 
 /**
  * Disposes WebGL resources when the camera is removed.
@@ -58,6 +59,9 @@ export function dispose(component: ComponentData): void {
   res.renderTexture = null;
   res.depthTexture = null;
   res.atlasTextures = [];
+
+  // Clear cached light uniform locations for this camera
+  clearLightUniformCache(camera.id!);
 
   camera._disposed = true;
 }

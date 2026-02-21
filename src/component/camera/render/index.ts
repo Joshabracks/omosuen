@@ -282,7 +282,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
       gl.uniform3f(u_mapSize, maxMapWidth, maxMapHeight, maxMapDepth);
 
       // Set dynamic light uniforms (same lights as cell-maps)
-      setLightUniforms(gl, program, lights);
+      setLightUniforms(gl, camera.id!, lights);
 
       // Bind cell FBO depth texture for occlusion masking
       gl.activeTexture(gl.TEXTURE2);

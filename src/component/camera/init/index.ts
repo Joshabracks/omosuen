@@ -9,6 +9,7 @@ import postProcessVertexShader from '../shader/post.vert';
 import postProcessFragmentShader from '../shader/post.frag';
 import unifiedVertexShader from '../shader/unified.vert';
 import unifiedFragmentShader from '../shader/unified.frag';
+import { cacheLightUniformLocations } from '../render/utils';
 
 /**
  * Initializes WebGL resources for the camera (shader programs, buffers).
@@ -69,6 +70,9 @@ export async function init(component: ComponentData): Promise<void> {
     );
   }
   camera.glResources.renderModeLocation = u_renderMode;
+
+  // Cache all light uniform locations for this camera
+  cacheLightUniformLocations(gl, unifiedProgram, camera.id!);
 
   // 3. Create quad geometry buffers
   // Vertex positions (centered quad -0.5 to 0.5)

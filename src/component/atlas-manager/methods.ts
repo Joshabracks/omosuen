@@ -8,6 +8,7 @@ import { Vector2D } from '../../math';
 import type { PackedFrame } from '../texture-map/types';
 import { Nexus } from '../nexus/methods';
 import { TextureMap } from '../texture-map';
+import { invalidateAllTextureMapCaches } from '../camera/render/index';
 
 export interface AtlasManagerMethods extends ComponentMethods {
   type: 'atlas-manager';
@@ -409,6 +410,7 @@ export const AtlasManager: AtlasManagerMethods = {
     // Clear pending texture maps and set compiled flag
     am.textureMapIds.clear();
     am.compiled = true;
+    invalidateAllTextureMapCaches();
   },
 
   getAtlas: (am: AtlasManagerT, index: number): ImageData | undefined => {

@@ -6,7 +6,31 @@ import { getProxiedComponent } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { Camera } from '../methods';
-import { renderCellMaps, renderPostProcess, setLightUniforms, snapCameraPosition } from './utils';
+import {
+  renderCellMaps,
+  renderPostProcess,
+  setLightUniforms,
+  snapCameraPosition,
+} from './utils';
+
+// TextureMap lookup cache — keyed by camera component ID
+const TEXTURE_MAP_CACHE = new Map<number, Map<string, TextureMapT>>();
+const TEXTURE_MAP_CACHE_DIRTY = new Map<number, boolean>();
+
+export function invalidateTextureMapCache(cameraId: number): void {
+  TEXTURE_MAP_CACHE_DIRTY.set(cameraId, true);
+}
+
+export function invalidateAllTextureMapCaches(): void {
+  for (const key of TEXTURE_MAP_CACHE_DIRTY.keys()) {
+    TEXTURE_MAP_CACHE_DIRTY.set(key, true);
+  }
+}
+
+export function clearTextureMapCache(cameraId: number): void {
+  TEXTURE_MAP_CACHE.delete(cameraId);
+  TEXTURE_MAP_CACHE_DIRTY.delete(cameraId);
+}
 
 /**
  * Renders the scene from the camera's perspective.
@@ -111,17 +135,24 @@ export function render(camera: CameraT, _deltaTime: number): void {
     return;
   }
 
-  // Build TextureMap lookup cache by textureMapKey
-  // Both sprites and cell-maps need this cache
-  // @ts-expect-error - Proxy methods exist at runtime
-  const allTextureMaps = sceneRoot.getComponentsByType(
-    'texture-map',
-    true,
-  ) as TextureMapT[];
-  const textureMapCache = new Map<string, TextureMapT>();
-  for (const tm of allTextureMaps) {
-    textureMapCache.set(tm.textureMapKey, tm);
+  // Use cached TextureMap lookup, rebuild only when dirty or missing
+  if (
+    !TEXTURE_MAP_CACHE.has(camera.id!) ||
+    TEXTURE_MAP_CACHE_DIRTY.get(camera.id!)
+  ) {
+    // @ts-expect-error - Proxy methods exist at runtime
+    const allTextureMaps = sceneRoot.getComponentsByType(
+      'texture-map',
+      true,
+    ) as TextureMapT[];
+    const cache = new Map<string, TextureMapT>();
+    for (const tm of allTextureMaps) {
+      cache.set(tm.textureMapKey, tm);
+    }
+    TEXTURE_MAP_CACHE.set(camera.id!, cache);
+    TEXTURE_MAP_CACHE_DIRTY.set(camera.id!, false);
   }
+  const textureMapCache = TEXTURE_MAP_CACHE.get(camera.id!)!;
 
   // Render cell-maps FIRST (before sprites) with depth writes enabled
   // This populates the depth buffer with solid geometry

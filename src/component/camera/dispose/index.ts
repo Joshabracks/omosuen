@@ -2,6 +2,7 @@ import { NexusT } from '../../nexus';
 import { ComponentData, getProxiedComponent } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
+import { clearTextureMapCache } from '../render/index';
 import { clearLightUniformCache } from '../render/utils';
 
 /**
@@ -60,8 +61,9 @@ export function dispose(component: ComponentData): void {
   res.depthTexture = null;
   res.atlasTextures = [];
 
-  // Clear cached light uniform locations for this camera
+  // Clear module-level caches for this camera
   clearLightUniformCache(camera.id!);
+  clearTextureMapCache(camera.id!);
 
   camera._disposed = true;
 }

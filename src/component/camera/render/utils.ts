@@ -20,7 +20,10 @@ const _dirLightColor = new Map<number, (WebGLUniformLocation | null)[]>();
 const _dirLightBrightness = new Map<number, (WebGLUniformLocation | null)[]>();
 const _pointLightPos = new Map<number, (WebGLUniformLocation | null)[]>();
 const _pointLightColor = new Map<number, (WebGLUniformLocation | null)[]>();
-const _pointLightBrightness = new Map<number, (WebGLUniformLocation | null)[]>();
+const _pointLightBrightness = new Map<
+  number,
+  (WebGLUniformLocation | null)[]
+>();
 const _pointLightRadius = new Map<number, (WebGLUniformLocation | null)[]>();
 const _pointLightHardness = new Map<number, (WebGLUniformLocation | null)[]>();
 const _spotLightPos = new Map<number, (WebGLUniformLocation | null)[]>();
@@ -35,10 +38,19 @@ export function cacheLightUniformLocations(
   cameraId: number,
 ): void {
   _ambientColor.set(cameraId, gl.getUniformLocation(program, 'u_ambientColor'));
-  _ambientBrightness.set(cameraId, gl.getUniformLocation(program, 'u_ambientBrightness'));
+  _ambientBrightness.set(
+    cameraId,
+    gl.getUniformLocation(program, 'u_ambientBrightness'),
+  );
   _numDirLights.set(cameraId, gl.getUniformLocation(program, 'u_numDirLights'));
-  _numPointLights.set(cameraId, gl.getUniformLocation(program, 'u_numPointLights'));
-  _numSpotLights.set(cameraId, gl.getUniformLocation(program, 'u_numSpotLights'));
+  _numPointLights.set(
+    cameraId,
+    gl.getUniformLocation(program, 'u_numPointLights'),
+  );
+  _numSpotLights.set(
+    cameraId,
+    gl.getUniformLocation(program, 'u_numSpotLights'),
+  );
 
   const dirDir: (WebGLUniformLocation | null)[] = [];
   const dirColor: (WebGLUniformLocation | null)[] = [];
@@ -46,7 +58,10 @@ export function cacheLightUniformLocations(
   for (let i = 0; i < 4; i++) {
     dirDir[i] = gl.getUniformLocation(program, `u_dirLightDir[${i}]`);
     dirColor[i] = gl.getUniformLocation(program, `u_dirLightColor[${i}]`);
-    dirBrightness[i] = gl.getUniformLocation(program, `u_dirLightBrightness[${i}]`);
+    dirBrightness[i] = gl.getUniformLocation(
+      program,
+      `u_dirLightBrightness[${i}]`,
+    );
   }
   _dirLightDir.set(cameraId, dirDir);
   _dirLightColor.set(cameraId, dirColor);
@@ -65,12 +80,21 @@ export function cacheLightUniformLocations(
   for (let i = 0; i < 8; i++) {
     ptPos[i] = gl.getUniformLocation(program, `u_pointLightPos[${i}]`);
     ptColor[i] = gl.getUniformLocation(program, `u_pointLightColor[${i}]`);
-    ptBrightness[i] = gl.getUniformLocation(program, `u_pointLightBrightness[${i}]`);
+    ptBrightness[i] = gl.getUniformLocation(
+      program,
+      `u_pointLightBrightness[${i}]`,
+    );
     ptRadius[i] = gl.getUniformLocation(program, `u_pointLightRadius[${i}]`);
-    ptHardness[i] = gl.getUniformLocation(program, `u_pointLightHardness[${i}]`);
+    ptHardness[i] = gl.getUniformLocation(
+      program,
+      `u_pointLightHardness[${i}]`,
+    );
     spPos[i] = gl.getUniformLocation(program, `u_spotLightPos[${i}]`);
     spColor[i] = gl.getUniformLocation(program, `u_spotLightColor[${i}]`);
-    spBrightness[i] = gl.getUniformLocation(program, `u_spotLightBrightness[${i}]`);
+    spBrightness[i] = gl.getUniformLocation(
+      program,
+      `u_spotLightBrightness[${i}]`,
+    );
     spRadius[i] = gl.getUniformLocation(program, `u_spotLightRadius[${i}]`);
     spHardness[i] = gl.getUniformLocation(program, `u_spotLightHardness[${i}]`);
   }
@@ -501,7 +525,10 @@ export function setLightUniforms(
       if (!parent || parent.type !== 'nexus') continue;
       const nexus = getProxiedComponent(parent) as unknown as NexusT;
       // @ts-expect-error - Proxy methods exist at runtime
-      const siblingTransform = nexus.getComponentByType('transform', false) as TransformT | null;
+      const siblingTransform = nexus.getComponentByType(
+        'transform',
+        false,
+      ) as TransformT | null;
       if (!siblingTransform) continue;
       const pos = siblingTransform.position;
       if (light.lightType === 'point') {
@@ -546,7 +573,12 @@ export function setLightUniforms(
 
   // Ambient
   if (hasAmbient) {
-    gl.uniform3f(locAmbientColor, ambientColor[0], ambientColor[1], ambientColor[2]);
+    gl.uniform3f(
+      locAmbientColor,
+      ambientColor[0],
+      ambientColor[1],
+      ambientColor[2],
+    );
     gl.uniform1f(locAmbientBrightness, 1.0);
   } else {
     gl.uniform3f(locAmbientColor, 0.0, 0.0, 0.0);

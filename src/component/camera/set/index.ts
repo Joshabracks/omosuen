@@ -1,6 +1,6 @@
 import { NexusT } from '../../nexus';
 import { TransformT } from '../../transform';
-import { getProxiedComponent } from '../../types';
+import { castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { FBO_OVERSCAN_PX } from '../render/utils';
@@ -21,12 +21,8 @@ export function setZoom(camera: CameraT, zoom: number): void {
 
   // Adjust camera position if zooming toward a non-center target
   if (camera.zoomTarget && camera.parent && camera.parent.type === 'nexus') {
-    const parentNexus = getProxiedComponent(
-      camera.parent!,
-    ) as unknown as NexusT;
-    const sceneRoot = getProxiedComponent(
-      parentNexus.parent!,
-    ) as unknown as NexusT;
+    const parentNexus = castTo<NexusT>(camera.parent!);
+    const sceneRoot = castTo<NexusT>(parentNexus.parent!);
 
     // @ts-expect-error - Proxy methods exist at runtime
     const viewport = sceneRoot.getComponentByName(
@@ -108,10 +104,8 @@ function updateFramebufferForZoom(camera: CameraT): void {
     return;
   }
 
-  const parentNexus = getProxiedComponent(camera.parent!) as unknown as NexusT;
-  const sceneRoot = getProxiedComponent(
-    parentNexus.parent!,
-  ) as unknown as NexusT;
+  const parentNexus = castTo<NexusT>(camera.parent!);
+  const sceneRoot = castTo<NexusT>(parentNexus.parent!);
 
   // @ts-expect-error - Proxy methods exist at runtime
   const viewport = sceneRoot.getComponentByName(

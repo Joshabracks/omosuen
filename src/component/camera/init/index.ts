@@ -1,7 +1,7 @@
 import { AtlasManagerT } from '../../atlas-manager';
 
 import { NexusT } from '../../nexus';
-import { ComponentData, getProxiedComponent } from '../../types';
+import { ComponentData, castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { createShaderProgram } from '../shader/create-shader-program';
@@ -26,12 +26,10 @@ export async function init(component: ComponentData): Promise<void> {
     return;
   }
 
-  const parentNexus = getProxiedComponent(camera.parent!) as unknown as NexusT;
+  const parentNexus = castTo<NexusT>(camera.parent!);
 
   // Get viewport from scene root (viewport is typically a sibling of camera's parent)
-  const sceneRoot = getProxiedComponent(
-    parentNexus.parent!,
-  ) as unknown as NexusT;
+  const sceneRoot = castTo<NexusT>(parentNexus.parent!);
   // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const viewport = sceneRoot.getComponentByName(
     camera.viewportRef,

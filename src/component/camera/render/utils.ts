@@ -4,7 +4,7 @@ import { LightT } from '../../light';
 import { NexusT } from '../../nexus';
 import { TextureMapT } from '../../texture-map';
 import { TransformT } from '../../transform';
-import { getProxiedComponent } from '../../types';
+import { castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { Vector3D } from '../../../math';
 import { CameraT } from '../data';
@@ -535,7 +535,7 @@ export function setLightUniforms(
       // point or spot — need sibling transform for position
       const parent = light.parent;
       if (!parent || parent.type !== 'nexus') continue;
-      const nexus = getProxiedComponent(parent) as unknown as NexusT;
+      const nexus = castTo<NexusT>(parent);
       // @ts-expect-error - Proxy methods exist at runtime
       const siblingTransform = nexus.getComponentByType(
         'transform',

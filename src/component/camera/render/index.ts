@@ -3,7 +3,7 @@ import { NexusT } from '../../nexus';
 import type { SpriteT } from '../../sprite';
 import { TextureMapT } from '../../texture-map';
 import { TransformT } from '../../transform';
-import { getProxiedComponent } from '../../types';
+import { castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { Camera } from '../methods';
@@ -124,7 +124,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
     return;
   }
 
-  const parentNexus = getProxiedComponent(camera.parent!) as unknown as NexusT;
+  const parentNexus = castTo<NexusT>(camera.parent!);
 
   // Get sibling transform for camera position
   // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
@@ -142,9 +142,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
 
   // Get viewport to render to (search from scene root, not parent)
   // Viewport is typically a sibling of the camera's parent nexus
-  const sceneRoot = getProxiedComponent(
-    parentNexus.parent!,
-  ) as unknown as NexusT;
+  const sceneRoot = castTo<NexusT>(parentNexus.parent!);
   // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const viewport = sceneRoot.getComponentByName(
     camera.viewportRef,
@@ -439,9 +437,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
       for (const sprite of sprites) {
         // Get sprite's parent nexus
         if (!sprite.parent || sprite.parent.type !== 'nexus') continue;
-        const spriteNexus = getProxiedComponent(
-          sprite.parent,
-        ) as unknown as NexusT;
+        const spriteNexus = castTo<NexusT>(sprite.parent);
 
         // Get sprite transform (sibling component)
         // @ts-expect-error - Proxy methods exist at runtime

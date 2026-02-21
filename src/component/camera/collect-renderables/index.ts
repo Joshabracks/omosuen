@@ -2,7 +2,7 @@ import { CellMapT } from '../../cell-map';
 import { LightT } from '../../light';
 import { NexusT } from '../../nexus';
 import { SpriteT } from '../../sprite';
-import { getProxiedComponent } from '../../types';
+import { castTo } from '../../types';
 import { CameraT } from '../data';
 
 /**
@@ -20,13 +20,11 @@ export function collectRenderables(camera: CameraT): {
     return { sprites: [], cellMaps: [], lights: [] };
   }
 
-  const parentNexus = getProxiedComponent(camera.parent!) as unknown as NexusT;
+  const parentNexus = castTo<NexusT>(camera.parent!);
 
   // Search from scene root to find ALL components in the entire scene tree
   // This allows the camera to find components in sibling branches, not just children
-  const sceneRoot = getProxiedComponent(
-    parentNexus.parent!,
-  ) as unknown as NexusT;
+  const sceneRoot = castTo<NexusT>(parentNexus.parent!);
 
   // Recursively collect all sprites from the scene root
   // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them

@@ -1,6 +1,6 @@
 import { NexusT } from '../../nexus';
 import { TransformT } from '../../transform';
-import { getProxiedComponent } from '../../types';
+import { castTo } from '../../types';
 import { CameraT } from '../data';
 
 /**
@@ -18,7 +18,7 @@ export function pan(camera: CameraT, offsetX: number, offsetY: number): void {
     return;
   }
 
-  const parentNexus = getProxiedComponent(camera.parent!) as unknown as NexusT;
+  const parentNexus = castTo<NexusT>(camera.parent!);
   // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const transform = parentNexus.getComponentByType(
     'transform',

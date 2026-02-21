@@ -1,4 +1,4 @@
-import { ComponentData, ComponentMethods, getProxiedComponent } from '../types';
+import { ComponentData, ComponentMethods, castTo } from '../types';
 import { ColliderT } from './data';
 import { CellMapT } from '../cell-map';
 import { NexusT } from '../nexus';
@@ -116,9 +116,7 @@ function clamp(v: number, min: number, max: number): number {
 
 function getSiblingTransform(collider: ColliderT): TransformT | null {
   if (!collider.parent || collider.parent.type !== 'nexus') return null;
-  const parentNexus = getProxiedComponent(
-    collider.parent,
-  ) as unknown as NexusT;
+  const parentNexus = castTo<NexusT>(collider.parent);
   // @ts-expect-error - Proxy methods exist at runtime
   return parentNexus.getComponentByType(
     'transform',
@@ -128,11 +126,9 @@ function getSiblingTransform(collider: ColliderT): TransformT | null {
 
 function getSceneRoot(collider: ColliderT): NexusT | null {
   if (!collider.parent || collider.parent.type !== 'nexus') return null;
-  let current = getProxiedComponent(
-    collider.parent,
-  ) as unknown as NexusT;
+  let current = castTo<NexusT>(collider.parent);
   while (current.parent && current.parent.type === 'nexus') {
-    current = getProxiedComponent(current.parent) as unknown as NexusT;
+    current = castTo<NexusT>(current.parent);
   }
   return current;
 }

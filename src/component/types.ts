@@ -1,6 +1,41 @@
 import { BUILDERS, MethodRegistry, PROPERTY_ALLOWLIST } from './registry';
 import { queueInit } from '../loop/init';
 import { Nexus, NexusT } from './nexus';
+import { CameraT } from './camera';
+import { CellMapT } from './cell-map';
+import { ColliderT } from './collider';
+import { DataLayerT } from './data-layer';
+import { FlagManagerT } from './flag-manager';
+import { InputControllerT } from './input-controller';
+import { LightT } from './light';
+import { MessengerT } from './messenger';
+import { SpriteT } from './sprite';
+import { TextureMapT } from './texture-map';
+import { TimerT } from './timer';
+import { TransformT } from './transform';
+import { UIOverlayT } from './ui-overlay';
+import { ViewportT } from './viewport';
+import { AtlasManagerT } from './atlas-manager';
+import { AnimationControllerT } from './animation-controller';
+
+type ComponentDataType =
+  | AnimationControllerT
+  | AtlasManagerT
+  | CameraT
+  | CellMapT
+  | ColliderT
+  | DataLayerT
+  | FlagManagerT
+  | InputControllerT
+  | LightT
+  | MessengerT
+  | NexusT
+  | SpriteT
+  | TextureMapT
+  | TimerT
+  | TransformT
+  | UIOverlayT
+  | ViewportT;
 
 /**
  * Registry mapping raw component objects to their Proxy wrappers.
@@ -27,14 +62,16 @@ const PROXY_REGISTRY = new WeakMap<ComponentData, ComponentData>();
  * @example
  * ```typescript
  * // In camera init:
- * const parentNexus = getProxiedComponent(camera.parent!) as NexusT;
+ * const parentNexus = castTo<NexusT>(camera.parent!);
  * const viewport = parentNexus.getComponentByName('My Viewport', false);
  * ```
  */
-export function getProxiedComponent(component: ComponentData): ComponentData {
+export function castTo<T extends ComponentDataType>(
+  component: ComponentData,
+): T {
   // Look up in registry - if not found, component might already be a Proxy or never registered
   const proxy = PROXY_REGISTRY.get(component);
-  return proxy || component;
+  return (proxy || component) as unknown as T;
 }
 
 let COMPONENT_COUNT = 0;

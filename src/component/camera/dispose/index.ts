@@ -1,5 +1,5 @@
 import { NexusT } from '../../nexus';
-import { ComponentData, getProxiedComponent } from '../../types';
+import { ComponentData, castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { clearTextureMapCache } from '../render/index';
@@ -18,13 +18,9 @@ export function dispose(component: ComponentData): void {
   // Obtain the GL context via the same viewport lookup pattern used in init
   let gl: WebGL2RenderingContext | null = null;
   if (camera.parent && camera.parent.type === 'nexus') {
-    const parentNexus = getProxiedComponent(
-      camera.parent!,
-    ) as unknown as NexusT;
+    const parentNexus = castTo<NexusT>(camera.parent!);
     if (parentNexus.parent) {
-      const sceneRoot = getProxiedComponent(
-        parentNexus.parent!,
-      ) as unknown as NexusT;
+      const sceneRoot = castTo<NexusT>(parentNexus.parent!);
       // @ts-expect-error - Proxy methods exist at runtime
       const viewport = sceneRoot.getComponentByName(
         camera.viewportRef,

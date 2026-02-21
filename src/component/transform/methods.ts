@@ -1,4 +1,4 @@
-import { ComponentData, ComponentMethods, getProxiedComponent } from '../types';
+import { ComponentData, ComponentMethods, castTo } from '../types';
 import { TransformT } from './data';
 import { Vector3D } from '../../math';
 import { NexusT } from '../nexus';
@@ -27,7 +27,7 @@ export interface TransformMethods extends ComponentMethods {
  */
 function findAncestorTransform(nexus: NexusT): TransformT | null {
   if (!nexus.parent || nexus.parent.type !== 'nexus') return null;
-  const parentNexus = getProxiedComponent(nexus.parent) as unknown as NexusT;
+  const parentNexus = castTo<NexusT>(nexus.parent);
 
   // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const parentTransform = parentNexus.getComponentByType(
@@ -46,7 +46,7 @@ function findAncestorTransform(nexus: NexusT): TransformT | null {
  */
 function getParentTransform(transform: TransformT): TransformT | null {
   if (!transform.parent || transform.parent.type !== 'nexus') return null;
-  const myNexus = getProxiedComponent(transform.parent) as unknown as NexusT;
+  const myNexus = castTo<NexusT>(transform.parent);
   return findAncestorTransform(myNexus);
 }
 

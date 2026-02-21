@@ -1,9 +1,12 @@
 import { AtlasManagerT } from '../../atlas-manager';
 import { CellMapT, rebuildDirtyChunks } from '../../cell-map';
+import { LightT } from '../../light';
 import { NexusT } from '../../nexus';
 import { TextureMapT } from '../../texture-map';
 import { TransformT } from '../../transform';
+import { getProxiedComponent } from '../../types';
 import { ViewportT } from '../../viewport';
+import { Vector3D } from '../../../math';
 import { CameraT } from '../data';
 
 /**
@@ -141,6 +144,7 @@ export function renderCellMaps(
   sceneRoot: NexusT,
   gl: WebGL2RenderingContext,
   textureMapCache: Map<string, TextureMapT>,
+  lights: LightT[],
 ): void {
   const program = camera.glResources.unifiedProgram;
   if (!program) {
@@ -197,6 +201,9 @@ export function renderCellMaps(
   );
   gl.uniform2f(uCameraPosition, snapped.x, snapped.y);
   gl.uniform1f(uZoom, camera.zoom);
+
+  // Set dynamic light uniforms
+  setLightUniforms(gl, program, lights);
 
   // Disable the UV attribute for chunk rendering (triplanar mapping doesn't use it)
   if (aUv >= 0) {
@@ -365,4 +372,108 @@ export function renderCellMaps(
   // Restore state for sprite rendering
   gl.disable(gl.DEPTH_TEST);
   gl.disable(gl.CULL_FACE);
+}
+
+/**
+ * Sets light uniform values on the unified shader program.
+ * Categorizes lights by type and uploads to GPU uniform arrays.
+ * When no lights are present, applies defaults matching the old hardcoded values.
+ */
+export function setLightUniforms(
+  gl: WebGL2RenderingContext,
+  program: WebGLProgram,
+  lights: LightT[],
+): void {
+  // Accumulate ambient light (additive)
+  const ambientColor = [0, 0, 0];
+  let hasAmbient = false;
+
+  const dirLights: LightT[] = [];
+  const pointLights: { light: LightT; pos: Vector3D }[] = [];
+  const spotLights: { light: LightT; pos: Vector3D }[] = [];
+
+  for (const light of lights) {
+    if (light.lightType === 'ambient') {
+      ambientColor[0] += light.color.x * light.brightness;
+      ambientColor[1] += light.color.y * light.brightness;
+      ambientColor[2] += light.color.z * light.brightness;
+      hasAmbient = true;
+    } else if (light.lightType === 'directional') {
+      dirLights.push(light);
+    } else {
+      // point or spot — need sibling transform for position
+      const parent = light.parent;
+      if (!parent || parent.type !== 'nexus') continue;
+      const nexus = getProxiedComponent(parent) as unknown as NexusT;
+      // @ts-expect-error - Proxy methods exist at runtime
+      const siblingTransform = nexus.getComponentByType('transform', false) as TransformT | null;
+      if (!siblingTransform) continue;
+      const pos = siblingTransform.position;
+      if (light.lightType === 'point') {
+        pointLights.push({ light, pos });
+      } else {
+        spotLights.push({ light, pos });
+      }
+    }
+  }
+
+  // Apply defaults when no lights exist (matches old hardcoded values)
+  if (lights.length === 0) {
+    // Default ambient: 0.4 brightness white
+    gl.uniform3f(gl.getUniformLocation(program, 'u_ambientColor'), 0.4, 0.4, 0.4);
+    gl.uniform1f(gl.getUniformLocation(program, 'u_ambientBrightness'), 1.0);
+
+    // Default directional: vec3(0.5, -0.7, 0.0) at 0.6 brightness
+    gl.uniform1i(gl.getUniformLocation(program, 'u_numDirLights'), 1);
+    gl.uniform3fv(gl.getUniformLocation(program, 'u_dirLightDir[0]'), [0.5, -0.7, 0.0]);
+    gl.uniform3fv(gl.getUniformLocation(program, 'u_dirLightColor[0]'), [1.0, 1.0, 1.0]);
+    gl.uniform1fv(gl.getUniformLocation(program, 'u_dirLightBrightness[0]'), [0.6]);
+
+    gl.uniform1i(gl.getUniformLocation(program, 'u_numPointLights'), 0);
+    gl.uniform1i(gl.getUniformLocation(program, 'u_numSpotLights'), 0);
+    return;
+  }
+
+  // Ambient
+  if (hasAmbient) {
+    gl.uniform3f(gl.getUniformLocation(program, 'u_ambientColor'), ambientColor[0], ambientColor[1], ambientColor[2]);
+    gl.uniform1f(gl.getUniformLocation(program, 'u_ambientBrightness'), 1.0);
+  } else {
+    gl.uniform3f(gl.getUniformLocation(program, 'u_ambientColor'), 0.0, 0.0, 0.0);
+    gl.uniform1f(gl.getUniformLocation(program, 'u_ambientBrightness'), 0.0);
+  }
+
+  // Directional lights (capped at 4)
+  const numDir = Math.min(dirLights.length, 4);
+  gl.uniform1i(gl.getUniformLocation(program, 'u_numDirLights'), numDir);
+  for (let i = 0; i < numDir; i++) {
+    const l = dirLights[i];
+    gl.uniform3fv(gl.getUniformLocation(program, `u_dirLightDir[${i}]`), [l.direction.x, l.direction.y, l.direction.z]);
+    gl.uniform3fv(gl.getUniformLocation(program, `u_dirLightColor[${i}]`), [l.color.x, l.color.y, l.color.z]);
+    gl.uniform1fv(gl.getUniformLocation(program, `u_dirLightBrightness[${i}]`), [l.brightness]);
+  }
+
+  // Point lights (capped at 8)
+  const numPoint = Math.min(pointLights.length, 8);
+  gl.uniform1i(gl.getUniformLocation(program, 'u_numPointLights'), numPoint);
+  for (let i = 0; i < numPoint; i++) {
+    const { light: l, pos } = pointLights[i];
+    gl.uniform3fv(gl.getUniformLocation(program, `u_pointLightPos[${i}]`), [pos.x, pos.y, pos.z]);
+    gl.uniform3fv(gl.getUniformLocation(program, `u_pointLightColor[${i}]`), [l.color.x, l.color.y, l.color.z]);
+    gl.uniform1fv(gl.getUniformLocation(program, `u_pointLightBrightness[${i}]`), [l.brightness]);
+    gl.uniform1fv(gl.getUniformLocation(program, `u_pointLightRadius[${i}]`), [l.radius]);
+    gl.uniform1fv(gl.getUniformLocation(program, `u_pointLightHardness[${i}]`), [l.hardness]);
+  }
+
+  // Spot lights (capped at 8)
+  const numSpot = Math.min(spotLights.length, 8);
+  gl.uniform1i(gl.getUniformLocation(program, 'u_numSpotLights'), numSpot);
+  for (let i = 0; i < numSpot; i++) {
+    const { light: l, pos } = spotLights[i];
+    gl.uniform3fv(gl.getUniformLocation(program, `u_spotLightPos[${i}]`), [pos.x, pos.y, pos.z]);
+    gl.uniform3fv(gl.getUniformLocation(program, `u_spotLightColor[${i}]`), [l.color.x, l.color.y, l.color.z]);
+    gl.uniform1fv(gl.getUniformLocation(program, `u_spotLightBrightness[${i}]`), [l.brightness]);
+    gl.uniform1fv(gl.getUniformLocation(program, `u_spotLightRadius[${i}]`), [l.radius]);
+    gl.uniform1fv(gl.getUniformLocation(program, `u_spotLightHardness[${i}]`), [l.hardness]);
+  }
 }

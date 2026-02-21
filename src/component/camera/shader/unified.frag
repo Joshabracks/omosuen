@@ -27,12 +27,91 @@ uniform vec2 u_fboUvScale;
 uniform vec2 u_fboUvOffset;
 uniform vec2 u_screenSize;
 
+    // Dynamic lighting uniforms
+uniform vec3 u_ambientColor;
+uniform float u_ambientBrightness;
+
+const int MAX_DIR_LIGHTS = 4;
+uniform int u_numDirLights;
+uniform vec3 u_dirLightDir[MAX_DIR_LIGHTS];
+uniform vec3 u_dirLightColor[MAX_DIR_LIGHTS];
+uniform float u_dirLightBrightness[MAX_DIR_LIGHTS];
+
+const int MAX_POINT_LIGHTS = 8;
+uniform int u_numPointLights;
+uniform vec3 u_pointLightPos[MAX_POINT_LIGHTS];
+uniform vec3 u_pointLightColor[MAX_POINT_LIGHTS];
+uniform float u_pointLightBrightness[MAX_POINT_LIGHTS];
+uniform float u_pointLightRadius[MAX_POINT_LIGHTS];
+uniform float u_pointLightHardness[MAX_POINT_LIGHTS];
+
+const int MAX_SPOT_LIGHTS = 8;
+uniform int u_numSpotLights;
+uniform vec3 u_spotLightPos[MAX_SPOT_LIGHTS];
+uniform vec3 u_spotLightColor[MAX_SPOT_LIGHTS];
+uniform float u_spotLightBrightness[MAX_SPOT_LIGHTS];
+uniform float u_spotLightRadius[MAX_SPOT_LIGHTS];
+uniform float u_spotLightHardness[MAX_SPOT_LIGHTS];
+
     // Varying inputs (shared)
 varying vec2 v_uv;
 varying vec3 v_normal;
 varying vec3 v_worldPos;
 varying vec2 v_screenPos;
 varying vec3 v_worldNormal;
+
+// Transform world direction to isometric screen space
+// Same projection matrix as the vertex shader
+vec3 worldDirToIso(vec3 d) {
+    return normalize(vec3(
+        d.x * 0.866 - d.z * 0.866,
+        d.x * 0.5 - d.y + d.z * 0.5,
+        0.0
+    ));
+}
+
+// Distance attenuation with hardness control
+float attenuate(float dist, float radius, float hardness) {
+    float inner = radius * hardness;
+    return 1.0 - smoothstep(inner, radius, dist);
+}
+
+// Compute lighting from all dynamic light sources
+vec3 computeLighting(vec3 normal, vec3 worldPos) {
+    // Ambient
+    vec3 lighting = u_ambientColor * u_ambientBrightness;
+
+    // Directional lights (normal-dependent diffuse)
+    for (int i = 0; i < MAX_DIR_LIGHTS; i++) {
+        if (i >= u_numDirLights) break;
+        vec3 isoDir = worldDirToIso(-u_dirLightDir[i]);
+        float diff = max(dot(normal, isoDir), 0.0);
+        lighting += u_dirLightColor[i] * u_dirLightBrightness[i] * diff;
+    }
+
+    // Point lights (normal-dependent diffuse + distance attenuation)
+    for (int i = 0; i < MAX_POINT_LIGHTS; i++) {
+        if (i >= u_numPointLights) break;
+        vec3 toLight = u_pointLightPos[i] - worldPos;
+        float dist = length(toLight);
+        if (dist >= u_pointLightRadius[i]) continue;
+        float atten = attenuate(dist, u_pointLightRadius[i], u_pointLightHardness[i]);
+        vec3 isoDir = worldDirToIso(normalize(toLight));
+        float diff = max(dot(normal, isoDir), 0.0);
+        lighting += u_pointLightColor[i] * u_pointLightBrightness[i] * diff * atten;
+    }
+
+    // Spot lights (ambient within sphere — no normal dependency, just distance)
+    for (int i = 0; i < MAX_SPOT_LIGHTS; i++) {
+        if (i >= u_numSpotLights) break;
+        float dist = length(u_spotLightPos[i] - worldPos);
+        if (dist >= u_spotLightRadius[i]) continue;
+        float atten = attenuate(dist, u_spotLightRadius[i], u_spotLightHardness[i]);
+        lighting += u_spotLightColor[i] * u_spotLightBrightness[i] * atten;
+    }
+
+    return lighting;
+}
 
 // Manual bilinear interpolation for atlas-safe texel blending.
 // Prevents shimmer by smoothly transitioning between neighboring texels
@@ -98,11 +177,8 @@ void main() {
             finalNormal = normalize(v_normal);
         }
 
-        // Directional light in screen space
-        vec3 lightDir = normalize(vec3(0.5, -0.7, 0.0));
-        float diffuse = max(dot(finalNormal, lightDir), 0.0);
-        float ambient = 0.4;
-        float lighting = ambient + diffuse * 0.6;
+        // Dynamic lighting
+        vec3 lighting = computeLighting(finalNormal, v_worldPos);
 
         gl_FragColor = vec4(albedo.rgb * lighting, albedo.a);
 
@@ -144,14 +220,11 @@ void main() {
             finalNormal = v_normal;
         }
 
-        // Directional light in screen space (same as cell-maps for consistency)
-        vec3 lightDir = normalize(vec3(0.5, -0.7, 0.0));
-        float diffuse = max(dot(finalNormal, lightDir), 0.0);
-        float ambient = 0.4;
-        float lighting = ambient + diffuse * 0.6;
+        // Dynamic lighting
+        vec3 lighting = computeLighting(finalNormal, v_worldPos);
 
         // Apply lighting and tint
-        vec4 tinted = albedo * u_tint * vec4(vec3(lighting), 1.0);
+        vec4 tinted = albedo * u_tint * vec4(lighting, 1.0);
 
         // Apply opacity to final alpha channel
         gl_FragColor = vec4(tinted.rgb, tinted.a * u_opacity);

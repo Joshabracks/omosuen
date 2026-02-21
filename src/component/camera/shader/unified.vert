@@ -109,7 +109,7 @@ void main() {
         // Sprites are 2D billboards facing the camera, so they use screen-space normals
         // Normal maps (if present) will be applied in the fragment shader for lighting
         v_normal = vec3(0.0, 0.0, 1.0);  // Billboard facing camera
-        v_worldPos = vec3(u_spritePosition.x, u_spritePosition.z, u_spritePosition.y);
+        v_worldPos = u_spritePosition;
         v_worldNormal = vec3(0.0, 0.0, 1.0);  // Screen-space normal
         v_screenPos = viewPos;
     }

@@ -86,7 +86,8 @@ export type COMPONENT_TYPE =
   | 'camera'
   | 'input-controller'
   | 'collider'
-  | 'timer';
+  | 'timer'
+  | 'light';
 
 export interface ComponentOptions {
   name: string;

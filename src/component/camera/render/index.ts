@@ -6,7 +6,7 @@ import { getProxiedComponent } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { Camera } from '../methods';
-import { renderCellMaps, renderPostProcess, snapCameraPosition } from './utils';
+import { renderCellMaps, renderPostProcess, setLightUniforms, snapCameraPosition } from './utils';
 
 /**
  * Renders the scene from the camera's perspective.
@@ -64,7 +64,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
   }
 
   // Collect all renderable components from the tree
-  const { sprites, cellMaps } = Camera.collectRenderables(camera);
+  const { sprites, cellMaps, lights } = Camera.collectRenderables(camera);
 
   console.log(
     `[camera] render() - collected ${sprites.length} sprites, ${cellMaps.length} cell-maps`,
@@ -141,6 +141,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
       sceneRoot,
       gl,
       textureMapCache,
+      lights,
     );
   } else {
     console.log('[camera] render() - no cell-maps to render');
@@ -288,6 +289,9 @@ export function render(camera: CameraT, _deltaTime: number): void {
         unifiedCellSizeZ,
       );
       gl.uniform3f(u_mapSize, maxMapWidth, maxMapHeight, maxMapDepth);
+
+      // Set dynamic light uniforms (same lights as cell-maps)
+      setLightUniforms(gl, program, lights);
 
       // Bind cell FBO depth texture for occlusion masking
       gl.activeTexture(gl.TEXTURE2);

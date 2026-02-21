@@ -78,6 +78,11 @@ import {
   builder as timerBuilder,
   PROPERTY_ALLOWLIST as TimerPropertyAllowlist,
 } from './timer';
+import {
+  Light,
+  builder as lightBuilder,
+  PROPERTY_ALLOWLIST as LightPropertyAllowlist,
+} from './light';
 import type { COMPONENT_TYPE } from './types';
 
 /**
@@ -107,6 +112,7 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   'input-controller': inputControllerBuilder,
   collider: colliderBuilder,
   timer: timerBuilder,
+  light: lightBuilder,
 };
 
 /**
@@ -135,6 +141,7 @@ export const MethodRegistry: Record<
   'input-controller': InputController,
   collider: Collider,
   timer: Timer,
+  light: Light,
   'ui-binding': {},
   'html-constructor': {},
   'message-listener': {},
@@ -161,6 +168,7 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   'input-controller': InputControllerPropertyAllowlist,
   collider: ColliderPropertyAllowlist,
   timer: TimerPropertyAllowlist,
+  light: LightPropertyAllowlist,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

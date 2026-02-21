@@ -2,6 +2,7 @@ import { ComponentData, ComponentMethods } from '../types';
 import { CameraT } from './data';
 import { SpriteT } from '../sprite/data';
 import { CellMapT } from '../cell-map/data';
+import { LightT } from '../light/data';
 import { render } from './render';
 import { collectRenderables } from './collect-renderables';
 import { pan } from './pan';
@@ -14,6 +15,7 @@ export interface CameraMethods extends ComponentMethods {
   collectRenderables: (camera: CameraT) => {
     sprites: SpriteT[];
     cellMaps: CellMapT[];
+    lights: LightT[];
   };
   pan: (camera: CameraT, offsetX: number, offsetY: number) => void;
   setZoom: (camera: CameraT, zoom: number) => void;

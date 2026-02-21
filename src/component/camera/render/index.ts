@@ -7,11 +7,20 @@ import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { Camera } from '../methods';
 import {
+  FBO_OVERSCAN_PX,
   renderCellMaps,
   renderPostProcess,
   setLightUniforms,
   snapCameraPosition,
 } from './utils';
+
+/** Default cell dimensions when no cell-maps are in the scene. */
+const DEFAULT_CELL_SIZE_X = 32;
+const DEFAULT_CELL_SIZE_Y = 16;
+const DEFAULT_CELL_SIZE_Z = 32;
+
+/** Default map dimension when no cell-maps provide actual dimensions. */
+const DEFAULT_MAP_DIMENSION = 20;
 
 // TextureMap lookup cache — keyed by camera component ID
 const TEXTURE_MAP_CACHE = new Map<number, Map<string, TextureMapT>>();
@@ -190,9 +199,9 @@ export function render(camera: CameraT, _deltaTime: number): void {
       let maxMapWidth = 0;
       let maxMapHeight = 0;
       let maxMapDepth = 0;
-      let unifiedCellSizeX = 32; // Default cell size
-      let unifiedCellSizeY = 16;
-      let unifiedCellSizeZ = 32;
+      let unifiedCellSizeX = DEFAULT_CELL_SIZE_X;
+      let unifiedCellSizeY = DEFAULT_CELL_SIZE_Y;
+      let unifiedCellSizeZ = DEFAULT_CELL_SIZE_Z;
 
       for (const cellMap of cellMaps) {
         maxMapWidth = Math.max(maxMapWidth, cellMap.mapSize.x);
@@ -207,9 +216,9 @@ export function render(camera: CameraT, _deltaTime: number): void {
       }
 
       // Fallback to reasonable defaults if no cell-maps found
-      if (maxMapWidth === 0) maxMapWidth = 20;
-      if (maxMapHeight === 0) maxMapHeight = 20;
-      if (maxMapDepth === 0) maxMapDepth = 20;
+      if (maxMapWidth === 0) maxMapWidth = DEFAULT_MAP_DIMENSION;
+      if (maxMapHeight === 0) maxMapHeight = DEFAULT_MAP_DIMENSION;
+      if (maxMapDepth === 0) maxMapDepth = DEFAULT_MAP_DIMENSION;
 
       // Enable blending so transparent sprite pixels show cells underneath
       gl.enable(gl.BLEND);
@@ -324,8 +333,8 @@ export function render(camera: CameraT, _deltaTime: number): void {
       // Uses the same UV transform as the post-process shader
       const fboWidth = camera.glResources.baseResolution.width;
       const fboHeight = camera.glResources.baseResolution.height;
-      const unpaddedWidth = fboWidth - 2;
-      const unpaddedHeight = fboHeight - 2;
+      const unpaddedWidth = fboWidth - FBO_OVERSCAN_PX;
+      const unpaddedHeight = fboHeight - FBO_OVERSCAN_PX;
       gl.uniform2f(
         u_fboUvScale,
         unpaddedWidth / fboWidth,

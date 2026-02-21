@@ -32,6 +32,18 @@ const _spotLightBrightness = new Map<number, (WebGLUniformLocation | null)[]>();
 const _spotLightRadius = new Map<number, (WebGLUniformLocation | null)[]>();
 const _spotLightHardness = new Map<number, (WebGLUniformLocation | null)[]>();
 
+/** Pixels of overscan padding added to FBO dimensions (1px border each side). */
+export const FBO_OVERSCAN_PX = 2;
+
+/** Default ambient color when no lights are in the scene. */
+const DEFAULT_AMBIENT_COLOR: [number, number, number] = [0.4, 0.4, 0.4];
+
+/** Default directional light direction when no lights are in the scene. */
+const DEFAULT_DIR_DIRECTION: [number, number, number] = [0.5, -0.7, 0.0];
+
+/** Default directional light brightness when no lights are in the scene. */
+const DEFAULT_DIR_BRIGHTNESS = 0.6;
+
 export function cacheLightUniformLocations(
   gl: WebGL2RenderingContext,
   program: WebGLProgram,
@@ -209,8 +221,8 @@ export function renderPostProcess(
 
   const fboWidth = camera.glResources.baseResolution.width; // padded
   const fboHeight = camera.glResources.baseResolution.height; // padded
-  const unpaddedWidth = fboWidth - 2;
-  const unpaddedHeight = fboHeight - 2;
+  const unpaddedWidth = fboWidth - FBO_OVERSCAN_PX;
+  const unpaddedHeight = fboHeight - FBO_OVERSCAN_PX;
 
   // UV scale: map [0,1] quad UV to the unpadded viewport region
   gl.uniform2f(uUvScale, unpaddedWidth / fboWidth, unpaddedHeight / fboHeight);
@@ -225,11 +237,11 @@ export function renderPostProcess(
     gl.uniform2f(
       uUvOffset,
       fboOffsetX / fboWidth,
-      (2 - fboOffsetY) / fboHeight,
+      (FBO_OVERSCAN_PX - fboOffsetY) / fboHeight,
     );
   } else {
     // No offset; X starts at 0 (camera edge), Y skips 2-pixel bottom border
-    gl.uniform2f(uUvOffset, 0, 2 / fboHeight);
+    gl.uniform2f(uUvOffset, 0, FBO_OVERSCAN_PX / fboHeight);
   }
 
   // Bind fullscreen quad buffer
@@ -560,12 +572,12 @@ export function setLightUniforms(
 
   // Apply defaults when no lights exist (matches old hardcoded values)
   if (lights.length === 0) {
-    gl.uniform3f(locAmbientColor, 0.4, 0.4, 0.4);
+    gl.uniform3f(locAmbientColor, ...DEFAULT_AMBIENT_COLOR);
     gl.uniform1f(locAmbientBrightness, 1.0);
     gl.uniform1i(locNumDir, 1);
-    gl.uniform3fv(locDirDir[0], [0.5, -0.7, 0.0]);
+    gl.uniform3fv(locDirDir[0], DEFAULT_DIR_DIRECTION);
     gl.uniform3fv(locDirColor[0], [1.0, 1.0, 1.0]);
-    gl.uniform1fv(locDirBrightness[0], [0.6]);
+    gl.uniform1fv(locDirBrightness[0], [DEFAULT_DIR_BRIGHTNESS]);
     gl.uniform1i(locNumPoint, 0);
     gl.uniform1i(locNumSpot, 0);
     return;

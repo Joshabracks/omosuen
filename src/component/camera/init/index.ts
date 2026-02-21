@@ -9,7 +9,7 @@ import postProcessVertexShader from '../shader/post.vert';
 import postProcessFragmentShader from '../shader/post.frag';
 import unifiedVertexShader from '../shader/unified.vert';
 import unifiedFragmentShader from '../shader/unified.frag';
-import { cacheLightUniformLocations } from '../render/utils';
+import { FBO_OVERSCAN_PX, cacheLightUniformLocations } from '../render/utils';
 
 /**
  * Initializes WebGL resources for the camera (shader programs, buffers).
@@ -184,9 +184,11 @@ export async function init(component: ComponentData): Promise<void> {
   // Add 2 pixels of overscan per dimension (1-pixel border on each side)
   // so the post-process UV offset has room to slide without exceeding texture bounds
   const baseWidth =
-    Math.floor(viewport.width / (camera.zoom * camera.pixelScale)) + 2;
+    Math.floor(viewport.width / (camera.zoom * camera.pixelScale)) +
+    FBO_OVERSCAN_PX;
   const baseHeight =
-    Math.floor(viewport.height / (camera.zoom * camera.pixelScale)) + 2;
+    Math.floor(viewport.height / (camera.zoom * camera.pixelScale)) +
+    FBO_OVERSCAN_PX;
 
   camera.glResources.baseResolution = {
     width: baseWidth,

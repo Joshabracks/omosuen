@@ -3,6 +3,7 @@ import { TransformT } from '../../transform';
 import { getProxiedComponent } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
+import { FBO_OVERSCAN_PX } from '../render/utils';
 
 /**
  * Sets the camera zoom level and updates framebuffer resolution.
@@ -127,9 +128,11 @@ function updateFramebufferForZoom(camera: CameraT): void {
   // Recalculate base resolution based on new zoom and pixel scale
   // Add 2 pixels of overscan per dimension (1-pixel border on each side)
   const baseWidth =
-    Math.floor(viewport.width / (camera.zoom * camera.pixelScale)) + 2;
+    Math.floor(viewport.width / (camera.zoom * camera.pixelScale)) +
+    FBO_OVERSCAN_PX;
   const baseHeight =
-    Math.floor(viewport.height / (camera.zoom * camera.pixelScale)) + 2;
+    Math.floor(viewport.height / (camera.zoom * camera.pixelScale)) +
+    FBO_OVERSCAN_PX;
 
   camera.glResources.baseResolution.width = baseWidth;
   camera.glResources.baseResolution.height = baseHeight;

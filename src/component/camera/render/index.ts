@@ -1,5 +1,6 @@
 import { AtlasManagerT } from '../../atlas-manager';
 import { NexusT } from '../../nexus';
+import type { SpriteT } from '../../sprite';
 import { TextureMapT } from '../../texture-map';
 import { TransformT } from '../../transform';
 import { getProxiedComponent } from '../../types';
@@ -39,6 +40,67 @@ export function invalidateAllTextureMapCaches(): void {
 export function clearTextureMapCache(cameraId: number): void {
   TEXTURE_MAP_CACHE.delete(cameraId);
   TEXTURE_MAP_CACHE_DIRTY.delete(cameraId);
+}
+
+/**
+ * Attempts to bind a sprite's normal texture to TEXTURE1.
+ * Sets u_hasNormal to 1 on success, 0 on any failure (early return).
+ */
+function bindNormalTexture(
+  sprite: SpriteT,
+  textureMapCache: Map<string, TextureMapT>,
+  camera: CameraT,
+  gl: WebGL2RenderingContext,
+  u_normalTexture: WebGLUniformLocation | null,
+  u_normalUVBounds: WebGLUniformLocation | null,
+  u_hasNormal: WebGLUniformLocation | null,
+  atlasSize: number,
+): void {
+  if (!sprite.textureMapKeys.normal) {
+    gl.uniform1i(u_hasNormal, 0);
+    return;
+  }
+
+  const normalTextureMap = textureMapCache.get(sprite.textureMapKeys.normal);
+  if (!normalTextureMap || normalTextureMap.packedFrames.length === 0) {
+    gl.uniform1i(u_hasNormal, 0);
+    return;
+  }
+
+  const normalFrame = normalTextureMap.packedFrames.find(
+    (f) => f.frameIndex === sprite.frame.normal,
+  );
+  if (!normalFrame) {
+    gl.uniform1i(u_hasNormal, 0);
+    return;
+  }
+
+  const normalAtlasTexture =
+    camera.glResources.atlasTextures[normalFrame.atlasIndex];
+  if (!normalAtlasTexture) {
+    gl.uniform1i(u_hasNormal, 0);
+    return;
+  }
+
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, normalAtlasTexture);
+  gl.uniform1i(u_normalTexture, 1);
+
+  const normalMinU = normalFrame.atlasPosition.x / atlasSize;
+  const normalMinV = normalFrame.atlasPosition.y / atlasSize;
+  const normalMaxU =
+    (normalFrame.atlasPosition.x + normalFrame.size.x) / atlasSize;
+  const normalMaxV =
+    (normalFrame.atlasPosition.y + normalFrame.size.y) / atlasSize;
+  gl.uniform4f(
+    u_normalUVBounds,
+    normalMinU,
+    normalMinV,
+    normalMaxU,
+    normalMaxV,
+  );
+
+  gl.uniform1i(u_hasNormal, 1);
 }
 
 /**
@@ -447,59 +509,16 @@ export function render(camera: CameraT, _deltaTime: number): void {
         gl.uniform4f(u_uvBounds, minU, minV, maxU, maxV);
 
         // Bind normal texture if available
-        if (sprite.textureMapKeys.normal) {
-          const normalTextureMap = textureMapCache.get(
-            sprite.textureMapKeys.normal,
-          );
-          if (normalTextureMap && normalTextureMap.packedFrames.length > 0) {
-            const normalFrame = normalTextureMap.packedFrames.find(
-              (f) => f.frameIndex === sprite.frame.normal,
-            );
-            if (normalFrame) {
-              const normalAtlasTexture =
-                camera.glResources.atlasTextures[normalFrame.atlasIndex];
-
-              if (normalAtlasTexture) {
-                // Bind normal texture to TEXTURE1
-                gl.activeTexture(gl.TEXTURE1);
-                gl.bindTexture(gl.TEXTURE_2D, normalAtlasTexture);
-                gl.uniform1i(u_normalTexture, 1);
-
-                // Calculate normal UV bounds in atlas
-                const normalMinU = normalFrame.atlasPosition.x / atlasSize;
-                const normalMinV = normalFrame.atlasPosition.y / atlasSize;
-                const normalMaxU =
-                  (normalFrame.atlasPosition.x + normalFrame.size.x) /
-                  atlasSize;
-                const normalMaxV =
-                  (normalFrame.atlasPosition.y + normalFrame.size.y) /
-                  atlasSize;
-                gl.uniform4f(
-                  u_normalUVBounds,
-                  normalMinU,
-                  normalMinV,
-                  normalMaxU,
-                  normalMaxV,
-                );
-
-                // Enable normal mapping
-                gl.uniform1i(u_hasNormal, 1);
-              } else {
-                // No normal atlas texture available
-                gl.uniform1i(u_hasNormal, 0);
-              }
-            } else {
-              // Normal frame not found
-              gl.uniform1i(u_hasNormal, 0);
-            }
-          } else {
-            // No normal texture map found
-            gl.uniform1i(u_hasNormal, 0);
-          }
-        } else {
-          // Sprite has no normal texture key
-          gl.uniform1i(u_hasNormal, 0);
-        }
+        bindNormalTexture(
+          sprite,
+          textureMapCache,
+          camera,
+          gl,
+          u_normalTexture,
+          u_normalUVBounds,
+          u_hasNormal,
+          atlasSize,
+        );
 
         // Set other channel flags (not yet implemented)
         gl.uniform1i(u_hasMaterial, 0);

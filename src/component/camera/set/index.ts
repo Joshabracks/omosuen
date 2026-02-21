@@ -165,8 +165,4 @@ function updateFramebufferForZoom(camera: CameraT): void {
     gl.UNSIGNED_INT,
     null,
   );
-
-  console.log(
-    `[camera] Updated framebuffer resolution to ${baseWidth}x${baseHeight} for zoom ${camera.zoom}`,
-  );
 }

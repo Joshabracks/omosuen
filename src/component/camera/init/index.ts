@@ -70,10 +70,6 @@ export async function init(component: ComponentData): Promise<void> {
   }
   camera.glResources.renderModeLocation = u_renderMode;
 
-  console.log(
-    `[camera] Camera '${camera.name}' compiled unified shader program`,
-  );
-
   // 3. Create quad geometry buffers
   // Vertex positions (centered quad -0.5 to 0.5)
   const vertices = new Float32Array([
@@ -177,10 +173,6 @@ export async function init(component: ComponentData): Promise<void> {
 
       camera.glResources.atlasTextures[i] = texture;
     }
-
-    console.log(
-      `[camera] Camera '${camera.name}' uploaded ${camera.glResources.atlasTextures.length} atlas textures`,
-    );
   }
 
   // 4. Create framebuffer for pixel-perfect post-processing
@@ -294,10 +286,6 @@ export async function init(component: ComponentData): Promise<void> {
   camera.glResources.renderTexture = renderTexture;
   camera.glResources.depthTexture = depthTexture;
 
-  console.log(
-    `[camera] Camera '${camera.name}' created framebuffer at ${baseWidth}x${baseHeight}`,
-  );
-
   // 5. Create post-processing shader
 
   const postProcessProgram = createShaderProgram(
@@ -351,14 +339,6 @@ export async function init(component: ComponentData): Promise<void> {
   gl.bindBuffer(gl.ARRAY_BUFFER, fullscreenQuadBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, fullscreenQuad, gl.STATIC_DRAW);
   camera.glResources.fullscreenQuadBuffer = fullscreenQuadBuffer;
-
-  console.log(
-    `[camera] Camera '${camera.name}' compiled post-process shader program`,
-  );
-
-  console.log(
-    `[camera] Camera '${camera.name}' initialized with WebGL context`,
-  );
 
   camera._initialized = true;
 }

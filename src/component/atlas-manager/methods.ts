@@ -228,12 +228,8 @@ export const AtlasManager: AtlasManagerMethods = {
 
     // Only compile if not already compiled and has pending texture maps
     if (!am.compiled && am.textureMapIds.size > 0) {
-      console.log(
-        '[atlas-manager] Auto-compiling texture atlases during initialization...',
-      );
       try {
         await AtlasManager.processTextureMaps(am);
-        console.log('[atlas-manager] Auto-compilation complete');
       } catch (error) {
         console.error(
           '[atlas-manager] Auto-compilation failed during init:',
@@ -413,10 +409,6 @@ export const AtlasManager: AtlasManagerMethods = {
     // Clear pending texture maps and set compiled flag
     am.textureMapIds.clear();
     am.compiled = true;
-
-    console.log(
-      `[atlas-manager] Successfully compiled ${am.atlases.length} atlases from ${textureMaps.length} texture maps`,
-    );
   },
 
   getAtlas: (am: AtlasManagerT, index: number): ImageData | undefined => {

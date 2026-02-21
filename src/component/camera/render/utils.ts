@@ -363,10 +363,6 @@ export function renderCellMaps(
 
       totalFaces += chunk.faceCount;
     }
-
-    console.log(
-      `[camera] renderCellMap '${cellMap.name}' - faces: ${totalFaces}, drawCalls: ${drawCalls}`,
-    );
   }
 
   // Restore state for sprite rendering

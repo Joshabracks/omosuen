@@ -105,8 +105,6 @@ async function init(component: ComponentData): Promise<void> {
   ic._eventHandlers.set('touchmove', touchmoveHandler);
   ic._eventHandlers.set('gamepadconnected', gamepadconnectedHandler);
   ic._eventHandlers.set('gamepaddisconnected', gamepaddisconnectedHandler);
-
-  console.log(`[input-controller] InputController '${ic.name}' initialized`);
 }
 
 /**
@@ -136,7 +134,6 @@ function dispose(component: ComponentData): void {
   ic.actionCallbacks.clear();
 
   ic._disposed = true;
-  console.log(`[input-controller] InputController '${ic.name}' disposed`);
 }
 
 /**
@@ -442,10 +439,6 @@ function handleGamepadConnected(ic: InputControllerT, e: GamepadEvent): void {
   matchingBindings.forEach((binding) => {
     triggerAction(ic, binding.action, e);
   });
-
-  console.log(
-    `[input-controller] Gamepad connected: ${e.gamepad.id} (index: ${e.gamepad.index})`,
-  );
 }
 
 function handleGamepadDisconnected(
@@ -459,10 +452,6 @@ function handleGamepadDisconnected(
   matchingBindings.forEach((binding) => {
     triggerAction(ic, binding.action, e);
   });
-
-  console.log(
-    `[input-controller] Gamepad disconnected: ${e.gamepad.id} (index: ${e.gamepad.index})`,
-  );
 }
 
 /**

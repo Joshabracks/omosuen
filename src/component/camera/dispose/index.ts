@@ -1,28 +1,63 @@
-import { ComponentData } from '../../types';
+import { NexusT } from '../../nexus';
+import { ComponentData, getProxiedComponent } from '../../types';
+import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 
 /**
  * Disposes WebGL resources when the camera is removed.
+ * Explicitly deletes all GPU resources to prevent memory leaks.
  *
  * @param component - The camera component
  */
 export function dispose(component: ComponentData): void {
   const camera = component as CameraT;
+  const res = camera.glResources;
 
-  // Note: WebGL resources are managed by the WebGL context.
-  // When the context is lost or the page unloads, resources are automatically freed.
-  // We null out our references to allow garbage collection, but don't need to
-  // explicitly call gl.deleteProgram() etc. unless we're dynamically creating/destroying
-  // many cameras during runtime (which is unlikely).
+  // Obtain the GL context via the same viewport lookup pattern used in init
+  let gl: WebGL2RenderingContext | null = null;
+  if (camera.parent && camera.parent.type === 'nexus') {
+    const parentNexus = getProxiedComponent(
+      camera.parent!,
+    ) as unknown as NexusT;
+    if (parentNexus.parent) {
+      const sceneRoot = getProxiedComponent(
+        parentNexus.parent!,
+      ) as unknown as NexusT;
+      // @ts-expect-error - Proxy methods exist at runtime
+      const viewport = sceneRoot.getComponentByName(
+        camera.viewportRef,
+        true,
+      ) as ViewportT | null;
+      gl = viewport?.gl ?? null;
+    }
+  }
 
-  // Clear buffers
-  camera.glResources.quadVertexBuffer = null;
-  camera.glResources.quadUVBuffer = null;
+  // Delete GPU resources if GL context is available
+  if (gl) {
+    if (res.unifiedProgram) gl.deleteProgram(res.unifiedProgram);
+    if (res.postProcessProgram) gl.deleteProgram(res.postProcessProgram);
+    if (res.quadVertexBuffer) gl.deleteBuffer(res.quadVertexBuffer);
+    if (res.quadUVBuffer) gl.deleteBuffer(res.quadUVBuffer);
+    if (res.fullscreenQuadBuffer) gl.deleteBuffer(res.fullscreenQuadBuffer);
+    if (res.framebuffer) gl.deleteFramebuffer(res.framebuffer);
+    if (res.renderTexture) gl.deleteTexture(res.renderTexture);
+    if (res.depthTexture) gl.deleteTexture(res.depthTexture);
+    for (const tex of res.atlasTextures) {
+      if (tex) gl.deleteTexture(tex);
+    }
+  }
 
-  // Clear textures
-  camera.glResources.atlasTextures = [];
+  // Null all references for GC
+  res.unifiedProgram = null;
+  res.renderModeLocation = null;
+  res.postProcessProgram = null;
+  res.quadVertexBuffer = null;
+  res.quadUVBuffer = null;
+  res.fullscreenQuadBuffer = null;
+  res.framebuffer = null;
+  res.renderTexture = null;
+  res.depthTexture = null;
+  res.atlasTextures = [];
 
   camera._disposed = true;
-
-  console.log(`[camera] Camera '${camera.name}' disposed`);
 }

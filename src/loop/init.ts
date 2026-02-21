@@ -82,18 +82,10 @@ export async function processInitQueue(
   // Start new init cycle
   if (INIT_QUEUE_LENGTH === -1 && INIT_QUEUE.length > 0) {
     INIT_QUEUE_LENGTH = INIT_QUEUE.length;
-    console.info(
-      `[INIT] Starting initialization of ${INIT_QUEUE_LENGTH} components`,
-    );
   }
 
   // Nothing to initialize
   if (INIT_QUEUE.length === 0) {
-    if (INITIALIZATION_IN_PROGRESS) {
-      console.info(
-        `[INIT] Completed initialization of ${INIT_QUEUE_LENGTH} components`,
-      );
-    }
     INITIALIZATION_IN_PROGRESS = false;
     INIT_QUEUE_LENGTH = -1;
     return;
@@ -149,20 +141,11 @@ export async function processInitQueue(
     const elapsed = performance.now() - startTime;
     if (elapsed >= targetFrameTime) {
       INITIALIZATION_IN_PROGRESS = true;
-      const remaining = INIT_QUEUE.length;
-      const total = INIT_QUEUE_LENGTH;
-      const completed = total - remaining;
-      console.info(
-        `[INIT] Initialized ${componentsInitialized} components this frame (${completed}/${total} total, ${remaining} remaining)`,
-      );
       return; // Exit early, continue next frame
     }
   }
 
   // All done
-  console.info(
-    `[INIT] Completed initialization of ${componentsInitialized} components (${INIT_QUEUE_LENGTH} total)`,
-  );
   INITIALIZATION_IN_PROGRESS = false;
   INIT_QUEUE_LENGTH = -1;
 }

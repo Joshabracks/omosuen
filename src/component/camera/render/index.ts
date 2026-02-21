@@ -66,10 +66,6 @@ export function render(camera: CameraT, _deltaTime: number): void {
   // Collect all renderable components from the tree
   const { sprites, cellMaps, lights } = Camera.collectRenderables(camera);
 
-  console.log(
-    `[camera] render() - collected ${sprites.length} sprites, ${cellMaps.length} cell-maps`,
-  );
-
   const gl = viewport.gl;
 
   // PHASE 1: Bind framebuffer for offscreen rendering at base resolution
@@ -130,9 +126,6 @@ export function render(camera: CameraT, _deltaTime: number): void {
   // Render cell-maps FIRST (before sprites) with depth writes enabled
   // This populates the depth buffer with solid geometry
   if (cellMaps.length > 0) {
-    console.log(
-      `[camera] render() - calling renderCellMaps with ${cellMaps.length} cell-maps`,
-    );
     renderCellMaps(
       camera,
       viewport,
@@ -143,8 +136,6 @@ export function render(camera: CameraT, _deltaTime: number): void {
       textureMapCache,
       lights,
     );
-  } else {
-    console.log('[camera] render() - no cell-maps to render');
   }
 
   // PHASE 2: Post-process cells to screen with pixel-perfect upscaling

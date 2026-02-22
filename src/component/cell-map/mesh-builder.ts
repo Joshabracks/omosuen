@@ -110,6 +110,159 @@ const FACE_CONFIGS: FaceConfig[] = [
 ];
 
 /**
+ * Record for a visible face quad used by the smoothed mesh builder.
+ */
+interface FaceRecord {
+  vertexKeys: string[]; // 4 position keys
+  materialIndex: number;
+  normal: [number, number, number];
+  isInterior: boolean; // true if face cell is inside chunk bounds
+}
+
+/**
+ * Writes a quad (4 vertices, 2 triangles) into the vertex and index buffers.
+ * Each vertex is 6 floats: [px, py, pz, nx, ny, nz].
+ * normals length 1 = broadcast to all 4 vertices, length 4 = per-vertex.
+ */
+function emitQuad(
+  vertexFloats: number[],
+  indexInts: number[],
+  positions: [number, number, number][],
+  normals: [number, number, number][],
+): void {
+  const base = vertexFloats.length / 6;
+  const n0 = normals[0];
+  for (let i = 0; i < 4; i++) {
+    const p = positions[i];
+    const n = normals.length > 1 ? normals[i] : n0;
+    vertexFloats.push(p[0], p[1], p[2], n[0], n[1], n[2]);
+  }
+  indexInts.push(base, base + 1, base + 2, base, base + 2, base + 3);
+}
+
+/**
+ * Laplacian smoothing with vertex constraining.
+ * Each vertex is iteratively relaxed toward the average of its neighbors,
+ * weighted by the vertex's smoothing weight, then clamped within ±halfCellSize
+ * of its original grid position.
+ */
+function smoothVertices(
+  positions: [number, number, number][],
+  originalPositions: [number, number, number][],
+  adjacency: Set<number>[],
+  weights: number[],
+  iterations: number,
+  halfCellSize: [number, number, number],
+): void {
+  const lambda = 0.5;
+  const newPositions: [number, number, number][] = positions.map(
+    (p) => [p[0], p[1], p[2]] as [number, number, number],
+  );
+
+  for (let iter = 0; iter < iterations; iter++) {
+    for (let i = 0; i < positions.length; i++) {
+      const w = weights[i];
+      const neighbors = adjacency[i];
+      if (w === 0 || neighbors.size === 0) {
+        newPositions[i][0] = positions[i][0];
+        newPositions[i][1] = positions[i][1];
+        newPositions[i][2] = positions[i][2];
+        continue;
+      }
+
+      // Average neighbor positions
+      let avgX = 0,
+        avgY = 0,
+        avgZ = 0;
+      for (const ni of neighbors) {
+        avgX += positions[ni][0];
+        avgY += positions[ni][1];
+        avgZ += positions[ni][2];
+      }
+      const count = neighbors.size;
+      avgX /= count;
+      avgY /= count;
+      avgZ /= count;
+
+      // Lerp toward average
+      const t = w * lambda;
+      let nx = positions[i][0] + (avgX - positions[i][0]) * t;
+      let ny = positions[i][1] + (avgY - positions[i][1]) * t;
+      let nz = positions[i][2] + (avgZ - positions[i][2]) * t;
+
+      // Constrain: clamp to ±halfCell of original position
+      const ox = originalPositions[i][0];
+      const oy = originalPositions[i][1];
+      const oz = originalPositions[i][2];
+      nx = Math.max(ox - halfCellSize[0], Math.min(ox + halfCellSize[0], nx));
+      ny = Math.max(oy - halfCellSize[1], Math.min(oy + halfCellSize[1], ny));
+      nz = Math.max(oz - halfCellSize[2], Math.min(oz + halfCellSize[2], nz));
+
+      newPositions[i][0] = nx;
+      newPositions[i][1] = ny;
+      newPositions[i][2] = nz;
+    }
+
+    // Swap: copy newPositions into positions for next iteration
+    for (let i = 0; i < positions.length; i++) {
+      positions[i][0] = newPositions[i][0];
+      positions[i][1] = newPositions[i][1];
+      positions[i][2] = newPositions[i][2];
+    }
+  }
+}
+
+/**
+ * Computes smooth per-vertex normals by accumulating face normals (cross product)
+ * onto each vertex, then normalizing.
+ */
+function computeSmoothNormals(
+  faces: FaceRecord[],
+  positions: [number, number, number][],
+  vertexKeyToIndex: Map<string, number>,
+  vertexCount: number,
+): [number, number, number][] {
+  const vertexNormals: [number, number, number][] = new Array(vertexCount);
+  for (let i = 0; i < vertexCount; i++) {
+    vertexNormals[i] = [0, 0, 0];
+  }
+
+  for (const face of faces) {
+    const indices = face.vertexKeys.map((k) => vertexKeyToIndex.get(k)!);
+    const p0 = positions[indices[0]];
+    const p1 = positions[indices[1]];
+    const p2 = positions[indices[2]];
+
+    const e1x = p1[0] - p0[0],
+      e1y = p1[1] - p0[1],
+      e1z = p1[2] - p0[2];
+    const e2x = p2[0] - p0[0],
+      e2y = p2[1] - p0[1],
+      e2z = p2[2] - p0[2];
+    const fnx = e1y * e2z - e1z * e2y;
+    const fny = e1z * e2x - e1x * e2z;
+    const fnz = e1x * e2y - e1y * e2x;
+
+    for (const idx of indices) {
+      vertexNormals[idx][0] += fnx;
+      vertexNormals[idx][1] += fny;
+      vertexNormals[idx][2] += fnz;
+    }
+  }
+
+  for (const vn of vertexNormals) {
+    const len = Math.sqrt(vn[0] * vn[0] + vn[1] * vn[1] + vn[2] * vn[2]);
+    if (len > 0) {
+      vn[0] /= len;
+      vn[1] /= len;
+      vn[2] /= len;
+    }
+  }
+
+  return vertexNormals;
+}
+
+/**
  * Builds the mesh for a single chunk with hidden face culling and greedy meshing.
  * Indices are grouped by material for efficient multi-material rendering.
  * When smoothing > 0, delegates to buildSmoothedChunkMesh instead.
@@ -307,29 +460,7 @@ function buildChunkMesh(
       ranges.push(currentRange);
     }
 
-    const vertexBase = vertexFloats.length / 6;
-
-    for (const [px, py, pz] of quad.verts) {
-      vertexFloats.push(
-        px,
-        py,
-        pz,
-        quad.normal[0],
-        quad.normal[1],
-        quad.normal[2],
-      );
-    }
-
-    // Two CCW triangles: 0-1-2, 0-2-3
-    indexInts.push(
-      vertexBase,
-      vertexBase + 1,
-      vertexBase + 2,
-      vertexBase,
-      vertexBase + 2,
-      vertexBase + 3,
-    );
-
+    emitQuad(vertexFloats, indexInts, quad.verts, [quad.normal]);
     currentRange!.indexCount += 6;
   }
 
@@ -387,13 +518,6 @@ function buildSmoothedChunkMesh(
   const strideZ = mapSizeX * mapSizeY;
 
   // ── Phase 1: Collect visible faces (individual quads, no greedy merging) ──
-
-  interface FaceRecord {
-    vertexKeys: string[]; // 4 position keys
-    materialIndex: number;
-    normal: [number, number, number];
-    isInterior: boolean; // true if face cell is inside chunk bounds
-  }
 
   const faces: FaceRecord[] = [];
 
@@ -524,108 +648,27 @@ function buildSmoothedChunkMesh(
 
   // ── Phase 3: Iterative Laplacian smoothing ──
 
-  const lambda = 0.5;
-  const halfCellX = cellSizeX * 0.5;
-  const halfCellY = cellSizeY * 0.5;
-  const halfCellZ = cellSizeZ * 0.5;
-  const newPositions: [number, number, number][] = uniquePositions.map(
-    (p) => [p[0], p[1], p[2]] as [number, number, number],
+  smoothVertices(
+    uniquePositions,
+    originalPositions,
+    adjacency,
+    vertexWeights,
+    cellMap.smoothing,
+    [cellSizeX * 0.5, cellSizeY * 0.5, cellSizeZ * 0.5],
   );
-
-  for (let iter = 0; iter < cellMap.smoothing; iter++) {
-    for (let i = 0; i < uniquePositions.length; i++) {
-      const w = vertexWeights[i];
-      const neighbors = adjacency[i];
-      if (w === 0 || neighbors.size === 0) {
-        newPositions[i][0] = uniquePositions[i][0];
-        newPositions[i][1] = uniquePositions[i][1];
-        newPositions[i][2] = uniquePositions[i][2];
-        continue;
-      }
-
-      // Average neighbor positions
-      let avgX = 0,
-        avgY = 0,
-        avgZ = 0;
-      for (const ni of neighbors) {
-        avgX += uniquePositions[ni][0];
-        avgY += uniquePositions[ni][1];
-        avgZ += uniquePositions[ni][2];
-      }
-      const count = neighbors.size;
-      avgX /= count;
-      avgY /= count;
-      avgZ /= count;
-
-      // Lerp toward average
-      const t = w * lambda;
-      let nx = uniquePositions[i][0] + (avgX - uniquePositions[i][0]) * t;
-      let ny = uniquePositions[i][1] + (avgY - uniquePositions[i][1]) * t;
-      let nz = uniquePositions[i][2] + (avgZ - uniquePositions[i][2]) * t;
-
-      // Constrain: clamp to ±halfCell of original position
-      const ox = originalPositions[i][0];
-      const oy = originalPositions[i][1];
-      const oz = originalPositions[i][2];
-      nx = Math.max(ox - halfCellX, Math.min(ox + halfCellX, nx));
-      ny = Math.max(oy - halfCellY, Math.min(oy + halfCellY, ny));
-      nz = Math.max(oz - halfCellZ, Math.min(oz + halfCellZ, nz));
-
-      newPositions[i][0] = nx;
-      newPositions[i][1] = ny;
-      newPositions[i][2] = nz;
-    }
-
-    // Swap: copy newPositions into uniquePositions for next iteration
-    for (let i = 0; i < uniquePositions.length; i++) {
-      uniquePositions[i][0] = newPositions[i][0];
-      uniquePositions[i][1] = newPositions[i][1];
-      uniquePositions[i][2] = newPositions[i][2];
-    }
-  }
 
   // ── Phase 4: Recompute normals from smoothed face geometry ──
 
-  // Smooth normals: accumulate face normals into shared per-vertex normals
   const normalSmoothing = cellMap.normalSmoothing;
-  let vertexNormals: [number, number, number][] | null = null;
-  if (normalSmoothing > 0) {
-    vertexNormals = uniquePositions.map(
-      () => [0, 0, 0] as [number, number, number],
-    );
-
-    for (const face of faces) {
-      const indices = face.vertexKeys.map((k) => vertexKeyToIndex.get(k)!);
-      const p0 = uniquePositions[indices[0]];
-      const p1 = uniquePositions[indices[1]];
-      const p2 = uniquePositions[indices[2]];
-
-      const e1x = p1[0] - p0[0],
-        e1y = p1[1] - p0[1],
-        e1z = p1[2] - p0[2];
-      const e2x = p2[0] - p0[0],
-        e2y = p2[1] - p0[1],
-        e2z = p2[2] - p0[2];
-      const fnx = e1y * e2z - e1z * e2y;
-      const fny = e1z * e2x - e1x * e2z;
-      const fnz = e1x * e2y - e1y * e2x;
-
-      for (const idx of indices) {
-        vertexNormals[idx][0] += fnx;
-        vertexNormals[idx][1] += fny;
-        vertexNormals[idx][2] += fnz;
-      }
-    }
-
-    for (const vn of vertexNormals) {
-      const len = Math.sqrt(vn[0] * vn[0] + vn[1] * vn[1] + vn[2] * vn[2]);
-      if (len > 0) {
-        vn[0] /= len;
-        vn[1] /= len;
-        vn[2] /= len;
-      }
-    }
-  }
+  const vertexNormals =
+    normalSmoothing > 0
+      ? computeSmoothNormals(
+          faces,
+          uniquePositions,
+          vertexKeyToIndex,
+          uniquePositions.length,
+        )
+      : null;
 
   // ── Phase 5: Emit mesh data (interior faces only) ──
 
@@ -649,7 +692,6 @@ function buildSmoothedChunkMesh(
       ranges.push(currentRange);
     }
 
-    const vertexBase = vertexFloats.length / 6;
     const indices = face.vertexKeys.map((k) => vertexKeyToIndex.get(k)!);
 
     // Compute flat face normal from smoothed geometry
@@ -672,17 +714,17 @@ function buildSmoothedChunkMesh(
       fnz /= fLen;
     }
 
+    // Build per-vertex positions and normals
+    const quadPositions: [number, number, number][] = [];
+    const quadNormals: [number, number, number][] = [];
     for (const idx of indices) {
-      const pos = uniquePositions[idx];
+      quadPositions.push(uniquePositions[idx]);
       if (!vertexNormals || normalSmoothing === 0) {
-        // Pure flat
-        vertexFloats.push(pos[0], pos[1], pos[2], fnx, fny, fnz);
+        quadNormals.push([fnx, fny, fnz]);
       } else if (normalSmoothing === 1) {
-        // Pure smooth
         const sn = vertexNormals[idx];
-        vertexFloats.push(pos[0], pos[1], pos[2], sn[0], sn[1], sn[2]);
+        quadNormals.push([sn[0], sn[1], sn[2]]);
       } else {
-        // Lerp between flat and smooth
         const sn = vertexNormals[idx];
         const t = normalSmoothing;
         let nx = fnx + (sn[0] - fnx) * t;
@@ -694,20 +736,11 @@ function buildSmoothedChunkMesh(
           ny /= nLen;
           nz /= nLen;
         }
-        vertexFloats.push(pos[0], pos[1], pos[2], nx, ny, nz);
+        quadNormals.push([nx, ny, nz]);
       }
     }
 
-    // Two CCW triangles: 0-1-2, 0-2-3
-    indexInts.push(
-      vertexBase,
-      vertexBase + 1,
-      vertexBase + 2,
-      vertexBase,
-      vertexBase + 2,
-      vertexBase + 3,
-    );
-
+    emitQuad(vertexFloats, indexInts, quadPositions, quadNormals);
     currentRange!.indexCount += 6;
   }
 

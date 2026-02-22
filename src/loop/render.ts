@@ -5,6 +5,7 @@
  * it's a stub to earmark the rendering phase in the game loop.
  */
 
+import type { CameraT } from '../component/camera/data';
 import type { NexusT } from '../component/nexus/data';
 import { Nexus } from '../component/nexus/methods';
 
@@ -34,7 +35,7 @@ export function renderScene(scene: NexusT): void {
   // Import nexus methods dynamically to avoid circular dependencies
 
   // Find all camera components in the scene (recursive search)
-  const cameras = Nexus.getComponentsByType(scene, 'camera', true) as NexusT[];
+  const cameras = Nexus.getComponentsByType(scene, 'camera', true) as CameraT[];
 
   // Render from each camera
   for (const camera of cameras) {

@@ -110,12 +110,7 @@ async function init(component: ComponentData): Promise<void> {
 /**
  * Update loop - can be used for gamepad polling or continuous input processing.
  */
-function update(_component: ComponentData, _deltaTime: number): void {
-  // Future: Poll gamepad state here if needed
-  // const ic = component as InputControllerT;
-  // const gamepads = navigator.getGamepads();
-  // Process gamepad inputs...
-}
+function update(_component: ComponentData, _deltaTime: number): void {}
 
 /**
  * Disposes the InputController by removing all event listeners.

@@ -4,7 +4,6 @@ import { LightT } from '../../light';
 import { NexusT } from '../../nexus';
 import { TextureMapT } from '../../texture-map';
 import { TransformT } from '../../transform';
-import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { setLightUniforms } from './light-uniforms';
 
@@ -38,7 +37,6 @@ export function snapCameraPosition(
  */
 export function renderCellMaps(
   camera: CameraT,
-  _viewport: ViewportT,
   cellMaps: CellMapT[],
   cameraTransform: TransformT,
   sceneRoot: NexusT,

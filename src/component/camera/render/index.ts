@@ -153,7 +153,6 @@ export function render(camera: CameraT, _deltaTime: number): void {
   if (cellMaps.length > 0) {
     renderCellMaps(
       camera,
-      viewport,
       cellMaps,
       transform,
       sceneRoot,

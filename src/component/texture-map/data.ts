@@ -47,6 +47,12 @@ export interface TextureMapT
    * Used at runtime for rendering.
    */
   packedFrames: PackedFrame[];
+
+  /**
+   * O(1) lookup map from frameIndex to PackedFrame.
+   * Built automatically by setPackedFrames().
+   */
+  frameIndexMap: Map<number, PackedFrame>;
 }
 
 export const PROPERTY_ALLOWLIST = [
@@ -55,6 +61,7 @@ export const PROPERTY_ALLOWLIST = [
   'imageType',
   'originalFrames',
   'packedFrames',
+  'frameIndexMap',
 ];
 
 /**
@@ -166,6 +173,7 @@ export function builder(options: TextureMapOptions): TextureMapT {
     imageType,
     originalFrames,
     packedFrames: [],
+    frameIndexMap: new Map(),
   } as unknown as TextureMapT;
 
   // Auto-register with atlas manager if provided

@@ -84,7 +84,7 @@ export const TextureMap: TextureMapMethods = {
     tm: TextureMapT,
     frameIndex: number,
   ): PackedFrame | undefined => {
-    return tm.packedFrames.find((frame) => frame.frameIndex === frameIndex);
+    return tm.frameIndexMap.get(frameIndex);
   },
 
   isPacked: (tm: TextureMapT): boolean => {
@@ -97,16 +97,22 @@ export const TextureMap: TextureMapMethods = {
 
   clearPackedFrames: (tm: TextureMapT): void => {
     tm.packedFrames = [];
+    tm.frameIndexMap.clear();
   },
 
   setPackedFrames: (tm: TextureMapT, packedFrames: PackedFrame[]): void => {
     tm.packedFrames = packedFrames;
+    tm.frameIndexMap.clear();
+    for (const frame of packedFrames) {
+      tm.frameIndexMap.set(frame.frameIndex, frame);
+    }
   },
 
   dispose: (component: ComponentData): void => {
     const tm = component as unknown as TextureMapT;
     tm.originalFrames = [];
     tm.packedFrames = [];
+    tm.frameIndexMap.clear();
     tm._disposed = true;
   },
 };

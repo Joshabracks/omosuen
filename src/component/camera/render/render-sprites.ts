@@ -43,9 +43,7 @@ function bindNormalTexture(
     return;
   }
 
-  const normalFrame = normalTextureMap.packedFrames.find(
-    (f) => f.frameIndex === sprite.frame.normal,
-  );
+  const normalFrame = normalTextureMap.frameIndexMap.get(sprite.frame.normal);
   if (!normalFrame) {
     gl.uniform1i(u_hasNormal, 0);
     return;
@@ -309,9 +307,7 @@ export function renderSprites(
     }
 
     // Get packed frame for current albedo frame index
-    const albedoFrame = albedoTextureMap.packedFrames.find(
-      (f) => f.frameIndex === sprite.frame.albedo,
-    );
+    const albedoFrame = albedoTextureMap.frameIndexMap.get(sprite.frame.albedo);
     if (!albedoFrame) {
       console.warn(
         `[camera] Sprite '${sprite.name}' frame ${sprite.frame.albedo} not found in texture map`,

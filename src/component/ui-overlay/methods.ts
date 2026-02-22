@@ -77,7 +77,6 @@ export const UIOverlay: UIOverlayMethods = {
         return;
       }
 
-      // @ts-expect-error - getComponentById exists but not in type def yet
       const previousOverlay = scene.getComponentById(
         u.previousOverlayId,
         true,

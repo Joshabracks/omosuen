@@ -21,7 +21,6 @@ export function dispose(component: ComponentData): void {
     const parentNexus = castTo<NexusT>(camera.parent!);
     if (parentNexus.parent) {
       const sceneRoot = castTo<NexusT>(parentNexus.parent!);
-      // @ts-expect-error - Proxy methods exist at runtime
       const viewport = sceneRoot.getComponentByName(
         camera.viewportRef,
         true,

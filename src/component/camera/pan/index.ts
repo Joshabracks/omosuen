@@ -19,7 +19,6 @@ export function pan(camera: CameraT, offsetX: number, offsetY: number): void {
   }
 
   const parentNexus = castTo<NexusT>(camera.parent!);
-  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const transform = parentNexus.getComponentByType(
     'transform',
     false,

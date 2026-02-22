@@ -27,18 +27,15 @@ export function collectRenderables(camera: CameraT): {
   const sceneRoot = castTo<NexusT>(parentNexus.parent!);
 
   // Recursively collect all sprites from the scene root
-  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const sprites = sceneRoot.getComponentsByType('sprite', true) as SpriteT[];
 
   // Recursively collect all cell maps from the scene root
-  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const cellMaps = sceneRoot.getComponentsByType(
     'cell-map',
     true,
   ) as CellMapT[];
 
   // Recursively collect all lights from the scene root
-  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const lights = sceneRoot.getComponentsByType('light', true) as LightT[];
 
   return { sprites, cellMaps, lights };

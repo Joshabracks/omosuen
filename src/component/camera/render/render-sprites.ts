@@ -153,53 +153,29 @@ export function renderSprites(
   }
 
   // Get attribute/uniform locations
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const a_position = gl.getAttribLocation(program, 'a_position');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const a_uv = gl.getAttribLocation(program, 'a_uv');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_viewportSize = gl.getUniformLocation(program, 'u_viewportSize');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_cameraPosition = gl.getUniformLocation(program, 'u_cameraPosition');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_zoom = gl.getUniformLocation(program, 'u_zoom');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_cellSize = gl.getUniformLocation(program, 'u_cellSize');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_mapSize = gl.getUniformLocation(program, 'u_mapSize');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_spritePosition = gl.getUniformLocation(program, 'u_spritePosition');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_spriteSize = gl.getUniformLocation(program, 'u_spriteSize');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_anchor = gl.getUniformLocation(program, 'u_anchor');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_rotation = gl.getUniformLocation(program, 'u_rotation');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_albedoTexture = gl.getUniformLocation(program, 'u_albedoTexture');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_normalTexture = gl.getUniformLocation(program, 'u_normalTexture');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_hasNormal = gl.getUniformLocation(program, 'u_hasNormal');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_hasMaterial = gl.getUniformLocation(program, 'u_hasMaterial');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_hasEmission = gl.getUniformLocation(program, 'u_hasEmission');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_tint = gl.getUniformLocation(program, 'u_tint');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_opacity = gl.getUniformLocation(program, 'u_opacity');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_uvBounds = gl.getUniformLocation(program, 'u_uvBounds');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_normalUVBounds = gl.getUniformLocation(program, 'u_normalUVBounds');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_depthTexture = gl.getUniformLocation(program, 'u_depthTexture');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_fboUvScale = gl.getUniformLocation(program, 'u_fboUvScale');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_fboUvOffset = gl.getUniformLocation(program, 'u_fboUvOffset');
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_screenSize = gl.getUniformLocation(program, 'u_screenSize');
 
   // Set constant uniforms (same for all sprites)
@@ -265,7 +241,6 @@ export function renderSprites(
   gl.vertexAttribPointer(a_uv, 2, gl.FLOAT, false, 0, 0);
 
   // Get atlas manager for texture size
-  // @ts-expect-error - Proxy methods exist at runtime
   const atlasManager = sceneRoot.getComponentByType(
     'atlas-manager',
     true,
@@ -279,7 +254,6 @@ export function renderSprites(
     const spriteNexus = castTo<NexusT>(sprite.parent);
 
     // Get sprite transform (sibling component)
-    // @ts-expect-error - Proxy methods exist at runtime
     const spriteTransform = spriteNexus.getComponentByType(
       'transform',
       false,

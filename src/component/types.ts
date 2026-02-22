@@ -18,7 +18,7 @@ import { ViewportT } from './viewport';
 import { AtlasManagerT } from './atlas-manager';
 import { AnimationControllerT } from './animation-controller';
 
-type ComponentDataType =
+export type ComponentDataType =
   | AnimationControllerT
   | AtlasManagerT
   | CameraT
@@ -170,7 +170,7 @@ export interface ComponentMethods {
  */
 export type ComponentInstanceMethods<T extends ComponentMethods> = {
   [K in keyof T as K extends 'type' ? never : K]: T[K] extends (
-    component: ComponentData,
+    first: infer _First,
     ...args: infer Args
   ) => infer Return
     ? (...args: Args) => Return

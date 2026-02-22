@@ -30,7 +30,6 @@ export async function init(component: ComponentData): Promise<void> {
 
   // Get viewport from scene root (viewport is typically a sibling of camera's parent)
   const sceneRoot = castTo<NexusT>(parentNexus.parent!);
-  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const viewport = sceneRoot.getComponentByName(
     camera.viewportRef,
     true,
@@ -60,7 +59,6 @@ export async function init(component: ComponentData): Promise<void> {
   camera.glResources.unifiedProgram = unifiedProgram;
 
   // Get renderMode uniform location for switching between cell/sprite modes
-  // eslint-disable-next-line @typescript-eslint/naming-convention
   const u_renderMode = gl.getUniformLocation(unifiedProgram, 'u_renderMode');
   if (!u_renderMode) {
     console.warn(
@@ -129,7 +127,6 @@ export async function init(component: ComponentData): Promise<void> {
   camera.glResources.quadUVBuffer = quadUVBuffer;
 
   // 3. Upload atlas textures
-  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const atlasManager = sceneRoot.getComponentByType(
     'atlas-manager',
     true,

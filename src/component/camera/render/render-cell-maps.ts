@@ -110,7 +110,6 @@ export function renderCellMaps(
   }
 
   // Get atlas manager for texture size
-  // @ts-expect-error - Proxy methods exist at runtime
   const atlasManager = sceneRoot.getComponentByType(
     'atlas-manager',
     true,

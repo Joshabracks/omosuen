@@ -170,7 +170,6 @@ export function setLightUniforms(
       const parent = light.parent;
       if (!parent || parent.type !== 'nexus') continue;
       const nexus = castTo<NexusT>(parent);
-      // @ts-expect-error - Proxy methods exist at runtime
       const siblingTransform = nexus.getComponentByType(
         'transform',
         false,

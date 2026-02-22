@@ -41,7 +41,6 @@ export function renderScene(scene: NexusT): void {
   for (const camera of cameras) {
     // Each camera has a render() method that handles its own rendering
     // Delta time is not needed for rendering (only for animations/updates)
-    // @ts-expect-error - camera has proxy for render
     camera.render(0);
   }
 }

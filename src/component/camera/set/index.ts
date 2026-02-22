@@ -24,13 +24,11 @@ export function setZoom(camera: CameraT, zoom: number): void {
     const parentNexus = castTo<NexusT>(camera.parent!);
     const sceneRoot = castTo<NexusT>(parentNexus.parent!);
 
-    // @ts-expect-error - Proxy methods exist at runtime
     const viewport = sceneRoot.getComponentByName(
       camera.viewportRef,
       true,
     ) as ViewportT | null;
 
-    // @ts-expect-error - Proxy methods exist at runtime
     const transform = parentNexus.getComponentByType(
       'transform',
       false,
@@ -107,7 +105,6 @@ function updateFramebufferForZoom(camera: CameraT): void {
   const parentNexus = castTo<NexusT>(camera.parent!);
   const sceneRoot = castTo<NexusT>(parentNexus.parent!);
 
-  // @ts-expect-error - Proxy methods exist at runtime
   const viewport = sceneRoot.getComponentByName(
     camera.viewportRef,
     true,

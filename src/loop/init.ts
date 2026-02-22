@@ -95,12 +95,10 @@ export async function processInitQueue(
   let componentsInitialized = 0;
 
   INIT_QUEUE.sort((a, b) => {
-    // @ts-expect-error - proxy wrapper has methods
     const componentA: ComponentData = scene.getComponentById(
       a,
       true,
     ) as ComponentData;
-    // @ts-expect-error - proxy wrapper has methods
     const componentB: ComponentData = scene.getComponentById(
       b,
       true,
@@ -112,8 +110,6 @@ export async function processInitQueue(
 
   while (INIT_QUEUE.length > 0) {
     const id = INIT_QUEUE.shift()!;
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-expect-error
     const component: ComponentData | null = scene.getComponentById(id, true);
 
     if (!component) {

@@ -54,7 +54,6 @@ export const AnimationController: AnimationControllerMethods = {
     }
 
     // Validate sprite exists
-    // @ts-expect-error - getComponentById exists but not in type def
     const sprite = scene.getComponentById(ac.spriteId, true) as SpriteT | null;
     if (!sprite) {
       console.warn(
@@ -337,7 +336,6 @@ function updateSpriteFrame(
   }
 
   // Get sprite by ID
-  // @ts-expect-error - getComponentById exists but not in type def
   const sprite = scene.getComponentById(controller.spriteId, true) as
     | SpriteT
     | null;
@@ -349,6 +347,5 @@ function updateSpriteFrame(
   }
 
   // Update sprite frame for specified channels
-  // @ts-expect-error - setFrame method exists on sprite
   sprite.setFrame(frameNumber, controller.channels);
 }

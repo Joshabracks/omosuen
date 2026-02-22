@@ -52,7 +52,6 @@ export function render(camera: CameraT, _deltaTime: number): void {
   const parentNexus = castTo<NexusT>(camera.parent!);
 
   // Get sibling transform for camera position
-  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const transform = parentNexus.getComponentByType(
     'transform',
     false,
@@ -68,7 +67,6 @@ export function render(camera: CameraT, _deltaTime: number): void {
   // Get viewport to render to (search from scene root, not parent)
   // Viewport is typically a sibling of the camera's parent nexus
   const sceneRoot = castTo<NexusT>(parentNexus.parent!);
-  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const viewport = sceneRoot.getComponentByName(
     camera.viewportRef,
     true,
@@ -134,7 +132,6 @@ export function render(camera: CameraT, _deltaTime: number): void {
     !TEXTURE_MAP_CACHE.has(camera.id!) ||
     TEXTURE_MAP_CACHE_DIRTY.get(camera.id!)
   ) {
-    // @ts-expect-error - Proxy methods exist at runtime
     const allTextureMaps = sceneRoot.getComponentsByType(
       'texture-map',
       true,

@@ -86,8 +86,6 @@ export function processDisposeQueue(scene: NexusT): void {
   // Process each disposal
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i];
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-expect-error
     const component = scene.getComponentById(id, true);
 
     if (!component) {

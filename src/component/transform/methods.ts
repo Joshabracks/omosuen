@@ -29,7 +29,6 @@ function findAncestorTransform(nexus: NexusT): TransformT | null {
   if (!nexus.parent || nexus.parent.type !== 'nexus') return null;
   const parentNexus = castTo<NexusT>(nexus.parent);
 
-  // @ts-expect-error - Proxy methods exist at runtime but TypeScript can't infer them
   const parentTransform = parentNexus.getComponentByType(
     'transform',
     false,

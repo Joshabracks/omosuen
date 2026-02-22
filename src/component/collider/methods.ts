@@ -117,7 +117,6 @@ function clamp(v: number, min: number, max: number): number {
 function getSiblingTransform(collider: ColliderT): TransformT | null {
   if (!collider.parent || collider.parent.type !== 'nexus') return null;
   const parentNexus = castTo<NexusT>(collider.parent);
-  // @ts-expect-error - Proxy methods exist at runtime
   return parentNexus.getComponentByType(
     'transform',
     false,
@@ -145,11 +144,8 @@ function computeOBB(collider: ColliderT): OBB {
   let yaw = 0;
 
   if (transform) {
-    // @ts-expect-error - Proxy methods exist at runtime
     const pos = transform.getPosition() as Vector3D;
-    // @ts-expect-error - Proxy methods exist at runtime
     scale = transform.getScale() as Vector3D;
-    // @ts-expect-error - Proxy methods exist at runtime
     const rot = transform.getRotation() as Vector3D;
     yaw = rot.y;
     center = new Vector3D(
@@ -211,9 +207,7 @@ function computeSphereWorld(
   let effectiveRadius: number;
 
   if (transform) {
-    // @ts-expect-error - Proxy methods exist at runtime
     const pos = transform.getPosition() as Vector3D;
-    // @ts-expect-error - Proxy methods exist at runtime
     const scale = transform.getScale() as Vector3D;
     center = new Vector3D(
       pos.x + collider.offset.x,
@@ -994,7 +988,6 @@ export const Collider: ColliderMethods = {
     // Find all colliders in the scene
     let allColliders: ColliderT[] = [];
     if (sceneRoot) {
-      // @ts-expect-error - Proxy methods exist at runtime
       allColliders = sceneRoot.getComponentsByType(
         'collider',
         true,

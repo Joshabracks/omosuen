@@ -146,7 +146,6 @@ function findTextureMapByKey(
   textureMapKey: string,
 ): TextureMapT | null {
   // Get all texture maps in the scene
-  // @ts-expect-error - getComponentsByType exists but not in type def yet
   const textureMaps = scene.getComponentsByType('texture-map') as
     | TextureMapT[]
     | undefined;

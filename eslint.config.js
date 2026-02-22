@@ -79,6 +79,7 @@ export default [
         'warn',
         {
           selector: 'variable',
+          filter: { regex: '^[ua]_', match: false },
           format: ['camelCase', 'UPPER_CASE', 'PascalCase'],
         },
         {

@@ -70,23 +70,24 @@ async function init(component: ComponentData): Promise<void> {
   const gamepaddisconnectedHandler = (e: Event) =>
     handleGamepadDisconnected(ic, e as GamepadEvent);
 
-  // Attach event listeners to window
-  window.addEventListener('keydown', keydownHandler);
-  window.addEventListener('keyup', keyupHandler);
-  window.addEventListener('mousedown', mousedownHandler);
-  window.addEventListener('mouseup', mouseupHandler);
-  window.addEventListener('mousemove', mousemoveHandler);
-  window.addEventListener('wheel', wheelHandler);
-  window.addEventListener('click', clickHandler);
-  window.addEventListener('contextmenu', contextmenuHandler);
-  window.addEventListener('pointerdown', pointerdownHandler);
-  window.addEventListener('pointerup', pointerupHandler);
-  window.addEventListener('pointermove', pointermoveHandler);
-  window.addEventListener('touchstart', touchstartHandler);
-  window.addEventListener('touchend', touchendHandler);
-  window.addEventListener('touchmove', touchmoveHandler);
-  window.addEventListener('gamepadconnected', gamepadconnectedHandler);
-  window.addEventListener('gamepaddisconnected', gamepaddisconnectedHandler);
+  // Attach event listeners to target (defaults to window)
+  const target = ic.target;
+  target.addEventListener('keydown', keydownHandler);
+  target.addEventListener('keyup', keyupHandler);
+  target.addEventListener('mousedown', mousedownHandler);
+  target.addEventListener('mouseup', mouseupHandler);
+  target.addEventListener('mousemove', mousemoveHandler);
+  target.addEventListener('wheel', wheelHandler);
+  target.addEventListener('click', clickHandler);
+  target.addEventListener('contextmenu', contextmenuHandler);
+  target.addEventListener('pointerdown', pointerdownHandler);
+  target.addEventListener('pointerup', pointerupHandler);
+  target.addEventListener('pointermove', pointermoveHandler);
+  target.addEventListener('touchstart', touchstartHandler);
+  target.addEventListener('touchend', touchendHandler);
+  target.addEventListener('touchmove', touchmoveHandler);
+  target.addEventListener('gamepadconnected', gamepadconnectedHandler);
+  target.addEventListener('gamepaddisconnected', gamepaddisconnectedHandler);
 
   // Store handlers for cleanup
   ic._eventHandlers.set('keydown', keydownHandler);
@@ -118,9 +119,9 @@ function update(_component: ComponentData, _deltaTime: number): void {}
 function dispose(component: ComponentData): void {
   const ic = component as InputControllerT;
 
-  // Remove all event listeners
+  // Remove all event listeners from the target
   ic._eventHandlers.forEach((handler, eventType) => {
-    window.removeEventListener(eventType, handler);
+    ic.target.removeEventListener(eventType, handler);
   });
 
   // Clear internal state

@@ -82,6 +82,9 @@ export interface InputControllerT
 
   /** Whether to prevent default browser behavior for bound keys */
   preventDefault: boolean;
+
+  /** DOM element to attach event listeners to (default: window) */
+  target: EventTarget;
 }
 
 export interface InputControllerOptions extends ComponentOptions {
@@ -89,6 +92,8 @@ export interface InputControllerOptions extends ComponentOptions {
   bindings?: ActionBinding[];
   /** Whether to prevent default browser behavior for bound keys (default: true) */
   preventDefault?: boolean;
+  /** DOM element to attach event listeners to (default: window) */
+  target?: EventTarget;
 }
 
 export function builder(options: InputControllerOptions): InputControllerT {
@@ -104,6 +109,7 @@ export function builder(options: InputControllerOptions): InputControllerT {
     actionCallbacks: new Map<string, ActionCallback[]>(),
     _eventHandlers: new Map<string, EventListener>(),
     preventDefault: options.preventDefault ?? true,
+    target: options.target ?? window,
   };
 
   return inputController as unknown as InputControllerT;
@@ -165,4 +171,5 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'actionCallbacks',
   '_eventHandlers',
   'preventDefault',
+  'target',
 ];

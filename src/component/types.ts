@@ -17,10 +17,14 @@ import { UIOverlayT } from './ui-overlay';
 import { ViewportT } from './viewport';
 import { AtlasManagerT } from './atlas-manager';
 import { AnimationControllerT } from './animation-controller';
+import { AudioManagerT } from './audio-manager';
+import { AudioControllerT } from './audio-controller';
 
 export type ComponentDataType =
   | AnimationControllerT
   | AtlasManagerT
+  | AudioManagerT
+  | AudioControllerT
   | CameraT
   | CellMapT
   | ColliderT
@@ -124,7 +128,9 @@ export type COMPONENT_TYPE =
   | 'input-controller'
   | 'collider'
   | 'timer'
-  | 'light';
+  | 'light'
+  | 'audio-manager'
+  | 'audio-controller';
 
 export interface ComponentOptions {
   name: string;

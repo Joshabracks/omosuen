@@ -83,6 +83,16 @@ import {
   builder as lightBuilder,
   PROPERTY_ALLOWLIST as LightPropertyAllowlist,
 } from './light';
+import {
+  AudioManager,
+  builder as audioManagerBuilder,
+  PROPERTY_ALLOWLIST as AudioManagerPropertyAllowlist,
+} from './audio-manager';
+import {
+  AudioController,
+  builder as audioControllerBuilder,
+  PROPERTY_ALLOWLIST as AudioControllerPropertyAllowlist,
+} from './audio-controller';
 import type { COMPONENT_TYPE } from './types';
 
 /**
@@ -113,6 +123,8 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   collider: colliderBuilder,
   timer: timerBuilder,
   light: lightBuilder,
+  'audio-manager': audioManagerBuilder,
+  'audio-controller': audioControllerBuilder,
 };
 
 /**
@@ -142,6 +154,8 @@ export const MethodRegistry: Record<
   collider: Collider,
   timer: Timer,
   light: Light,
+  'audio-manager': AudioManager,
+  'audio-controller': AudioController,
   'ui-binding': {},
   'html-constructor': {},
   'message-listener': {},
@@ -169,6 +183,8 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   collider: ColliderPropertyAllowlist,
   timer: TimerPropertyAllowlist,
   light: LightPropertyAllowlist,
+  'audio-manager': AudioManagerPropertyAllowlist,
+  'audio-controller': AudioControllerPropertyAllowlist,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

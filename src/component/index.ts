@@ -63,6 +63,15 @@ export type {
   LightMethods,
   LightType,
 } from './light';
+export type {
+  AudioManagerT as audio_manager,
+  AudioManagerMethods,
+} from './audio-manager';
+export type {
+  AudioControllerT as audio_controller,
+  AudioControllerMethods,
+  SFXOptions,
+} from './audio-controller';
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';
@@ -87,3 +96,5 @@ export { CameraSerializer } from './camera/data';
 export { ColliderSerializer } from './collider/data';
 export { TimerSerializer } from './timer/data';
 export { LightSerializer } from './light/data';
+export { AudioManagerSerializer } from './audio-manager/data';
+export { AudioControllerSerializer } from './audio-controller/data';

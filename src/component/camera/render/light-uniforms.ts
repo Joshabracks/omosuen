@@ -27,6 +27,12 @@ const _spotLightBrightness = new Map<number, (WebGLUniformLocation | null)[]>();
 const _spotLightRadius = new Map<number, (WebGLUniformLocation | null)[]>();
 const _spotLightHardness = new Map<number, (WebGLUniformLocation | null)[]>();
 
+// Per-frame light categorization arrays — reused to avoid allocations
+const _ambientAccum = [0, 0, 0];
+const _dirLightsArr: LightT[] = [];
+const _pointLightsArr: { light: LightT; pos: Vector3D }[] = [];
+const _spotLightsArr: { light: LightT; pos: Vector3D }[] = [];
+
 /** Pixels of overscan padding added to FBO dimensions (1px border each side). */
 export const FBO_OVERSCAN_PX = 2;
 
@@ -149,22 +155,21 @@ export function setLightUniforms(
   cameraId: number,
   lights: LightT[],
 ): void {
-  // Accumulate ambient light (additive)
-  const ambientColor = [0, 0, 0];
+  // Reset module-level categorization arrays
+  _ambientAccum[0] = 0; _ambientAccum[1] = 0; _ambientAccum[2] = 0;
   let hasAmbient = false;
-
-  const dirLights: LightT[] = [];
-  const pointLights: { light: LightT; pos: Vector3D }[] = [];
-  const spotLights: { light: LightT; pos: Vector3D }[] = [];
+  _dirLightsArr.length = 0;
+  _pointLightsArr.length = 0;
+  _spotLightsArr.length = 0;
 
   for (const light of lights) {
     if (light.lightType === 'ambient') {
-      ambientColor[0] += light.color.x * light.brightness;
-      ambientColor[1] += light.color.y * light.brightness;
-      ambientColor[2] += light.color.z * light.brightness;
+      _ambientAccum[0] += light.color.x * light.brightness;
+      _ambientAccum[1] += light.color.y * light.brightness;
+      _ambientAccum[2] += light.color.z * light.brightness;
       hasAmbient = true;
     } else if (light.lightType === 'directional') {
-      dirLights.push(light);
+      _dirLightsArr.push(light);
     } else {
       // point or spot — need sibling transform for position
       const parent = light.parent;
@@ -177,9 +182,9 @@ export function setLightUniforms(
       if (!siblingTransform) continue;
       const pos = siblingTransform.position;
       if (light.lightType === 'point') {
-        pointLights.push({ light, pos });
+        _pointLightsArr.push({ light, pos });
       } else {
-        spotLights.push({ light, pos });
+        _spotLightsArr.push({ light, pos });
       }
     }
   }
@@ -220,9 +225,9 @@ export function setLightUniforms(
   if (hasAmbient) {
     gl.uniform3f(
       locAmbientColor,
-      ambientColor[0],
-      ambientColor[1],
-      ambientColor[2],
+      _ambientAccum[0],
+      _ambientAccum[1],
+      _ambientAccum[2],
     );
     gl.uniform1f(locAmbientBrightness, 1.0);
   } else {
@@ -231,20 +236,20 @@ export function setLightUniforms(
   }
 
   // Directional lights (capped at 4)
-  const numDir = Math.min(dirLights.length, 4);
+  const numDir = Math.min(_dirLightsArr.length, 4);
   gl.uniform1i(locNumDir, numDir);
   for (let i = 0; i < numDir; i++) {
-    const l = dirLights[i];
+    const l = _dirLightsArr[i];
     gl.uniform3fv(locDirDir[i], [l.direction.x, l.direction.y, l.direction.z]);
     gl.uniform3fv(locDirColor[i], [l.color.x, l.color.y, l.color.z]);
     gl.uniform1fv(locDirBrightness[i], [l.brightness]);
   }
 
   // Point lights (capped at 8)
-  const numPoint = Math.min(pointLights.length, 8);
+  const numPoint = Math.min(_pointLightsArr.length, 8);
   gl.uniform1i(locNumPoint, numPoint);
   for (let i = 0; i < numPoint; i++) {
-    const { light: l, pos } = pointLights[i];
+    const { light: l, pos } = _pointLightsArr[i];
     gl.uniform3fv(locPtPos[i], [pos.x, pos.y, pos.z]);
     gl.uniform3fv(locPtColor[i], [l.color.x, l.color.y, l.color.z]);
     gl.uniform1fv(locPtBrightness[i], [l.brightness]);
@@ -253,10 +258,10 @@ export function setLightUniforms(
   }
 
   // Spot lights (capped at 8)
-  const numSpot = Math.min(spotLights.length, 8);
+  const numSpot = Math.min(_spotLightsArr.length, 8);
   gl.uniform1i(locNumSpot, numSpot);
   for (let i = 0; i < numSpot; i++) {
-    const { light: l, pos } = spotLights[i];
+    const { light: l, pos } = _spotLightsArr[i];
     gl.uniform3fv(locSpPos[i], [pos.x, pos.y, pos.z]);
     gl.uniform3fv(locSpColor[i], [l.color.x, l.color.y, l.color.z]);
     gl.uniform1fv(locSpBrightness[i], [l.brightness]);

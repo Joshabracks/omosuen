@@ -91,7 +91,6 @@ export const UIOverlay: UIOverlayMethods = {
 
       if (previousOverlay.showOverride) {
         // @ts-expect-error - Dynamic method access via registered override
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const overrideMethod = UIOverlay[previousOverlay.showOverride];
         if (overrideMethod && typeof overrideMethod === 'function') {
           overrideMethod(previousOverlay);

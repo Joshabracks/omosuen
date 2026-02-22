@@ -98,9 +98,10 @@ export const Nexus: NexusMethods = {
     switch (components.constructor.name) {
       case 'Object':
         for (const key in components) {
-          // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-          // @ts-expect-error
-          Nexus.addComponent(n, components[key]);
+          Nexus.addComponent(
+            n,
+            (components as Record<string, ComponentData>)[key],
+          );
         }
         break;
       case 'Array':

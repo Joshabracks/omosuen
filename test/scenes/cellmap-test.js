@@ -1,11 +1,12 @@
 /**
- * Cell-Map Rendering Test Scene
+ * Cell-Map Rendering Test Scene — Silhouette Demo
  * Tests 3D isometric cell-map rendering featuring:
- * - 20x20x10 heightmap terrain (dome/pyramid shape)
- * - Grass texture with albedo + normal maps
- * - Isometric camera view
- * - Camera pan and zoom controls
- * - Render statistics display
+ * - 20x20 flat grass terrain with a hollow 10x10 dirt structure (10 cells tall, roofed)
+ * - Doorway opening on the +X face
+ * - 1 indoor sprite (always occluded by roof, silhouette always visible)
+ * - 2 outdoor sprites patrolling around the structure (silhouette when behind walls)
+ * - Grass + dirt textures with albedo + normal maps
+ * - Isometric camera with pan and zoom controls
  */
 
 const Omosuen = window.Omosuen;
@@ -274,66 +275,64 @@ setTimeout(() => {
 }, 500); // Wait 500ms for UI to be ready
 
 /**
- * Finds the highest solid cell (shapeIndex !== 0) at a given X,Z coordinate
- * @param {Array3D} shapeMap - The shape map from the cell-map
- * @param {number} x - X grid coordinate
- * @param {number} z - Z grid coordinate
- * @param {number} maxHeight - Maximum height to search
- * @returns {number} The Y coordinate of the highest solid cell, or -1 if none found
+ * Generates a flat grass ground with a hollow dirt structure in the center.
+ * Structure: 10x10 footprint (x=5..14, z=5..14), 10 cells tall with roof.
+ * Doorway: 4-cell-wide, 4-cell-tall opening on the +X face (x=14, z=8..11, y=1..4).
+ * Returns both materialMap (0=grass, 1=dirt) and shapeMap (0=air, 1=solid).
  */
-function findHighestCellY(shapeMap, x, z, maxHeight) {
-    // Search from top down
-    for (let y = maxHeight - 1; y >= 0; y--) {
-        const shapeIndex = shapeMap.get(new Omosuen.Vector3D(x, y, z));
-        if (shapeIndex !== 0) {
-            return y;
-        }
-    }
-    return -1; // No solid cell found
-}
-
-/**
- * Generates a heightmap with concentric rings for depth testing
- * Rings radiate from center using Chebyshev distance (max of |dx|, |dz|)
- * Odd rings (1, 3, 5, ...) are at height 2
- * Even rings (0, 2, 4, ...) are at height 3
- * All cells use grass material; sprite spawn cells are marked dirt after generation
- * Returns both materialMap (which material to use) and shapeMap (solid vs air)
- */
-function generateHeightmap(width, depth, maxHeight) {
-    // Material map: which material index to use (0 = grass, 1 = dirt)
+function generateStructureMap(width, depth, maxHeight) {
     const materialMap = new Omosuen.Array3D(
         new Omosuen.Vector3D(width, maxHeight, depth),
-        0 // Default to material 0 (grass) for all cells
+        0 // Default to material 0 (grass)
     );
 
-    // Shape map: which mesh to use (0 = air/empty, 1 = cube/solid)
     const shapeMap = new Omosuen.Array3D(
         new Omosuen.Vector3D(width, maxHeight, depth),
-        0 // Default to 0 (air/empty) for all cells
+        0 // Default to 0 (air/empty)
     );
 
-    // Calculate center of map
-    const centerX = Math.floor(width / 2);
-    const centerZ = Math.floor(depth / 2);
-
+    // Flat grass ground at y=0
     for (let x = 0; x < width; x++) {
         for (let z = 0; z < depth; z++) {
-            // Calculate ring index using Chebyshev distance (max of absolute differences)
-            // This creates square-shaped concentric rings
-            const dx = Math.abs(x - centerX);
-            const dz = Math.abs(z - centerZ);
-            const ring = Math.max(dx, dz);
+            shapeMap.set(new Omosuen.Vector3D(x, 0, z), 1);
+            // materialMap defaults to 0 (grass)
+        }
+    }
 
-            // Odd rings = height 2, Even rings = height 3
-            const height = (ring % 2 === 1) ? 2 : 3;
+    // Structure bounds
+    const SX0 = 5, SX1 = 14; // x range (inclusive)
+    const SZ0 = 5, SZ1 = 14; // z range (inclusive)
+    const WALL_TOP = 9;      // walls from y=1 to y=9
+    const ROOF_Y = 10;       // roof at y=10
 
-            // Fill cells from ground up to calculated height
-            for (let y = 0; y <= height; y++) {
-                // All rings use grass (material 0)
-                shapeMap.set(new Omosuen.Vector3D(x, y, z), 1); // Shape 1 = cube (solid)
+    // Doorway on +X face (x=14): z=8..11, y=1..4
+    const DOOR_Z0 = 8, DOOR_Z1 = 11;
+    const DOOR_Y_TOP = 4;
+
+    // Build walls (perimeter cells from y=1 to WALL_TOP)
+    for (let y = 1; y <= WALL_TOP; y++) {
+        for (let x = SX0; x <= SX1; x++) {
+            for (let z = SZ0; z <= SZ1; z++) {
+                // Only perimeter cells are walls
+                const isPerimeter = (x === SX0 || x === SX1 || z === SZ0 || z === SZ1);
+                if (!isPerimeter) continue;
+
+                // Check doorway opening: +X face, within doorway z-range and y-range
+                if (x === SX1 && z >= DOOR_Z0 && z <= DOOR_Z1 && y <= DOOR_Y_TOP) {
+                    continue; // Leave as air (doorway)
+                }
+
+                shapeMap.set(new Omosuen.Vector3D(x, y, z), 1);
+                materialMap.set(new Omosuen.Vector3D(x, y, z), 1); // dirt
             }
-            // Cells above height remain as 0 (air) in shapeMap
+        }
+    }
+
+    // Build roof at ROOF_Y (all cells in footprint)
+    for (let x = SX0; x <= SX1; x++) {
+        for (let z = SZ0; z <= SZ1; z++) {
+            shapeMap.set(new Omosuen.Vector3D(x, ROOF_Y, z), 1);
+            materialMap.set(new Omosuen.Vector3D(x, ROOF_Y, z), 1); // dirt
         }
     }
 
@@ -598,31 +597,17 @@ export async function createScene() {
 
     console.log('[CellMap Test] InputController created with mouse pan and zoom');
 
-    // 6. Create Cell-Map with dome-shaped heightmap
+    // 6. Create Cell-Map with hollow structure
     const MAP_WIDTH = 20;   // 20 cells wide
     const MAP_DEPTH = 20;   // 20 cells deep
-    const MAP_HEIGHT = 20;  // 20 layers tall (dome gets taller towards center)
+    const MAP_HEIGHT = 20;  // 20 layers tall
     const CELL_WIDTH = 32;  // Standard cell width
     const CELL_DEPTH = 32;  // Standard cell depth
     const CELL_HEIGHT = 16; // Standard cell height
 
-    // Generate concentric ring heightmap for depth testing
-    const { materialMap, shapeMap } = generateHeightmap(MAP_WIDTH, MAP_DEPTH, MAP_HEIGHT);
-    console.log('[CellMap Test] Concentric ring heightmap generated (20x20x20): odd rings height 2, even rings height 3');
-
-    // Pre-compute sprite spawn positions and mark their cells as dirt
-    const spriteSpawns = [];
-    for (let i = 0; i < 10; i++) {
-        const randomX = Math.floor(Math.random() * MAP_WIDTH);
-        const randomZ = Math.floor(Math.random() * MAP_DEPTH);
-        const highestY = findHighestCellY(shapeMap, randomX, randomZ, MAP_HEIGHT);
-        if (highestY === -1) continue;
-
-        spriteSpawns.push({ randomX, randomZ, highestY });
-
-        // Mark the top cell of this column as dirt (material 1)
-        materialMap.set(new Omosuen.Vector3D(randomX, highestY, randomZ), 1);
-    }
+    // Generate flat ground with hollow dirt structure in center
+    const { materialMap, shapeMap } = generateStructureMap(MAP_WIDTH, MAP_DEPTH, MAP_HEIGHT);
+    console.log('[CellMap Test] Structure map generated: flat grass ground + 10x10 hollow dirt structure');
 
     // Create material definition for grass
     const grassMaterial = {
@@ -640,7 +625,7 @@ export async function createScene() {
     }
 
     const cellMap = await Omosuen.newComponent('cell-map', {
-        name: 'Terrain Heightmap',
+        name: 'Terrain Structure',
         materials: [grassMaterial, dirtMaterial],
         materialMap: materialMap,
         shapeMap: shapeMap, // Explicitly provide shapeMap (0 = air, 1 = solid cube)
@@ -669,7 +654,7 @@ export async function createScene() {
 
     let ambientTime = 0;
     Omosuen.registerMethod('nexus', 'ambientPulse', (_nexus, deltaTime) => {
-        ambientTime += deltaTime / 1000;
+        ambientTime += deltaTime / 100000;
         // Sine wave: oscillates brightness between 0.1 and 0.5 over 1 second period
         const t = (Math.sin(ambientTime * Math.PI * 2) + 1) / 2; // 0 to 1
         ambientLight.setBrightness(0.1 + t * 0.4);
@@ -743,119 +728,140 @@ export async function createScene() {
 
     console.log('[CellMap Test] Lighting components created');
 
-    // Register collision update for sprite nexuses
-    const NUDGE_SPEED = 64; // units per second (4 cell-heights/sec at CELL_HEIGHT=16)
-    Omosuen.registerMethod('nexus', 'spriteCollisionUpdate', (nexus, deltaTime) => {
-        const transform = nexus.getComponentByType('transform', false);
-        const collider = nexus.getComponentByType('collider', false);
-        if (!transform || !collider) return;
+    // 7. Create 3 character sprites for silhouette demo
+    //    - 1 indoor (center of structure, always occluded by roof)
+    //    - 2 outdoor walkers (patrol around the structure)
 
-        const result = collider.intersectsCellMap(cellMap);
-        if (!result.hit) return;
-
-        transform.translate(0, NUDGE_SPEED * (deltaTime / 1000), 0);
-    });
-
-    // 7. Create 10 character sprites placed on the terrain
-    const animationConfigs = [
-        { name: 'walk-down', frames: [11, 12] },
-        { name: 'walk-left', frames: [13, 14] },
-        { name: 'walk-right', frames: [15, 16] },
-        { name: 'walk-up', frames: [17, 18] },
+    const walkAnimations = [
+        { name: 'walk-down', frames: [11, 12], frameTime: 200, loop: true },
+        { name: 'walk-left', frames: [13, 14], frameTime: 200, loop: true },
+        { name: 'walk-right', frames: [15, 16], frameTime: 200, loop: true },
+        { name: 'walk-up', frames: [17, 18], frameTime: 200, loop: true },
     ];
 
-    console.log(`[CellMap Test] Creating ${spriteSpawns.length} character sprites on terrain (pre-computed placement)...`);
-
-    for (let i = 0; i < spriteSpawns.length; i++) {
-        const { randomX, randomZ, highestY } = spriteSpawns[i];
-
-        // Calculate 3D world position
-        // Place sprite one cell height above the terrain for "standing on top" appearance
-        const worldX = (randomX * CELL_WIDTH) + (CELL_WIDTH / 2);
-        const worldY = (highestY + 1) * CELL_HEIGHT;
-        const worldZ = (randomZ * CELL_DEPTH) + (CELL_DEPTH / 2);
-
-        // Create sprite nexus with collision update
-        const spriteNexus = await Omosuen.newComponent('nexus', {
-            name: `Character ${i + 1}`,
-            updateOverride: 'spriteCollisionUpdate',
+    // Helper: create a sprite nexus with transform, sprite, and animation controller
+    async function createCharacter(name, worldPos, showSilhouette, updateOverride) {
+        const nexus = await Omosuen.newComponent('nexus', {
+            name,
+            updateOverride: updateOverride || undefined,
         }, scene);
 
-        // Create transform with 3D world position (x=width, y=height, z=depth)
         await Omosuen.newComponent('transform', {
-            name: `Character ${i + 1} Transform`,
-            position: new Omosuen.Vector3D(worldX, worldY, worldZ),
-            rotation: new Omosuen.Vector3D(0, 0, 0),
-            scale: new Omosuen.Vector3D(1, 1, 1),
-        }, spriteNexus);
+            name: `${name} Transform`,
+            position: new Omosuen.Vector3D(worldPos.x, worldPos.y, worldPos.z),
+        }, nexus);
 
-        // Create collider for terrain collision detection
-        await Omosuen.newComponent('collider', {
-            name: `Character ${i + 1} Collider`,
-            shape: 'box',
-            size: new Omosuen.Vector3D(4, 6, 4),
-            offset: new Omosuen.Vector3D(0, 0, 0),
-        }, spriteNexus);
-
-        // Create sprite
         const sprite = await Omosuen.newComponent('sprite', {
-            name: `Character ${i + 1} Sprite`,
+            name: `${name} Sprite`,
             textureMapKeys: {
                 albedo: 'objects',
                 normal: 'objects-normal',
                 material: '',
                 emission: '',
             },
-            frame: {
-                albedo: 11, // Start with walk-down frame 1
-                normal: 11,
-                emission: 0,
-                material: 0,
-            },
-            anchor: new Omosuen.Vector2D(0, 8), // Center anchor (16x16 sprite)
+            frame: { albedo: 11, normal: 11, emission: 0, material: 0 },
+            anchor: new Omosuen.Vector2D(0, 8),
             tint: new Omosuen.Vector4D(1, 1, 1, 1),
             opacity: 1.0,
-        }, spriteNexus);
+            showSilhouette,
+        }, nexus);
 
-        // Pick a random starting animation
-        const randomAnim = animationConfigs[Math.floor(Math.random() * animationConfigs.length)];
-
-        // Create animation controller
-        const animationController = await Omosuen.newComponent('animation-controller', {
-            name: `Character ${i + 1} Animator`,
+        const animator = await Omosuen.newComponent('animation-controller', {
+            name: `${name} Animator`,
             spriteId: sprite.id,
-            animations: [
-                {
-                    name: 'walk-down',
-                    frames: [11, 12],
-                    frameTime: 200, // 5 FPS
-                    loop: true,
-                },
-                {
-                    name: 'walk-left',
-                    frames: [13, 14],
-                    frameTime: 200,
-                    loop: true,
-                },
-                {
-                    name: 'walk-right',
-                    frames: [15, 16],
-                    frameTime: 200,
-                    loop: true,
-                },
-                {
-                    name: 'walk-up',
-                    frames: [17, 18],
-                    frameTime: 200,
-                    loop: true,
-                },
-            ],
-        }, spriteNexus);
-        animationController.play(randomAnim.name)
-        console.log(`[CellMap Test] Created sprite ${i + 1} at grid (${randomX}, ${highestY}, ${randomZ}) -> world (${worldX}, ${worldY}, ${worldZ})`);
+            animations: walkAnimations,
+        }, nexus);
+
+        return { nexus, sprite, animator };
     }
 
-    console.log('[CellMap Test] All character sprites created');
+    // Patrol path: rectangular loop around the structure
+    // Structure is x=5..14, z=5..14 — path runs 2 cells outside at x=3,16 z=3,16
+    const PATROL_WAYPOINTS = [
+        new Omosuen.Vector3D(3 * CELL_WIDTH + CELL_WIDTH / 2, CELL_HEIGHT, 3 * CELL_DEPTH + CELL_DEPTH / 2),   // 0: north (112, 16, 112)
+        new Omosuen.Vector3D(3 * CELL_WIDTH + CELL_WIDTH / 2, CELL_HEIGHT, 16 * CELL_DEPTH + CELL_DEPTH / 2),  // 1: west  (112, 16, 528)
+        new Omosuen.Vector3D(16 * CELL_WIDTH + CELL_WIDTH / 2, CELL_HEIGHT, 16 * CELL_DEPTH + CELL_DEPTH / 2), // 2: south (528, 16, 528)
+        new Omosuen.Vector3D(16 * CELL_WIDTH + CELL_WIDTH / 2, CELL_HEIGHT, 3 * CELL_DEPTH + CELL_DEPTH / 2),  // 3: east  (528, 16, 112)
+    ];
+    const PATROL_SPEED = 48; // units per second
+    const ARRIVAL_THRESHOLD = 2; // snap to waypoint within this distance
+
+    // Direction-to-animation mapping for isometric view:
+    //   +X → walk-right, -X → walk-left, +Z → walk-down, -Z → walk-up
+    function getWalkAnimName(dx, dz) {
+        if (Math.abs(dx) > Math.abs(dz)) {
+            return dx > 0 ? 'walk-right' : 'walk-left';
+        }
+        return dz > 0 ? 'walk-down' : 'walk-up';
+    }
+
+    // Register clockwise patrol around the structure
+    function registerPatrol(methodName, startIndex) {
+        let waypointIndex = startIndex;
+        let currentAnim = '';
+
+        Omosuen.registerMethod('nexus', methodName, (nexus, deltaTime) => {
+            const transform = nexus.getComponentByType('transform', false);
+            const animController = nexus.getComponentByType('animation-controller', false);
+            if (!transform || !animController) return;
+
+            const target = PATROL_WAYPOINTS[waypointIndex];
+            const dx = target.x - transform.position.x;
+            const dz = target.z - transform.position.z;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+
+            // Switch animation based on movement direction
+            const animName = getWalkAnimName(dx, dz);
+            if (animName !== currentAnim) {
+                animController.play(animName);
+                currentAnim = animName;
+            }
+
+            const step = PATROL_SPEED * (deltaTime / 1000);
+            if (dist > ARRIVAL_THRESHOLD) {
+                transform.translate((dx / dist) * step, 0, (dz / dist) * step);
+            } else {
+                // Snap to waypoint and advance to next
+                transform.setPosition(target.x, target.y, target.z);
+                waypointIndex = (waypointIndex + 1) % PATROL_WAYPOINTS.length;
+            }
+        });
+    }
+
+    // Walker A starts north, patrols north → west → south → east
+    registerPatrol('patrolA', 1);
+    // Walker B starts south, patrols south → east → north → west
+    registerPatrol('patrolB', 3);
+
+    // Sprite A: indoor, center of structure (always occluded by roof)
+    const indoorChar = await createCharacter(
+        'Indoor Character',
+        new Omosuen.Vector3D(10 * CELL_WIDTH + CELL_WIDTH / 2, CELL_HEIGHT, 10 * CELL_DEPTH + CELL_DEPTH / 2),
+        true,  // showSilhouette
+        null,  // no movement
+    );
+    indoorChar.animator.play('walk-down');
+    console.log('[CellMap Test] Created indoor sprite at structure center with silhouette always on');
+
+    // Sprite B: outdoor walker, starts at north corner
+    const walkerA = await createCharacter(
+        'Walker A',
+        PATROL_WAYPOINTS[0],
+        true,      // showSilhouette
+        'patrolA',
+    );
+    console.log('[CellMap Test] Created Walker A at north (112, 16, 112)');
+
+    // Sprite C: outdoor walker, starts at south corner (opposite side)
+    const walkerB = await createCharacter(
+        'Walker B',
+        PATROL_WAYPOINTS[2],
+        true,      // showSilhouette
+        'patrolB',
+    );
+    console.log('[CellMap Test] Created Walker B at south (528, 16, 528)');
+
+    console.log('[CellMap Test] All character sprites created (1 indoor + 2 patrolling around structure)');
 
     // 8. Create UI overlay
     const ui = await Omosuen.newComponent('ui-overlay', {

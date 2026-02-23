@@ -105,6 +105,7 @@ export function renderCellMaps(
   const aPosition = gl.getAttribLocation(program, 'a_position');
   const aNormal = gl.getAttribLocation(program, 'a_normal');
   const aUv = gl.getAttribLocation(program, 'a_uv');
+  const aOrigPosition = gl.getAttribLocation(program, 'a_origPosition');
 
   // Get uniform locations
   const uViewportSize = gl.getUniformLocation(program, 'u_viewportSize');
@@ -159,7 +160,7 @@ export function renderCellMaps(
   ) as AtlasManagerT | null;
   const atlasSize = atlasManager?.config.atlasSize ?? 1024;
 
-  const BYTES_PER_VERTEX = 6 * 4; // 6 floats × 4 bytes (pos3 + normal3)
+  const BYTES_PER_VERTEX = 9 * 4; // 9 floats × 4 bytes (pos3 + normal3 + origPos3)
 
   // Render each cell-map
   for (const cellMap of cellMaps) {
@@ -247,6 +248,18 @@ export function renderCellMaps(
           false,
           BYTES_PER_VERTEX,
           12,
+        );
+      }
+
+      if (aOrigPosition >= 0) {
+        gl.enableVertexAttribArray(aOrigPosition);
+        gl.vertexAttribPointer(
+          aOrigPosition,
+          3,
+          gl.FLOAT,
+          false,
+          BYTES_PER_VERTEX,
+          24,
         );
       }
 

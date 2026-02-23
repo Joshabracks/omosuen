@@ -255,6 +255,13 @@ export function renderSprites(
     gl.uniform1i(u_hasVisibilityMask, 0);
   }
 
+  // Disable cell-only attributes that may be left enabled from cell rendering
+  const a_origPosition = gl.getAttribLocation(program, 'a_origPosition');
+  if (a_origPosition >= 0) {
+    gl.disableVertexAttribArray(a_origPosition);
+    gl.vertexAttrib3f(a_origPosition, 0, 0, 0);
+  }
+
   // Bind vertex buffers (shared for all sprites)
   gl.bindBuffer(gl.ARRAY_BUFFER, camera.glResources.quadVertexBuffer);
   gl.enableVertexAttribArray(a_position);

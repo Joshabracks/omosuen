@@ -70,6 +70,7 @@ varying vec3 v_normal;
 varying vec3 v_worldPos;
 varying vec2 v_screenPos;
 varying vec3 v_worldNormal;
+varying vec3 v_origWorldPos;
 
 // Transform world direction to isometric screen space
 // Same projection matrix as the vertex shader
@@ -218,8 +219,9 @@ void main() {
         // ============================================================
 
         // Per-fragment line-of-sight raycasting (early discard skips expensive texture/lighting work)
+        // Uses pre-smoothing positions so floor() resolves consistently across each face
         if(u_hasVisibilityMask) {
-            vec3 fragPos = v_worldPos / u_cellSize;
+            vec3 fragPos = v_origWorldPos / u_cellSize;
             vec3 targetPos = u_revealTarget / u_cellSize;
 
             // Different cell from target — ray march to check visibility
@@ -294,7 +296,7 @@ void main() {
 
         // Per-fragment line-of-sight raycasting (hide sprites in non-visible cells)
         if(u_hasVisibilityMask) {
-            vec3 fragPos = v_worldPos / u_cellSize;
+            vec3 fragPos = v_origWorldPos / u_cellSize;
             vec3 targetPos = u_revealTarget / u_cellSize;
 
             if(floor(fragPos) != floor(targetPos)) {

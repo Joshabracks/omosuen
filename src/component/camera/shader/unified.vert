@@ -1,6 +1,7 @@
-attribute vec3 a_position;  // Used by cells
+attribute vec3 a_position;      // Used by cells
 attribute vec2 a_uv;
-attribute vec3 a_normal;    // Used by cells
+attribute vec3 a_normal;        // Used by cells
+attribute vec3 a_origPosition;  // Pre-smoothing position (cells only)
 
     // Render mode selector
 uniform lowp int u_renderMode;  // 0 = cells, 1 = sprites
@@ -24,6 +25,7 @@ varying vec3 v_normal;
 varying vec3 v_worldPos;
 varying vec2 v_screenPos;
 varying vec3 v_worldNormal;
+varying vec3 v_origWorldPos;
 
 void main() {
     if(u_renderMode == 0) {
@@ -66,6 +68,7 @@ void main() {
         v_normal = normalize(isoNormal);
         v_worldPos = worldPos;
         v_worldNormal = a_normal;
+        v_origWorldPos = a_origPosition;
 
     } else {
         // ============================================================
@@ -112,6 +115,7 @@ void main() {
         v_normal = vec3(0.0, -1.0, 0.0);  // Isometric up
         v_worldPos = u_spritePosition;
         v_worldNormal = vec3(0.0, 0.0, 1.0);  // Screen-space normal
+        v_origWorldPos = u_spritePosition;
         v_screenPos = viewPos;
     }
 }

@@ -121,21 +121,24 @@ interface FaceRecord {
 
 /**
  * Writes a quad (4 vertices, 2 triangles) into the vertex and index buffers.
- * Each vertex is 6 floats: [px, py, pz, nx, ny, nz].
- * normals length 1 = broadcast to all 4 vertices, length 4 = per-vertex.
+ * Each vertex is 9 floats: [px, py, pz, nx, ny, nz, opx, opy, opz].
+ * normals/origPositions length 1 = broadcast to all 4 vertices, length 4 = per-vertex.
  */
 function emitQuad(
   vertexFloats: number[],
   indexInts: number[],
   positions: [number, number, number][],
   normals: [number, number, number][],
+  origPositions: [number, number, number][],
 ): void {
-  const base = vertexFloats.length / 6;
+  const base = vertexFloats.length / 9;
   const n0 = normals[0];
+  const o0 = origPositions[0];
   for (let i = 0; i < 4; i++) {
     const p = positions[i];
     const n = normals.length > 1 ? normals[i] : n0;
-    vertexFloats.push(p[0], p[1], p[2], n[0], n[1], n[2]);
+    const o = origPositions.length > 1 ? origPositions[i] : o0;
+    vertexFloats.push(p[0], p[1], p[2], n[0], n[1], n[2], o[0], o[1], o[2]);
   }
   indexInts.push(base, base + 1, base + 2, base, base + 2, base + 3);
 }
@@ -460,7 +463,7 @@ function buildChunkMesh(
       ranges.push(currentRange);
     }
 
-    emitQuad(vertexFloats, indexInts, quad.verts, [quad.normal]);
+    emitQuad(vertexFloats, indexInts, quad.verts, [quad.normal], quad.verts);
     currentRange!.indexCount += 6;
   }
 
@@ -714,11 +717,13 @@ function buildSmoothedChunkMesh(
       fnz /= fLen;
     }
 
-    // Build per-vertex positions and normals
+    // Build per-vertex positions, normals, and original positions
     const quadPositions: [number, number, number][] = [];
     const quadNormals: [number, number, number][] = [];
+    const quadOrigPositions: [number, number, number][] = [];
     for (const idx of indices) {
       quadPositions.push(uniquePositions[idx]);
+      quadOrigPositions.push(originalPositions[idx]);
       if (!vertexNormals || normalSmoothing === 0) {
         quadNormals.push([fnx, fny, fnz]);
       } else if (normalSmoothing === 1) {
@@ -740,7 +745,7 @@ function buildSmoothedChunkMesh(
       }
     }
 
-    emitQuad(vertexFloats, indexInts, quadPositions, quadNormals);
+    emitQuad(vertexFloats, indexInts, quadPositions, quadNormals, quadOrigPositions);
     currentRange!.indexCount += 6;
   }
 

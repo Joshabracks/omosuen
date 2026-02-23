@@ -6,6 +6,7 @@ import { TextureMapT } from '../../texture-map';
 import { TransformT } from '../../transform';
 import { CameraT } from '../data';
 import { setLightUniforms } from './light-uniforms';
+import { computeVisibilityMask } from './visibility-mask';
 
 /**
  * Snaps camera position to FBO pixel boundaries so the pixel grid
@@ -28,6 +29,40 @@ export function snapCameraPosition(
     remainderX: camX - snappedX,
     remainderY: camY - snappedY,
   };
+}
+
+/**
+ * Uploads a per-cell visibility mask as a flattened 2D R8 texture.
+ * Texture layout: width = mapX, height = mapY * mapZ.
+ * Texel at (x, y + z * mapY) → cell (x, y, z).
+ */
+function uploadVisibilityTexture(
+  gl: WebGL2RenderingContext,
+  camera: CameraT,
+  mask: Uint8Array,
+  mapSize: { x: number; y: number; z: number },
+): void {
+  if (!camera.glResources.visibilityTexture) {
+    camera.glResources.visibilityTexture = gl.createTexture();
+  }
+
+  gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.visibilityTexture);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.R8,
+    mapSize.x,
+    mapSize.y * mapSize.z,
+    0,
+    gl.RED,
+    gl.UNSIGNED_BYTE,
+    mask,
+  );
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 }
 
 /**
@@ -84,6 +119,13 @@ export function renderCellMaps(
   const uTextureSize = gl.getUniformLocation(program, 'u_textureSize');
   const uHasNormal = gl.getUniformLocation(program, 'u_hasNormal');
 
+  // Visibility mask uniform locations
+  const uHasVisibilityMask = gl.getUniformLocation(
+    program,
+    'u_hasVisibilityMask',
+  );
+  const uVisibilityMask = gl.getUniformLocation(program, 'u_visibilityMask');
+
   // Set constant uniforms
   const logicalWidth =
     camera.glResources.baseResolution.width * camera.pixelScale;
@@ -136,6 +178,38 @@ export function renderCellMaps(
       cellMap.mapSize.y,
       cellMap.mapSize.z,
     );
+
+    // Visibility mask clipping (per cell-map — respects revealExempt)
+    if (camera.revealTarget && !cellMap.revealExempt) {
+      // Recompute mask when reveal target crosses a cell boundary
+      const cx = Math.floor(camera.revealTarget.x / cellMap.cellSize.x);
+      const cy = Math.floor(camera.revealTarget.y / cellMap.cellSize.y);
+      const cz = Math.floor(camera.revealTarget.z / cellMap.cellSize.z);
+
+      const last = camera.glResources.lastRevealCell;
+      if (!last || last.x !== cx || last.y !== cy || last.z !== cz) {
+        camera.glResources.lastRevealCell = { x: cx, y: cy, z: cz };
+
+        const mask = computeVisibilityMask(
+          cellMap.packedData,
+          cellMap.mapSize,
+          { x: cx, y: cy, z: cz },
+        );
+        uploadVisibilityTexture(gl, camera, mask, cellMap.mapSize);
+      }
+
+      // Bind visibility texture
+      if (camera.glResources.visibilityTexture) {
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, camera.glResources.visibilityTexture);
+        gl.uniform1i(uVisibilityMask, 3);
+        gl.uniform1i(uHasVisibilityMask, 1);
+      } else {
+        gl.uniform1i(uHasVisibilityMask, 0);
+      }
+    } else {
+      gl.uniform1i(uHasVisibilityMask, 0);
+    }
 
     let totalFaces = 0;
     let drawCalls = 0;

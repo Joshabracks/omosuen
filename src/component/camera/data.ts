@@ -52,6 +52,32 @@ export interface CameraT
   zoomTarget: { x: number; y: number } | null;
 
   /**
+   * Y-slice reveal target in world-space coordinates.
+   * When set, cell geometry above target.y + revealYOffset is clipped
+   * within the reveal region (radius or volume).
+   * null = disabled, all geometry renders normally.
+   */
+  revealTarget: { x: number; y: number; z: number } | null;
+
+  /** World-space offset above revealTarget.y where clipping begins. Default: 16.0 */
+  revealYOffset: number;
+
+  /** Height of dither fade zone below clip plane. 0 = hard cut. Default: 8.0 */
+  revealFadeHeight: number;
+
+  /** Cylindrical reveal radius in world units (used when no volume is set). Default: 256.0 */
+  revealRadius: number;
+
+  /**
+   * Optional AABB volume override. When set, only cells inside this box are
+   * clipped (instead of the cylindrical radius). null = use radius mode.
+   */
+  revealVolume: {
+    min: { x: number; y: number; z: number };
+    max: { x: number; y: number; z: number };
+  } | null;
+
+  /**
    * WebGL rendering resources (shader programs, buffers, etc.)
    */
   glResources: {
@@ -69,6 +95,10 @@ export interface CameraT
 
     // Base rendering resolution (independent of canvas size, adjusted by zoom)
     baseResolution: { width: number; height: number };
+
+    // Visibility mask for line-of-sight reveal clipping
+    visibilityTexture: WebGLTexture | null;
+    lastRevealCell: { x: number; y: number; z: number } | null;
   };
 }
 
@@ -93,6 +123,15 @@ export interface CameraOptions extends ComponentOptions {
    * Name of the viewport component to render to (required)
    */
   viewportRef: string;
+
+  /** World-space offset above revealTarget.y where clipping begins (default: 16.0) */
+  revealYOffset?: number;
+
+  /** Height of dither fade zone below clip plane (default: 8.0) */
+  revealFadeHeight?: number;
+
+  /** Cylindrical reveal radius in world units (default: 256.0) */
+  revealRadius?: number;
 }
 
 /**
@@ -117,6 +156,12 @@ export function builder(options: CameraOptions): CameraT {
     viewportRef: options.viewportRef,
     zoomTarget: null,
 
+    revealTarget: null,
+    revealYOffset: options.revealYOffset ?? 16.0,
+    revealFadeHeight: options.revealFadeHeight ?? 8.0,
+    revealRadius: options.revealRadius ?? 256.0,
+    revealVolume: null,
+
     glResources: {
       unifiedProgram: null,
       renderModeLocation: null,
@@ -130,6 +175,8 @@ export function builder(options: CameraOptions): CameraT {
       postProcessProgram: null,
       fullscreenQuadBuffer: null,
       baseResolution: { width: 800, height: 600 }, // Default, will be updated in init()
+      visibilityTexture: null,
+      lastRevealCell: null,
     },
   };
 
@@ -152,6 +199,9 @@ function serialize(component: ComponentData): any {
     pixelScale: c.pixelScale,
     axonometricAngle: c.axonometricAngle,
     viewportRef: c.viewportRef,
+    revealYOffset: c.revealYOffset,
+    revealFadeHeight: c.revealFadeHeight,
+    revealRadius: c.revealRadius,
   };
 }
 
@@ -162,7 +212,17 @@ function serialize(component: ComponentData): any {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deserialize(data: any): CameraT {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-  const { type, name, zoom, pixelScale, axonometricAngle, viewportRef } = data;
+  const {
+    type,
+    name,
+    zoom,
+    pixelScale,
+    axonometricAngle,
+    viewportRef,
+    revealYOffset,
+    revealFadeHeight,
+    revealRadius,
+  } = data;
 
   const errors = [];
   if (type !== 'camera') {
@@ -184,6 +244,9 @@ function deserialize(data: any): CameraT {
     pixelScale: pixelScale as number,
     axonometricAngle: axonometricAngle as number,
     viewportRef: viewportRef as string,
+    revealYOffset: revealYOffset as number | undefined,
+    revealFadeHeight: revealFadeHeight as number | undefined,
+    revealRadius: revealRadius as number | undefined,
   });
 }
 
@@ -202,4 +265,9 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'viewportRef',
   'zoomTarget',
   'glResources',
+  'revealTarget',
+  'revealYOffset',
+  'revealFadeHeight',
+  'revealRadius',
+  'revealVolume',
 ];

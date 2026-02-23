@@ -75,6 +75,9 @@ export interface CellMapOptions extends ComponentOptions {
    * 1 = fully averaged per-vertex normals, values in between lerp.
    */
   normalSmoothing?: number;
+
+  /** If true, this cell-map is exempt from Y-slice reveal clipping (default: false) */
+  revealExempt?: boolean;
 }
 
 export interface CellMapT extends ComponentData {
@@ -108,6 +111,9 @@ export interface CellMapT extends ComponentData {
   // Chunk-based rendering
   chunks: ChunkMesh[];
   chunkGridSize: { x: number; y: number; z: number };
+
+  /** If true, this cell-map is exempt from Y-slice reveal clipping. Default: false */
+  revealExempt: boolean;
 }
 
 /**
@@ -181,6 +187,7 @@ export const PROPERTY_ALLOWLIST = [
   'smoothing',
   'smoothingWeights',
   'normalSmoothing',
+  'revealExempt',
 ];
 
 /**
@@ -370,5 +377,6 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     needsGPUUpdate: true,
     chunks,
     chunkGridSize,
+    revealExempt: options.revealExempt ?? false,
   };
 }

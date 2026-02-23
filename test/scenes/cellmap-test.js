@@ -41,6 +41,7 @@ Omosuen.registerHtmlConstructor('cellmapTest', (overlay) => {
                 </div>
 
                 <div class="sidebar-status" style="font-size: 12px; line-height: 1.6;">
+                    <strong>Move:</strong> WASD keys<br>
                     <strong>Pan:</strong> Middle-click + drag<br>
                     <strong>Zoom:</strong> Mouse wheel
                 </div>
@@ -551,6 +552,12 @@ export async function createScene() {
             eventType: 'wheel',
             action: 'mouseWheel',
         },
+
+        // WASD movement bindings
+        { eventType: 'keydown', key: 'w', action: 'moveUp' },
+        { eventType: 'keydown', key: 'a', action: 'moveLeft' },
+        { eventType: 'keydown', key: 's', action: 'moveDown' },
+        { eventType: 'keydown', key: 'd', action: 'moveRight' },
     ];
     bindActions.forEach(inputController.bindAction);
 
@@ -833,12 +840,52 @@ export async function createScene() {
     // Walker B starts south, patrols south → east → north → west
     registerPatrol('patrolB', 3);
 
-    // Sprite A: indoor, center of structure (always occluded by roof)
+    // WASD player control — moves character and updates reveal target each frame
+    const PLAYER_SPEED = 64; // units per second
+    let currentPlayerAnim = '';
+
+    Omosuen.registerMethod('nexus', 'playerControl', (nexus, deltaTime) => {
+        const transform = nexus.getComponentByType('transform', false);
+        const animController = nexus.getComponentByType('animation-controller', false);
+        if (!transform || !animController) return;
+
+        let dx = 0, dz = 0;
+        if (inputController.isActionPressed('moveUp'))    dz -= 1;
+        if (inputController.isActionPressed('moveDown'))   dz += 1;
+        if (inputController.isActionPressed('moveLeft'))   dx -= 1;
+        if (inputController.isActionPressed('moveRight'))  dx += 1;
+
+        if (dx === 0 && dz === 0) return;
+
+        // Normalize diagonal movement
+        const len = Math.sqrt(dx * dx + dz * dz);
+        dx /= len;
+        dz /= len;
+
+        const step = PLAYER_SPEED * (deltaTime / 1000);
+        transform.translate(dx * step, 0, dz * step);
+
+        // Update walk animation based on direction
+        const animName = getWalkAnimName(dx, dz);
+        if (animName !== currentPlayerAnim) {
+            animController.play(animName);
+            currentPlayerAnim = animName;
+        }
+
+        // Update reveal target to follow character
+        camera.setRevealTarget(
+            transform.position.x,
+            transform.position.y,
+            transform.position.z,
+        );
+    });
+
+    // Sprite A: indoor, center of structure (player-controlled)
     const indoorChar = await createCharacter(
         'Indoor Character',
         new Omosuen.Vector3D(10 * CELL_WIDTH + CELL_WIDTH / 2, CELL_HEIGHT, 10 * CELL_DEPTH + CELL_DEPTH / 2),
-        true,  // showSilhouette
-        null,  // no movement
+        true,             // showSilhouette
+        'playerControl',  // WASD movement
     );
     indoorChar.animator.play('walk-down');
     console.log('[CellMap Test] Created indoor sprite at structure center with silhouette always on');
@@ -862,6 +909,14 @@ export async function createScene() {
     console.log('[CellMap Test] Created Walker B at south (528, 16, 528)');
 
     console.log('[CellMap Test] All character sprites created (1 indoor + 2 patrolling around structure)');
+
+    // Enable Y-slice clipping to reveal the interior of the structure
+    camera.setRevealTarget(
+        10 * CELL_WIDTH + CELL_WIDTH / 2,   // center of structure x
+        CELL_HEIGHT,                          // character Y position (floor level)
+        10 * CELL_DEPTH + CELL_DEPTH / 2,   // center of structure z
+    );
+    console.log('[CellMap Test] WASD controls enabled — reveal target tracks player');
 
     // 8. Create UI overlay
     const ui = await Omosuen.newComponent('ui-overlay', {

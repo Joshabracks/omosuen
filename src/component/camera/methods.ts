@@ -6,7 +6,16 @@ import { LightT } from '../light/data';
 import { render } from './render';
 import { collectRenderables } from './collect-renderables';
 import { pan } from './pan';
-import { setZoom, setPixelScale, setZoomTarget, resetZoomTarget } from './set';
+import {
+  setZoom,
+  setPixelScale,
+  setZoomTarget,
+  resetZoomTarget,
+  setRevealTarget,
+  clearRevealTarget,
+  setRevealVolume,
+  clearRevealVolume,
+} from './set';
 import { init } from './init';
 import { dispose } from './dispose';
 
@@ -22,6 +31,19 @@ export interface CameraMethods extends ComponentMethods {
   setZoomTarget: (camera: CameraT, x: number, y: number) => void;
   resetZoomTarget: (camera: CameraT) => void;
   setPixelScale: (camera: CameraT, pixelScale: number) => void;
+  setRevealTarget: (
+    camera: CameraT,
+    x: number,
+    y: number,
+    z: number,
+  ) => void;
+  clearRevealTarget: (camera: CameraT) => void;
+  setRevealVolume: (
+    camera: CameraT,
+    min: { x: number; y: number; z: number },
+    max: { x: number; y: number; z: number },
+  ) => void;
+  clearRevealVolume: (camera: CameraT) => void;
   init: (component: ComponentData) => Promise<void>;
   dispose: (component: ComponentData) => void;
 }
@@ -35,6 +57,10 @@ export const Camera: CameraMethods = {
   setZoomTarget,
   resetZoomTarget,
   setPixelScale,
+  setRevealTarget,
+  clearRevealTarget,
+  setRevealVolume,
+  clearRevealVolume,
   init,
   dispose,
 };

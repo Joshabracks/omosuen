@@ -10,6 +10,8 @@ uniform vec4 u_uvBounds;
 uniform bool u_hasNormal;
 
     // Cell-specific uniforms (Mode 0)
+uniform highp vec3 u_cellSize;
+uniform highp vec3 u_mapSize;
 uniform vec4 u_normalUVBounds;
 uniform vec2 u_textureSize;
 
@@ -30,6 +32,10 @@ uniform vec2 u_screenSize;
     // Silhouette uniforms (sprite mode — renders flat color when occluded)
 uniform bool u_showSilhouette;
 uniform vec4 u_silhouetteColor;
+
+    // Per-cell visibility mask (cell mode — line-of-sight clipping)
+uniform bool u_hasVisibilityMask;
+uniform sampler2D u_visibilityMask;
 
     // Dynamic lighting uniforms
 uniform vec3 u_ambientColor;
@@ -145,6 +151,26 @@ void main() {
         // ============================================================
         // MODE 0: CELL RENDERING (Triplanar world-space texture mapping)
         // ============================================================
+
+        // Per-cell visibility mask clipping (early discard skips expensive texture/lighting work)
+        if(u_hasVisibilityMask) {
+            // Convert world position to cell grid coordinates
+            vec3 cellCoord = floor(v_worldPos / u_cellSize);
+
+            // Bounds check (cells outside map are always visible)
+            if(cellCoord.x >= 0.0 && cellCoord.x < u_mapSize.x &&
+               cellCoord.y >= 0.0 && cellCoord.y < u_mapSize.y &&
+               cellCoord.z >= 0.0 && cellCoord.z < u_mapSize.z) {
+
+                // Convert to 2D texture UV (Y slices stacked per Z row)
+                float texU = (cellCoord.x + 0.5) / u_mapSize.x;
+                float texV = (cellCoord.y + cellCoord.z * u_mapSize.y + 0.5)
+                              / (u_mapSize.y * u_mapSize.z);
+
+                float clipped = texture2D(u_visibilityMask, vec2(texU, texV)).r;
+                if(clipped > 0.5) discard;
+            }
+        }
 
         // Calculate blend weights from world-space normal
         vec3 blendWeights = abs(normalize(v_worldNormal));

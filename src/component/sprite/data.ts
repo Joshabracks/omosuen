@@ -56,6 +56,18 @@ export interface SpriteT
    * 0 = fully transparent, 1 = fully opaque.
    */
   opacity: number;
+
+  /**
+   * When true, renders a flat-color silhouette when the sprite is
+   * occluded by cell geometry instead of discarding the fragment.
+   */
+  showSilhouette: boolean;
+
+  /**
+   * Color of the silhouette (RGBA, 0-1 range).
+   * Only used when showSilhouette is true.
+   */
+  silhouetteColor: Vector4D;
 }
 
 export interface SpriteOptions extends ComponentOptions {
@@ -74,6 +86,8 @@ export interface SpriteOptions extends ComponentOptions {
   anchor?: Vector2D;
   tint?: Vector4D;
   opacity?: number;
+  showSilhouette?: boolean;
+  silhouetteColor?: Vector4D;
 }
 
 /**
@@ -104,6 +118,8 @@ export function builder(options: SpriteOptions): SpriteT {
     anchor: options.anchor ?? new Vector2D(0, 0),
     tint: options.tint ?? new Vector4D(1, 1, 1, 1),
     opacity: options.opacity ?? 1.0,
+    showSilhouette: options.showSilhouette ?? false,
+    silhouetteColor: options.silhouetteColor ?? new Vector4D(0.2, 0.4, 0.8, 0.5),
   };
 
   return sprite as unknown as SpriteT;
@@ -145,6 +161,14 @@ function serialize(component: ComponentData): any {
       w: s.tint.w,
     },
     opacity: s.opacity,
+    showSilhouette: s.showSilhouette,
+    silhouetteColor: {
+      _vectorType: 'Vector4D',
+      x: s.silhouetteColor.x,
+      y: s.silhouetteColor.y,
+      z: s.silhouetteColor.z,
+      w: s.silhouetteColor.w,
+    },
   };
 }
 
@@ -154,7 +178,7 @@ function serialize(component: ComponentData): any {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deserialize(data: any): SpriteT {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-  const { type, name, textureMapKeys, frame, anchor, tint, opacity } = data;
+  const { type, name, textureMapKeys, frame, anchor, tint, opacity, showSilhouette, silhouetteColor } = data;
 
   const errors = [];
   if (type !== 'sprite') {
@@ -183,6 +207,14 @@ function deserialize(data: any): SpriteT {
     }
   }
 
+  // Reconstruct Vector4D silhouetteColor
+  let silhouetteColorVec: Vector4D | undefined;
+  if (silhouetteColor && typeof silhouetteColor === 'object') {
+    if ('_vectorType' in silhouetteColor && silhouetteColor._vectorType === 'Vector4D') {
+      silhouetteColorVec = new Vector4D(silhouetteColor.x, silhouetteColor.y, silhouetteColor.z, silhouetteColor.w);
+    }
+  }
+
   return builder({
     name: name as string,
     textureMapKeys: textureMapKeys as SpriteOptions['textureMapKeys'],
@@ -190,6 +222,8 @@ function deserialize(data: any): SpriteT {
     anchor: anchorVec,
     tint: tintVec,
     opacity: opacity as number,
+    showSilhouette: showSilhouette as boolean | undefined,
+    silhouetteColor: silhouetteColorVec,
   });
 }
 
@@ -207,4 +241,6 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'anchor',
   'tint',
   'opacity',
+  'showSilhouette',
+  'silhouetteColor',
 ];

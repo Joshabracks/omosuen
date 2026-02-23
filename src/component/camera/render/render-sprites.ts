@@ -177,6 +177,8 @@ export function renderSprites(
   const u_fboUvScale = gl.getUniformLocation(program, 'u_fboUvScale');
   const u_fboUvOffset = gl.getUniformLocation(program, 'u_fboUvOffset');
   const u_screenSize = gl.getUniformLocation(program, 'u_screenSize');
+  const u_showSilhouette = gl.getUniformLocation(program, 'u_showSilhouette');
+  const u_silhouetteColor = gl.getUniformLocation(program, 'u_silhouetteColor');
 
   // Set constant uniforms (same for all sprites)
   // Sprites render at full resolution to screen (not via FBO), so they use
@@ -352,6 +354,18 @@ export function renderSprites(
       sprite.tint.w,
     );
     gl.uniform1f(u_opacity, sprite.opacity);
+
+    // Set silhouette uniforms
+    gl.uniform1i(u_showSilhouette, sprite.showSilhouette ? 1 : 0);
+    if (sprite.showSilhouette) {
+      gl.uniform4f(
+        u_silhouetteColor,
+        sprite.silhouetteColor.x,
+        sprite.silhouetteColor.y,
+        sprite.silhouetteColor.z,
+        sprite.silhouetteColor.w,
+      );
+    }
 
     // Draw the sprite quad (6 vertices = 2 triangles)
     gl.drawArrays(gl.TRIANGLES, 0, 6);

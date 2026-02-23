@@ -27,6 +27,10 @@ uniform vec2 u_fboUvScale;
 uniform vec2 u_fboUvOffset;
 uniform vec2 u_screenSize;
 
+    // Silhouette uniforms (sprite mode — renders flat color when occluded)
+uniform bool u_showSilhouette;
+uniform vec4 u_silhouetteColor;
+
     // Dynamic lighting uniforms
 uniform vec3 u_ambientColor;
 uniform float u_ambientBrightness;
@@ -197,12 +201,17 @@ void main() {
         if(albedo.a < 0.01)
             discard;
 
-        // Occlusion test: discard sprite fragments behind cells
+        // Occlusion test: discard sprite fragments behind cells (or show silhouette)
         vec2 screenUV = gl_FragCoord.xy / u_screenSize;
         vec2 fboUV = screenUV * u_fboUvScale + u_fboUvOffset;
         float cellDepth = texture2D(u_depthTexture, fboUV).r;
-        if(cellDepth < gl_FragCoord.z)
+        if(cellDepth < gl_FragCoord.z) {
+            if(u_showSilhouette) {
+                gl_FragColor = u_silhouetteColor;
+                return;
+            }
             discard;
+        }
 
         // Normal mapping for sprites (if available)
         vec3 finalNormal;

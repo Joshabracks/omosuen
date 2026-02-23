@@ -179,6 +179,12 @@ export function renderSprites(
   const u_screenSize = gl.getUniformLocation(program, 'u_screenSize');
   const u_showSilhouette = gl.getUniformLocation(program, 'u_showSilhouette');
   const u_silhouetteColor = gl.getUniformLocation(program, 'u_silhouetteColor');
+  const u_hasVisibilityMask = gl.getUniformLocation(
+    program,
+    'u_hasVisibilityMask',
+  );
+  const u_cellSolidity = gl.getUniformLocation(program, 'u_cellSolidity');
+  const u_revealTarget = gl.getUniformLocation(program, 'u_revealTarget');
 
   // Set constant uniforms (same for all sprites)
   // Sprites render at full resolution to screen (not via FBO), so they use
@@ -232,6 +238,22 @@ export function renderSprites(
     (2 - fboOffsetY) / fboHeight,
   );
   gl.uniform2f(u_screenSize, viewport.width, viewport.height);
+
+  // Bind cell solidity texture and reveal target for per-fragment raycasting
+  if (camera.revealTarget && camera.glResources.visibilityTexture) {
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, camera.glResources.visibilityTexture);
+    gl.uniform1i(u_cellSolidity, 3);
+    gl.uniform3f(
+      u_revealTarget,
+      camera.revealTarget.x,
+      camera.revealTarget.y,
+      camera.revealTarget.z,
+    );
+    gl.uniform1i(u_hasVisibilityMask, 1);
+  } else {
+    gl.uniform1i(u_hasVisibilityMask, 0);
+  }
 
   // Bind vertex buffers (shared for all sprites)
   gl.bindBuffer(gl.ARRAY_BUFFER, camera.glResources.quadVertexBuffer);

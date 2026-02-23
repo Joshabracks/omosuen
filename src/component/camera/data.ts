@@ -96,9 +96,8 @@ export interface CameraT
     // Base rendering resolution (independent of canvas size, adjusted by zoom)
     baseResolution: { width: number; height: number };
 
-    // Visibility mask for line-of-sight reveal clipping
+    // Cell solidity texture for per-fragment line-of-sight raycasting
     visibilityTexture: WebGLTexture | null;
-    lastRevealCell: { x: number; y: number; z: number } | null;
   };
 }
 
@@ -176,7 +175,6 @@ export function builder(options: CameraOptions): CameraT {
       fullscreenQuadBuffer: null,
       baseResolution: { width: 800, height: 600 }, // Default, will be updated in init()
       visibilityTexture: null,
-      lastRevealCell: null,
     },
   };
 

@@ -33,9 +33,10 @@ uniform vec2 u_screenSize;
 uniform bool u_showSilhouette;
 uniform vec4 u_silhouetteColor;
 
-    // Per-cell visibility mask (cell mode — line-of-sight clipping)
+    // Per-fragment line-of-sight raycasting (both modes)
 uniform bool u_hasVisibilityMask;
-uniform sampler2D u_visibilityMask;
+uniform sampler2D u_cellSolidity;   // R8: 0=empty, 255=solid
+uniform highp vec3 u_revealTarget;  // World-space reveal target position
 
     // Dynamic lighting uniforms
 uniform vec3 u_ambientColor;
@@ -123,6 +124,70 @@ vec3 computeLighting(vec3 normal, vec3 worldPos) {
     return lighting;
 }
 
+// Check if a cell at integer coordinates is solid by sampling the solidity texture
+bool isCellSolid(vec3 cell) {
+    float u = (cell.x + 0.5) / u_mapSize.x;
+    float v = (cell.y + cell.z * u_mapSize.y + 0.5)
+              / (u_mapSize.y * u_mapSize.z);
+    return texture2D(u_cellSolidity, vec2(u, v)).r > 0.5;
+}
+
+// 3D DDA ray march using continuous cell-space positions (Amanatides & Woo).
+// Each fragment traces its own ray from origin to dest, producing per-pixel
+// clipping boundaries instead of snapping to cell edges.
+const int MAX_RAY_STEPS = 96;
+bool isRayBlocked(vec3 origin, vec3 dest) {
+    vec3 startCell = floor(origin);
+    vec3 endCell = floor(dest);
+
+    // Same cell — trivially not blocked
+    if(startCell == endCell) return false;
+
+    vec3 dir = dest - origin;
+    vec3 s = sign(dir);
+
+    // t increment per full cell crossing
+    float tDeltaX = dir.x != 0.0 ? abs(1.0 / dir.x) : 1e10;
+    float tDeltaY = dir.y != 0.0 ? abs(1.0 / dir.y) : 1e10;
+    float tDeltaZ = dir.z != 0.0 ? abs(1.0 / dir.z) : 1e10;
+
+    // t to reach the first cell boundary from the continuous origin
+    float tMaxX = dir.x > 0.0 ? (startCell.x + 1.0 - origin.x) * tDeltaX
+                 : dir.x < 0.0 ? (origin.x - startCell.x) * tDeltaX
+                 : 1e10;
+    float tMaxY = dir.y > 0.0 ? (startCell.y + 1.0 - origin.y) * tDeltaY
+                 : dir.y < 0.0 ? (origin.y - startCell.y) * tDeltaY
+                 : 1e10;
+    float tMaxZ = dir.z > 0.0 ? (startCell.z + 1.0 - origin.z) * tDeltaZ
+                 : dir.z < 0.0 ? (origin.z - startCell.z) * tDeltaZ
+                 : 1e10;
+
+    vec3 pos = startCell;
+
+    for(int i = 0; i < MAX_RAY_STEPS; i++) {
+        // Advance along axis with smallest tMax
+        if(tMaxX <= tMaxY && tMaxX <= tMaxZ) {
+            pos.x += s.x; tMaxX += tDeltaX;
+        } else if(tMaxY <= tMaxZ) {
+            pos.y += s.y; tMaxY += tDeltaY;
+        } else {
+            pos.z += s.z; tMaxZ += tDeltaZ;
+        }
+
+        // Reached destination cell — not blocked
+        if(pos == endCell) return false;
+
+        // Out of bounds — not blocked
+        if(pos.x < 0.0 || pos.x >= u_mapSize.x ||
+           pos.y < 0.0 || pos.y >= u_mapSize.y ||
+           pos.z < 0.0 || pos.z >= u_mapSize.z) return false;
+
+        // Intermediate solid cell — blocked
+        if(isCellSolid(pos)) return true;
+    }
+    return false;
+}
+
 // Manual bilinear interpolation for atlas-safe texel blending.
 // Prevents shimmer by smoothly transitioning between neighboring texels
 // instead of hard floor() snapping.
@@ -152,23 +217,14 @@ void main() {
         // MODE 0: CELL RENDERING (Triplanar world-space texture mapping)
         // ============================================================
 
-        // Per-cell visibility mask clipping (early discard skips expensive texture/lighting work)
+        // Per-fragment line-of-sight raycasting (early discard skips expensive texture/lighting work)
         if(u_hasVisibilityMask) {
-            // Convert world position to cell grid coordinates
-            vec3 cellCoord = floor(v_worldPos / u_cellSize);
+            vec3 fragPos = v_worldPos / u_cellSize;
+            vec3 targetPos = u_revealTarget / u_cellSize;
 
-            // Bounds check (cells outside map are always visible)
-            if(cellCoord.x >= 0.0 && cellCoord.x < u_mapSize.x &&
-               cellCoord.y >= 0.0 && cellCoord.y < u_mapSize.y &&
-               cellCoord.z >= 0.0 && cellCoord.z < u_mapSize.z) {
-
-                // Convert to 2D texture UV (Y slices stacked per Z row)
-                float texU = (cellCoord.x + 0.5) / u_mapSize.x;
-                float texV = (cellCoord.y + cellCoord.z * u_mapSize.y + 0.5)
-                              / (u_mapSize.y * u_mapSize.z);
-
-                float clipped = texture2D(u_visibilityMask, vec2(texU, texV)).r;
-                if(clipped > 0.5) discard;
+            // Different cell from target — ray march to check visibility
+            if(floor(fragPos) != floor(targetPos)) {
+                if(isRayBlocked(targetPos, fragPos)) discard;
             }
         }
 
@@ -226,6 +282,16 @@ void main() {
         // Discard fully transparent pixels early
         if(albedo.a < 0.01)
             discard;
+
+        // Per-fragment line-of-sight raycasting (hide sprites in non-visible cells)
+        if(u_hasVisibilityMask) {
+            vec3 fragPos = v_worldPos / u_cellSize;
+            vec3 targetPos = u_revealTarget / u_cellSize;
+
+            if(floor(fragPos) != floor(targetPos)) {
+                if(isRayBlocked(targetPos, fragPos)) discard;
+            }
+        }
 
         // Occlusion test: discard sprite fragments behind cells (or show silhouette)
         vec2 screenUV = gl_FragCoord.xy / u_screenSize;

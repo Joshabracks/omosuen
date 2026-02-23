@@ -6,7 +6,7 @@ import { TextureMapT } from '../../texture-map';
 import { TransformT } from '../../transform';
 import { CameraT } from '../data';
 import { setLightUniforms } from './light-uniforms';
-import { computeVisibilityMask } from './visibility-mask';
+import { computeSolidityMap } from './visibility-mask';
 
 /**
  * Snaps camera position to FBO pixel boundaries so the pixel grid
@@ -119,12 +119,13 @@ export function renderCellMaps(
   const uTextureSize = gl.getUniformLocation(program, 'u_textureSize');
   const uHasNormal = gl.getUniformLocation(program, 'u_hasNormal');
 
-  // Visibility mask uniform locations
+  // Per-fragment raycasting uniform locations
   const uHasVisibilityMask = gl.getUniformLocation(
     program,
     'u_hasVisibilityMask',
   );
-  const uVisibilityMask = gl.getUniformLocation(program, 'u_visibilityMask');
+  const uCellSolidity = gl.getUniformLocation(program, 'u_cellSolidity');
+  const uRevealTarget = gl.getUniformLocation(program, 'u_revealTarget');
 
   // Set constant uniforms
   const logicalWidth =
@@ -179,34 +180,26 @@ export function renderCellMaps(
       cellMap.mapSize.z,
     );
 
-    // Visibility mask clipping (per cell-map — respects revealExempt)
+    // Per-fragment raycasting (per cell-map — respects revealExempt)
     if (camera.revealTarget && !cellMap.revealExempt) {
-      // Recompute mask when reveal target crosses a cell boundary
-      const cx = Math.floor(camera.revealTarget.x / cellMap.cellSize.x);
-      const cy = Math.floor(camera.revealTarget.y / cellMap.cellSize.y);
-      const cz = Math.floor(camera.revealTarget.z / cellMap.cellSize.z);
+      // Upload solidity map (recompute every frame — cheap for small maps)
+      const solidityMap = computeSolidityMap(
+        cellMap.packedData,
+        cellMap.mapSize,
+      );
+      uploadVisibilityTexture(gl, camera, solidityMap, cellMap.mapSize);
 
-      const last = camera.glResources.lastRevealCell;
-      if (!last || last.x !== cx || last.y !== cy || last.z !== cz) {
-        camera.glResources.lastRevealCell = { x: cx, y: cy, z: cz };
-
-        const mask = computeVisibilityMask(
-          cellMap.packedData,
-          cellMap.mapSize,
-          { x: cx, y: cy, z: cz },
-        );
-        uploadVisibilityTexture(gl, camera, mask, cellMap.mapSize);
-      }
-
-      // Bind visibility texture
-      if (camera.glResources.visibilityTexture) {
-        gl.activeTexture(gl.TEXTURE3);
-        gl.bindTexture(gl.TEXTURE_2D, camera.glResources.visibilityTexture);
-        gl.uniform1i(uVisibilityMask, 3);
-        gl.uniform1i(uHasVisibilityMask, 1);
-      } else {
-        gl.uniform1i(uHasVisibilityMask, 0);
-      }
+      // Bind solidity texture and set reveal target
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, camera.glResources.visibilityTexture);
+      gl.uniform1i(uCellSolidity, 3);
+      gl.uniform3f(
+        uRevealTarget,
+        camera.revealTarget.x,
+        camera.revealTarget.y,
+        camera.revealTarget.z,
+      );
+      gl.uniform1i(uHasVisibilityMask, 1);
     } else {
       gl.uniform1i(uHasVisibilityMask, 0);
     }

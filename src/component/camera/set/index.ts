@@ -109,7 +109,6 @@ export function setRevealTarget(
  */
 export function clearRevealTarget(camera: CameraT): void {
   camera.revealTarget = null;
-  camera.glResources.lastRevealCell = null;
 }
 
 /**

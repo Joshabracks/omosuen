@@ -638,7 +638,7 @@ export async function createScene() {
         shapeMap: shapeMap, // Explicitly provide shapeMap (0 = air, 1 = solid cube)
         cellSize: new Omosuen.Vector3D(CELL_WIDTH, CELL_HEIGHT, CELL_DEPTH),
         mapSize: new Omosuen.Vector3D(MAP_WIDTH, MAP_HEIGHT, MAP_DEPTH),
-        smoothing: 4,
+        smoothing: 0,
         normalSmoothing: 0.75
         // emissionMap: default (no emission)
         // visibilityMap: default (all visible)
@@ -876,7 +876,7 @@ export async function createScene() {
         camera.setRevealTarget(
             transform.position.x,
             transform.position.y,
-            transform.position.z,
+            transform.position.z + (1 * CELL_HEIGHT),
         );
     });
 

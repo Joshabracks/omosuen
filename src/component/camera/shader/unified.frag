@@ -225,6 +225,15 @@ void main() {
             // Different cell from target — ray march to check visibility
             if(floor(fragPos) != floor(targetPos)) {
                 if(isRayBlocked(targetPos, fragPos)) discard;
+
+                // Cull exterior faces of solid cells viewed from inside:
+                // If the fragment is in a solid cell and its face normal points
+                // in the same direction as the ray (away from target), the face
+                // is on the far side of the wall — discard it.
+                if(isCellSolid(floor(fragPos))) {
+                    vec3 rayDir = fragPos - targetPos;
+                    if(dot(rayDir, v_worldNormal) > 0.0) discard;
+                }
             }
         }
 

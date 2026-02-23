@@ -8,8 +8,7 @@ import {
 import type { AudioManagerMethods } from './methods';
 
 export interface AudioManagerT
-  extends ComponentData,
-    ComponentInstanceMethods<AudioManagerMethods> {
+  extends ComponentData, ComponentInstanceMethods<AudioManagerMethods> {
   type: 'audio-manager';
   unique: ComponentUnique.GLOBAL;
 

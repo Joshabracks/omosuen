@@ -1,13 +1,48 @@
 import type { NexusT } from '../component/nexus/data';
 import { NexusSerializer } from '../component/nexus/data';
-import type { UIOverlayT } from '../component/ui-overlay/data';
 import { UIOverlaySerializer } from '../component/ui-overlay/data';
 import { DataLayerSerializer } from '../component/data-layer/data';
 import { FlagManagerSerializer } from '../component/flag-manager/data';
+import { ViewportSerializer } from '../component/viewport/data';
+import { CameraSerializer } from '../component/camera/data';
+import { TransformSerializer } from '../component/transform/data';
+import { SpriteSerializer } from '../component/sprite/data';
+import { ColliderSerializer } from '../component/collider/data';
+import { EventColliderSerializer } from '../component/event-collider/data';
+import { LightSerializer } from '../component/light/data';
+import { TimerSerializer } from '../component/timer/data';
+import { MessengerSerializer } from '../component/messenger/data';
+import { InputControllerSerializer } from '../component/input-controller/data';
+import { AudioManagerSerializer } from '../component/audio-manager/data';
+import { AudioControllerSerializer } from '../component/audio-controller/data';
+import { AnimationControllerSerializer } from '../component/animation-controller/data';
 import { Nexus } from '../component/nexus/methods';
 import { getSceneEntry, hasScene } from './registry';
-import type { ComponentData } from '../component/types';
+import type { ComponentData, ComponentSerializer, COMPONENT_TYPE } from '../component/types';
 import { resetComponentCount, setComponentCount } from '../component/types';
+
+/**
+ * Registry of component serializers, keyed by component type.
+ * Nexus is excluded — it requires special recursive child handling.
+ */
+const SERIALIZERS: Partial<Record<COMPONENT_TYPE, ComponentSerializer>> = {
+  'ui-overlay': UIOverlaySerializer,
+  'data-layer': DataLayerSerializer,
+  'flag-manager': FlagManagerSerializer,
+  'viewport': ViewportSerializer,
+  'camera': CameraSerializer,
+  'transform': TransformSerializer,
+  'sprite': SpriteSerializer,
+  'collider': ColliderSerializer,
+  'event-collider': EventColliderSerializer,
+  'light': LightSerializer,
+  'timer': TimerSerializer,
+  'messenger': MessengerSerializer,
+  'input-controller': InputControllerSerializer,
+  'audio-manager': AudioManagerSerializer,
+  'audio-controller': AudioControllerSerializer,
+  'animation-controller': AnimationControllerSerializer,
+};
 
 /**
  * Currently active scene (root nexus component)
@@ -168,20 +203,19 @@ export function serializeComponentRecursive(component: ComponentData): any {
       unique: nexus.unique,
       components: serializedChildren,
     };
-  } else if (component.type === 'ui-overlay') {
-    componentData = UIOverlaySerializer.serialize(component);
-  } else if (component.type === 'data-layer') {
-    componentData = DataLayerSerializer.serialize(component);
-  } else if (component.type === 'flag-manager') {
-    componentData = FlagManagerSerializer.serialize(component);
   } else {
-    console.warn(
-      `[SCENE LOADER] Unknown component type for serialization: ${component.type}`,
-    );
-    componentData = {
-      type: component.type,
-      name: component.name,
-    };
+    const serializer = SERIALIZERS[component.type];
+    if (serializer) {
+      componentData = serializer.serialize(component);
+    } else {
+      console.warn(
+        `[SCENE LOADER] Unknown component type for serialization: ${component.type}`,
+      );
+      componentData = {
+        type: component.type,
+        name: component.name,
+      };
+    }
   }
 
   // Merge generic ComponentData fields with component-specific data
@@ -229,20 +263,17 @@ export function deserializeComponentRecursive(
       }
 
       component = nexusComp;
-    } else if (data.type === 'ui-overlay') {
-      // Deserialize UI Overlay
-      component = UIOverlaySerializer.deserialize(data) as UIOverlayT;
-    } else if (data.type === 'data-layer') {
-      // Deserialize Data Layer
-      component = DataLayerSerializer.deserialize(data) as ComponentData;
-    } else if (data.type === 'flag-manager') {
-      // Deserialize Flag Manager
-      component = FlagManagerSerializer.deserialize(data) as ComponentData;
     } else {
-      console.error(
-        `[SCENE LOADER ERROR] Unknown component type: ${data.type}`,
-      );
-      return null;
+      const serializer =
+        SERIALIZERS[data.type as COMPONENT_TYPE];
+      if (serializer) {
+        component = serializer.deserialize(data) as ComponentData;
+      } else {
+        console.error(
+          `[SCENE LOADER ERROR] Unknown component type: ${data.type}`,
+        );
+        return null;
+      }
     }
 
     if (!component) {

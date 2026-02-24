@@ -74,6 +74,11 @@ import {
   PROPERTY_ALLOWLIST as ColliderPropertyAllowlist,
 } from './collider';
 import {
+  EventCollider,
+  builder as eventColliderBuilder,
+  PROPERTY_ALLOWLIST as EventColliderPropertyAllowlist,
+} from './event-collider';
+import {
   Timer,
   builder as timerBuilder,
   PROPERTY_ALLOWLIST as TimerPropertyAllowlist,
@@ -121,6 +126,7 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   camera: cameraBuilder,
   'input-controller': inputControllerBuilder,
   collider: colliderBuilder,
+  'event-collider': eventColliderBuilder,
   timer: timerBuilder,
   light: lightBuilder,
   'audio-manager': audioManagerBuilder,
@@ -152,6 +158,7 @@ export const MethodRegistry: Record<
   camera: Camera,
   'input-controller': InputController,
   collider: Collider,
+  'event-collider': EventCollider,
   timer: Timer,
   light: Light,
   'audio-manager': AudioManager,
@@ -181,6 +188,7 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   camera: CameraPropertyAllowlist,
   'input-controller': InputControllerPropertyAllowlist,
   collider: ColliderPropertyAllowlist,
+  'event-collider': EventColliderPropertyAllowlist,
   timer: TimerPropertyAllowlist,
   light: LightPropertyAllowlist,
   'audio-manager': AudioManagerPropertyAllowlist,

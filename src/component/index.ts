@@ -57,6 +57,10 @@ export type {
   CollisionPipelineResult,
   ProcessCollisionsOptions,
 } from './collider';
+export type {
+  EventColliderT as event_collider,
+  EventColliderMethods,
+} from './event-collider';
 export type { TimerT as timer, TimerMethods } from './timer';
 export type {
   LightT as light,
@@ -94,6 +98,7 @@ export { TransformSerializer } from './transform/data';
 export { AnimationControllerSerializer } from './animation-controller/data';
 export { CameraSerializer } from './camera/data';
 export { ColliderSerializer } from './collider/data';
+export { EventColliderSerializer } from './event-collider/data';
 export { TimerSerializer } from './timer/data';
 export { LightSerializer } from './light/data';
 export { AudioManagerSerializer } from './audio-manager/data';

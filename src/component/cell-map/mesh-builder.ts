@@ -745,7 +745,13 @@ function buildSmoothedChunkMesh(
       }
     }
 
-    emitQuad(vertexFloats, indexInts, quadPositions, quadNormals, quadOrigPositions);
+    emitQuad(
+      vertexFloats,
+      indexInts,
+      quadPositions,
+      quadNormals,
+      quadOrigPositions,
+    );
     currentRange!.indexCount += 6;
   }
 

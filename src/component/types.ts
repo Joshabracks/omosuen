@@ -19,6 +19,7 @@ import { AtlasManagerT } from './atlas-manager';
 import { AnimationControllerT } from './animation-controller';
 import { AudioManagerT } from './audio-manager';
 import { AudioControllerT } from './audio-controller';
+import { EventColliderT } from './event-collider';
 
 export type ComponentDataType =
   | AnimationControllerT
@@ -39,7 +40,8 @@ export type ComponentDataType =
   | TimerT
   | TransformT
   | UIOverlayT
-  | ViewportT;
+  | ViewportT
+  | EventColliderT;
 
 /**
  * Registry mapping raw component objects to their Proxy wrappers.
@@ -127,6 +129,7 @@ export type COMPONENT_TYPE =
   | 'camera'
   | 'input-controller'
   | 'collider'
+  | 'event-collider'
   | 'timer'
   | 'light'
   | 'audio-manager'

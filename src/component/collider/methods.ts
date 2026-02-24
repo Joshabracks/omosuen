@@ -45,18 +45,10 @@ interface OBB {
 export interface ColliderMethods extends ComponentMethods {
   init: (component: ComponentData) => Promise<void>;
   getWorldCenter: (collider: ColliderT) => Vector3D;
-  getWorldBounds: (
-    collider: ColliderT,
-  ) => { min: Vector3D; max: Vector3D };
+  getWorldBounds: (collider: ColliderT) => { min: Vector3D; max: Vector3D };
   intersectsCollider: (collider: ColliderT, other: ColliderT) => boolean;
-  getOccupiedCells: (
-    collider: ColliderT,
-    cellMap: CellMapT,
-  ) => Vector3D[];
-  getOccupiedSolidCells: (
-    collider: ColliderT,
-    cellMap: CellMapT,
-  ) => Vector3D[];
+  getOccupiedCells: (collider: ColliderT, cellMap: CellMapT) => Vector3D[];
+  getOccupiedSolidCells: (collider: ColliderT, cellMap: CellMapT) => Vector3D[];
   intersectsCellMap: (
     collider: ColliderT,
     cellMap: CellMapT,
@@ -68,19 +60,9 @@ export interface ColliderMethods extends ComponentMethods {
     options?: ProcessCollisionsOptions,
   ) => CollisionPipelineResult;
   setShape: (collider: ColliderT, shape: 'box' | 'sphere') => void;
-  setSize: (
-    collider: ColliderT,
-    x: number,
-    y: number,
-    z: number,
-  ) => void;
+  setSize: (collider: ColliderT, x: number, y: number, z: number) => void;
   setRadius: (collider: ColliderT, radius: number) => void;
-  setOffset: (
-    collider: ColliderT,
-    x: number,
-    y: number,
-    z: number,
-  ) => void;
+  setOffset: (collider: ColliderT, x: number, y: number, z: number) => void;
 }
 
 // ============================================================
@@ -198,9 +180,10 @@ function computeOBB(collider: ColliderT): OBB {
   return { center, halfExtents, axes, worldAABB };
 }
 
-function computeSphereWorld(
-  collider: ColliderT,
-): { center: Vector3D; radius: number } {
+function computeSphereWorld(collider: ColliderT): {
+  center: Vector3D;
+  radius: number;
+} {
   const transform = getSiblingTransform(collider);
 
   let center: Vector3D;
@@ -214,8 +197,7 @@ function computeSphereWorld(
       pos.y + collider.offset.y,
       pos.z + collider.offset.z,
     );
-    effectiveRadius =
-      collider.radius * Math.max(scale.x, scale.y, scale.z);
+    effectiveRadius = collider.radius * Math.max(scale.x, scale.y, scale.z);
   } else {
     center = new Vector3D(
       collider.offset.x,
@@ -242,11 +224,7 @@ function closestPointOnSegment(
   const abLenSq = dot3(ab, ab);
   if (abLenSq < 1e-10) return new Vector3D(a.x, a.y, a.z);
   const t = clamp(dot3(ap, ab) / abLenSq, 0, 1);
-  return new Vector3D(
-    a.x + t * ab.x,
-    a.y + t * ab.y,
-    a.z + t * ab.z,
-  );
+  return new Vector3D(a.x + t * ab.x, a.y + t * ab.y, a.z + t * ab.z);
 }
 
 function closestPointOnTriangle(
@@ -565,10 +543,14 @@ function getChunkTrianglesInBounds(
 
   for (const chunk of cellMap.chunks) {
     if (
-      chunk.cx < minCx || chunk.cx > maxCx ||
-      chunk.cy < minCy || chunk.cy > maxCy ||
-      chunk.cz < minCz || chunk.cz > maxCz
-    ) continue;
+      chunk.cx < minCx ||
+      chunk.cx > maxCx ||
+      chunk.cy < minCy ||
+      chunk.cy > maxCy ||
+      chunk.cz < minCz ||
+      chunk.cz > maxCz
+    )
+      continue;
     if (!chunk.vertices || !chunk.indices) continue;
 
     const verts = chunk.vertices;
@@ -579,9 +561,15 @@ function getChunkTrianglesInBounds(
       const i2 = indices[i + 2] * 6;
 
       // Quick per-triangle AABB cull against collider bounds
-      const x0 = verts[i0], y0 = verts[i0 + 1], z0 = verts[i0 + 2];
-      const x1 = verts[i1], y1 = verts[i1 + 1], z1 = verts[i1 + 2];
-      const x2 = verts[i2], y2 = verts[i2 + 1], z2 = verts[i2 + 2];
+      const x0 = verts[i0],
+        y0 = verts[i0 + 1],
+        z0 = verts[i0 + 2];
+      const x1 = verts[i1],
+        y1 = verts[i1 + 1],
+        z1 = verts[i1 + 2];
+      const x2 = verts[i2],
+        y2 = verts[i2 + 1],
+        z2 = verts[i2 + 2];
 
       if (
         Math.max(x0, x1, x2) < bounds.min.x ||
@@ -590,7 +578,8 @@ function getChunkTrianglesInBounds(
         Math.min(y0, y1, y2) > bounds.max.y ||
         Math.max(z0, z1, z2) < bounds.min.z ||
         Math.min(z0, z1, z2) > bounds.max.z
-      ) continue;
+      )
+        continue;
 
       triangles.push([
         new Vector3D(x0, y0, z0),
@@ -607,9 +596,10 @@ function getChunkTrianglesInBounds(
 // World bounds computation
 // ============================================================
 
-function getWorldBoundsImpl(
-  collider: ColliderT,
-): { min: Vector3D; max: Vector3D } {
+function getWorldBoundsImpl(collider: ColliderT): {
+  min: Vector3D;
+  max: Vector3D;
+} {
   if (collider.shape === 'box') {
     return computeOBB(collider).worldAABB;
   }
@@ -640,18 +630,9 @@ function getOccupiedCellsImpl(
   const bounds = getWorldBoundsImpl(collider);
   const cells: Vector3D[] = [];
 
-  const minGx = Math.max(
-    0,
-    Math.floor(bounds.min.x / cellMap.cellSize.x),
-  );
-  const minGy = Math.max(
-    0,
-    Math.floor(bounds.min.y / cellMap.cellSize.y),
-  );
-  const minGz = Math.max(
-    0,
-    Math.floor(bounds.min.z / cellMap.cellSize.z),
-  );
+  const minGx = Math.max(0, Math.floor(bounds.min.x / cellMap.cellSize.x));
+  const minGy = Math.max(0, Math.floor(bounds.min.y / cellMap.cellSize.y));
+  const minGz = Math.max(0, Math.floor(bounds.min.z / cellMap.cellSize.z));
   const maxGx = Math.min(
     cellMap.mapSize.x - 1,
     Math.floor(bounds.max.x / cellMap.cellSize.x),
@@ -726,11 +707,7 @@ function testColliderVsCellMapMesh(
     const mesh = cellMap.meshes[shapeIndex];
     if (!mesh || mesh.indices.length === 0) continue;
 
-    const triangles = getMeshTrianglesWorld(
-      mesh,
-      cellCoords,
-      cellMap.cellSize,
-    );
+    const triangles = getMeshTrianglesWorld(mesh, cellCoords, cellMap.cellSize);
     let cellHit = false;
 
     if (collider.shape === 'box') {
@@ -759,12 +736,7 @@ function testColliderVsCellMapMesh(
         if (triangleVsAABB(lv0, lv1, lv2, obb.halfExtents)) {
           cellHit = true;
           // Closest point on triangle to OBB center (in world space)
-          const cp = closestPointOnTriangle(
-            obb.center,
-            tv0,
-            tv1,
-            tv2,
-          );
+          const cp = closestPointOnTriangle(obb.center, tv0, tv1, tv2);
           contactPoints.push(cp);
         }
       }
@@ -854,9 +826,7 @@ function testColliderVsSmoothedMesh(
       );
 
       if (triangleVsAABB(lv0, lv1, lv2, obb.halfExtents)) {
-        contactPoints.push(
-          closestPointOnTriangle(obb.center, tv0, tv1, tv2),
-        );
+        contactPoints.push(closestPointOnTriangle(obb.center, tv0, tv1, tv2));
       }
     }
   } else {
@@ -914,9 +884,7 @@ export const Collider: ColliderMethods = {
     return computeOBB(collider).center;
   },
 
-  getWorldBounds(
-    collider: ColliderT,
-  ): { min: Vector3D; max: Vector3D } {
+  getWorldBounds(collider: ColliderT): { min: Vector3D; max: Vector3D } {
     return getWorldBoundsImpl(collider);
   },
 
@@ -947,17 +915,11 @@ export const Collider: ColliderMethods = {
     return obbVsSphere(obb, sphere.center, sphere.radius);
   },
 
-  getOccupiedCells(
-    collider: ColliderT,
-    cellMap: CellMapT,
-  ): Vector3D[] {
+  getOccupiedCells(collider: ColliderT, cellMap: CellMapT): Vector3D[] {
     return getOccupiedCellsImpl(collider, cellMap);
   },
 
-  getOccupiedSolidCells(
-    collider: ColliderT,
-    cellMap: CellMapT,
-  ): Vector3D[] {
+  getOccupiedSolidCells(collider: ColliderT, cellMap: CellMapT): Vector3D[] {
     return getOccupiedCellsImpl(collider, cellMap).filter((coords) =>
       isCellSolid(cellMap, coords),
     );
@@ -1025,14 +987,11 @@ export const Collider: ColliderMethods = {
         for (let j = i + 1; j < colliders.length; j++) {
           const idA = colliders[i].id ?? 0;
           const idB = colliders[j].id ?? 0;
-          const pairKey =
-            idA < idB ? `${idA}:${idB}` : `${idB}:${idA}`;
+          const pairKey = idA < idB ? `${idA}:${idB}` : `${idB}:${idA}`;
           if (testedPairs.has(pairKey)) continue;
           testedPairs.add(pairKey);
 
-          if (
-            Collider.intersectsCollider(colliders[i], colliders[j])
-          ) {
+          if (Collider.intersectsCollider(colliders[i], colliders[j])) {
             colliderPairs.push({
               a: colliders[i],
               b: colliders[j],
@@ -1045,26 +1004,16 @@ export const Collider: ColliderMethods = {
     // Step 3: Solid cell overlaps
     const solidCellOverlaps = new Map<ColliderT, Vector3D[]>();
     for (const [col, cells] of occupiedCells) {
-      const solidCells = cells.filter((coords) =>
-        isCellSolid(cellMap, coords),
-      );
+      const solidCells = cells.filter((coords) => isCellSolid(cellMap, coords));
       solidCellOverlaps.set(col, solidCells);
     }
 
     // Step 4: Mesh collision + contact center
-    const cellMapCollisions = new Map<
-      ColliderT,
-      CellMapCollisionResult
-    >();
+    const cellMapCollisions = new Map<ColliderT, CellMapCollisionResult>();
     for (const [col, solidCells] of solidCellOverlaps) {
       cellMapCollisions.set(
         col,
-        testColliderVsCellMapMesh(
-          col,
-          cellMap,
-          solidCells,
-          skipMeshCheck,
-        ),
+        testColliderVsCellMapMesh(col, cellMap, solidCells, skipMeshCheck),
       );
     }
 
@@ -1080,12 +1029,7 @@ export const Collider: ColliderMethods = {
     collider.shape = shape;
   },
 
-  setSize(
-    collider: ColliderT,
-    x: number,
-    y: number,
-    z: number,
-  ): void {
+  setSize(collider: ColliderT, x: number, y: number, z: number): void {
     collider.size.x = x;
     collider.size.y = y;
     collider.size.z = z;
@@ -1095,12 +1039,7 @@ export const Collider: ColliderMethods = {
     collider.radius = radius;
   },
 
-  setOffset(
-    collider: ColliderT,
-    x: number,
-    y: number,
-    z: number,
-  ): void {
+  setOffset(collider: ColliderT, x: number, y: number, z: number): void {
     collider.offset.x = x;
     collider.offset.y = y;
     collider.offset.z = z;

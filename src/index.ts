@@ -38,7 +38,7 @@ export type { OmosuenConfig } from './config';
 /**
  * Engine version
  */
-export const version = '0.1.0';
+export const version = '0.1.1';
 
 /**
  * Engine name

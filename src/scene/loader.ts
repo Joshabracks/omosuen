@@ -19,7 +19,8 @@ import { AnimationControllerSerializer } from '../component/animation-controller
 import { Nexus } from '../component/nexus/methods';
 import { getSceneEntry, hasScene } from './registry';
 import type { ComponentData, ComponentSerializer, COMPONENT_TYPE } from '../component/types';
-import { resetComponentCount, setComponentCount } from '../component/types';
+import { resetComponentCount, setComponentCount, wrapInProxy } from '../component/types';
+import { queueInit } from '../loop/init';
 
 /**
  * Registry of component serializers, keyed by component type.
@@ -311,7 +312,15 @@ export function deserializeComponentRecursive(
       component.loader = data.loader;
     }
 
-    return component;
+    // Wrap in Proxy for method dispatch (matches newComponent() behavior)
+    const proxy = wrapInProxy(component);
+
+    // Queue for initialization (viewport creates canvas, camera sets up GL, etc.)
+    if (component.id !== undefined) {
+      queueInit(component.id);
+    }
+
+    return proxy;
   } catch (error) {
     const errorMessage =
       error instanceof Error

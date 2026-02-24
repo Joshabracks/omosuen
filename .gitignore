@@ -18,7 +18,7 @@ yarn-error.log*
 *.swp
 *.swo
 *~
-.CLAUDE.md
+CLAUDE.md
 
 # OS files
 .DS_Store
@@ -26,3 +26,5 @@ Thumbs.db
 
 # TypeScript
 *.tsbuildinfo
+
+.design

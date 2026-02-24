@@ -1,0 +1,14 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+
+# Test directory
+test
+
+# Minified files
+*.min.js
+
+# Lock files
+package-lock.json

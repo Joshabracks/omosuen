@@ -17,24 +17,28 @@ export default (env) => {
       filename: isDevelopment ? 'omosuen.js' : 'omosuen.min.js',
       library: {
         name: 'Omosuen',
-        type: 'umd'
+        type: 'umd',
       },
-      globalObject: 'this'
+      globalObject: 'this',
     },
     module: {
       rules: [
         {
           test: /\.ts$/,
           use: 'ts-loader',
-          exclude: /node_modules/
-        }
-      ]
+          exclude: /node_modules/,
+        },
+        {
+          test: /\.(glsl|vs|fs|vert|frag)$/,
+          use: ['raw-loader'],
+        },
+      ],
     },
     resolve: {
-      extensions: ['.ts', '.js']
+      extensions: ['.ts', '.js'],
     },
     optimization: {
-      minimize: !isDevelopment
-    }
+      minimize: !isDevelopment,
+    },
   };
 };

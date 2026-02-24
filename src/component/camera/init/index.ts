@@ -29,8 +29,11 @@ export async function init(component: ComponentData): Promise<void> {
   const parentNexus = castTo<NexusT>(camera.parent!);
 
   // Get viewport from scene root (viewport is typically a sibling of camera's parent)
-  const sceneRoot = castTo<NexusT>(parentNexus.parent!);
-  const viewport = sceneRoot.getComponentByName(
+  // If camera is directly under root, parentNexus IS the root (parent is null)
+  const searchRoot = parentNexus.parent
+    ? castTo<NexusT>(parentNexus.parent)
+    : parentNexus;
+  const viewport = searchRoot.getComponentByName(
     camera.viewportRef,
     true,
   ) as ViewportT | null;
@@ -127,7 +130,7 @@ export async function init(component: ComponentData): Promise<void> {
   camera.glResources.quadUVBuffer = quadUVBuffer;
 
   // 3. Upload atlas textures
-  const atlasManager = sceneRoot.getComponentByType(
+  const atlasManager = searchRoot.getComponentByType(
     'atlas-manager',
     true,
   ) as AtlasManagerT | null;

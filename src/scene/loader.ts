@@ -252,18 +252,50 @@ export function deserializeComponentRecursive(
       // Deserialize the nexus itself (creates empty nexus)
       const nexusComp = NexusSerializer.deserialize(data) as NexusT;
 
-      // Recursively deserialize child components if they exist
+      // Restore generic fields BEFORE wrapping so the proxy has them
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      if (typeof data.id === 'number') {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+        nexusComp.id = data.id;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        if (data.id > maxId.value) {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+          maxId.value = data.id;
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      if (data.overrideKey !== undefined) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+        nexusComp.overrideKey = data.overrideKey;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      if (data.updateOverride !== undefined) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+        nexusComp.updateOverride = data.updateOverride;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      if (data.loader !== undefined) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+        nexusComp.loader = data.loader;
+      }
+
+      // Wrap in proxy BEFORE adding children so child.parent = proxy
+      const proxy = wrapInProxy(nexusComp);
+      if (nexusComp.id !== undefined) {
+        queueInit(nexusComp.id);
+      }
+
+      // Add children to the PROXY so parent references are correct
       if (data.components && Array.isArray(data.components)) {
         for (const childData of data.components) {
           const child = deserializeComponentRecursive(childData, maxId);
           if (child) {
-            // Use Nexus methods directly to add child (nexusComp doesn't have Proxy methods yet)
-            Nexus.addComponent(nexusComp, child);
+            Nexus.addComponent(proxy as NexusT, child);
           }
         }
       }
 
-      component = nexusComp;
+      return proxy;
     } else {
       const serializer =
         SERIALIZERS[data.type as COMPONENT_TYPE];

@@ -871,13 +871,6 @@ export async function createScene() {
             animController.play(animName);
             currentPlayerAnim = animName;
         }
-
-        // Update reveal target to follow character
-        camera.setRevealTarget(
-            transform.position.x,
-            transform.position.y,
-            transform.position.z + (1 * CELL_HEIGHT),
-        );
     });
 
     // Sprite A: indoor, center of structure (player-controlled)
@@ -888,6 +881,11 @@ export async function createScene() {
         'playerControl',  // WASD movement
     );
     indoorChar.animator.play('walk-down');
+    const playerCollider = await Omosuen.newComponent('collider', {
+        name: 'Player Collider',
+        shape: 'box',
+        size: new Omosuen.Vector3D(8, 8, 8),
+    }, indoorChar.nexus);
     console.log('[CellMap Test] Created indoor sprite at structure center with silhouette always on');
 
     // Sprite B: outdoor walker, starts at north corner
@@ -910,13 +908,33 @@ export async function createScene() {
 
     console.log('[CellMap Test] All character sprites created (1 indoor + 2 patrolling around structure)');
 
-    // Enable Y-slice clipping to reveal the interior of the structure
-    camera.setRevealTarget(
-        10 * CELL_WIDTH + CELL_WIDTH / 2,   // center of structure x
-        CELL_HEIGHT,                          // character Y position (floor level)
-        10 * CELL_DEPTH + CELL_DEPTH / 2,   // center of structure z
-    );
-    console.log('[CellMap Test] WASD controls enabled — reveal target tracks player');
+    // 7b. Create EventCollider trigger zone covering the structure interior
+    const triggerNexus = await Omosuen.newComponent('nexus', {
+        name: 'Interior Trigger Nexus',
+    }, scene);
+    await Omosuen.newComponent('transform', {
+        name: 'Interior Trigger Transform',
+        position: new Omosuen.Vector3D(320, 88, 320),
+    }, triggerNexus);
+    const interiorTrigger = await Omosuen.newComponent('event-collider', {
+        name: 'Interior Trigger',
+        shape: 'box',
+        size: new Omosuen.Vector3D(160, 72, 160),
+    }, triggerNexus);
+
+    interiorTrigger.addTrigger(playerCollider);
+    interiorTrigger.setOnEnter((collider) => {
+        const t = collider.parent.getComponentByType('transform', false);
+        if (t) camera.setRevealTarget(t.position.x, t.position.y, t.position.z + CELL_HEIGHT);
+    });
+    interiorTrigger.setOnExit(() => {
+        camera.clearRevealTarget();
+    });
+    interiorTrigger.setWhile((collider) => {
+        const t = collider.parent.getComponentByType('transform', false);
+        if (t) camera.setRevealTarget(t.position.x, t.position.y, t.position.z + CELL_HEIGHT);
+    });
+    console.log('[CellMap Test] Interior EventCollider trigger zone created — reveal target tracks player on enter/exit');
 
     // 8. Create UI overlay
     const ui = await Omosuen.newComponent('ui-overlay', {

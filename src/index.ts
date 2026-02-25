@@ -36,9 +36,11 @@ export type { OmosuenConfig } from './config';
 // ============================================================================
 
 /**
- * Engine version
+ * Engine version — injected at build time by webpack DefinePlugin from package.json
  */
-export const version = '0.1.0';
+// eslint-disable-next-line @typescript-eslint/naming-convention
+declare const __ENGINE_VERSION__: string;
+export const version = __ENGINE_VERSION__;
 
 /**
  * Engine name

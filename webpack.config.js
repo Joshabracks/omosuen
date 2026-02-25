@@ -1,8 +1,12 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { readFileSync } from 'fs';
+import webpack from 'webpack';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
 
 export default (env) => {
   const isDevelopment = env.mode === 'development';
@@ -37,6 +41,11 @@ export default (env) => {
     resolve: {
       extensions: ['.ts', '.js'],
     },
+    plugins: [
+      new webpack.DefinePlugin({
+        __ENGINE_VERSION__: JSON.stringify(pkg.version),
+      }),
+    ],
     optimization: {
       minimize: !isDevelopment,
     },

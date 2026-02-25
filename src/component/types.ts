@@ -186,38 +186,15 @@ export type ComponentInstanceMethods<T extends ComponentMethods> = {
     : never;
 };
 
-export async function newComponent(
-  type: COMPONENT_TYPE,
-  options: ComponentOptions,
-  parent: NexusT | null = null,
-): Promise<ComponentData | null> {
-  const builder = BUILDERS[type];
-  if (!builder) {
-    console.error(
-      `[NEW COMPONENT ERROR] component type ${type} does not exist`,
-    );
-    return null;
-  }
-  const component = (await builder(options)) as ComponentData;
-  if (!component) {
-    console.error(
-      `[NEW COMPONENT ERROR] component named ${options.name} failed to build`,
-    );
-    return null;
-  }
-  component.id = COMPONENT_COUNT++;
-
-  // Preserve ComponentData base fields from options
-  if (options.overrideKey !== undefined) {
-    component.overrideKey = options.overrideKey;
-  }
-  if (options.updateOverride !== undefined) {
-    component.updateOverride = options.updateOverride;
-  }
-
-  // Automatically queue for initialization
-  queueInit(component.id);
-
+/**
+ * Wraps a raw component object in a Proxy that enables method dispatch
+ * via MethodRegistry and property access control via PROPERTY_ALLOWLIST.
+ * Registers the proxy in PROXY_REGISTRY for later retrieval via castTo().
+ *
+ * @param component - Raw component data object (from builder or deserializer)
+ * @returns Proxy-wrapped component
+ */
+export function wrapInProxy(component: ComponentData): ComponentData {
   const proxyKeys = Object.keys(MethodRegistry[component.type]);
 
   // Base ComponentData properties (always allowed)
@@ -274,6 +251,43 @@ export async function newComponent(
   // Register the proxy in the registry so it can be retrieved later
   // This is crucial for components that store references to other components
   PROXY_REGISTRY.set(component, proxy);
+
+  return proxy;
+}
+
+export async function newComponent(
+  type: COMPONENT_TYPE,
+  options: ComponentOptions,
+  parent: NexusT | null = null,
+): Promise<ComponentData | null> {
+  const builder = BUILDERS[type];
+  if (!builder) {
+    console.error(
+      `[NEW COMPONENT ERROR] component type ${type} does not exist`,
+    );
+    return null;
+  }
+  const component = (await builder(options)) as ComponentData;
+  if (!component) {
+    console.error(
+      `[NEW COMPONENT ERROR] component named ${options.name} failed to build`,
+    );
+    return null;
+  }
+  component.id = COMPONENT_COUNT++;
+
+  // Preserve ComponentData base fields from options
+  if (options.overrideKey !== undefined) {
+    component.overrideKey = options.overrideKey;
+  }
+  if (options.updateOverride !== undefined) {
+    component.updateOverride = options.updateOverride;
+  }
+
+  // Automatically queue for initialization
+  queueInit(component.id);
+
+  const proxy = wrapInProxy(component);
   if (parent) {
     Nexus.addComponent(parent, proxy);
   }

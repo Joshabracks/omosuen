@@ -249,6 +249,7 @@ export const Nexus: NexusMethods = {
     return matches;
   },
   getComponentById: (n: NexusT, id: number, recursive: boolean = false) => {
+    if (n.id === id) return n;
     const match = n.components.find((c) => c.id === id);
     if (match || !recursive) return match ?? null;
 

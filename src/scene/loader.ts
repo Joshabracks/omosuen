@@ -16,6 +16,7 @@ import { InputControllerSerializer } from '../component/input-controller/data';
 import { AudioManagerSerializer } from '../component/audio-manager/data';
 import { AudioControllerSerializer } from '../component/audio-controller/data';
 import { AnimationControllerSerializer } from '../component/animation-controller/data';
+import { AtlasManagerSerializer } from '../component/atlas-manager/data';
 import { Nexus } from '../component/nexus/methods';
 import { getSceneEntry, hasScene } from './registry';
 import type { ComponentData, ComponentSerializer, COMPONENT_TYPE } from '../component/types';
@@ -43,6 +44,7 @@ const SERIALIZERS: Partial<Record<COMPONENT_TYPE, ComponentSerializer>> = {
   'audio-manager': AudioManagerSerializer,
   'audio-controller': AudioControllerSerializer,
   'animation-controller': AnimationControllerSerializer,
+  'atlas-manager': AtlasManagerSerializer,
 };
 
 /**

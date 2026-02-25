@@ -1,4 +1,9 @@
-import type { ComponentData, ComponentOptions } from '../types';
+import type {
+  ComponentData,
+  ComponentOptions,
+  ComponentSerializer,
+  SerializedData,
+} from '../types';
 import { ComponentUnique } from '../types';
 import type { AtlasManagerMethods } from './methods';
 import type { ComponentInstanceMethods } from '../types';
@@ -131,3 +136,38 @@ export function builder(options: AtlasManagerOptions): AtlasManagerT {
     imageLoading: new Map<string, Promise<HTMLImageElement>>(),
   } as unknown as AtlasManagerT;
 }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serialize(component: ComponentData): any {
+  const c = component as AtlasManagerT;
+  return {
+    type: 'atlas-manager',
+    name: c.name,
+    unique: ComponentUnique.GLOBAL,
+    config: {
+      atlasSize: c.config.atlasSize,
+      maxAtlases: c.config.maxAtlases,
+      padding: c.config.padding,
+    },
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function deserialize(data: any): AtlasManagerT {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const { type, name, config } = data;
+
+  if (type !== 'atlas-manager') {
+    throw new Error(`type ${type} does not match "atlas-manager"`);
+  }
+
+  return builder({
+    name: (name as string) || 'AtlasManager',
+    config: config as AtlasManagerConfig | undefined,
+  });
+}
+
+export const AtlasManagerSerializer: ComponentSerializer = {
+  serialize,
+  deserialize,
+};

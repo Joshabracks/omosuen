@@ -2,9 +2,9 @@ import {
   ComponentData,
   ComponentOptions,
   ComponentSerializer,
-  ComponentUnique,
   ComponentInstanceMethods,
 } from '../types';
+import { ComponentUnique } from '../constants';
 import { Vector2D, Vector4D } from '../../math';
 import type { SpriteMethods } from './methods';
 

@@ -1,5 +1,5 @@
 import type { ComponentData, ComponentOptions } from '../types';
-import { ComponentUnique } from '../types';
+import { ComponentUnique } from '../constants';
 import type {
   ImageType,
   OriginalFrame,

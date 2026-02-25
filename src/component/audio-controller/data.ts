@@ -2,9 +2,9 @@ import {
   ComponentData,
   ComponentOptions,
   ComponentSerializer,
-  ComponentUnique,
   ComponentInstanceMethods,
 } from '../types';
+import { ComponentUnique } from '../constants';
 import type { AudioManagerT } from '../audio-manager/data';
 import type { AudioControllerMethods } from './methods';
 

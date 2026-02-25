@@ -2,9 +2,9 @@ import {
   ComponentData,
   ComponentOptions,
   ComponentSerializer,
-  ComponentUnique,
   ComponentInstanceMethods,
 } from '../types';
+import { ComponentUnique } from '../constants';
 import type { AnimationControllerMethods } from './methods';
 import type { Animation, AnimationState } from './types';
 import type { ChannelType } from '../sprite/types';

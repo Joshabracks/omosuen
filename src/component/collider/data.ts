@@ -2,9 +2,9 @@ import {
   ComponentData,
   ComponentOptions,
   ComponentSerializer,
-  ComponentUnique,
   ComponentInstanceMethods,
 } from '../types';
+import { ComponentUnique } from '../constants';
 import { Vector3D } from '../../math';
 import type { ColliderMethods } from './methods';
 

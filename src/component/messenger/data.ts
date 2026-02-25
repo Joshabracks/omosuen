@@ -9,10 +9,10 @@ import {
   ComponentData,
   ComponentOptions,
   ComponentSerializer,
-  ComponentUnique,
   ComponentInstanceMethods,
   SerializedData,
 } from '../types';
+import { ComponentUnique } from '../constants';
 import type { MessengerMethods } from './methods';
 import type { ListenerConfig } from './types';
 import { ALL_MESSAGES, ANY_MESSAGES } from './types';

@@ -3,8 +3,8 @@ import {
   ComponentOptions,
   ComponentSerializer,
   ComponentInstanceMethods,
-} from '../types';
-import { ComponentUnique } from '../constants';
+  ComponentUnique,
+} from '../base';
 import { Vector3D } from '../../math';
 import type { ColliderT } from '../collider/data';
 import type { EventColliderMethods } from './methods';

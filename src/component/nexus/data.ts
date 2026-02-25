@@ -3,8 +3,8 @@ import {
   ComponentOptions,
   ComponentSerializer,
   ComponentInstanceMethods,
-} from '../types';
-import { ComponentUnique } from '../constants';
+  ComponentUnique,
+} from '../base';
 import type { NexusMethods } from './methods';
 
 export interface NexusT

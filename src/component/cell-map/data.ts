@@ -1,4 +1,4 @@
-import { ComponentData, ComponentOptions } from '../types';
+import { ComponentData, ComponentOptions } from '../base';
 import { Array3D, Array3Dc, Array3Di, Vector3D } from '../../math';
 import {
   Material,

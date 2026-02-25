@@ -3,8 +3,8 @@ import {
   ComponentOptions,
   ComponentSerializer,
   ComponentInstanceMethods,
-} from '../types';
-import { ComponentUnique } from '../constants';
+  ComponentUnique,
+} from '../base';
 import type { TimerMethods } from './methods';
 
 export interface TimerT

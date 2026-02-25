@@ -78,7 +78,7 @@ export type {
 } from './audio-controller';
 
 // Export ComponentUnique enum for developers to use
-export { ComponentUnique } from './types';
+export { ComponentUnique } from './base';
 
 // Export messenger constants for developer use
 export { ALL_MESSAGES, ANY_MESSAGES } from './messenger/types';

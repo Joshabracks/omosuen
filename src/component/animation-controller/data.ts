@@ -3,8 +3,8 @@ import {
   ComponentOptions,
   ComponentSerializer,
   ComponentInstanceMethods,
-} from '../types';
-import { ComponentUnique } from '../constants';
+  ComponentUnique,
+} from '../base';
 import type { AnimationControllerMethods } from './methods';
 import type { Animation, AnimationState } from './types';
 import type { ChannelType } from '../sprite/types';

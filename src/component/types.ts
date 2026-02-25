@@ -1,3 +1,13 @@
+/**
+ * Component system runtime — Proxy wrappers, factory, and type registry.
+ *
+ * Standalone type definitions live in ./base.ts (leaf module).
+ * This file re-exports them and adds registry-dependent runtime code.
+ */
+
+// Re-export all standalone types so existing imports from './types' still work
+export * from './base';
+
 import { BUILDERS, MethodRegistry, PROPERTY_ALLOWLIST } from './registry';
 import { queueInit } from '../loop/init';
 import { Nexus, NexusT } from './nexus';
@@ -20,6 +30,8 @@ import { AnimationControllerT } from './animation-controller';
 import { AudioManagerT } from './audio-manager';
 import { AudioControllerT } from './audio-controller';
 import { EventColliderT } from './event-collider';
+
+import type { ComponentData, ComponentOptions, COMPONENT_TYPE } from './base';
 
 export type ComponentDataType =
   | AnimationControllerT
@@ -99,82 +111,6 @@ export function resetComponentCount(): void {
 export function setComponentCount(count: number): void {
   COMPONENT_COUNT = count;
 }
-
-import { ComponentUnique } from './constants';
-export { ComponentUnique };
-
-export type COMPONENT_TYPE =
-  | 'nexus'
-  | 'ui-overlay'
-  | 'data-layer'
-  | 'flag-manager'
-  | 'messenger'
-  | 'viewport'
-  | 'texture-map'
-  | 'atlas-manager'
-  | 'sprite'
-  | 'transform'
-  | 'animation-controller'
-  | 'cell-map'
-  | 'camera'
-  | 'input-controller'
-  | 'collider'
-  | 'event-collider'
-  | 'timer'
-  | 'light'
-  | 'audio-manager'
-  | 'audio-controller';
-
-export interface ComponentOptions {
-  name: string;
-  overrideKey?: string;
-  updateOverride?: string;
-}
-
-export interface ComponentData {
-  name: string;
-  type: COMPONENT_TYPE;
-  id?: number;
-  parent: ComponentData | null;
-  _disposed?: boolean;
-  loader?: boolean;
-  unique?: ComponentUnique;
-  overrideKey?: string;
-  updateOverride?: string;
-  _initialized?: boolean;
-  _initDefer?: number;
-}
-
-export interface ComponentMethods {
-  type: COMPONENT_TYPE;
-  dispose?: (component: ComponentData) => void;
-  update?: (component: ComponentData, deltaTime: number) => void;
-  init?: (component: ComponentData) => Promise<void>;
-}
-
-/**
- * Converts a component methods interface into instance method signatures.
- * Removes the first parameter (the component itself) from each method,
- * transforming static methods into instance methods for TypeScript typing.
- *
- * This enables full IDE autocomplete and type safety for component method calls
- * (e.g., `nexus.addComponent()`) while maintaining the DOD architecture where
- * methods are stored centrally and dispatched via Proxy at runtime.
- *
- * @example
- * ```typescript
- * // Input: addComponent: (n: nexus, component: ComponentData) => void
- * // Output: addComponent: (component: ComponentData) => void
- * ```
- */
-export type ComponentInstanceMethods<T extends ComponentMethods> = {
-  [K in keyof T as K extends 'type' ? never : K]: T[K] extends (
-    first: infer _First,
-    ...args: infer Args
-  ) => infer Return
-    ? (...args: Args) => Return
-    : never;
-};
 
 /**
  * Wraps a raw component object in a Proxy that enables method dispatch
@@ -283,13 +219,4 @@ export async function newComponent(
   }
 
   return proxy;
-}
-
-// Type alias for serialized component data
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type SerializedData = Record<string, any>;
-
-export interface ComponentSerializer {
-  serialize(component: ComponentData): SerializedData;
-  deserialize(data: SerializedData): ComponentData | Promise<ComponentData>;
 }

@@ -3,8 +3,8 @@ import {
   ComponentOptions,
   ComponentSerializer,
   ComponentInstanceMethods,
-} from '../types';
-import { ComponentUnique } from '../constants';
+  ComponentUnique,
+} from '../base';
 import { Vector2D, Vector3D, Vector4D } from '../../math';
 import type { DataLayerMethods } from './methods';
 

@@ -1,5 +1,4 @@
-import { ComponentData, ComponentMethods } from '../types';
-import { ComponentUnique } from '../constants';
+import { ComponentData, ComponentMethods, ComponentUnique } from '../base';
 import { MethodRegistry } from '../registry';
 import { NexusT } from './data';
 

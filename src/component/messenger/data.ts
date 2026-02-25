@@ -11,8 +11,8 @@ import {
   ComponentSerializer,
   ComponentInstanceMethods,
   SerializedData,
-} from '../types';
-import { ComponentUnique } from '../constants';
+  ComponentUnique,
+} from '../base';
 import type { MessengerMethods } from './methods';
 import type { ListenerConfig } from './types';
 import { ALL_MESSAGES, ANY_MESSAGES } from './types';

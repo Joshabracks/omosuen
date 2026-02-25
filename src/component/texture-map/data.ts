@@ -1,5 +1,5 @@
-import type { ComponentData, ComponentOptions } from '../types';
-import { ComponentUnique } from '../constants';
+import type { ComponentData, ComponentOptions } from '../base';
+import { ComponentUnique } from '../base';
 import type {
   ImageType,
   OriginalFrame,
@@ -8,7 +8,7 @@ import type {
 } from './types';
 import { isFrameMap, isGridConfig } from './types';
 import type { TextureMapMethods } from './methods';
-import type { ComponentInstanceMethods } from '../types';
+import type { ComponentInstanceMethods } from '../base';
 import { Vector2D } from '../../math';
 
 export interface TextureMapT

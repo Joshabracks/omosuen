@@ -1,7 +1,6 @@
-import type { ComponentData, ComponentOptions } from '../types';
-import { ComponentUnique } from '../constants';
+import type { ComponentData, ComponentOptions, ComponentInstanceMethods } from '../base';
+import { ComponentUnique } from '../base';
 import type { AtlasManagerMethods } from './methods';
-import type { ComponentInstanceMethods } from '../types';
 
 /**
  * Valid atlas sizes (power of 2)

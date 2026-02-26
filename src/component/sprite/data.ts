@@ -15,7 +15,7 @@ import type { SpriteMethods } from './methods';
 export interface SpriteT
   extends ComponentData, ComponentInstanceMethods<SpriteMethods> {
   type: 'sprite';
-  unique: ComponentUnique.FALSE;
+  unique: ComponentUnique.LOCAL;
 
   /**
    * Texture map keys for different rendering channels.
@@ -97,7 +97,7 @@ export function builder(options: SpriteOptions): SpriteT {
   const sprite = {
     type: 'sprite' as const,
     name: options.name,
-    unique: ComponentUnique.FALSE,
+    unique: ComponentUnique.LOCAL,
     parent: null,
     _disposed: false,
 
@@ -135,7 +135,7 @@ function serialize(component: ComponentData): any {
   return {
     type: 'sprite',
     name: s.name,
-    unique: ComponentUnique.FALSE,
+    unique: ComponentUnique.LOCAL,
     textureMapKeys: {
       albedo: s.textureMapKeys.albedo,
       normal: s.textureMapKeys.normal,

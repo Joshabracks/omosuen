@@ -16,12 +16,7 @@ import type { ChannelType } from '../sprite/types';
 export interface AnimationControllerT
   extends ComponentData, ComponentInstanceMethods<AnimationControllerMethods> {
   type: 'animation-controller';
-  unique: ComponentUnique.FALSE;
-
-  /**
-   * ID of the target sprite component to animate.
-   */
-  spriteId: number;
+  unique: ComponentUnique.LOCAL;
 
   /**
    * Map of named animations.
@@ -62,7 +57,6 @@ export interface AnimationControllerT
 }
 
 export interface AnimationControllerOptions extends ComponentOptions {
-  spriteId: number;
   animations?: Animation[];
   channels?: ChannelType[];
   speed?: number;
@@ -93,11 +87,10 @@ export function builder(
   const controller = {
     type: 'animation-controller' as const,
     name: options.name,
-    unique: ComponentUnique.FALSE,
+    unique: ComponentUnique.LOCAL,
     parent: null,
     _disposed: false,
 
-    spriteId: options.spriteId,
     animations: animationsMap,
     state: 'stopped' as AnimationState,
     currentAnimation: null,
@@ -123,8 +116,7 @@ function serialize(component: ComponentData): any {
   return {
     type: 'animation-controller',
     name: ac.name,
-    unique: ComponentUnique.FALSE,
-    spriteId: ac.spriteId,
+    unique: ComponentUnique.LOCAL,
     animations: animationsArray,
     state: ac.state,
     currentAnimation: ac.currentAnimation,
@@ -144,7 +136,6 @@ function deserialize(data: any): AnimationControllerT {
   const {
     type,
     name,
-    spriteId,
     animations,
     state,
     currentAnimation,
@@ -161,9 +152,6 @@ function deserialize(data: any): AnimationControllerT {
   if (!name) {
     errors.push('animation-controller requires a name');
   }
-  if (spriteId === undefined) {
-    errors.push('animation-controller requires a spriteId');
-  }
   if (errors.length) {
     throw new Error(errors.join('\n'));
   }
@@ -179,11 +167,10 @@ function deserialize(data: any): AnimationControllerT {
   const controller = {
     type: 'animation-controller' as const,
     name: name as string,
-    unique: ComponentUnique.FALSE,
+    unique: ComponentUnique.LOCAL,
     parent: null,
     _disposed: false,
 
-    spriteId: spriteId as number,
     animations: animationsMap,
     state: (state as AnimationState) ?? 'stopped',
     currentAnimation: (currentAnimation as string | null) ?? null,
@@ -205,7 +192,6 @@ export const AnimationControllerSerializer: ComponentSerializer = {
  * Allowlist of animation-controller-specific properties accessible via component Proxy.
  */
 export const PROPERTY_ALLOWLIST: string[] = [
-  'spriteId',
   'animations',
   'state',
   'currentAnimation',

@@ -2,7 +2,6 @@ import { ComponentData, ComponentMethods } from '../types';
 import { AnimationControllerT } from './data';
 import type { Animation, AnimationState } from './types';
 import type { ChannelType } from '../sprite/types';
-import { getActiveScene } from '../../scene';
 import type { NexusT } from '../nexus/data';
 import type { SpriteT } from '../sprite/data';
 import { MethodRegistry } from '../registry';
@@ -10,7 +9,10 @@ import { MethodRegistry } from '../registry';
 export interface AnimationControllerMethods extends ComponentMethods {
   init: (component: ComponentData) => Promise<void>;
   update: (component: ComponentData, deltaTime: number) => void;
-  addAnimation: (controller: AnimationControllerT, animation: Animation) => void;
+  addAnimation: (
+    controller: AnimationControllerT,
+    animation: Animation,
+  ) => void;
   removeAnimation: (controller: AnimationControllerT, name: string) => void;
   hasAnimation: (controller: AnimationControllerT, name: string) => boolean;
   getAnimation: (
@@ -31,7 +33,10 @@ export interface AnimationControllerMethods extends ComponentMethods {
   getCurrentFrame: (controller: AnimationControllerT) => number;
   setSpeed: (controller: AnimationControllerT, speed: number) => void;
   getSpeed: (controller: AnimationControllerT) => number;
-  setChannels: (controller: AnimationControllerT, channels: ChannelType[]) => void;
+  setChannels: (
+    controller: AnimationControllerT,
+    channels: ChannelType[],
+  ) => void;
   getChannels: (controller: AnimationControllerT) => ChannelType[];
 }
 
@@ -40,24 +45,24 @@ export const AnimationController: AnimationControllerMethods = {
 
   /**
    * Initializes the animation controller.
-   * Validates that the target sprite exists.
+   * Validates that a sibling sprite exists in the parent nexus.
    */
   async init(component: ComponentData): Promise<void> {
     const ac = component as AnimationControllerT;
-    const scene = getActiveScene();
+    const parent = ac.parent as NexusT | null;
 
-    if (!scene) {
+    if (!parent) {
       console.warn(
-        `[animation-controller] Cannot initialize '${ac.name}' - no active scene`,
+        `[animation-controller] Cannot initialize '${ac.name}' - no parent nexus`,
       );
       return;
     }
 
-    // Validate sprite exists
-    const sprite = scene.getComponentById(ac.spriteId, true) as SpriteT | null;
+    // Validate sibling sprite exists
+    const sprite = parent.getComponentByType('sprite') as SpriteT | null;
     if (!sprite) {
       console.warn(
-        `[animation-controller] Sprite with ID ${ac.spriteId} not found for '${ac.name}'`,
+        `[animation-controller] No sibling sprite found for '${ac.name}'`,
       );
     }
   },
@@ -121,9 +126,8 @@ export const AnimationController: AnimationControllerMethods = {
 
           // Call onComplete callback if defined
           if (animation.onComplete) {
-            const callback = MethodRegistry['animation-controller'][
-              animation.onComplete
-            ];
+            const callback =
+              MethodRegistry['animation-controller'][animation.onComplete];
             if (callback && typeof callback === 'function') {
               callback(ac);
             } else {
@@ -190,7 +194,10 @@ export const AnimationController: AnimationControllerMethods = {
   /**
    * Gets an animation by name.
    */
-  getAnimation(controller: AnimationControllerT, name: string): Animation | null {
+  getAnimation(
+    controller: AnimationControllerT,
+    name: string,
+  ): Animation | null {
     return controller.animations.get(name) ?? null;
   },
 
@@ -324,25 +331,19 @@ export const AnimationController: AnimationControllerMethods = {
 };
 
 /**
- * Helper function to update the sprite's frame.
+ * Helper function to update the sibling sprite's frame.
  */
 function updateSpriteFrame(
   controller: AnimationControllerT,
   frameNumber: number,
 ): void {
-  const scene = getActiveScene();
-  if (!scene) {
+  const parent = controller.parent as NexusT | null;
+  if (!parent) {
     return;
   }
 
-  // Get sprite by ID
-  const sprite = scene.getComponentById(controller.spriteId, true) as
-    | SpriteT
-    | null;
+  const sprite = parent.getComponentByType('sprite') as SpriteT | null;
   if (!sprite) {
-    console.warn(
-      `[animation-controller] Sprite with ID ${controller.spriteId} not found`,
-    );
     return;
   }
 

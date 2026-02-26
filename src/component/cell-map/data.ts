@@ -411,6 +411,10 @@ function serialize(component: ComponentData): any {
       normalTextureKey: m.normalTextureKey,
       emissionTextureKey: m.emissionTextureKey,
       materialTextureKey: m.materialTextureKey,
+      albedoFrame: m.albedoFrame ?? 0,
+      normalFrame: m.normalFrame ?? 0,
+      emissionFrame: m.emissionFrame ?? 0,
+      materialFrame: m.materialFrame ?? 0,
     })),
     cellSize: {
       _vectorType: 'Vector3D',
@@ -561,6 +565,10 @@ function deserialize(data: any): CellMapT {
     normalTextureKey: m.normalTextureKey || '',
     emissionTextureKey: m.emissionTextureKey || '',
     materialTextureKey: m.materialTextureKey || '',
+    albedoFrame: m.albedoFrame ?? 0,
+    normalFrame: m.normalFrame ?? 0,
+    emissionFrame: m.emissionFrame ?? 0,
+    materialFrame: m.materialFrame ?? 0,
   }));
 
   return {

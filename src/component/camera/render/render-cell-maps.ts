@@ -273,7 +273,7 @@ export function renderCellMaps(
         if (!albedoTextureMap || albedoTextureMap.packedFrames.length === 0)
           continue;
 
-        const albedoFrame = albedoTextureMap.packedFrames[0];
+        const albedoFrame = albedoTextureMap.frameIndexMap.get(material.albedoFrame ?? 0);
         if (!albedoFrame) continue;
 
         const atlasTexture =
@@ -297,8 +297,10 @@ export function renderCellMaps(
 
         // Bind normal texture if available
         const normalTextureMap = textureMapCache.get(material.normalTextureKey);
-        if (normalTextureMap && normalTextureMap.packedFrames.length > 0) {
-          const normalFrame = normalTextureMap.packedFrames[0];
+        const normalFrame = normalTextureMap
+          ? normalTextureMap.frameIndexMap.get(material.normalFrame ?? 0)
+          : undefined;
+        if (normalFrame) {
           const normalAtlasTexture =
             camera.glResources.atlasTextures[normalFrame.atlasIndex];
 

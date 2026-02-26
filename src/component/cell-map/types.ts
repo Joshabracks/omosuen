@@ -26,6 +26,26 @@ export interface Material {
    * References TextureMap.textureMapKey field
    */
   materialTextureKey: string;
+
+  /**
+   * Frame index into albedo TextureMap (default 0)
+   */
+  albedoFrame: number;
+
+  /**
+   * Frame index into normal TextureMap (default 0)
+   */
+  normalFrame: number;
+
+  /**
+   * Frame index into emission TextureMap (default 0)
+   */
+  emissionFrame: number;
+
+  /**
+   * Frame index into material TextureMap (default 0)
+   */
+  materialFrame: number;
 }
 
 /**

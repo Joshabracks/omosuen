@@ -1,4 +1,8 @@
-import type { ComponentData, ComponentOptions } from '../types';
+import type {
+  ComponentData,
+  ComponentOptions,
+  ComponentSerializer,
+} from '../types';
 import { ComponentUnique } from '../types';
 import type {
   ImageType,
@@ -9,7 +13,7 @@ import type {
 import { isFrameMap, isGridConfig } from './types';
 import type { TextureMapMethods } from './methods';
 import type { ComponentInstanceMethods } from '../types';
-import { Vector2D } from '../../math';
+import { Vector2D, Vector4D } from '../../math';
 
 export interface TextureMapT
   extends ComponentData, ComponentInstanceMethods<TextureMapMethods> {
@@ -191,3 +195,117 @@ export function builder(options: TextureMapOptions): TextureMapT {
 
   return textureMap;
 }
+
+/**
+ * Serializes a texture-map component to a plain object.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serialize(component: ComponentData): any {
+  const t = component as TextureMapT;
+
+  // Serialize imageType based on mode
+  let imageTypeData: unknown = null;
+
+  if (isFrameMap(t.imageType)) {
+    imageTypeData = {
+      mode: 'framemap',
+      frames: t.imageType.map((rect) => ({
+        x: rect.x,
+        y: rect.y,
+        w: rect.z,
+        h: rect.w,
+      })),
+    };
+  } else if (isGridConfig(t.imageType)) {
+    const grid = t.imageType as GridConfig;
+    imageTypeData = {
+      mode: 'grid',
+      cellWidth: grid.cellSize.x,
+      cellHeight: grid.cellSize.y,
+      cols: grid.gridSize.x,
+      rows: grid.gridSize.y,
+      cellCount: grid.cellCount,
+    };
+  }
+
+  return {
+    type: 'texture-map',
+    name: t.name,
+    unique: ComponentUnique.FALSE,
+    textureMapKey: t.textureMapKey,
+    filePath: t.filePath,
+    imageType: imageTypeData,
+  };
+}
+
+/**
+ * Deserializes a plain object back into a texture-map component.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function deserialize(data: any): TextureMapT {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const {
+    type,
+    name,
+    textureMapKey,
+    filePath,
+    imageType: imageTypeData,
+  } = data;
+
+  const errors = [];
+  if (type !== 'texture-map') {
+    errors.push(`type ${type} does not match "texture-map"`);
+  }
+  if (!name) {
+    errors.push('texture-map requires a name');
+  }
+  if (errors.length) {
+    throw new Error(errors.join('\n'));
+  }
+
+  // Reconstruct imageType from serialized format
+  let imageType: ImageType;
+
+  if (imageTypeData && typeof imageTypeData === 'object') {
+    if (
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      imageTypeData.mode === 'framemap' &&
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      Array.isArray(imageTypeData.frames)
+    ) {
+      // Reconstruct FrameMap (Vector4D[])
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+      imageType = imageTypeData.frames.map(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (f: any) => new Vector4D(f.x, f.y, f.w, f.h),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    } else if (imageTypeData.mode === 'grid') {
+      // Reconstruct GridConfig
+      imageType = {
+        cellSize: new Vector2D(
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+          imageTypeData.cellWidth,
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+          imageTypeData.cellHeight,
+        ),
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        gridSize: new Vector2D(imageTypeData.cols, imageTypeData.rows),
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+        cellCount: imageTypeData.cellCount,
+      } as GridConfig;
+    }
+  }
+
+  return builder({
+    name: name as string,
+    textureMapKey: textureMapKey as string,
+    filePath: filePath as string,
+    imageType,
+  });
+}
+
+export const TextureMapSerializer: ComponentSerializer = {
+  serialize,
+  deserialize,
+};

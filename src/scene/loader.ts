@@ -17,10 +17,19 @@ import { AudioManagerSerializer } from '../component/audio-manager/data';
 import { AudioControllerSerializer } from '../component/audio-controller/data';
 import { AnimationControllerSerializer } from '../component/animation-controller/data';
 import { AtlasManagerSerializer } from '../component/atlas-manager/data';
+import { TextureMapSerializer } from '../component/texture-map/data';
 import { Nexus } from '../component/nexus/methods';
 import { getSceneEntry, hasScene } from './registry';
-import type { ComponentData, ComponentSerializer, COMPONENT_TYPE } from '../component/types';
-import { resetComponentCount, setComponentCount, wrapInProxy } from '../component/types';
+import type {
+  ComponentData,
+  ComponentSerializer,
+  COMPONENT_TYPE,
+} from '../component/types';
+import {
+  resetComponentCount,
+  setComponentCount,
+  wrapInProxy,
+} from '../component/types';
 import { queueInit } from '../loop/init';
 
 /**
@@ -31,20 +40,21 @@ const SERIALIZERS: Partial<Record<COMPONENT_TYPE, ComponentSerializer>> = {
   'ui-overlay': UIOverlaySerializer,
   'data-layer': DataLayerSerializer,
   'flag-manager': FlagManagerSerializer,
-  'viewport': ViewportSerializer,
-  'camera': CameraSerializer,
-  'transform': TransformSerializer,
-  'sprite': SpriteSerializer,
-  'collider': ColliderSerializer,
+  viewport: ViewportSerializer,
+  camera: CameraSerializer,
+  transform: TransformSerializer,
+  sprite: SpriteSerializer,
+  collider: ColliderSerializer,
   'event-collider': EventColliderSerializer,
-  'light': LightSerializer,
-  'timer': TimerSerializer,
-  'messenger': MessengerSerializer,
+  light: LightSerializer,
+  timer: TimerSerializer,
+  messenger: MessengerSerializer,
   'input-controller': InputControllerSerializer,
   'audio-manager': AudioManagerSerializer,
   'audio-controller': AudioControllerSerializer,
   'animation-controller': AnimationControllerSerializer,
   'atlas-manager': AtlasManagerSerializer,
+  'texture-map': TextureMapSerializer,
 };
 
 /**
@@ -299,8 +309,7 @@ export function deserializeComponentRecursive(
 
       return proxy;
     } else {
-      const serializer =
-        SERIALIZERS[data.type as COMPONENT_TYPE];
+      const serializer = SERIALIZERS[data.type as COMPONENT_TYPE];
       if (serializer) {
         component = serializer.deserialize(data) as ComponentData;
       } else {

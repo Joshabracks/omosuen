@@ -1,10 +1,16 @@
-import { ComponentData, ComponentOptions } from '../types';
+import {
+  ComponentData,
+  ComponentOptions,
+  ComponentSerializer,
+  ComponentUnique,
+} from '../types';
 import { Array3D, Array3Dc, Array3Di, Vector3D } from '../../math';
 import {
   Material,
   Mesh,
   ChunkMesh,
   packCell,
+  unpackCell,
   createDefaultCellData,
   CHUNK_SIZE,
 } from './types';
@@ -380,3 +386,207 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     revealExempt: options.revealExempt ?? false,
   };
 }
+
+/**
+ * Serializes a cell-map component to a plain object.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serialize(component: ComponentData): any {
+  const cm = component as CellMapT;
+  const size = cm.mapSize;
+
+  // Expand RLE-compressed packedData to flat array of 32-bit packed ints
+  const packedFlat: number[] = [];
+  const expanded = cm.packedData.expand();
+  expanded.forEach((val) => {
+    packedFlat.push(val);
+  });
+
+  return {
+    type: 'cell-map',
+    name: cm.name,
+    unique: ComponentUnique.FALSE,
+    materials: cm.materials.map((m) => ({
+      albedoTextureKey: m.albedoTextureKey,
+      normalTextureKey: m.normalTextureKey,
+      emissionTextureKey: m.emissionTextureKey,
+      materialTextureKey: m.materialTextureKey,
+    })),
+    cellSize: {
+      _vectorType: 'Vector3D',
+      x: cm.cellSize.x,
+      y: cm.cellSize.y,
+      z: cm.cellSize.z,
+    },
+    mapSize: {
+      _vectorType: 'Vector3D',
+      x: size.x,
+      y: size.y,
+      z: size.z,
+    },
+    packedData: packedFlat,
+    smoothing: cm.smoothing,
+    normalSmoothing: cm.normalSmoothing,
+    revealExempt: cm.revealExempt,
+  };
+}
+
+/**
+ * Deserializes a plain object back into a cell-map component.
+ * Constructs CellMapT directly (mirrors builder logic) since builder is async.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function deserialize(data: any): CellMapT {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const {
+    type,
+    name,
+    materials,
+    cellSize,
+    mapSize,
+    packedData,
+    smoothing,
+    normalSmoothing,
+    revealExempt,
+  } = data;
+
+  const errors: string[] = [];
+  if (type !== 'cell-map') {
+    errors.push(`type ${type} does not match "cell-map"`);
+  }
+  if (!name) {
+    errors.push('cell-map requires a name');
+  }
+  if (!materials || !Array.isArray(materials)) {
+    errors.push('cell-map requires a materials array');
+  }
+  if (!cellSize || !mapSize) {
+    errors.push('cell-map requires cellSize and mapSize');
+  }
+  if (!packedData || !Array.isArray(packedData)) {
+    errors.push('cell-map requires packedData array');
+  }
+  if (errors.length) {
+    throw new Error(errors.join('\n'));
+  }
+
+  // Reconstruct Vector3D for cellSize and mapSize
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  const cs = new Vector3D(cellSize.x, cellSize.y, cellSize.z);
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  const ms = new Vector3D(mapSize.x, mapSize.y, mapSize.z);
+
+  // Reconstruct input maps by unpacking each cell from the flat packed array
+  const materialMap = new Array3D<number>(ms, 0);
+  const shapeMap = new Array3D<number>(ms, 1);
+  const emissionMap = new Array3D<number>(ms, 0);
+  const visibilityMap = new Array3D<boolean>(ms, true);
+
+  for (let i = 0; i < (packedData as number[]).length; i++) {
+    const cell = unpackCell((packedData as number[])[i]);
+    materialMap.indexSet(i, cell.materialIndex);
+    shapeMap.indexSet(i, cell.shapeIndex);
+    emissionMap.indexSet(i, cell.emissionIntensity);
+    visibilityMap.indexSet(i, cell.visible);
+  }
+
+  // Re-pack into Array3D then compress to Array3Dc (mirrors builder)
+  const packedArray = new Array3D<number>(ms);
+  packedArray.forEach((_, x, y, z, i) => {
+    const coords = new Vector3D(x, y, z);
+    const cellData = createDefaultCellData();
+    cellData.materialIndex = materialMap.get(coords);
+    cellData.shapeIndex = shapeMap.get(coords);
+    cellData.emissionIntensity = emissionMap.get(coords);
+    cellData.visible = visibilityMap.get(coords);
+
+    cellData.materialIndex = Math.max(
+      0,
+      Math.min(0xfff, cellData.materialIndex),
+    );
+    cellData.shapeIndex = Math.max(0, Math.min(0xfff, cellData.shapeIndex));
+    cellData.emissionIntensity = Math.max(
+      0,
+      Math.min(0x1f, cellData.emissionIntensity),
+    );
+
+    packedArray.indexSet(i, packCell(cellData));
+  });
+  const compressedData = new Array3Dc(packedArray, 0.05);
+
+  // Meshes: air at 0, default cube at 1
+  const meshes: Mesh[] = [
+    {
+      vertices: new Float32Array(0),
+      uvs: new Float32Array(0),
+      indices: new Uint16Array(0),
+    },
+    generateDefaultCubeMesh(),
+  ];
+
+  // Smoothing weights (uniform default)
+  const weightsArray3D = new Array3D<number>(ms, 8);
+  const smoothingWeights = new Array3Di(weightsArray3D, 8, [4, 4], 'clamp');
+
+  // Chunk grid
+  const chunkGridSize = {
+    x: Math.ceil(ms.x / CHUNK_SIZE),
+    y: Math.ceil(ms.y / CHUNK_SIZE),
+    z: Math.ceil(ms.z / CHUNK_SIZE),
+  };
+
+  const chunks: ChunkMesh[] = [];
+  for (let cz = 0; cz < chunkGridSize.z; cz++) {
+    for (let cy = 0; cy < chunkGridSize.y; cy++) {
+      for (let cx = 0; cx < chunkGridSize.x; cx++) {
+        chunks.push({
+          cx,
+          cy,
+          cz,
+          dirty: true,
+          vertices: null,
+          indices: null,
+          drawRanges: [],
+          faceCount: 0,
+          glVertexBuffer: null,
+          glIndexBuffer: null,
+        });
+      }
+    }
+  }
+
+  // Reconstruct materials array
+  const mats: Material[] = (materials as Material[]).map((m) => ({
+    albedoTextureKey: m.albedoTextureKey || '',
+    normalTextureKey: m.normalTextureKey || '',
+    emissionTextureKey: m.emissionTextureKey || '',
+    materialTextureKey: m.materialTextureKey || '',
+  }));
+
+  return {
+    name: name as string,
+    type: 'cell-map',
+    parent: null,
+    materials: mats,
+    materialMap,
+    shapeMap,
+    meshes,
+    emissionMap,
+    visibilityMap,
+    cellSize: cs,
+    mapSize: ms,
+    packedData: compressedData,
+    smoothing: (smoothing as number) ?? 0,
+    smoothingWeights,
+    normalSmoothing: Math.max(0, Math.min(1, (normalSmoothing as number) ?? 0)),
+    needsGPUUpdate: true,
+    chunks,
+    chunkGridSize,
+    revealExempt: (revealExempt as boolean) ?? false,
+  };
+}
+
+export const CellMapSerializer: ComponentSerializer = {
+  serialize,
+  deserialize,
+};

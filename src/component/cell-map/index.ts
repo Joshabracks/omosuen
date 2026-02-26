@@ -1,4 +1,9 @@
-export { builder, PROPERTY_ALLOWLIST, generateDefaultCubeMesh } from './data';
+export {
+  builder,
+  PROPERTY_ALLOWLIST,
+  generateDefaultCubeMesh,
+  CellMapSerializer,
+} from './data';
 export type { CellMapT, CellMapOptions } from './data';
 export { CellMap } from './methods';
 export type { CellMapMethods } from './methods';

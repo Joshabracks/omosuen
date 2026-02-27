@@ -1,6 +1,6 @@
 {
   "name": "omosuen",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "Omosuen - An axonometric game engine with fixed z-axis camera. Etymology: Omos (Greek: shoulder/axis) + Suen (Mesopotamian moon deity/measurement)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

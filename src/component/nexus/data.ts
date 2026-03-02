@@ -13,6 +13,7 @@ export interface NexusT
   unique: ComponentUnique.FALSE;
   components: ComponentData[];
   paused: boolean;
+  script?: string;
 }
 
 export function builder(options: ComponentOptions): NexusT {
@@ -45,6 +46,7 @@ function serialize(component: ComponentData): any {
     name: nexus.name,
     unique: ComponentUnique.FALSE,
     components: serializedComponents,
+    script: nexus.script || undefined,
   };
 }
 
@@ -57,6 +59,12 @@ function deserialize(data: any): NexusT {
   if (errors.length) throw new Error(errors.join('\n'));
 
   const nexus = builder({ name });
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  if (data.script) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+    nexus.script = data.script;
+  }
 
   // Components will be added separately by the main deserializer
   return nexus;
@@ -71,4 +79,4 @@ export const NexusSerializer: ComponentSerializer = {
  * Allowlist of nexus-specific properties accessible via component Proxy.
  * These properties can be accessed directly without triggering method lookup.
  */
-export const PROPERTY_ALLOWLIST: string[] = ['components', 'paused'];
+export const PROPERTY_ALLOWLIST: string[] = ['components', 'paused', 'script'];

@@ -129,6 +129,20 @@ export async function processInitQueue(
       await method.init(component);
     }
 
+    // Call instance-specific init override if set
+    if (component.initOverride) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      const overrideMethod = method[component.initOverride];
+      if (overrideMethod && typeof overrideMethod === 'function') {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+        await overrideMethod(component);
+      } else {
+        console.warn(
+          `[INIT] Custom init method '${component.initOverride}' not found for component '${component.name}'`,
+        );
+      }
+    }
+
     // Mark as initialized
     component._initialized = true;
     componentsInitialized++;

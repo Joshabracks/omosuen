@@ -138,14 +138,10 @@ async function loadAudio(
       throw new Error(`Failed to fetch audio file: ${filePath}`);
     }
     const arrayBuffer = await response.arrayBuffer();
-    const audioBuffer =
-      await am._audioContext.decodeAudioData(arrayBuffer);
+    const audioBuffer = await am._audioContext.decodeAudioData(arrayBuffer);
     am._buffers.set(audioId, audioBuffer);
   } catch (error) {
-    console.error(
-      `[audio-manager] Failed to load audio "${audioId}":`,
-      error,
-    );
+    console.error(`[audio-manager] Failed to load audio "${audioId}":`, error);
     throw error;
   }
 }
@@ -222,11 +218,7 @@ async function playMusic(am: AudioManagerT, fadeTime = 1.0): Promise<void> {
 }
 
 async function stopMusic(am: AudioManagerT, fadeTime = 1.0): Promise<void> {
-  if (
-    !am._audioContext ||
-    !am._currentMusicSource ||
-    !am._currentMusicGain
-  ) {
+  if (!am._audioContext || !am._currentMusicSource || !am._currentMusicGain) {
     return;
   }
 
@@ -276,10 +268,7 @@ async function pauseMusic(am: AudioManagerT, fadeTime = 0.5): Promise<void> {
   am._musicPlaying = false;
 }
 
-async function resumeMusic(
-  am: AudioManagerT,
-  fadeTime = 0.5,
-): Promise<void> {
+async function resumeMusic(am: AudioManagerT, fadeTime = 0.5): Promise<void> {
   if (am._musicPlaying) {
     return;
   }
@@ -291,8 +280,7 @@ async function resumeMusic(
 async function nextTrack(am: AudioManagerT, fadeTime = 5.0): Promise<void> {
   if (am.musicTracks.length === 0) return;
 
-  am.currentTrackIndex =
-    (am.currentTrackIndex + 1) % am.musicTracks.length;
+  am.currentTrackIndex = (am.currentTrackIndex + 1) % am.musicTracks.length;
   am._musicPausedAt = 0;
 
   if (am._musicPlaying) {
@@ -300,15 +288,11 @@ async function nextTrack(am: AudioManagerT, fadeTime = 5.0): Promise<void> {
   }
 }
 
-async function previousTrack(
-  am: AudioManagerT,
-  fadeTime = 5.0,
-): Promise<void> {
+async function previousTrack(am: AudioManagerT, fadeTime = 5.0): Promise<void> {
   if (am.musicTracks.length === 0) return;
 
   am.currentTrackIndex =
-    (am.currentTrackIndex - 1 + am.musicTracks.length) %
-    am.musicTracks.length;
+    (am.currentTrackIndex - 1 + am.musicTracks.length) % am.musicTracks.length;
   am._musicPausedAt = 0;
 
   if (am._musicPlaying) {

@@ -37,9 +37,7 @@ async function init(component: ComponentData): Promise<void> {
 
   // Walk up to scene root and find the global audio-manager
   if (!ac.parent || ac.parent.type !== 'nexus') {
-    console.warn(
-      '[audio-controller] Cannot init: no parent nexus',
-    );
+    console.warn('[audio-controller] Cannot init: no parent nexus');
     return;
   }
 
@@ -101,9 +99,7 @@ function playSFX(
   options?: SFXOptions,
 ): void {
   if (!ac._manager || !ac._manager._audioContext || !ac._gainNode) {
-    console.warn(
-      '[audio-controller] Cannot play SFX: not initialized',
-    );
+    console.warn('[audio-controller] Cannot play SFX: not initialized');
     return;
   }
 

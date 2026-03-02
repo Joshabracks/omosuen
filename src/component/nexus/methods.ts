@@ -1,5 +1,5 @@
 import { ComponentData, ComponentMethods, ComponentUnique } from '../types';
-import { MethodRegistry } from '../registry';
+import { MethodRegistry, unregisterMethod } from '../registry';
 import { NexusT } from './data';
 
 export interface NexusMethods extends ComponentMethods {
@@ -273,6 +273,16 @@ export const Nexus: NexusMethods = {
         c._disposed = true;
       }
     });
+
+    // Unregister script methods if this nexus had a script
+    if (n.script) {
+      const filename = n.script.split('/').pop() || n.script;
+      const baseName = filename
+        .replace(/\.omo\.(ts|js)$/, '')
+        .replace(/\.(ts|js)$/, '');
+      unregisterMethod('nexus', `${baseName}-init`);
+      unregisterMethod('nexus', `${baseName}-update`);
+    }
 
     // Clear the components array
     n.components = [];

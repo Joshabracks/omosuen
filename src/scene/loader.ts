@@ -32,6 +32,7 @@ import {
   wrapInProxy,
 } from '../component/types';
 import { queueInit } from '../loop/init';
+import { registerMethod } from '../component/registry';
 
 /**
  * Registry of component serializers, keyed by component type.
@@ -240,8 +241,61 @@ export function serializeComponentRecursive(component: ComponentData): any {
     id: component.id,
     overrideKey: component.overrideKey,
     updateOverride: component.updateOverride,
+    initOverride: component.initOverride,
     loader: component.loader,
   };
+}
+
+/**
+ * Loads a script module for a nexus component.
+ * Dynamically imports the script file and registers its exported init/update
+ * functions in MethodRegistry under keys derived from the filename.
+ *
+ * @param nexus - The nexus component with a script field
+ */
+export async function loadScript(nexus: NexusT): Promise<void> {
+  if (!nexus.script) return;
+
+  try {
+    // Use Function constructor to bypass webpack's static analysis
+    const importFunc = new Function('modulePath', 'return import(modulePath)');
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const module = await importFunc(nexus.script);
+
+    // Extract base name: "scripts/Example.omo.js" → "Example"
+    const filename = nexus.script.split('/').pop() || nexus.script;
+    const baseName = filename
+      .replace(/\.omo\.(ts|js)$/, '')
+      .replace(/\.(ts|js)$/, '');
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    if (typeof module.init === 'function') {
+      const key = `${baseName}-init`;
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      registerMethod('nexus', key, module.init);
+      nexus.initOverride = key;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    if (typeof module.update === 'function') {
+      const key = `${baseName}-update`;
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      registerMethod('nexus', key, module.update);
+      nexus.updateOverride = key;
+    }
+
+    console.info(
+      `[SCENE LOADER] Script "${nexus.script}" loaded for nexus "${nexus.name}"`,
+    );
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error
+        ? `${error.message}\n${error.stack || ''}`
+        : String(error);
+    console.error(
+      `[SCENE LOADER ERROR] Failed to load script "${nexus.script}" for nexus "${nexus.name}": ${errorMessage}`,
+    );
+  }
 }
 
 /**
@@ -253,11 +307,11 @@ export function serializeComponentRecursive(component: ComponentData): any {
  * @returns Deserialized component or null on error
  */
 
-export function deserializeComponentRecursive(
+export async function deserializeComponentRecursive(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: any,
   maxId: { value: number } = { value: -1 },
-): ComponentData | null {
+): Promise<ComponentData | null> {
   try {
     let component: ComponentData | null = null;
 
@@ -288,10 +342,18 @@ export function deserializeComponentRecursive(
         nexusComp.updateOverride = data.updateOverride;
       }
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      if (data.initOverride !== undefined) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+        nexusComp.initOverride = data.initOverride;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       if (data.loader !== undefined) {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         nexusComp.loader = data.loader;
       }
+
+      // Load script module before wrapping (registers methods in MethodRegistry)
+      await loadScript(nexusComp);
 
       // Wrap in proxy BEFORE adding children so child.parent = proxy
       const proxy = wrapInProxy(nexusComp);
@@ -302,7 +364,7 @@ export function deserializeComponentRecursive(
       // Add children to the PROXY so parent references are correct
       if (data.components && Array.isArray(data.components)) {
         for (const childData of data.components) {
-          const child = deserializeComponentRecursive(childData, maxId);
+          const child = await deserializeComponentRecursive(childData, maxId);
           if (child) {
             Nexus.addComponent(proxy as NexusT, child);
           }
@@ -349,6 +411,12 @@ export function deserializeComponentRecursive(
     if (data.updateOverride !== undefined) {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
       component.updateOverride = data.updateOverride;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    if (data.initOverride !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+      component.initOverride = data.initOverride;
     }
 
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
@@ -408,7 +476,7 @@ async function loadFromSerialized(
     const maxId = { value: -1 };
 
     // Recursively deserialize the entire scene hierarchy
-    const scene = deserializeComponentRecursive(data, maxId) as NexusT;
+    const scene = (await deserializeComponentRecursive(data, maxId)) as NexusT;
 
     if (!scene || scene.type !== 'nexus') {
       console.error(

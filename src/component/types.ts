@@ -139,6 +139,7 @@ export interface ComponentOptions {
   name: string;
   overrideKey?: string;
   updateOverride?: string;
+  initOverride?: string;
 }
 
 export interface ComponentData {
@@ -151,6 +152,7 @@ export interface ComponentData {
   unique?: ComponentUnique;
   overrideKey?: string;
   updateOverride?: string;
+  initOverride?: string;
   _initialized?: boolean;
   _initDefer?: number;
 }
@@ -208,6 +210,7 @@ export function wrapInProxy(component: ComponentData): ComponentData {
     'unique',
     'overrideKey',
     'updateOverride',
+    'initOverride',
     '_initialized',
     '_initDefer',
   ];
@@ -282,6 +285,9 @@ export async function newComponent(
   }
   if (options.updateOverride !== undefined) {
     component.updateOverride = options.updateOverride;
+  }
+  if (options.initOverride !== undefined) {
+    component.initOverride = options.initOverride;
   }
 
   // Automatically queue for initialization

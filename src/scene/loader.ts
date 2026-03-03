@@ -144,7 +144,9 @@ async function loadFromModule(
     // Use Function constructor to bypass webpack's static analysis
     // This ensures the import is handled at runtime by the browser, not bundled by webpack
     const importFunc = new Function('modulePath', 'return import(modulePath)');
-    const importPath = '/' + modulePath.replace(/\.ts$/, '.js');
+    const importPath =
+      (modulePath.startsWith('/') ? '' : '/') +
+      modulePath.replace(/\.ts$/, '.js');
     const module = await importFunc(importPath);
 
     // Try different export patterns

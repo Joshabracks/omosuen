@@ -144,7 +144,8 @@ async function loadFromModule(
     // Use Function constructor to bypass webpack's static analysis
     // This ensures the import is handled at runtime by the browser, not bundled by webpack
     const importFunc = new Function('modulePath', 'return import(modulePath)');
-    const module = await importFunc(modulePath);
+    const importPath = '/' + modulePath.replace(/\.ts$/, '.js');
+    const module = await importFunc(importPath);
 
     // Try different export patterns
     let scene: NexusT | null = null;
@@ -259,8 +260,13 @@ export async function loadScript(nexus: NexusT): Promise<void> {
   try {
     // Use Function constructor to bypass webpack's static analysis
     const importFunc = new Function('modulePath', 'return import(modulePath)');
+
+    // Transform stored TS path to browser-importable JS URL
+    // "src/scripts/Testnexus.omo.ts" → "/src/scripts/Testnexus.omo.js"
+    const importPath = '/' + (nexus.script as string).replace(/\.ts$/, '.js');
+
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const module = await importFunc(nexus.script);
+    const module = await importFunc(importPath);
 
     // Extract base name: "scripts/Example.omo.js" → "Example"
     const filename = nexus.script.split('/').pop() || nexus.script;

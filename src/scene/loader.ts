@@ -257,51 +257,65 @@ export function serializeComponentRecursive(component: ComponentData): any {
 export async function loadScript(nexus: NexusT): Promise<void> {
   if (!nexus.script) return;
 
-  try {
-    // Use Function constructor to bypass webpack's static analysis
-    const importFunc = new Function('modulePath', 'return import(modulePath)');
+  const scriptPath = nexus.script as string;
+  const importPath = '/' + scriptPath.replace(/\.ts$/, '.js');
 
-    // Transform stored TS path to browser-importable JS URL
-    // "src/scripts/Testnexus.omo.ts" → "/src/scripts/Testnexus.omo.js"
-    const importPath = '/' + (nexus.script as string).replace(/\.ts$/, '.js');
+  // Import the module
+  const importFunc = new Function('modulePath', 'return import(modulePath)');
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const module = await importFunc(importPath);
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const module = await importFunc(importPath);
-
-    // Extract base name: "scripts/Example.omo.js" → "Example"
-    const filename = nexus.script.split('/').pop() || nexus.script;
-    const baseName = filename
-      .replace(/\.omo\.(ts|js)$/, '')
-      .replace(/\.(ts|js)$/, '');
-
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-    if (typeof module.init === 'function') {
-      const key = `${baseName}-init`;
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      registerMethod('nexus', key, module.init);
-      nexus.initOverride = key;
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-    if (typeof module.update === 'function') {
-      const key = `${baseName}-update`;
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      registerMethod('nexus', key, module.update);
-      nexus.updateOverride = key;
-    }
-
-    console.info(
-      `[SCENE LOADER] Script "${nexus.script}" loaded for nexus "${nexus.name}"`,
-    );
-  } catch (error) {
-    const errorMessage =
-      error instanceof Error
-        ? `${error.message}\n${error.stack || ''}`
-        : String(error);
+  if (!module || typeof module !== 'object') {
     console.error(
-      `[SCENE LOADER ERROR] Failed to load script "${nexus.script}" for nexus "${nexus.name}": ${errorMessage}`,
+      `[SCENE LOADER ERROR] Script "${scriptPath}" for nexus "${nexus.name}" did not return a valid module`,
     );
+    return;
   }
+
+  // Derive registry keys from filename
+  const filename = scriptPath.split('/').pop() || scriptPath;
+  const baseName = filename
+    .replace(/\.omo\.(ts|js)$/, '')
+    .replace(/\.(ts|js)$/, '');
+
+  if (!baseName) {
+    console.error(
+      `[SCENE LOADER ERROR] Could not derive base name from script path "${scriptPath}" for nexus "${nexus.name}"`,
+    );
+    return;
+  }
+
+  // Register exports
+  let registered = false;
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  if (typeof module.init === 'function') {
+    const key = `${baseName}-init`;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    registerMethod('nexus', key, module.init);
+    nexus.initOverride = key;
+    registered = true;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  if (typeof module.update === 'function') {
+    const key = `${baseName}-update`;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    registerMethod('nexus', key, module.update);
+    nexus.updateOverride = key;
+    registered = true;
+  }
+
+  if (!registered) {
+    console.warn(
+      `[SCENE LOADER WARNING] Script "${scriptPath}" for nexus "${nexus.name}" exports neither init() nor update()`,
+    );
+    return;
+  }
+
+  console.info(
+    `[SCENE LOADER] Script "${scriptPath}" loaded for nexus "${nexus.name}"`,
+  );
 }
 
 /**

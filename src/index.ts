@@ -4,6 +4,25 @@
  */
 
 import { setConfig as applyConfig } from './config';
+import {
+  Vector2D,
+  Vector3D,
+  Vector4D,
+  Array2D,
+  Array3D,
+  Array3Dc,
+  Array3Di,
+  Array3Dic,
+  lerp,
+} from './math';
+import {
+  ComponentUnique,
+  ALL_MESSAGES,
+  ANY_MESSAGES,
+  createDefaultCellData,
+  packCell,
+  unpackCell,
+} from './component';
 
 // ============================================================================
 // Component Exports
@@ -55,6 +74,26 @@ export function init(config?: import('./config').OmosuenConfig): void {
   if (config) {
     applyConfig(config);
   }
+
+  // Expose runtime exports for dynamically loaded .omo scripts
+  (globalThis as Record<string, unknown>).__omosuen_exports = {
+    Vector2D,
+    Vector3D,
+    Vector4D,
+    Array2D,
+    Array3D,
+    Array3Dc,
+    Array3Di,
+    Array3Dic,
+    lerp,
+    ComponentUnique,
+    ALL_MESSAGES,
+    ANY_MESSAGES,
+    createDefaultCellData,
+    packCell,
+    unpackCell,
+  };
+
   console.log(`${name} Engine v${version} initialized`);
 }
 

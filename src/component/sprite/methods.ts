@@ -146,7 +146,7 @@ function findTextureMapByKey(
   textureMapKey: string,
 ): TextureMapT | null {
   // Get all texture maps in the scene
-  const textureMaps = scene.getComponentsByType('texture-map') as
+  const textureMaps = scene.getComponentsByType('texture-map', true) as
     | TextureMapT[]
     | undefined;
 

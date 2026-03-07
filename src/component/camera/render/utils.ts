@@ -327,9 +327,17 @@ export function renderCellMaps(
     camera.glResources.baseResolution.height * camera.pixelScale;
   gl.uniform2f(uViewportSize, logicalWidth, logicalHeight);
 
+  // Project camera 3D world position to 2D isometric space
+  const camIsoX =
+    cameraTransform.position.x * 0.866 - cameraTransform.position.z * 0.866;
+  const camIsoY =
+    cameraTransform.position.x * 0.5 -
+    cameraTransform.position.y +
+    cameraTransform.position.z * 0.5;
+
   const snapped = snapCameraPosition(
-    cameraTransform.position.x,
-    cameraTransform.position.z,
+    camIsoX,
+    camIsoY,
     camera.pixelScale,
     camera.zoom,
   );

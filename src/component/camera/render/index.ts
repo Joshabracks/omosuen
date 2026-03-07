@@ -108,10 +108,18 @@ export function render(camera: CameraT, _deltaTime: number): void {
   gl.clearDepth(1.0); // Ensure depth buffer clears to far plane
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
+  // Project camera 3D world position to 2D isometric space
+  const camIsoX =
+    transform.position.x * 0.866 - transform.position.z * 0.866;
+  const camIsoY =
+    transform.position.x * 0.5 -
+    transform.position.y +
+    transform.position.z * 0.5;
+
   // Compute camera snap for world-locked pixelation
   const cameraSnap = snapCameraPosition(
-    transform.position.x,
-    transform.position.z,
+    camIsoX,
+    camIsoY,
     camera.pixelScale,
     camera.zoom,
   );

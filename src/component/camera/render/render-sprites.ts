@@ -194,7 +194,13 @@ export function renderSprites(
     viewport.width / camera.zoom,
     viewport.height / camera.zoom,
   );
-  gl.uniform2f(u_cameraPosition, transform.position.x, transform.position.z);
+  // Project camera 3D world position to 2D isometric space
+  // (same projection the vertex shader applies to every world position)
+  const camIsoX =
+    transform.position.x * 0.866 - transform.position.z * 0.866;
+  const camIsoY =
+    transform.position.x * 0.5 - transform.position.y + transform.position.z * 0.5;
+  gl.uniform2f(u_cameraPosition, camIsoX, camIsoY);
   gl.uniform1f(u_zoom, camera.zoom);
   gl.uniform3f(
     u_cellSize,

@@ -31,7 +31,15 @@ export function pan(camera: CameraT, offsetX: number, offsetY: number): void {
     return;
   }
 
-  // Update transform position (camera uses x=iso horizontal, z=iso vertical)
-  transform.position.x += offsetX;
-  transform.position.z += offsetY;
+  // Inverse-project screen-space offsets to world-space.
+  // The isometric projection is:
+  //   isoX = wx * 0.866 - wz * 0.866
+  //   isoY = wx * 0.5   + wz * 0.5
+  // Inverting (ignoring height):
+  //   wx = isoX / 1.732 + isoY
+  //   wz = -isoX / 1.732 + isoY
+  const worldDx = offsetX / 1.732 + offsetY;
+  const worldDz = -offsetX / 1.732 + offsetY;
+  transform.position.x += worldDx;
+  transform.position.z += worldDz;
 }

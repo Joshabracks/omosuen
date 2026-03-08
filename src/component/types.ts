@@ -56,6 +56,43 @@ export type ComponentDataType =
 const PROXY_REGISTRY = new WeakMap<ComponentData, ComponentData>();
 
 /**
+ * Pre-computed lookup maps for nexus shorthand property access.
+ * Maps both kebab-case and camelCase forms to COMPONENT_TYPE strings.
+ *
+ * SINGULAR_TYPE_MAP: nexus.transform / nexus['cell-map'] → getComponentByType
+ * PLURAL_TYPE_MAP:   nexus.sprites / nexus['cell-maps']  → getComponentsByType
+ */
+const SINGULAR_TYPE_MAP = new Map<string, string>();
+const PLURAL_TYPE_MAP = new Map<string, string>();
+
+// Populated after BUILDERS is available (deferred to first wrapInProxy call)
+let nexusMapsBuilt = false;
+function ensureNexusMaps(): void {
+  if (nexusMapsBuilt) return;
+  nexusMapsBuilt = true;
+
+  for (const type of Object.keys(BUILDERS)) {
+    // Kebab-case entry (e.g. 'cell-map')
+    SINGULAR_TYPE_MAP.set(type, type);
+
+    // CamelCase entry (e.g. 'cellMap')
+    const camel = type.replace(/-([a-z])/g, (_, ch: string) =>
+      ch.toUpperCase(),
+    );
+    if (camel !== type) {
+      SINGULAR_TYPE_MAP.set(camel, type);
+    }
+
+    // Plurals: append 'es' for strings ending in s/x/z/sh/ch, otherwise 's'
+    const needsEs = /(?:s|x|z|sh|ch)$/.test(type);
+    PLURAL_TYPE_MAP.set(type + (needsEs ? 'es' : 's'), type);
+    if (camel !== type) {
+      PLURAL_TYPE_MAP.set(camel + (needsEs ? 'es' : 's'), type);
+    }
+  }
+}
+
+/**
  * Gets the Proxy wrapper for a component.
  *
  * This function is needed because when components store references to other
@@ -197,6 +234,7 @@ export type ComponentInstanceMethods<T extends ComponentMethods> = {
  * @returns Proxy-wrapped component
  */
 export function wrapInProxy(component: ComponentData): ComponentData {
+  ensureNexusMaps();
   const proxyKeys = Object.keys(MethodRegistry[component.type]);
 
   // Base ComponentData properties (always allowed)
@@ -233,19 +271,36 @@ export function wrapInProxy(component: ComponentData): ComponentData {
       }
 
       // Check if it's a method
-      if (proxyKeys.indexOf(prop) === -1) {
-        console.error(
-          `${c.type} has no method named ${prop}. Available methods: ${proxyKeys.join(', ')}`,
-        );
-        // return do nothing func for graceful failure
-        return () => {};
+      if (proxyKeys.indexOf(prop) !== -1) {
+        // Return method wrapper
+        return (...args: unknown[]) => {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
+          return MethodRegistry[c.type][prop](c, ...args);
+        };
       }
 
-      // Return method wrapper
-      return (...args: unknown[]) => {
+      // Nexus shorthand: resolve child components by type or name
+      if (c.type === 'nexus') {
+        const singularType = SINGULAR_TYPE_MAP.get(prop);
+        if (singularType) {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
+          return MethodRegistry['nexus']['getComponentByType'](c, singularType);
+        }
+        const pluralType = PLURAL_TYPE_MAP.get(prop);
+        if (pluralType) {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
+          return MethodRegistry['nexus']['getComponentsByType'](c, pluralType);
+        }
+        // Name-based fallback
         // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
-        return MethodRegistry[c.type][prop](c, ...args);
-      };
+        return MethodRegistry['nexus']['getComponentByName'](c, prop);
+      }
+
+      console.error(
+        `${c.type} has no method named ${prop}. Available methods: ${proxyKeys.join(', ')}`,
+      );
+      // return do nothing func for graceful failure
+      return () => {};
     },
   };
 

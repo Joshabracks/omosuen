@@ -327,13 +327,16 @@ export function renderCellMaps(
     camera.glResources.baseResolution.height * camera.pixelScale;
   gl.uniform2f(uViewportSize, logicalWidth, logicalHeight);
 
-  // Project camera 3D world position to 2D isometric space
+  // Project camera 3D world position to 2D axonometric space
+  const angleRad = (camera.axonometricAngle * Math.PI) / 180;
+  const cosA = Math.cos(angleRad);
+  const sinA = Math.sin(angleRad);
   const camIsoX =
-    cameraTransform.position.x * 0.866 - cameraTransform.position.z * 0.866;
+    cameraTransform.position.x * cosA - cameraTransform.position.z * cosA;
   const camIsoY =
-    cameraTransform.position.x * 0.5 -
+    cameraTransform.position.x * sinA -
     cameraTransform.position.y +
-    cameraTransform.position.z * 0.5;
+    cameraTransform.position.z * sinA;
 
   const snapped = snapCameraPosition(
     camIsoX,

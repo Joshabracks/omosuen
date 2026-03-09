@@ -108,13 +108,18 @@ export function render(camera: CameraT, _deltaTime: number): void {
   gl.clearDepth(1.0); // Ensure depth buffer clears to far plane
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-  // Project camera 3D world position to 2D isometric space
+  // Compute axonometric projection parameters from camera angle
+  const angleRad = (camera.axonometricAngle * Math.PI) / 180;
+  const cosA = Math.cos(angleRad);
+  const sinA = Math.sin(angleRad);
+
+  // Project camera 3D world position to 2D axonometric space
   const camIsoX =
-    transform.position.x * 0.866 - transform.position.z * 0.866;
+    transform.position.x * cosA - transform.position.z * cosA;
   const camIsoY =
-    transform.position.x * 0.5 -
+    transform.position.x * sinA -
     transform.position.y +
-    transform.position.z * 0.5;
+    transform.position.z * sinA;
 
   // Compute camera snap for world-locked pixelation
   const cameraSnap = snapCameraPosition(
@@ -164,6 +169,8 @@ export function render(camera: CameraT, _deltaTime: number): void {
       gl,
       textureMapCache,
       lights,
+      cosA,
+      sinA,
     );
   }
 
@@ -183,6 +190,8 @@ export function render(camera: CameraT, _deltaTime: number): void {
       textureMapCache,
       lights,
       subPixelOffset,
+      cosA,
+      sinA,
     );
   }
 }

@@ -41,10 +41,21 @@ export function setZoom(camera: CameraT, zoom: number): void {
       const factor = 1 / (oldZoom * oldZoom) - 1 / (zoom * zoom);
 
       // Inverse-project screen-space zoom offset to world-space
+      const angleRad = (camera.axonometricAngle * Math.PI) / 180;
+      const cosA = Math.cos(angleRad);
+      const sinA = Math.sin(angleRad);
       const screenDx = offsetX * factor;
       const screenDy = offsetY * factor;
-      transform.position.x += screenDx / 1.732 + screenDy;
-      transform.position.z += -screenDx / 1.732 + screenDy;
+
+      if (sinA < 0.01) {
+        transform.position.x += screenDx / (2 * cosA);
+        transform.position.z += -screenDx / (2 * cosA);
+        transform.position.y -= screenDy;
+      } else {
+        transform.position.x += screenDx / (2 * cosA) + screenDy / (2 * sinA);
+        transform.position.z +=
+          -screenDx / (2 * cosA) + screenDy / (2 * sinA);
+      }
     }
   }
 

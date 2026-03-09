@@ -5,7 +5,7 @@ import { NexusT } from '../../nexus';
 import { TextureMapT } from '../../texture-map';
 import { TransformT } from '../../transform';
 import { CameraT } from '../data';
-import { setLightUniforms } from './light-uniforms';
+import { setAngleUniform, setLightUniforms } from './light-uniforms';
 import { computeSolidityMap } from './visibility-mask';
 
 /**
@@ -78,6 +78,8 @@ export function renderCellMaps(
   gl: WebGL2RenderingContext,
   textureMapCache: Map<string, TextureMapT>,
   lights: LightT[],
+  cosA: number,
+  sinA: number,
 ): void {
   const program = camera.glResources.unifiedProgram;
   if (!program) {
@@ -135,14 +137,14 @@ export function renderCellMaps(
     camera.glResources.baseResolution.height * camera.pixelScale;
   gl.uniform2f(uViewportSize, logicalWidth, logicalHeight);
 
-  // Project camera 3D world position to 2D isometric space
+  // Project camera 3D world position to 2D axonometric space
   // (same projection the vertex shader applies to every world position)
   const camIsoX =
-    cameraTransform.position.x * 0.866 - cameraTransform.position.z * 0.866;
+    cameraTransform.position.x * cosA - cameraTransform.position.z * cosA;
   const camIsoY =
-    cameraTransform.position.x * 0.5 -
+    cameraTransform.position.x * sinA -
     cameraTransform.position.y +
-    cameraTransform.position.z * 0.5;
+    cameraTransform.position.z * sinA;
 
   const snapped = snapCameraPosition(
     camIsoX,
@@ -155,6 +157,9 @@ export function renderCellMaps(
 
   // Set dynamic light uniforms
   setLightUniforms(gl, camera.id!, lights);
+
+  // Set axonometric angle uniform (GPU computes cos/sin)
+  setAngleUniform(gl, camera.id!, camera.axonometricAngle);
 
   // Disable the UV attribute for chunk rendering (triplanar mapping doesn't use it)
   if (aUv >= 0) {

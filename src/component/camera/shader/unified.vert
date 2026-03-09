@@ -10,6 +10,7 @@ uniform lowp int u_renderMode;  // 0 = cells, 1 = sprites
 uniform vec2 u_viewportSize;
 uniform vec2 u_cameraPosition;
 uniform float u_zoom;
+uniform mediump float u_axonometricAngle;
 uniform vec3 u_cellSize;   // Used by both for grid calculations
 uniform vec3 u_mapSize;    // Used by both for depth calculations
 
@@ -28,6 +29,9 @@ varying vec3 v_worldNormal;
 varying vec3 v_origWorldPos;
 
 void main() {
+    float cosA = cos(radians(u_axonometricAngle));
+    float sinA = sin(radians(u_axonometricAngle));
+
     if(u_renderMode == 0) {
         // ============================================================
         // MODE 0: CELL RENDERING
@@ -36,10 +40,10 @@ void main() {
         // Chunk mesh builder provides world-space positions directly
         vec3 worldPos = a_position;
 
-        // Apply standard isometric projection
-        vec2 isoX = worldPos.x * vec2(0.866, 0.5);
+        // Apply axonometric projection
+        vec2 isoX = worldPos.x * vec2(cosA, sinA);
         vec2 isoY = worldPos.y * vec2(0.0, -1.0);
-        vec2 isoZ = worldPos.z * vec2(-0.866, 0.5);
+        vec2 isoZ = worldPos.z * vec2(-cosA, sinA);
         vec2 isoProjected = isoX + isoY + isoZ;
 
         // Convert to view space and apply zoom
@@ -50,18 +54,18 @@ void main() {
         // Convert to clip space
         vec2 clipSpace = (isoPos / u_viewportSize) * 2.0;
 
-        // Depth = projection onto isometric view direction (1,1,1).
+        // Depth = projection onto axonometric view direction.
         // Higher sum = closer to camera = lower depth buffer value.
-        float rawDepth = worldPos.x + worldPos.y + worldPos.z;
-        float maxRawDepth = u_mapSize.x * u_cellSize.x + u_mapSize.y * u_cellSize.y + u_mapSize.z * u_cellSize.z;
+        float rawDepth = worldPos.x + 2.0 * sinA * worldPos.y + worldPos.z;
+        float maxRawDepth = u_mapSize.x * u_cellSize.x + 2.0 * sinA * u_mapSize.y * u_cellSize.y + u_mapSize.z * u_cellSize.z;
         float clipDepth = 1.0 - rawDepth / maxRawDepth;
 
         gl_Position = vec4(clipSpace * vec2(1, -1), clipDepth, 1.0);
 
         // Transform normal to isometric screen space
-        vec3 isoNormalX = a_normal.x * vec3(0.866, 0.5, 0.0);
+        vec3 isoNormalX = a_normal.x * vec3(cosA, sinA, 0.0);
         vec3 isoNormalY = a_normal.y * vec3(0.0, -1.0, 0.0);
-        vec3 isoNormalZ = a_normal.z * vec3(-0.866, 0.5, 0.0);
+        vec3 isoNormalZ = a_normal.z * vec3(-cosA, sinA, 0.0);
         vec3 isoNormal = isoNormalX + isoNormalY + isoNormalZ;
 
         v_uv = a_uv;
@@ -75,10 +79,10 @@ void main() {
         // MODE 1: SPRITE RENDERING
         // ============================================================
 
-        // Apply isometric projection to sprite's 3D world position
-        vec2 isoX = u_spritePosition.x * vec2(0.866, 0.5);
+        // Apply axonometric projection to sprite's 3D world position
+        vec2 isoX = u_spritePosition.x * vec2(cosA, sinA);
         vec2 isoY = u_spritePosition.y * vec2(0.0, -1.0);
-        vec2 isoZ = u_spritePosition.z * vec2(-0.866, 0.5);
+        vec2 isoZ = u_spritePosition.z * vec2(-cosA, sinA);
         vec2 isoProjected = isoX + isoY + isoZ;
 
         // Apply anchor offset in screen space
@@ -102,8 +106,8 @@ void main() {
 
         // Same depth formula as cells, with +1.0 bias so sprite renders
         // just in front of the cell surface at its position.
-        float rawDepth = u_spritePosition.x + u_spritePosition.y + u_spritePosition.z + 1.0;
-        float maxRawDepth = u_mapSize.x * u_cellSize.x + u_mapSize.y * u_cellSize.y + u_mapSize.z * u_cellSize.z;
+        float rawDepth = u_spritePosition.x + 2.0 * sinA * u_spritePosition.y + u_spritePosition.z + 1.0;
+        float maxRawDepth = u_mapSize.x * u_cellSize.x + 2.0 * sinA * u_mapSize.y * u_cellSize.y + u_mapSize.z * u_cellSize.z;
         float clipDepth = 1.0 - rawDepth / maxRawDepth;
 
         gl_Position = vec4(clipSpace * vec2(1, -1), clipDepth, 1.0);

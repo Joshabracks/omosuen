@@ -32,14 +32,27 @@ export function pan(camera: CameraT, offsetX: number, offsetY: number): void {
   }
 
   // Inverse-project screen-space offsets to world-space.
-  // The isometric projection is:
-  //   isoX = wx * 0.866 - wz * 0.866
-  //   isoY = wx * 0.5   + wz * 0.5
-  // Inverting (ignoring height):
-  //   wx = isoX / 1.732 + isoY
-  //   wz = -isoX / 1.732 + isoY
-  const worldDx = offsetX / 1.732 + offsetY;
-  const worldDz = -offsetX / 1.732 + offsetY;
-  transform.position.x += worldDx;
-  transform.position.z += worldDz;
+  // The axonometric projection is:
+  //   isoX = cosA * (wx - wz)
+  //   isoY = sinA * (wx + wz) - wy
+  // Inverting (at constant height):
+  //   wx = isoX / (2 * cosA) + isoY / (2 * sinA)
+  //   wz = -isoX / (2 * cosA) + isoY / (2 * sinA)
+  const angleRad = (camera.axonometricAngle * Math.PI) / 180;
+  const cosA = Math.cos(angleRad);
+  const sinA = Math.sin(angleRad);
+
+  if (sinA < 0.01) {
+    // Near top-down: vertical pan changes height instead of x/z
+    const worldDx = offsetX / (2 * cosA);
+    const worldDz = -offsetX / (2 * cosA);
+    transform.position.x += worldDx;
+    transform.position.z += worldDz;
+    transform.position.y -= offsetY;
+  } else {
+    const worldDx = offsetX / (2 * cosA) + offsetY / (2 * sinA);
+    const worldDz = -offsetX / (2 * cosA) + offsetY / (2 * sinA);
+    transform.position.x += worldDx;
+    transform.position.z += worldDz;
+  }
 }

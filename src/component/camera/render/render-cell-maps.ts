@@ -78,7 +78,6 @@ export function renderCellMaps(
   gl: WebGL2RenderingContext,
   textureMapCache: Map<string, TextureMapT>,
   lights: LightT[],
-  cosA: number,
   sinA: number,
 ): void {
   const program = camera.glResources.unifiedProgram;
@@ -139,8 +138,9 @@ export function renderCellMaps(
 
   // Project camera 3D world position to 2D axonometric space
   // (same projection the vertex shader applies to every world position)
+  const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
   const camIsoX =
-    cameraTransform.position.x * cosA - cameraTransform.position.z * cosA;
+    cameraTransform.position.x * ISO_H - cameraTransform.position.z * ISO_H;
   const camIsoY =
     cameraTransform.position.x * sinA -
     cameraTransform.position.y +

@@ -328,11 +328,11 @@ export function renderCellMaps(
   gl.uniform2f(uViewportSize, logicalWidth, logicalHeight);
 
   // Project camera 3D world position to 2D axonometric space
+  const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
   const angleRad = (camera.axonometricAngle * Math.PI) / 180;
-  const cosA = Math.cos(angleRad);
   const sinA = Math.sin(angleRad);
   const camIsoX =
-    cameraTransform.position.x * cosA - cameraTransform.position.z * cosA;
+    cameraTransform.position.x * ISO_H - cameraTransform.position.z * ISO_H;
   const camIsoY =
     cameraTransform.position.x * sinA -
     cameraTransform.position.y +

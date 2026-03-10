@@ -78,10 +78,10 @@ varying vec3 v_origWorldPos;
 // Transform world direction to isometric screen space
 // Same projection matrix as the vertex shader
 vec3 worldDirToIso(vec3 d) {
-    float cosA = cos(radians(u_axonometricAngle));
+    const float ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
     float sinA = sin(radians(u_axonometricAngle));
     return normalize(vec3(
-        d.x * cosA - d.z * cosA,
+        d.x * ISO_H - d.z * ISO_H,
         d.x * sinA - d.y + d.z * sinA,
         0.0
     ));

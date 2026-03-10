@@ -109,13 +109,13 @@ export function render(camera: CameraT, _deltaTime: number): void {
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
   // Compute axonometric projection parameters from camera angle
+  const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
   const angleRad = (camera.axonometricAngle * Math.PI) / 180;
-  const cosA = Math.cos(angleRad);
   const sinA = Math.sin(angleRad);
 
   // Project camera 3D world position to 2D axonometric space
   const camIsoX =
-    transform.position.x * cosA - transform.position.z * cosA;
+    transform.position.x * ISO_H - transform.position.z * ISO_H;
   const camIsoY =
     transform.position.x * sinA -
     transform.position.y +
@@ -169,7 +169,6 @@ export function render(camera: CameraT, _deltaTime: number): void {
       gl,
       textureMapCache,
       lights,
-      cosA,
       sinA,
     );
   }
@@ -190,7 +189,6 @@ export function render(camera: CameraT, _deltaTime: number): void {
       textureMapCache,
       lights,
       subPixelOffset,
-      cosA,
       sinA,
     );
   }

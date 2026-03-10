@@ -97,6 +97,7 @@ export function renderSprites(
   lights: LightT[],
   subPixelOffset: { remainderX: number; remainderY: number },
   sinA: number,
+  heightScale: number,
 ): void {
   const program = camera.glResources.unifiedProgram;
   if (!program) {
@@ -206,7 +207,7 @@ export function renderSprites(
     transform.position.x * ISO_H - transform.position.z * ISO_H;
   const camIsoY =
     transform.position.x * sinA -
-    transform.position.y +
+    transform.position.y * heightScale +
     transform.position.z * sinA;
   gl.uniform2f(u_cameraPosition, camIsoX, camIsoY);
   gl.uniform1f(u_zoom, camera.zoom);

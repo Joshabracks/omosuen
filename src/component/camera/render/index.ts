@@ -110,15 +110,17 @@ export function render(camera: CameraT, _deltaTime: number): void {
 
   // Compute axonometric projection parameters from camera angle
   const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
-  const angleRad = (camera.axonometricAngle * Math.PI) / 180;
+  const clampedAngle = Math.max(0, Math.min(90, camera.axonometricAngle));
+  const angleRad = (clampedAngle * Math.PI) / 180;
   const sinA = Math.sin(angleRad);
+  const heightScale = Math.cos(angleRad) * 1.1547005; // cos(a)/cos(30deg)
 
   // Project camera 3D world position to 2D axonometric space
   const camIsoX =
     transform.position.x * ISO_H - transform.position.z * ISO_H;
   const camIsoY =
     transform.position.x * sinA -
-    transform.position.y +
+    transform.position.y * heightScale +
     transform.position.z * sinA;
 
   // Compute camera snap for world-locked pixelation
@@ -170,6 +172,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
       textureMapCache,
       lights,
       sinA,
+      heightScale,
     );
   }
 
@@ -190,6 +193,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
       lights,
       subPixelOffset,
       sinA,
+      heightScale,
     );
   }
 }

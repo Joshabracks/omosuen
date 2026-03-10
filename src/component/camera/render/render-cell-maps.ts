@@ -79,6 +79,7 @@ export function renderCellMaps(
   textureMapCache: Map<string, TextureMapT>,
   lights: LightT[],
   sinA: number,
+  heightScale: number,
 ): void {
   const program = camera.glResources.unifiedProgram;
   if (!program) {
@@ -143,7 +144,7 @@ export function renderCellMaps(
     cameraTransform.position.x * ISO_H - cameraTransform.position.z * ISO_H;
   const camIsoY =
     cameraTransform.position.x * sinA -
-    cameraTransform.position.y +
+    cameraTransform.position.y * heightScale +
     cameraTransform.position.z * sinA;
 
   const snapped = snapCameraPosition(

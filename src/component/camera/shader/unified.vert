@@ -30,7 +30,9 @@ varying vec3 v_origWorldPos;
 
 void main() {
     const float ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
-    float sinA = sin(radians(u_axonometricAngle));
+    float clampedAngle = clamp(u_axonometricAngle, 0.0, 90.0);
+    float sinA = sin(radians(clampedAngle));
+    float heightScale = cos(radians(clampedAngle)) * 1.1547005; // cos(a)/cos(30deg)
 
     if(u_renderMode == 0) {
         // ============================================================
@@ -42,7 +44,7 @@ void main() {
 
         // Apply axonometric projection
         vec2 isoX = worldPos.x * vec2(ISO_H, sinA);
-        vec2 isoY = worldPos.y * vec2(0.0, -1.0);
+        vec2 isoY = worldPos.y * vec2(0.0, -heightScale);
         vec2 isoZ = worldPos.z * vec2(-ISO_H, sinA);
         vec2 isoProjected = isoX + isoY + isoZ;
 
@@ -56,7 +58,7 @@ void main() {
 
         // Depth = projection onto axonometric view direction.
         // Higher sum = closer to camera = lower depth buffer value.
-        float rawDepth = worldPos.x + worldPos.y + worldPos.z;
+        float rawDepth = worldPos.x + heightScale * worldPos.y + worldPos.z;
         float maxRawDepth = u_mapSize.x * u_cellSize.x + u_mapSize.y * u_cellSize.y + u_mapSize.z * u_cellSize.z;
         float clipDepth = 1.0 - rawDepth / maxRawDepth;
 
@@ -81,7 +83,7 @@ void main() {
 
         // Apply axonometric projection to sprite's 3D world position
         vec2 isoX = u_spritePosition.x * vec2(ISO_H, sinA);
-        vec2 isoY = u_spritePosition.y * vec2(0.0, -1.0);
+        vec2 isoY = u_spritePosition.y * vec2(0.0, -heightScale);
         vec2 isoZ = u_spritePosition.z * vec2(-ISO_H, sinA);
         vec2 isoProjected = isoX + isoY + isoZ;
 
@@ -106,7 +108,7 @@ void main() {
 
         // Same depth formula as cells, with +1.0 bias so sprite renders
         // just in front of the cell surface at its position.
-        float rawDepth = u_spritePosition.x + u_spritePosition.y + u_spritePosition.z + 1.0;
+        float rawDepth = u_spritePosition.x + heightScale * u_spritePosition.y + u_spritePosition.z + 1.0;
         float maxRawDepth = u_mapSize.x * u_cellSize.x + u_mapSize.y * u_cellSize.y + u_mapSize.z * u_cellSize.z;
         float clipDepth = 1.0 - rawDepth / maxRawDepth;
 

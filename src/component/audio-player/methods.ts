@@ -1,7 +1,7 @@
-import { ComponentData, ComponentMethods, castTo } from '../types';
+import { ComponentData, ComponentMethods } from '../types';
 import type { NexusT } from '../nexus/data';
 import { Nexus } from '../nexus/methods';
-import type { AudioPlayerT } from './data';
+import type { AudioPlayerT, ActiveSource } from './data';
 import type { AudioTrackT } from '../audio-track/data';
 import type { AudioEffectT } from '../audio-effect/data';
 import type { TrackController } from './track-controller';
@@ -26,6 +26,10 @@ export interface AudioPlayerMethods extends ComponentMethods {
   unmute: (ap: AudioPlayerT) => void;
 
   _playController: (ap: AudioPlayerT, controller: TrackController) => number;
+  _getActiveSource: (
+    ap: AudioPlayerT,
+    sourceId: number,
+  ) => ActiveSource | undefined;
 }
 
 // ── Helpers ──
@@ -153,16 +157,38 @@ async function loadAudioBuffer(
 
 // ── Playback ──
 
+interface PlayEffectData {
+  pitchShift: number;
+  speedShift: number;
+  volume: number;
+  pan: number;
+  mix: number[];
+  spatial: boolean;
+  spatialX: number;
+  spatialY: number;
+  spatialZ: number;
+  offset: number;
+}
+
+/**
+ * Compute log-spaced EQ band center frequencies from 20 Hz to 20 kHz.
+ */
+function computeBandFrequencies(bandCount: number): number[] {
+  const logMin = Math.log10(20);
+  const logMax = Math.log10(20000);
+  const freqs: number[] = [];
+  for (let i = 0; i < bandCount; i++) {
+    const logFreq = logMin + ((i + 0.5) / bandCount) * (logMax - logMin);
+    freqs.push(Math.pow(10, logFreq));
+  }
+  return freqs;
+}
+
 function playInternal(
   ap: AudioPlayerT,
   filePath: string,
   repeat: boolean,
-  effectData: {
-    pitchShift: number;
-    speedShift: number;
-    volume: number;
-    pan: number;
-  },
+  effectData: PlayEffectData,
 ): number {
   if (!ap._audioContext || !ap._masterGain) {
     console.warn('[audio-player] Cannot play: not initialized');
@@ -193,20 +219,67 @@ function playInternal(
   gainNode.gain.value = clampVolume(effectData.volume);
   panner.pan.value = Math.max(-1, Math.min(1, effectData.pan));
 
-  // Chain: source → gain → panner → master
-  source.connect(gainNode);
-  gainNode.connect(panner);
-  panner.connect(ap._masterGain);
+  // Build EQ filter chain
+  const filters: BiquadFilterNode[] = [];
+  if (effectData.mix.length > 0) {
+    const freqs = computeBandFrequencies(effectData.mix.length);
+    for (let i = 0; i < effectData.mix.length; i++) {
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'peaking';
+      filter.frequency.value = freqs[i];
+      filter.Q.value = 1.0;
+      filter.gain.value = effectData.mix[i] * 12; // -12 to +12 dB
+      filters.push(filter);
+    }
+  }
+
+  // Spatial panner (HRTF) when spatial mode is enabled
+  let spatialPanner: PannerNode | null = null;
+  if (effectData.spatial) {
+    spatialPanner = ctx.createPanner();
+    spatialPanner.panningModel = 'HRTF';
+    spatialPanner.distanceModel = 'inverse';
+    spatialPanner.positionX.value = effectData.spatialX;
+    spatialPanner.positionY.value = effectData.spatialY;
+    spatialPanner.positionZ.value = effectData.spatialZ;
+  }
+
+  // Chain: source → [filters] → gain → panner/spatialPanner → master
+  let lastNode: AudioNode = source;
+
+  for (const filter of filters) {
+    lastNode.connect(filter);
+    lastNode = filter;
+  }
+
+  lastNode.connect(gainNode);
+
+  if (effectData.spatial && spatialPanner) {
+    gainNode.connect(spatialPanner);
+    spatialPanner.connect(ap._masterGain);
+  } else {
+    gainNode.connect(panner);
+    panner.connect(ap._masterGain);
+  }
 
   const sourceId = ap._nextSourceId++;
-  ap._activeSources.set(sourceId, { source, gain: gainNode, panner });
+  const startTime = ctx.currentTime;
+  ap._activeSources.set(sourceId, {
+    source,
+    gain: gainNode,
+    panner,
+    filters,
+    spatialPanner,
+    startTime,
+    offset: effectData.offset,
+  });
 
   // Auto-cleanup on end
   source.onended = () => {
     ap._activeSources.delete(sourceId);
   };
 
-  source.start(0);
+  source.start(0, effectData.offset);
   return sourceId;
 }
 
@@ -221,16 +294,38 @@ function play(
     speedShift: effect?.speedShift ?? 1.0,
     volume: effect?.volume ?? 1.0,
     pan: effect?.pan ?? 0,
+    mix: effect?.mix ? [...effect.mix] : [],
+    spatial: effect?.spatial ?? false,
+    spatialX: effect?.spatialX ?? 0,
+    spatialY: effect?.spatialY ?? 0,
+    spatialZ: effect?.spatialZ ?? 0,
+    offset: 0,
   });
 }
 
-function _playController(ap: AudioPlayerT, controller: TrackController): number {
+function _playController(
+  ap: AudioPlayerT,
+  controller: TrackController,
+): number {
   return playInternal(ap, controller.track.filePath, controller.repeat, {
     pitchShift: controller.pitchShift,
     speedShift: controller.speedShift,
     volume: controller.volume,
     pan: controller.pan,
+    mix: [...controller.mix],
+    spatial: controller.spatial,
+    spatialX: controller.spatialX,
+    spatialY: controller.spatialY,
+    spatialZ: controller.spatialZ,
+    offset: controller._pauseOffset,
   });
+}
+
+function _getActiveSource(
+  ap: AudioPlayerT,
+  sourceId: number,
+): ActiveSource | undefined {
+  return ap._activeSources.get(sourceId);
 }
 
 function stop(ap: AudioPlayerT, sourceId: number): void {
@@ -290,4 +385,5 @@ export const AudioPlayer: AudioPlayerMethods = {
   mute,
   unmute,
   _playController,
+  _getActiveSource,
 };

@@ -11,6 +11,10 @@ export interface ActiveSource {
   source: AudioBufferSourceNode;
   gain: GainNode;
   panner: StereoPannerNode;
+  filters: BiquadFilterNode[];
+  spatialPanner: PannerNode | null;
+  startTime: number;
+  offset: number;
 }
 
 export interface AudioPlayerT
@@ -114,4 +118,13 @@ export const AudioPlayerSerializer: ComponentSerializer = {
   deserialize,
 };
 
-export const PROPERTY_ALLOWLIST: string[] = ['masterVolume', 'muted'];
+export const PROPERTY_ALLOWLIST: string[] = [
+  'masterVolume',
+  'muted',
+  '_audioContext',
+  '_masterGain',
+  '_activeSources',
+  '_nextSourceId',
+  '_bufferCache',
+  '_bufferLoading',
+];

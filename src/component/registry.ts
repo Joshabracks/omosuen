@@ -89,15 +89,20 @@ import {
   PROPERTY_ALLOWLIST as LightPropertyAllowlist,
 } from './light';
 import {
-  AudioManager,
-  builder as audioManagerBuilder,
-  PROPERTY_ALLOWLIST as AudioManagerPropertyAllowlist,
-} from './audio-manager';
+  AudioTrack,
+  builder as audioTrackBuilder,
+  PROPERTY_ALLOWLIST as AudioTrackPropertyAllowlist,
+} from './audio-track';
 import {
-  AudioController,
-  builder as audioControllerBuilder,
-  PROPERTY_ALLOWLIST as AudioControllerPropertyAllowlist,
-} from './audio-controller';
+  AudioEffect,
+  builder as audioEffectBuilder,
+  PROPERTY_ALLOWLIST as AudioEffectPropertyAllowlist,
+} from './audio-effect';
+import {
+  AudioPlayer,
+  builder as audioPlayerBuilder,
+  PROPERTY_ALLOWLIST as AudioPlayerPropertyAllowlist,
+} from './audio-player';
 import type { COMPONENT_TYPE } from './types';
 
 /**
@@ -129,8 +134,9 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   'event-collider': eventColliderBuilder,
   timer: timerBuilder,
   light: lightBuilder,
-  'audio-manager': audioManagerBuilder,
-  'audio-controller': audioControllerBuilder,
+  'audio-track': audioTrackBuilder,
+  'audio-effect': audioEffectBuilder,
+  'audio-player': audioPlayerBuilder,
 };
 
 /**
@@ -161,8 +167,9 @@ export const MethodRegistry: Record<
   'event-collider': EventCollider,
   timer: Timer,
   light: Light,
-  'audio-manager': AudioManager,
-  'audio-controller': AudioController,
+  'audio-track': AudioTrack,
+  'audio-effect': AudioEffect,
+  'audio-player': AudioPlayer,
   'ui-binding': {},
   'html-constructor': {},
   'message-listener': {},
@@ -191,8 +198,9 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   'event-collider': EventColliderPropertyAllowlist,
   timer: TimerPropertyAllowlist,
   light: LightPropertyAllowlist,
-  'audio-manager': AudioManagerPropertyAllowlist,
-  'audio-controller': AudioControllerPropertyAllowlist,
+  'audio-track': AudioTrackPropertyAllowlist,
+  'audio-effect': AudioEffectPropertyAllowlist,
+  'audio-player': AudioPlayerPropertyAllowlist,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

@@ -22,6 +22,7 @@ import {
   createDefaultCellData,
   packCell,
   unpackCell,
+  TrackController,
 } from './component';
 
 // ============================================================================
@@ -92,6 +93,7 @@ export function init(config?: import('./config').OmosuenConfig): void {
     createDefaultCellData,
     packCell,
     unpackCell,
+    TrackController,
   };
 
   console.log(`${name} Engine v${version} initialized`);

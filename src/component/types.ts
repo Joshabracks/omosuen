@@ -17,15 +17,17 @@ import { UIOverlayT } from './ui-overlay';
 import { ViewportT } from './viewport';
 import { AtlasManagerT } from './atlas-manager';
 import { AnimationControllerT } from './animation-controller';
-import { AudioManagerT } from './audio-manager';
-import { AudioControllerT } from './audio-controller';
+import { AudioTrackT } from './audio-track';
+import { AudioEffectT } from './audio-effect';
+import { AudioPlayerT } from './audio-player';
 import { EventColliderT } from './event-collider';
 
 export type ComponentDataType =
   | AnimationControllerT
   | AtlasManagerT
-  | AudioManagerT
-  | AudioControllerT
+  | AudioTrackT
+  | AudioEffectT
+  | AudioPlayerT
   | CameraT
   | CellMapT
   | ColliderT
@@ -148,6 +150,7 @@ export enum ComponentUnique {
   FALSE = 0,
   LOCAL = 1,
   GLOBAL = 2,
+  NAME = 3,
 }
 
 export type COMPONENT_TYPE =
@@ -169,8 +172,9 @@ export type COMPONENT_TYPE =
   | 'event-collider'
   | 'timer'
   | 'light'
-  | 'audio-manager'
-  | 'audio-controller';
+  | 'audio-track'
+  | 'audio-effect'
+  | 'audio-player';
 
 export interface ComponentOptions {
   name: string;

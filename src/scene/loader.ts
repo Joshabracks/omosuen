@@ -13,8 +13,9 @@ import { LightSerializer } from '../component/light/data';
 import { TimerSerializer } from '../component/timer/data';
 import { MessengerSerializer } from '../component/messenger/data';
 import { InputControllerSerializer } from '../component/input-controller/data';
-import { AudioManagerSerializer } from '../component/audio-manager/data';
-import { AudioControllerSerializer } from '../component/audio-controller/data';
+import { AudioTrackSerializer } from '../component/audio-track/data';
+import { AudioEffectSerializer } from '../component/audio-effect/data';
+import { AudioPlayerSerializer } from '../component/audio-player/data';
 import { AnimationControllerSerializer } from '../component/animation-controller/data';
 import { AtlasManagerSerializer } from '../component/atlas-manager/data';
 import { TextureMapSerializer } from '../component/texture-map/data';
@@ -52,8 +53,9 @@ const SERIALIZERS: Partial<Record<COMPONENT_TYPE, ComponentSerializer>> = {
   timer: TimerSerializer,
   messenger: MessengerSerializer,
   'input-controller': InputControllerSerializer,
-  'audio-manager': AudioManagerSerializer,
-  'audio-controller': AudioControllerSerializer,
+  'audio-track': AudioTrackSerializer,
+  'audio-effect': AudioEffectSerializer,
+  'audio-player': AudioPlayerSerializer,
   'animation-controller': AnimationControllerSerializer,
   'atlas-manager': AtlasManagerSerializer,
   'texture-map': TextureMapSerializer,

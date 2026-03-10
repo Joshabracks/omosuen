@@ -86,6 +86,25 @@ export const Nexus: NexusMethods = {
 
       // Note: Disposed components are automatically removed from their parent Nexus
       // during the dispose process or will be filtered out as _disposed
+    } else if (component.unique === ComponentUnique.NAME) {
+      // NAME: Dispose all instances with same type AND same name in entire scene
+      let root: ComponentData = n;
+      while (root.parent && root.parent.type === 'nexus') {
+        root = root.parent;
+      }
+
+      const allInstances = Nexus.getComponentsByTypeAndName(
+        root as NexusT,
+        component.type,
+        component.name,
+        true,
+      );
+      allInstances.forEach((c) => {
+        const C = MethodRegistry[c.type];
+        if (C.dispose && typeof C.dispose === 'function') {
+          C.dispose(c);
+        }
+      });
     }
 
     component.parent = n;

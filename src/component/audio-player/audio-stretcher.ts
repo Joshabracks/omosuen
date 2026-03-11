@@ -850,6 +850,7 @@ class StretcherProcessor extends AudioWorkletProcessor {
     this.stopped = false;
     this.feedBuffer = null;
     this.extractBuffer = new Float32Array(256);
+    this.outputSourcePos = 0;
     this.posCounter = 0;
 
     this.port.onmessage = (e) => {
@@ -865,6 +866,7 @@ class StretcherProcessor extends AudioWorkletProcessor {
           this.stretcher.pitchSemitones = msg.pitchShift;
           this.stretcher.tempo = msg.tempo;
           this.feedBuffer = new Float32Array(16384);
+          this.outputSourcePos = msg.sourcePos;
           this.ended = false;
           this.stopped = false;
           this.initialized = true;
@@ -945,11 +947,19 @@ class StretcherProcessor extends AudioWorkletProcessor {
     }
     for (let i = toPull; i < numFrames; i++) { outputL[i] = 0; outputR[i] = 0; }
 
+    // Track output-derived source position (accounts for WSOLA pipeline buffering)
+    if (toPull > 0) {
+      this.outputSourcePos += toPull * this.stretcher.virtualTempo;
+      if (this.repeat && this.outputSourcePos >= this.totalFrames) {
+        this.outputSourcePos %= this.totalFrames;
+      }
+    }
+
     // Report position periodically (~every 23ms at 128-frame quantum)
     this.posCounter++;
     if (this.posCounter >= 8) {
       this.posCounter = 0;
-      this.port.postMessage({ type: 'position', value: this.sourcePos });
+      this.port.postMessage({ type: 'position', value: this.outputSourcePos });
     }
 
     if (this.ended && available === 0) {

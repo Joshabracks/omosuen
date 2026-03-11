@@ -199,7 +199,7 @@ Omosuen.registerHtmlConstructor('audioTestUI', (overlay) => {
                 <div class="slider-row">
                     <span class="slider-row-label">Speed</span>
                     <input type="range" id="speed-slider" class="slider-horizontal"
-                        min="25" max="400" value="100">
+                        min="-200" max="400" value="100">
                     <span id="speed-value" class="slider-row-value">1.00x</span>
                 </div>
                 <div class="slider-row">

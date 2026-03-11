@@ -857,6 +857,7 @@ class StretcherProcessor extends AudioWorkletProcessor {
     this.extractBuffer = new Float32Array(256);
     this.outputSourcePos = 0;
     this.posCounter = 0;
+    this.reverse = false;
 
     this.port.onmessage = (e) => {
       const msg = e.data;
@@ -869,7 +870,8 @@ class StretcherProcessor extends AudioWorkletProcessor {
           this.sourcePos = msg.sourcePos;
           this.stretcher = new AudioStretcher(sampleRate);
           this.stretcher.pitchSemitones = msg.pitchShift;
-          this.stretcher.tempo = msg.tempo;
+          this.reverse = msg.tempo < 0;
+          this.stretcher.tempo = Math.abs(msg.tempo);
           this.feedBuffer = new Float32Array(16384);
           this.outputSourcePos = msg.sourcePos;
           this.ended = false;
@@ -884,7 +886,12 @@ class StretcherProcessor extends AudioWorkletProcessor {
           break;
         case 'tempo':
           if (this.stretcher) {
-            this.stretcher.tempo = msg.value;
+            const newReverse = msg.value < 0;
+            if (newReverse !== this.reverse) {
+              this.reverse = newReverse;
+              this.stretcher.clear();
+            }
+            this.stretcher.tempo = Math.abs(msg.value);
             this.stretcher.outputBuffer.clear();
           }
           break;
@@ -918,18 +925,33 @@ class StretcherProcessor extends AudioWorkletProcessor {
 
       let fed = 0;
       while (fed < framesToFeed) {
-        if (this.sourcePos >= this.totalFrames) {
-          if (this.repeat) { this.sourcePos = 0; }
-          else { this.ended = true; break; }
+        if (this.reverse) {
+          if (this.sourcePos <= 0) {
+            if (this.repeat) { this.sourcePos = this.totalFrames; }
+            else { this.ended = true; break; }
+          }
+          const remaining = this.sourcePos;
+          const chunk = Math.min(framesToFeed - fed, remaining);
+          for (let i = 0; i < chunk; i++) {
+            this.feedBuffer[(fed + i) * 2] = this.channelL[this.sourcePos - 1 - i];
+            this.feedBuffer[(fed + i) * 2 + 1] = this.channelR[this.sourcePos - 1 - i];
+          }
+          this.sourcePos -= chunk;
+          fed += chunk;
+        } else {
+          if (this.sourcePos >= this.totalFrames) {
+            if (this.repeat) { this.sourcePos = 0; }
+            else { this.ended = true; break; }
+          }
+          const remaining = this.totalFrames - this.sourcePos;
+          const chunk = Math.min(framesToFeed - fed, remaining);
+          for (let i = 0; i < chunk; i++) {
+            this.feedBuffer[(fed + i) * 2] = this.channelL[this.sourcePos + i];
+            this.feedBuffer[(fed + i) * 2 + 1] = this.channelR[this.sourcePos + i];
+          }
+          this.sourcePos += chunk;
+          fed += chunk;
         }
-        const remaining = this.totalFrames - this.sourcePos;
-        const chunk = Math.min(framesToFeed - fed, remaining);
-        for (let i = 0; i < chunk; i++) {
-          this.feedBuffer[(fed + i) * 2] = this.channelL[this.sourcePos + i];
-          this.feedBuffer[(fed + i) * 2 + 1] = this.channelR[this.sourcePos + i];
-        }
-        this.sourcePos += chunk;
-        fed += chunk;
       }
       if (fed > 0) this.stretcher.inputBuffer.putSamples(this.feedBuffer, 0, fed);
     }
@@ -954,9 +976,16 @@ class StretcherProcessor extends AudioWorkletProcessor {
 
     // Track output-derived source position (accounts for WSOLA pipeline buffering)
     if (toPull > 0) {
-      this.outputSourcePos += toPull * this.stretcher.virtualTempo;
-      if (this.repeat && this.outputSourcePos >= this.totalFrames) {
-        this.outputSourcePos %= this.totalFrames;
+      if (this.reverse) {
+        this.outputSourcePos -= toPull * this.stretcher.virtualTempo;
+        if (this.repeat && this.outputSourcePos < 0) {
+          this.outputSourcePos = this.totalFrames + (this.outputSourcePos % this.totalFrames);
+        }
+      } else {
+        this.outputSourcePos += toPull * this.stretcher.virtualTempo;
+        if (this.repeat && this.outputSourcePos >= this.totalFrames) {
+          this.outputSourcePos %= this.totalFrames;
+        }
       }
     }
 

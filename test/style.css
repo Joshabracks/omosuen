@@ -666,3 +666,41 @@ body {
     color: #ff6600;
     font-family: 'Courier New', Courier, monospace;
 }
+
+/* Timer slider */
+.timer-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0 0;
+}
+
+.timer-label {
+    font-size: 11px;
+    color: #ff6600;
+    font-family: 'Courier New', Courier, monospace;
+    min-width: 40px;
+    text-align: center;
+}
+
+.timer-slider-wrap {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+}
+
+.timer-slider-wrap .slider-horizontal {
+    width: 100%;
+}
+
+.timer-thumb-label {
+    position: absolute;
+    top: -18px;
+    font-size: 10px;
+    color: #ff9933;
+    font-family: 'Courier New', Courier, monospace;
+    transform: translateX(-50%);
+    pointer-events: none;
+    white-space: nowrap;
+}

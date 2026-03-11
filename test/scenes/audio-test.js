@@ -10,7 +10,15 @@ let halloweenController = null;
 let clickController = null;
 let audioPlayer = null;
 let isSurround = false;
+let isSeeking = false;
 const EQ_BANDS = 10;
+
+function formatTime(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    return String(min).padStart(2, '0') + ':' + String(sec).padStart(2, '0');
+}
 
 // ── Click sound helper ──
 function playClick() {
@@ -129,6 +137,15 @@ Omosuen.registerHtmlConstructor('audioTestUI', (overlay) => {
                     <button id="btn-pause" class="transport-btn">&#9208; PAUSE</button>
                     <button id="btn-stop" class="transport-btn">&#9209; STOP</button>
                     <span id="transport-status" class="status-display">STOPPED</span>
+                </div>
+                <div class="timer-row">
+                    <span class="timer-label">00:00</span>
+                    <div class="timer-slider-wrap">
+                        <input type="range" id="timer-slider" class="slider-horizontal"
+                            min="0" max="1000" value="0">
+                        <span class="timer-thumb-label" id="timer-thumb">00:00</span>
+                    </div>
+                    <span class="timer-label" id="timer-length">00:00</span>
                 </div>
             </div>
 
@@ -303,6 +320,26 @@ Omosuen.registerBinding('audioReverb', (event) => {
     if (display) display.textContent = val.toFixed(2);
 });
 
+// Timer seek
+Omosuen.registerBinding('audioTimerSeek', (event) => {
+    if (!halloweenController) return;
+    const slider = event.target;
+    const ratio = parseInt(slider.value, 10) / parseInt(slider.max, 10);
+    const lengthMs = halloweenController.trackLength();
+    halloweenController.setTrackPosition(ratio * lengthMs);
+
+    // Update thumb label immediately
+    const posMs = ratio * lengthMs;
+    const thumb = document.getElementById('timer-thumb');
+    if (thumb) {
+        thumb.textContent = formatTime(posMs);
+        thumb.style.left = (ratio * 100) + '%';
+    }
+});
+
+Omosuen.registerBinding('audioTimerSeekStart', () => { isSeeking = true; });
+Omosuen.registerBinding('audioTimerSeekEnd', () => { isSeeking = false; });
+
 // Click sound on mousedown/mouseup for all interactive elements
 Omosuen.registerBinding('audioClickDown', () => { playClick(); });
 Omosuen.registerBinding('audioClickUp', () => { playClick(); });
@@ -425,6 +462,9 @@ export async function createScene() {
         { selector: '#pan-slider', onActions: ['input'], methodKey: 'audioPan' },
         { selector: '#btn-stereo', onActions: ['click'], methodKey: 'audioStereoMode' },
         { selector: '#btn-surround', onActions: ['click'], methodKey: 'audioSurroundMode' },
+        { selector: '#timer-slider', onActions: ['input'], methodKey: 'audioTimerSeek' },
+        { selector: '#timer-slider', onActions: ['mousedown', 'touchstart'], methodKey: 'audioTimerSeekStart' },
+        { selector: '#timer-slider', onActions: ['mouseup', 'touchend'], methodKey: 'audioTimerSeekEnd' },
         { selector: '#pitch-slider', onActions: ['input'], methodKey: 'audioPitch' },
         { selector: '#speed-slider', onActions: ['input'], methodKey: 'audioSpeed' },
         { selector: '#reverb-slider', onActions: ['input'], methodKey: 'audioReverb' },
@@ -443,7 +483,7 @@ export async function createScene() {
     const clickSelectors = [
         '#btn-back', '#btn-play', '#btn-pause', '#btn-stop',
         '#btn-stereo', '#btn-surround',
-        '#master-vol', '#pan-slider', '#pitch-slider', '#speed-slider', '#reverb-slider',
+        '#master-vol', '#pan-slider', '#timer-slider', '#pitch-slider', '#speed-slider', '#reverb-slider',
     ];
     for (let i = 0; i < EQ_BANDS; i++) {
         clickSelectors.push(`#eq-band-${i}`);
@@ -492,6 +532,31 @@ function onReady(player, clickTrack, halloweenTrack, halloweenEffect) {
 
     // Setup hexagon drag
     setupHexagonDrag();
+
+    // Setup timer slider
+    const lengthMs = halloweenController.trackLength();
+    const lengthEl = document.getElementById('timer-length');
+    if (lengthEl) lengthEl.textContent = formatTime(lengthMs);
+
+    // Timer update loop
+    function updateTimer() {
+        if (halloweenController && !isSeeking) {
+            const posMs = halloweenController.trackPosition();
+            const length = halloweenController.trackLength();
+            const slider = document.getElementById('timer-slider');
+            const thumb = document.getElementById('timer-thumb');
+            if (slider && length > 0) {
+                const ratio = posMs / length;
+                slider.value = Math.round(ratio * parseInt(slider.max, 10));
+                if (thumb) {
+                    thumb.textContent = formatTime(posMs);
+                    thumb.style.left = (ratio * 100) + '%';
+                }
+            }
+        }
+        requestAnimationFrame(updateTimer);
+    }
+    requestAnimationFrame(updateTimer);
 
     updateTransportStatus('READY');
 }

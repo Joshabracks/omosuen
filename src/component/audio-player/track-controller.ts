@@ -253,6 +253,53 @@ export class TrackController {
     }
   }
 
+  // ── Track info & seeking ──
+
+  /** Returns the track duration in milliseconds, or 0 if not loaded. */
+  trackLength(): number {
+    const buffer = this._audioPlayer._bufferCache.get(this._track.filePath);
+    return buffer ? buffer.duration * 1000 : 0;
+  }
+
+  /** Returns the current playback position in milliseconds. */
+  trackPosition(): number {
+    if (this._sourceId === null) {
+      return this._pauseOffset * 1000;
+    }
+    const active = this._getActiveSource();
+    if (!active) return this._pauseOffset * 1000;
+
+    if (active.isStretched) {
+      const sampleRate = this._audioPlayer._audioContext?.sampleRate ?? 44100;
+      return (active.sourcePosition / sampleRate) * 1000;
+    } else if (active.source) {
+      const ctx = this._audioPlayer._audioContext;
+      if (ctx) {
+        const elapsed =
+          (ctx.currentTime - active.startTime) *
+          active.source.playbackRate.value;
+        const duration = active.source.buffer?.duration ?? Infinity;
+        const pos = active.offset + elapsed;
+        return (this._repeat ? pos % duration : Math.min(pos, duration)) * 1000;
+      }
+    }
+    return 0;
+  }
+
+  /** Seeks to a position in milliseconds. */
+  setTrackPosition(position: number): void {
+    const lengthMs = this.trackLength();
+    const posSec = Math.max(0, Math.min(position, lengthMs)) / 1000;
+
+    if (this.isPlaying) {
+      this.pause();
+      this._pauseOffset = posSec;
+      this.play();
+    } else {
+      this._pauseOffset = posSec;
+    }
+  }
+
   // ── Playback ──
 
   /** Starts (or resumes) playback, returning the source ID. */

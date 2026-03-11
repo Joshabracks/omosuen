@@ -5,6 +5,7 @@ import type { AudioPlayerT, ActiveSource } from './data';
 import type { AudioTrackT } from '../audio-track/data';
 import type { AudioEffectT } from '../audio-effect/data';
 import type { TrackController } from './track-controller';
+import { getWorkletProcessorSource } from './audio-stretcher';
 
 export interface AudioPlayerMethods extends ComponentMethods {
   type: 'audio-player';
@@ -62,6 +63,32 @@ async function init(component: ComponentData): Promise<void> {
   ap._audioContext = audioContext;
   ap._masterGain = masterGain;
 
+  // Create shared reverb convolver with synthetic impulse response
+  const reverbConvolver = audioContext.createConvolver();
+  const irDuration = 2.0;
+  const irLength = Math.floor(audioContext.sampleRate * irDuration);
+  const irBuffer = audioContext.createBuffer(
+    2,
+    irLength,
+    audioContext.sampleRate,
+  );
+  for (let ch = 0; ch < 2; ch++) {
+    const data = irBuffer.getChannelData(ch);
+    for (let i = 0; i < irLength; i++) {
+      data[i] =
+        (Math.random() * 2 - 1) * Math.pow(1 - i / irLength, 3);
+    }
+  }
+  reverbConvolver.buffer = irBuffer;
+  reverbConvolver.connect(masterGain);
+  ap._reverbConvolver = reverbConvolver;
+
+  // Register AudioWorklet for stretched playback (WSOLA pitch/speed separation)
+  const workletSource = getWorkletProcessorSource();
+  const blob = new Blob([workletSource], { type: 'application/javascript' });
+  ap._workletBlobUrl = URL.createObjectURL(blob);
+  await audioContext.audioWorklet.addModule(ap._workletBlobUrl);
+
   // Auto-discover all AudioTrack components in the scene (atlas-manager pattern)
   const rootNexus = getRootNexus(ap);
   if (rootNexus) {
@@ -89,11 +116,7 @@ function dispose(component: ComponentData): void {
 
   // Stop all active sources
   for (const [, active] of ap._activeSources) {
-    try {
-      active.source.stop();
-    } catch {
-      // Source may already be stopped
-    }
+    stopActive(active);
   }
   ap._activeSources.clear();
 
@@ -110,6 +133,13 @@ function dispose(component: ComponentData): void {
   }
 
   ap._masterGain = null;
+  ap._reverbConvolver = null;
+
+  if (ap._workletBlobUrl) {
+    URL.revokeObjectURL(ap._workletBlobUrl);
+    ap._workletBlobUrl = null;
+  }
+
   ap._disposed = true;
 }
 
@@ -167,6 +197,7 @@ interface PlayEffectData {
   spatialX: number;
   spatialY: number;
   spatialZ: number;
+  reverb: number;
   offset: number;
 }
 
@@ -211,9 +242,9 @@ function playInternal(
   source.buffer = buffer;
   source.loop = repeat;
 
-  // Apply effect: playbackRate = 2^(semitones/12) * speedShift
-  const pitchRate = Math.pow(2, effectData.pitchShift / 12);
-  source.playbackRate.value = pitchRate * effectData.speedShift;
+  // Speed via playbackRate, pitch via detune (cents) — separate controls
+  source.playbackRate.value = effectData.speedShift;
+  source.detune.value = effectData.pitchShift * 100;
 
   // Apply volume and pan
   gainNode.gain.value = clampVolume(effectData.volume);
@@ -244,7 +275,13 @@ function playInternal(
     spatialPanner.positionZ.value = effectData.spatialZ;
   }
 
-  // Chain: source → [filters] → gain → panner/spatialPanner → master
+  // Reverb send gain (wet path)
+  const reverbSend = ctx.createGain();
+  reverbSend.gain.value = Math.max(0, Math.min(1, effectData.reverb));
+
+  // Chain: source → [filters] → gain → panner/spatialPanner → master (dry)
+  //                                      ↓
+  //                                 reverbSend → convolver → master (wet)
   let lastNode: AudioNode = source;
 
   for (const filter of filters) {
@@ -254,12 +291,21 @@ function playInternal(
 
   lastNode.connect(gainNode);
 
+  let pannerOut: AudioNode;
   if (effectData.spatial && spatialPanner) {
     gainNode.connect(spatialPanner);
     spatialPanner.connect(ap._masterGain);
+    pannerOut = spatialPanner;
   } else {
     gainNode.connect(panner);
     panner.connect(ap._masterGain);
+    pannerOut = panner;
+  }
+
+  // Connect reverb wet path
+  if (ap._reverbConvolver) {
+    pannerOut.connect(reverbSend);
+    reverbSend.connect(ap._reverbConvolver);
   }
 
   const sourceId = ap._nextSourceId++;
@@ -270,8 +316,12 @@ function playInternal(
     panner,
     filters,
     spatialPanner,
+    reverbSend,
     startTime,
     offset: effectData.offset,
+    workletNode: null,
+    sourcePosition: 0,
+    isStretched: false,
   });
 
   // Auto-cleanup on end
@@ -299,15 +349,155 @@ function play(
     spatialX: effect?.spatialX ?? 0,
     spatialY: effect?.spatialY ?? 0,
     spatialZ: effect?.spatialZ ?? 0,
+    reverb: effect?.reverb ?? 0,
     offset: 0,
   });
+}
+
+// ── Stretched Playback (WSOLA via AudioWorklet) ──
+
+function playStretched(
+  ap: AudioPlayerT,
+  filePath: string,
+  repeat: boolean,
+  effectData: PlayEffectData,
+): number {
+  if (!ap._audioContext || !ap._masterGain) {
+    console.warn('[audio-player] Cannot play: not initialized');
+    return -1;
+  }
+
+  const buffer = ap._bufferCache.get(filePath);
+  if (!buffer) {
+    console.warn(
+      `[audio-player] Audio "${filePath}" not loaded. Ensure an AudioTrack component exists and AudioPlayer has initialized.`,
+    );
+    return -1;
+  }
+
+  const ctx = ap._audioContext;
+  const sourceId = ap._nextSourceId++;
+
+  // Copy channel data for transfer to worklet
+  const channelL = new Float32Array(buffer.getChannelData(0));
+  const channelR = new Float32Array(
+    buffer.numberOfChannels > 1
+      ? buffer.getChannelData(1)
+      : buffer.getChannelData(0),
+  );
+
+  // Create AudioWorkletNode
+  const workletNode = new AudioWorkletNode(ctx, 'stretcher-processor', {
+    outputChannelCount: [2],
+    numberOfInputs: 0,
+    numberOfOutputs: 1,
+  });
+
+  // Send audio data and initial parameters (transfer buffers for zero-copy)
+  const sourcePos = Math.floor(effectData.offset * ctx.sampleRate);
+  workletNode.port.postMessage(
+    {
+      type: 'init',
+      channelL,
+      channelR,
+      sourcePos,
+      pitchShift: effectData.pitchShift,
+      tempo: effectData.speedShift,
+      repeat,
+    },
+    [channelL.buffer, channelR.buffer],
+  );
+
+  // Listen for position updates and end detection
+  workletNode.port.onmessage = (e: MessageEvent) => {
+    const msg = e.data as { type: string; value?: number };
+    if (msg.type === 'position') {
+      const active = ap._activeSources.get(sourceId);
+      if (active) active.sourcePosition = msg.value!;
+    } else if (msg.type === 'ended') {
+      ap._activeSources.delete(sourceId);
+    }
+  };
+
+  // Build downstream chain (same as playInternal)
+  const gainNode = ctx.createGain();
+  const panner = ctx.createStereoPanner();
+  gainNode.gain.value = clampVolume(effectData.volume);
+  panner.pan.value = Math.max(-1, Math.min(1, effectData.pan));
+
+  const filters: BiquadFilterNode[] = [];
+  if (effectData.mix.length > 0) {
+    const freqs = computeBandFrequencies(effectData.mix.length);
+    for (let i = 0; i < effectData.mix.length; i++) {
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'peaking';
+      filter.frequency.value = freqs[i];
+      filter.Q.value = 1.0;
+      filter.gain.value = effectData.mix[i] * 12;
+      filters.push(filter);
+    }
+  }
+
+  let spatialPanner: PannerNode | null = null;
+  if (effectData.spatial) {
+    spatialPanner = ctx.createPanner();
+    spatialPanner.panningModel = 'HRTF';
+    spatialPanner.distanceModel = 'inverse';
+    spatialPanner.positionX.value = effectData.spatialX;
+    spatialPanner.positionY.value = effectData.spatialY;
+    spatialPanner.positionZ.value = effectData.spatialZ;
+  }
+
+  const reverbSend = ctx.createGain();
+  reverbSend.gain.value = Math.max(0, Math.min(1, effectData.reverb));
+
+  // Wire: workletNode → [filters] → gain → panner → master
+  let lastNode: AudioNode = workletNode;
+  for (const filter of filters) {
+    lastNode.connect(filter);
+    lastNode = filter;
+  }
+  lastNode.connect(gainNode);
+
+  let pannerOut: AudioNode;
+  if (effectData.spatial && spatialPanner) {
+    gainNode.connect(spatialPanner);
+    spatialPanner.connect(ap._masterGain);
+    pannerOut = spatialPanner;
+  } else {
+    gainNode.connect(panner);
+    panner.connect(ap._masterGain);
+    pannerOut = panner;
+  }
+
+  if (ap._reverbConvolver) {
+    pannerOut.connect(reverbSend);
+    reverbSend.connect(ap._reverbConvolver);
+  }
+
+  const startTime = ctx.currentTime;
+  ap._activeSources.set(sourceId, {
+    source: null,
+    gain: gainNode,
+    panner,
+    filters,
+    spatialPanner,
+    reverbSend,
+    startTime,
+    offset: effectData.offset,
+    workletNode,
+    sourcePosition: sourcePos,
+    isStretched: true,
+  });
+
+  return sourceId;
 }
 
 function _playController(
   ap: AudioPlayerT,
   controller: TrackController,
 ): number {
-  return playInternal(ap, controller.track.filePath, controller.repeat, {
+  return playStretched(ap, controller.track.filePath, controller.repeat, {
     pitchShift: controller.pitchShift,
     speedShift: controller.speedShift,
     volume: controller.volume,
@@ -317,6 +507,7 @@ function _playController(
     spatialX: controller.spatialX,
     spatialY: controller.spatialY,
     spatialZ: controller.spatialZ,
+    reverb: controller.reverb,
     offset: controller._pauseOffset,
   });
 }
@@ -328,25 +519,32 @@ function _getActiveSource(
   return ap._activeSources.get(sourceId);
 }
 
-function stop(ap: AudioPlayerT, sourceId: number): void {
-  const active = ap._activeSources.get(sourceId);
-  if (active) {
+function stopActive(active: ActiveSource): void {
+  if (active.isStretched) {
+    if (active.workletNode) {
+      active.workletNode.port.postMessage({ type: 'stop' });
+      active.workletNode.disconnect();
+    }
+  } else if (active.source) {
     try {
       active.source.stop();
     } catch {
       // Source may already be stopped
     }
+  }
+}
+
+function stop(ap: AudioPlayerT, sourceId: number): void {
+  const active = ap._activeSources.get(sourceId);
+  if (active) {
+    stopActive(active);
     ap._activeSources.delete(sourceId);
   }
 }
 
 function stopAll(ap: AudioPlayerT): void {
   for (const [id, active] of ap._activeSources) {
-    try {
-      active.source.stop();
-    } catch {
-      // Source may already be stopped
-    }
+    stopActive(active);
     ap._activeSources.delete(id);
   }
 }

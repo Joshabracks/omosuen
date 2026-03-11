@@ -86,7 +86,11 @@ export class TrackController {
     this._repeat = value;
     const active = this._getActiveSource();
     if (active) {
-      active.source.loop = value;
+      if (active.isStretched && active.workletNode) {
+        active.workletNode.port.postMessage({ type: 'repeat', value });
+      } else if (active.source) {
+        active.source.loop = value;
+      }
     }
   }
 
@@ -105,8 +109,14 @@ export class TrackController {
     this._pitchShift = v;
     const active = this._getActiveSource();
     if (active) {
-      active.source.playbackRate.value =
-        Math.pow(2, this._pitchShift / 12) * this._speedShift;
+      if (active.isStretched && active.workletNode) {
+        active.workletNode.port.postMessage({
+          type: 'pitch',
+          value: this._pitchShift,
+        });
+      } else if (active.source) {
+        active.source.detune.value = this._pitchShift * 100;
+      }
     }
   }
 
@@ -117,8 +127,14 @@ export class TrackController {
     this._speedShift = v;
     const active = this._getActiveSource();
     if (active) {
-      active.source.playbackRate.value =
-        Math.pow(2, this._pitchShift / 12) * this._speedShift;
+      if (active.isStretched && active.workletNode) {
+        active.workletNode.port.postMessage({
+          type: 'tempo',
+          value: this._speedShift,
+        });
+      } else if (active.source) {
+        active.source.playbackRate.value = this._speedShift;
+      }
     }
   }
 
@@ -231,6 +247,10 @@ export class TrackController {
   }
   set reverb(v: number) {
     this._reverb = Math.max(0, Math.min(1, v));
+    const active = this._getActiveSource();
+    if (active) {
+      active.reverbSend.gain.value = this._reverb;
+    }
   }
 
   // ── Playback ──
@@ -257,20 +277,31 @@ export class TrackController {
       return;
     }
 
-    const ctx = this._audioPlayer._audioContext;
-    if (ctx) {
-      const elapsed =
-        (ctx.currentTime - active.startTime) *
-        active.source.playbackRate.value;
-      const duration = active.source.buffer?.duration ?? Infinity;
-      this._pauseOffset = (active.offset + elapsed) % duration;
+    if (active.isStretched) {
+      // Stretched mode: get position from the source read cursor
+      const sampleRate = this._audioPlayer._audioContext?.sampleRate ?? 44100;
+      this._pauseOffset = active.sourcePosition / sampleRate;
+      if (active.workletNode) {
+        active.workletNode.port.postMessage({ type: 'stop' });
+        active.workletNode.disconnect();
+      }
+    } else if (active.source) {
+      // Native mode: calculate from ctx.currentTime
+      const ctx = this._audioPlayer._audioContext;
+      if (ctx) {
+        const elapsed =
+          (ctx.currentTime - active.startTime) *
+          active.source.playbackRate.value;
+        const duration = active.source.buffer?.duration ?? Infinity;
+        this._pauseOffset = (active.offset + elapsed) % duration;
+      }
+      try {
+        active.source.stop();
+      } catch {
+        // Source may already be stopped
+      }
     }
 
-    try {
-      active.source.stop();
-    } catch {
-      // Source may already be stopped
-    }
     this._audioPlayer._activeSources.delete(this._sourceId);
     this._sourceId = null;
   }

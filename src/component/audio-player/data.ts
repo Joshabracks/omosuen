@@ -8,13 +8,19 @@ import {
 import type { AudioPlayerMethods } from './methods';
 
 export interface ActiveSource {
-  source: AudioBufferSourceNode;
+  source: AudioBufferSourceNode | null;
   gain: GainNode;
   panner: StereoPannerNode;
   filters: BiquadFilterNode[];
   spatialPanner: PannerNode | null;
+  reverbSend: GainNode;
   startTime: number;
   offset: number;
+
+  // Stretched mode (WSOLA via AudioWorklet)
+  workletNode: AudioWorkletNode | null;
+  sourcePosition: number;
+  isStretched: boolean;
 }
 
 export interface AudioPlayerT
@@ -33,6 +39,7 @@ export interface AudioPlayerT
 
   _audioContext: AudioContext | null;
   _masterGain: GainNode | null;
+  _reverbConvolver: ConvolverNode | null;
 
   /** Decoded audio buffers keyed by filePath. */
   _bufferCache: Map<string, AudioBuffer>;
@@ -45,6 +52,9 @@ export interface AudioPlayerT
 
   /** Next source ID counter. */
   _nextSourceId: number;
+
+  /** Blob URL for the stretcher AudioWorklet module (revoked on dispose). */
+  _workletBlobUrl: string | null;
 }
 
 export interface AudioPlayerOptions extends ComponentOptions {
@@ -66,10 +76,12 @@ export function builder(options: AudioPlayerOptions): AudioPlayerT {
 
     _audioContext: null,
     _masterGain: null,
+    _reverbConvolver: null,
     _bufferCache: new Map<string, AudioBuffer>(),
     _bufferLoading: new Map<string, Promise<AudioBuffer>>(),
     _activeSources: new Map<number, ActiveSource>(),
     _nextSourceId: 0,
+    _workletBlobUrl: null,
   };
 
   return audioPlayer as unknown as AudioPlayerT;
@@ -127,4 +139,6 @@ export const PROPERTY_ALLOWLIST: string[] = [
   '_nextSourceId',
   '_bufferCache',
   '_bufferLoading',
+  '_reverbConvolver',
+  '_workletBlobUrl',
 ];

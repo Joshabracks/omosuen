@@ -501,8 +501,8 @@ body {
 }
 
 .slider-vertical {
-    -webkit-appearance: slider-vertical;
-    appearance: slider-vertical;
+    writing-mode: vertical-lr;
+    direction: rtl;
     width: 24px;
     height: 130px;
     background: transparent;

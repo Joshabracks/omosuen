@@ -225,12 +225,12 @@ class RateTransposer {
     this.slopeCount -= 1.0;
 
     if (numFrames !== 1) {
-      outer: while (true) {
+      while (true) {
         while (this.slopeCount > 1.0) {
           this.slopeCount -= 1.0;
           used++;
-          if (used >= numFrames - 1) break outer;
         }
+        if (used >= numFrames - 1) break;
         const srcIndex = srcOffset + 2 * used;
         dest[destOffset + 2 * i] =
           (1.0 - this.slopeCount) * src[srcIndex] +
@@ -524,6 +524,7 @@ export class AudioStretcher {
 
     if (this._rate > 1.0) {
       if (this._outputBuffer !== this.rateTransposer.outputBuffer) {
+        this._intermediateBuffer.clear();
         this.stretch.inputBuffer = this._inputBuffer;
         this.stretch.outputBuffer = this._intermediateBuffer;
         this.rateTransposer.inputBuffer = this._intermediateBuffer;
@@ -531,6 +532,7 @@ export class AudioStretcher {
       }
     } else {
       if (this._outputBuffer !== this.stretch.outputBuffer) {
+        this._intermediateBuffer.clear();
         this.rateTransposer.inputBuffer = this._inputBuffer;
         this.rateTransposer.outputBuffer = this._intermediateBuffer;
         this.stretch.inputBuffer = this._intermediateBuffer;
@@ -663,8 +665,9 @@ class RateTransposer {
     }
     this.slopeCount -= 1.0;
     if (numFrames !== 1) {
-      outer: while (true) {
-        while (this.slopeCount > 1.0) { this.slopeCount -= 1.0; used++; if (used >= numFrames-1) break outer; }
+      while (true) {
+        while (this.slopeCount > 1.0) { this.slopeCount -= 1.0; used++; }
+        if (used >= numFrames - 1) break;
         const si = srcOff + 2*used;
         dest[destOff + 2*i] = (1-this.slopeCount)*src[si] + this.slopeCount*src[si+2];
         dest[destOff + 2*i+1] = (1-this.slopeCount)*src[si+1] + this.slopeCount*src[si+3];
@@ -820,6 +823,7 @@ class AudioStretcher {
     if (Math.abs(this._rate - pR) > 1e-10) this._rateTransposer.rate = this._rate;
     if (this._rate > 1.0) {
       if (this._outputBuffer !== this._rateTransposer.outputBuffer) {
+        this._intermediateBuffer.clear();
         this._stretch.inputBuffer = this._inputBuffer;
         this._stretch.outputBuffer = this._intermediateBuffer;
         this._rateTransposer.inputBuffer = this._intermediateBuffer;
@@ -827,6 +831,7 @@ class AudioStretcher {
       }
     } else {
       if (this._outputBuffer !== this._stretch.outputBuffer) {
+        this._intermediateBuffer.clear();
         this._rateTransposer.inputBuffer = this._inputBuffer;
         this._rateTransposer.outputBuffer = this._intermediateBuffer;
         this._stretch.inputBuffer = this._intermediateBuffer;

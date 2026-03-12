@@ -11,6 +11,7 @@ let clickController = null;
 let audioPlayer = null;
 let isSurround = false;
 let isSeeking = false;
+let clickSoundEnabled = true;
 const EQ_BANDS = 10;
 
 function formatTime(ms) {
@@ -22,7 +23,7 @@ function formatTime(ms) {
 
 // ── Click sound helper ──
 function playClick() {
-    if (!clickController) return;
+    if (!clickController || !clickSoundEnabled) return;
     clickController.pitchShift = (Math.random() - 0.5) * 0.2; // -0.1 to 0.1
     clickController.play();
 }
@@ -167,6 +168,7 @@ Omosuen.registerHtmlConstructor('audioTestUI', (overlay) => {
                     <span class="section-title">MODE:</span>
                     <button id="btn-stereo" class="toggle-btn active">STEREO</button>
                     <button id="btn-surround" class="toggle-btn">SURROUND</button>
+                    <button id="btn-click-sound" class="toggle-btn active">CLICK SFX</button>
                 </div>
 
                 <div id="stereo-panel" class="slider-row">
@@ -284,13 +286,13 @@ Omosuen.registerBinding('audioSurroundMode', () => {
     document.getElementById('surround-panel').style.display = '';
     document.getElementById('btn-stereo').classList.remove('active');
     document.getElementById('btn-surround').classList.add('active');
+});
 
-    // If playing, need to restart with spatial mode
-    if (halloweenController && halloweenController.isPlaying) {
-        const wasPlaying = true;
-        halloweenController.pause();
-        halloweenController.play();
-    }
+// Click sound toggle
+Omosuen.registerBinding('audioToggleClickSound', () => {
+    clickSoundEnabled = !clickSoundEnabled;
+    const btn = document.getElementById('btn-click-sound');
+    if (btn) btn.classList.toggle('active', clickSoundEnabled);
 });
 
 // Pitch slider
@@ -462,6 +464,7 @@ export async function createScene() {
         { selector: '#pan-slider', onActions: ['input'], methodKey: 'audioPan' },
         { selector: '#btn-stereo', onActions: ['click'], methodKey: 'audioStereoMode' },
         { selector: '#btn-surround', onActions: ['click'], methodKey: 'audioSurroundMode' },
+        { selector: '#btn-click-sound', onActions: ['click'], methodKey: 'audioToggleClickSound' },
         { selector: '#timer-slider', onActions: ['input'], methodKey: 'audioTimerSeek' },
         { selector: '#timer-slider', onActions: ['mousedown', 'touchstart'], methodKey: 'audioTimerSeekStart' },
         { selector: '#timer-slider', onActions: ['mouseup', 'touchend'], methodKey: 'audioTimerSeekEnd' },

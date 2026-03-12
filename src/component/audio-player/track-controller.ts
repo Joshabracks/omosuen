@@ -38,6 +38,7 @@ export class TrackController {
   private _spatialY: number;
   private _spatialZ: number;
   private _reverb: number;
+  private _crossfadeTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Offset into buffer for resume-from-pause (seconds). */
   _pauseOffset: number = 0;
@@ -70,6 +71,41 @@ export class TrackController {
   private _getActiveSource(): ActiveSource | undefined {
     if (this._sourceId === null) return undefined;
     return AudioPlayer._getActiveSource(this._audioPlayer, this._sourceId);
+  }
+
+  /**
+   * Micro-crossfade: fade gain to near-zero, apply change, fade back up.
+   * Masks discontinuities from stretcher.clear() and panner rewiring.
+   */
+  private _crossfadeParam(active: ActiveSource, apply: () => void): void {
+    const ctx = this._audioPlayer._audioContext;
+    if (!ctx) {
+      apply();
+      return;
+    }
+
+    if (this._crossfadeTimer !== null) {
+      clearTimeout(this._crossfadeTimer);
+      this._crossfadeTimer = null;
+    }
+
+    const gain = active.gain.gain;
+    const now = ctx.currentTime;
+    const fadeSec = 0.01;
+    const vol = Math.max(this._volume, 0.001);
+
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(gain.value, now);
+    gain.exponentialRampToValueAtTime(0.001, now + fadeSec);
+
+    this._crossfadeTimer = setTimeout(() => {
+      this._crossfadeTimer = null;
+      apply();
+      const t = ctx.currentTime;
+      gain.cancelScheduledValues(t);
+      gain.setValueAtTime(0.001, t);
+      gain.exponentialRampToValueAtTime(vol, t + fadeSec);
+    }, fadeSec * 1000 + 2);
   }
 
   /** The AudioTrack this controller wraps. */
@@ -110,9 +146,11 @@ export class TrackController {
     const active = this._getActiveSource();
     if (active) {
       if (active.isStretched && active.workletNode) {
-        active.workletNode.port.postMessage({
-          type: 'pitch',
-          value: this._pitchShift,
+        this._crossfadeParam(active, () => {
+          active.workletNode!.port.postMessage({
+            type: 'pitch',
+            value: this._pitchShift,
+          });
         });
       } else if (active.source) {
         active.source.detune.value = this._pitchShift * 100;
@@ -128,9 +166,11 @@ export class TrackController {
     const active = this._getActiveSource();
     if (active) {
       if (active.isStretched && active.workletNode) {
-        active.workletNode.port.postMessage({
-          type: 'tempo',
-          value: this._speedShift,
+        this._crossfadeParam(active, () => {
+          active.workletNode!.port.postMessage({
+            type: 'tempo',
+            value: this._speedShift,
+          });
         });
       } else if (active.source) {
         active.source.playbackRate.value = this._speedShift;
@@ -192,8 +232,45 @@ export class TrackController {
     return this._spatial;
   }
   set spatial(v: boolean) {
+    if (v === this._spatial) return;
     this._spatial = v;
-    // Spatial toggle requires restarting the source (different node graph)
+    const active = this._getActiveSource();
+    if (!active) return;
+
+    const ctx = this._audioPlayer._audioContext;
+    const masterGain = this._audioPlayer._masterGain;
+    if (!ctx || !masterGain) return;
+
+    this._crossfadeParam(active, () => {
+      const oldPannerOut: AudioNode = active.spatialPanner || active.panner;
+      oldPannerOut.disconnect();
+
+      if (v) {
+        // Stereo → Spatial: create PannerNode, rewire
+        const sp = ctx.createPanner();
+        sp.panningModel = 'HRTF';
+        sp.distanceModel = 'inverse';
+        sp.positionX.value = this._spatialX;
+        sp.positionY.value = this._spatialY;
+        sp.positionZ.value = this._spatialZ;
+        active.gain.disconnect();
+        active.gain.connect(sp);
+        sp.connect(masterGain);
+        if (this._audioPlayer._reverbConvolver) {
+          sp.connect(active.reverbSend);
+        }
+        active.spatialPanner = sp;
+      } else {
+        // Spatial → Stereo: reconnect stereo panner
+        active.gain.disconnect();
+        active.gain.connect(active.panner);
+        active.panner.connect(masterGain);
+        if (this._audioPlayer._reverbConvolver) {
+          active.panner.connect(active.reverbSend);
+        }
+        active.spatialPanner = null;
+      }
+    });
   }
 
   get spatialX(): number {

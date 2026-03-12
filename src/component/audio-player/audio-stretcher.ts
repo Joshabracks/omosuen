@@ -880,19 +880,17 @@ class StretcherProcessor extends AudioWorkletProcessor {
           break;
         case 'pitch':
           if (this.stretcher) {
+            this.sourcePos = Math.round(this.outputSourcePos);
             this.stretcher.pitchSemitones = msg.value;
-            this.stretcher.outputBuffer.clear();
+            this.stretcher.clear();
           }
           break;
         case 'tempo':
           if (this.stretcher) {
-            const newReverse = msg.value < 0;
-            if (newReverse !== this.reverse) {
-              this.reverse = newReverse;
-              this.stretcher.clear();
-            }
+            this.sourcePos = Math.round(this.outputSourcePos);
+            this.reverse = msg.value < 0;
             this.stretcher.tempo = Math.abs(msg.value);
-            this.stretcher.outputBuffer.clear();
+            this.stretcher.clear();
           }
           break;
         case 'repeat':

@@ -236,6 +236,11 @@ function playInternal(
   }
 
   const ctx = ap._audioContext;
+
+  if (ctx.state === 'suspended') {
+    ctx.resume().catch(() => {});
+  }
+
   const source = ctx.createBufferSource();
   const gainNode = ctx.createGain();
   const panner = ctx.createStereoPanner();
@@ -378,6 +383,11 @@ function playStretched(
   }
 
   const ctx = ap._audioContext;
+
+  if (ctx.state === 'suspended') {
+    ctx.resume().catch(() => {});
+  }
+
   const sourceId = ap._nextSourceId++;
 
   // Copy channel data for transfer to worklet
@@ -410,6 +420,13 @@ function playStretched(
     },
     [channelL.buffer, channelR.buffer],
   );
+
+  // Detect worklet crashes and clean up leaked sources
+  workletNode.addEventListener('processorerror', () => {
+    console.error('[audio-player] Worklet processor error for source', sourceId);
+    ap._activeSources.delete(sourceId);
+    workletNode.disconnect();
+  });
 
   // Listen for position updates and end detection
   workletNode.port.onmessage = (e: MessageEvent) => {

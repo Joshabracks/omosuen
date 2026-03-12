@@ -307,7 +307,9 @@ class Stretch {
       this.inputBuffer.receiveSamples(this.pMidBuffer, this.overlapLength);
     }
 
-    while (this.inputBuffer.frameCount >= this.sampleReq) {
+    let iters = 0;
+    while (this.inputBuffer.frameCount >= this.sampleReq && iters < 8) {
+      iters++;
       const offset = this.seekBestOverlapPosition();
 
       this.outputBuffer.ensureAdditionalCapacity(this.overlapLength);
@@ -714,7 +716,9 @@ class Stretch {
       this.pMidBuffer = new Float32Array(this.overlapLength * 2);
       this.inputBuffer.receiveSamples(this.pMidBuffer, this.overlapLength);
     }
-    while (this.inputBuffer.frameCount >= this.sampleReq) {
+    let iters = 0;
+    while (this.inputBuffer.frameCount >= this.sampleReq && iters < 8) {
+      iters++;
       const offset = this._seekBestOverlapPosition();
       this.outputBuffer.ensureAdditionalCapacity(this.overlapLength);
       this._overlapStereo(2 * offset);
@@ -884,7 +888,7 @@ class StretcherProcessor extends AudioWorkletProcessor {
           this.stretcher = new AudioStretcher(sampleRate);
           this.stretcher.pitchSemitones = msg.pitchShift;
           this.reverse = msg.tempo < 0;
-          this.stretcher.tempo = Math.abs(msg.tempo);
+          this.stretcher.tempo = Math.max(0.05, Math.abs(msg.tempo));
           this.feedBuffer = new Float32Array(16384);
           this.outputSourcePos = msg.sourcePos;
           this.ended = false;
@@ -913,7 +917,7 @@ class StretcherProcessor extends AudioWorkletProcessor {
             } else {
               this.sourcePos = Math.round(this.outputSourcePos);
               this.reverse = msg.value < 0;
-              this.stretcher.tempo = Math.abs(msg.value);
+              this.stretcher.tempo = Math.max(0.05, Math.abs(msg.value));
               this.stretcher.clear();
             }
           }
@@ -952,8 +956,9 @@ class StretcherProcessor extends AudioWorkletProcessor {
     const numFrames = outputL.length;
 
     // Feed source samples scaled by effective tempo+pitch to prevent starvation
-    if (!this.ended) {
-      const effectiveRate = Math.max(1, this.stretcher.virtualTempo * this.stretcher.virtualPitch);
+    const skipFeed = this.preBuffer && this.preBuffer.frameCount > this.transitionBufferFrames * 2;
+    if (!this.ended && !skipFeed) {
+      const effectiveRate = Math.max(0.1, this.stretcher.virtualTempo * this.stretcher.virtualPitch);
       const preDeficit = this.preBuffer ? Math.max(0, this.transitionBufferFrames - this.preBuffer.frameCount) : 0;
       const framesToFeed = Math.min(Math.ceil((numFrames + preDeficit) * effectiveRate) + 128, 16384);
 
@@ -1127,6 +1132,12 @@ class StretcherProcessor extends AudioWorkletProcessor {
       outputFrames = toPull;
     }
 
+    // Sanitize output — prevent NaN/Infinity from corrupting the audio graph
+    for (let i = 0; i < numFrames; i++) {
+      if (!(outputL[i] >= -1 && outputL[i] <= 1)) outputL[i] = 0;
+      if (!(outputR[i] >= -1 && outputR[i] <= 1)) outputR[i] = 0;
+    }
+
     // Apply pending parameter changes when buffer is ready
     if (this.preBuffer && !this.transitioning) {
       const hasPending = this.pendingPitch !== null || this.pendingTempo !== null;
@@ -1139,7 +1150,7 @@ class StretcherProcessor extends AudioWorkletProcessor {
         }
         if (this.pendingTempo !== null) {
           this.reverse = this.pendingTempo < 0;
-          this.stretcher.tempo = Math.abs(this.pendingTempo);
+          this.stretcher.tempo = Math.max(0.05, Math.abs(this.pendingTempo));
           this.pendingTempo = null;
         }
         this.stretcher.clear();

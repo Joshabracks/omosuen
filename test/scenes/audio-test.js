@@ -450,7 +450,8 @@ export async function createScene() {
         spatial: false,
         spatialX: 0,
         spatialY: 0,
-        spatialZ: 0
+        spatialZ: 0,
+        transitionBuffer: 150
     });
     scene.addComponent(halloweenEffect);
 

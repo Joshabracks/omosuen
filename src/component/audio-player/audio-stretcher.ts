@@ -859,6 +859,19 @@ class StretcherProcessor extends AudioWorkletProcessor {
     this.posCounter = 0;
     this.reverse = false;
 
+    // Pre-buffer for seamless transitions
+    this.preBuffer = null;
+    this.transitionBufferFrames = 0;
+    this.fadeOutBuffer = null;
+    this.fadeOutLen = 0;
+    this.fadeOutPos = 0;
+    this.transitioning = false;
+    this.newAudioArrived = false;
+    this.crossfadePos = 0;
+    this.crossfadeLen = 0;
+    this.pendingPitch = null;
+    this.pendingTempo = null;
+
     this.port.onmessage = (e) => {
       const msg = e.data;
       switch (msg.type) {
@@ -876,21 +889,33 @@ class StretcherProcessor extends AudioWorkletProcessor {
           this.outputSourcePos = msg.sourcePos;
           this.ended = false;
           this.stopped = false;
+          if (msg.transitionBuffer > 0) {
+            this.transitionBufferFrames = Math.ceil(sampleRate * msg.transitionBuffer / 1000);
+            this.preBuffer = new SampleBuffer();
+          }
           this.initialized = true;
           break;
         case 'pitch':
           if (this.stretcher) {
-            this.sourcePos = Math.round(this.outputSourcePos);
-            this.stretcher.pitchSemitones = msg.value;
-            this.stretcher.clear();
+            if (this.preBuffer) {
+              this.pendingPitch = msg.value;
+            } else {
+              this.sourcePos = Math.round(this.outputSourcePos);
+              this.stretcher.pitchSemitones = msg.value;
+              this.stretcher.clear();
+            }
           }
           break;
         case 'tempo':
           if (this.stretcher) {
-            this.sourcePos = Math.round(this.outputSourcePos);
-            this.reverse = msg.value < 0;
-            this.stretcher.tempo = Math.abs(msg.value);
-            this.stretcher.clear();
+            if (this.preBuffer) {
+              this.pendingTempo = msg.value;
+            } else {
+              this.sourcePos = Math.round(this.outputSourcePos);
+              this.reverse = msg.value < 0;
+              this.stretcher.tempo = Math.abs(msg.value);
+              this.stretcher.clear();
+            }
           }
           break;
         case 'repeat':
@@ -901,6 +926,20 @@ class StretcherProcessor extends AudioWorkletProcessor {
           break;
       }
     };
+  }
+
+  _beginTransition() {
+    if (this.preBuffer && this.preBuffer.frameCount > 0) {
+      this.fadeOutLen = this.preBuffer.frameCount;
+      this.fadeOutBuffer = new Float32Array(this.fadeOutLen * 2);
+      this.preBuffer.extract(this.fadeOutBuffer, 0, this.fadeOutLen);
+      this.preBuffer.receive(this.fadeOutLen);
+      this.fadeOutPos = 0;
+      this.transitioning = true;
+      this.newAudioArrived = false;
+      this.crossfadePos = 0;
+      this.crossfadeLen = 0;
+    }
   }
 
   process(inputs, outputs) {
@@ -915,7 +954,8 @@ class StretcherProcessor extends AudioWorkletProcessor {
     // Feed source samples scaled by effective tempo+pitch to prevent starvation
     if (!this.ended) {
       const effectiveRate = Math.max(1, this.stretcher.virtualTempo * this.stretcher.virtualPitch);
-      const framesToFeed = Math.min(Math.ceil(numFrames * effectiveRate) + 128, 8192);
+      const preDeficit = this.preBuffer ? Math.max(0, this.transitionBufferFrames - this.preBuffer.frameCount) : 0;
+      const framesToFeed = Math.min(Math.ceil((numFrames + preDeficit) * effectiveRate) + 128, 16384);
 
       if (this.feedBuffer.length < framesToFeed * 2) {
         this.feedBuffer = new Float32Array(framesToFeed * 2);
@@ -956,31 +996,165 @@ class StretcherProcessor extends AudioWorkletProcessor {
 
     this.stretcher.process();
 
-    const available = this.stretcher.outputBuffer.frameCount;
-    const toPull = Math.min(numFrames, available);
+    // ── Output ──
+    let outputFrames = 0;
 
-    if (toPull > 0) {
-      if (this.extractBuffer.length < toPull * 2) {
-        this.extractBuffer = new Float32Array(toPull * 2);
+    if (this.preBuffer) {
+      // Move stretcher output → preBuffer
+      const strAvail = this.stretcher.outputBuffer.frameCount;
+      if (strAvail > 0) {
+        if (this.extractBuffer.length < strAvail * 2) {
+          this.extractBuffer = new Float32Array(strAvail * 2);
+        }
+        this.stretcher.outputBuffer.extract(this.extractBuffer, 0, strAvail);
+        this.stretcher.outputBuffer.receive(strAvail);
+        this.preBuffer.putSamples(this.extractBuffer, 0, strAvail);
       }
-      this.stretcher.outputBuffer.extract(this.extractBuffer, 0, toPull);
-      this.stretcher.outputBuffer.receive(toPull);
-      for (let i = 0; i < toPull; i++) {
-        outputL[i] = this.extractBuffer[i * 2];
-        outputR[i] = this.extractBuffer[i * 2 + 1];
+
+      if (this.transitioning) {
+        // ── Transition: blend fadeOutBuffer (old) with preBuffer (new) ──
+        let written = 0;
+
+        while (written < numFrames && this.transitioning) {
+          const hasOld = this.fadeOutPos < this.fadeOutLen;
+          const hasNew = this.preBuffer.frameCount > 0;
+
+          if (!this.newAudioArrived) {
+            if (hasNew) {
+              // New audio just arrived — begin crossfade
+              this.newAudioArrived = true;
+              const remainingOld = this.fadeOutLen - this.fadeOutPos;
+              this.crossfadeLen = Math.min(remainingOld, 2048);
+              this.crossfadePos = 0;
+            } else if (hasOld) {
+              // No new yet — output old at full volume
+              const n = Math.min(numFrames - written, this.fadeOutLen - this.fadeOutPos);
+              for (let i = 0; i < n; i++) {
+                const idx = (this.fadeOutPos + i) * 2;
+                outputL[written + i] = this.fadeOutBuffer[idx];
+                outputR[written + i] = this.fadeOutBuffer[idx + 1];
+              }
+              this.fadeOutPos += n;
+              written += n;
+              break;
+            } else {
+              // No old, no new — end transition
+              this.transitioning = false;
+              break;
+            }
+          }
+
+          if (this.newAudioArrived && this.transitioning) {
+            if (hasOld && this.crossfadePos < this.crossfadeLen && hasNew) {
+              // Crossfade zone
+              const n = Math.min(
+                numFrames - written,
+                this.crossfadeLen - this.crossfadePos,
+                this.fadeOutLen - this.fadeOutPos,
+                this.preBuffer.frameCount
+              );
+              if (n <= 0) break;
+
+              if (this.extractBuffer.length < n * 2) {
+                this.extractBuffer = new Float32Array(n * 2);
+              }
+              this.preBuffer.extract(this.extractBuffer, 0, n);
+              this.preBuffer.receive(n);
+
+              for (let i = 0; i < n; i++) {
+                const t = (this.crossfadePos + i) / this.crossfadeLen;
+                const oldIdx = (this.fadeOutPos + i) * 2;
+                outputL[written + i] = this.fadeOutBuffer[oldIdx] * (1 - t) + this.extractBuffer[i * 2] * t;
+                outputR[written + i] = this.fadeOutBuffer[oldIdx + 1] * (1 - t) + this.extractBuffer[i * 2 + 1] * t;
+              }
+              this.fadeOutPos += n;
+              this.crossfadePos += n;
+              written += n;
+            } else {
+              // Crossfade complete
+              this.transitioning = false;
+            }
+          }
+        }
+
+        // Fill remaining from preBuffer if transition ended mid-quantum
+        if (!this.transitioning && written < numFrames) {
+          const n = Math.min(numFrames - written, this.preBuffer.frameCount);
+          if (n > 0) {
+            if (this.extractBuffer.length < n * 2) this.extractBuffer = new Float32Array(n * 2);
+            this.preBuffer.extract(this.extractBuffer, 0, n);
+            this.preBuffer.receive(n);
+            for (let i = 0; i < n; i++) {
+              outputL[written + i] = this.extractBuffer[i * 2];
+              outputR[written + i] = this.extractBuffer[i * 2 + 1];
+            }
+            written += n;
+          }
+        }
+
+        for (let i = written; i < numFrames; i++) { outputL[i] = 0; outputR[i] = 0; }
+        outputFrames = written;
+      } else {
+        // Normal pre-buffered output
+        const avail = this.preBuffer.frameCount;
+        const toPull = Math.min(numFrames, avail);
+        if (toPull > 0) {
+          if (this.extractBuffer.length < toPull * 2) this.extractBuffer = new Float32Array(toPull * 2);
+          this.preBuffer.extract(this.extractBuffer, 0, toPull);
+          this.preBuffer.receive(toPull);
+          for (let i = 0; i < toPull; i++) {
+            outputL[i] = this.extractBuffer[i * 2];
+            outputR[i] = this.extractBuffer[i * 2 + 1];
+          }
+        }
+        for (let i = toPull; i < numFrames; i++) { outputL[i] = 0; outputR[i] = 0; }
+        outputFrames = toPull;
+      }
+    } else {
+      // Direct path (no pre-buffer)
+      const available = this.stretcher.outputBuffer.frameCount;
+      const toPull = Math.min(numFrames, available);
+      if (toPull > 0) {
+        if (this.extractBuffer.length < toPull * 2) this.extractBuffer = new Float32Array(toPull * 2);
+        this.stretcher.outputBuffer.extract(this.extractBuffer, 0, toPull);
+        this.stretcher.outputBuffer.receive(toPull);
+        for (let i = 0; i < toPull; i++) {
+          outputL[i] = this.extractBuffer[i * 2];
+          outputR[i] = this.extractBuffer[i * 2 + 1];
+        }
+      }
+      for (let i = toPull; i < numFrames; i++) { outputL[i] = 0; outputR[i] = 0; }
+      outputFrames = toPull;
+    }
+
+    // Apply pending parameter changes when buffer is ready
+    if (this.preBuffer && !this.transitioning) {
+      const hasPending = this.pendingPitch !== null || this.pendingTempo !== null;
+      if (hasPending && this.preBuffer.frameCount >= this.transitionBufferFrames / 2) {
+        this._beginTransition();
+        this.sourcePos = Math.round(this.outputSourcePos);
+        if (this.pendingPitch !== null) {
+          this.stretcher.pitchSemitones = this.pendingPitch;
+          this.pendingPitch = null;
+        }
+        if (this.pendingTempo !== null) {
+          this.reverse = this.pendingTempo < 0;
+          this.stretcher.tempo = Math.abs(this.pendingTempo);
+          this.pendingTempo = null;
+        }
+        this.stretcher.clear();
       }
     }
-    for (let i = toPull; i < numFrames; i++) { outputL[i] = 0; outputR[i] = 0; }
 
-    // Track output-derived source position (accounts for WSOLA pipeline buffering)
-    if (toPull > 0) {
+    // Track output-derived source position
+    if (outputFrames > 0) {
       if (this.reverse) {
-        this.outputSourcePos -= toPull * this.stretcher.virtualTempo;
+        this.outputSourcePos -= outputFrames * this.stretcher.virtualTempo;
         if (this.repeat && this.outputSourcePos < 0) {
           this.outputSourcePos = this.totalFrames + (this.outputSourcePos % this.totalFrames);
         }
       } else {
-        this.outputSourcePos += toPull * this.stretcher.virtualTempo;
+        this.outputSourcePos += outputFrames * this.stretcher.virtualTempo;
         if (this.repeat && this.outputSourcePos >= this.totalFrames) {
           this.outputSourcePos %= this.totalFrames;
         }
@@ -994,7 +1168,9 @@ class StretcherProcessor extends AudioWorkletProcessor {
       this.port.postMessage({ type: 'position', value: this.outputSourcePos });
     }
 
-    if (this.ended && available === 0) {
+    const stretcherEmpty = this.stretcher.outputBuffer.frameCount === 0;
+    const preEmpty = !this.preBuffer || this.preBuffer.frameCount === 0;
+    if (this.ended && stretcherEmpty && preEmpty) {
       this.port.postMessage({ type: 'ended' });
       return false;
     }

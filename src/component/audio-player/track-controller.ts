@@ -38,6 +38,7 @@ export class TrackController {
   private _spatialY: number;
   private _spatialZ: number;
   private _reverb: number;
+  private _transitionBuffer: number;
   private _crossfadeTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Offset into buffer for resume-from-pause (seconds). */
@@ -64,6 +65,7 @@ export class TrackController {
     this._spatialY = effect?.spatialY ?? 0;
     this._spatialZ = effect?.spatialZ ?? 0;
     this._reverb = effect?.reverb ?? 0;
+    this._transitionBuffer = effect?.transitionBuffer ?? 0;
   }
 
   // ── Helpers ──
@@ -146,12 +148,19 @@ export class TrackController {
     const active = this._getActiveSource();
     if (active) {
       if (active.isStretched && active.workletNode) {
-        this._crossfadeParam(active, () => {
-          active.workletNode!.port.postMessage({
+        if (this._transitionBuffer > 0) {
+          active.workletNode.port.postMessage({
             type: 'pitch',
             value: this._pitchShift,
           });
-        });
+        } else {
+          this._crossfadeParam(active, () => {
+            active.workletNode!.port.postMessage({
+              type: 'pitch',
+              value: this._pitchShift,
+            });
+          });
+        }
       } else if (active.source) {
         active.source.detune.value = this._pitchShift * 100;
       }
@@ -166,12 +175,19 @@ export class TrackController {
     const active = this._getActiveSource();
     if (active) {
       if (active.isStretched && active.workletNode) {
-        this._crossfadeParam(active, () => {
-          active.workletNode!.port.postMessage({
+        if (this._transitionBuffer > 0) {
+          active.workletNode.port.postMessage({
             type: 'tempo',
             value: this._speedShift,
           });
-        });
+        } else {
+          this._crossfadeParam(active, () => {
+            active.workletNode!.port.postMessage({
+              type: 'tempo',
+              value: this._speedShift,
+            });
+          });
+        }
       } else if (active.source) {
         active.source.playbackRate.value = this._speedShift;
       }
@@ -328,6 +344,11 @@ export class TrackController {
     if (active) {
       active.reverbSend.gain.value = this._reverb;
     }
+  }
+
+  /** Pre-buffer duration in ms for seamless pitch/speed transitions. Takes effect on next play(). */
+  get transitionBuffer(): number {
+    return this._transitionBuffer;
   }
 
   // ── Track info & seeking ──

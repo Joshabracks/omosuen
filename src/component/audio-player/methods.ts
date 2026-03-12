@@ -198,6 +198,7 @@ interface PlayEffectData {
   spatialY: number;
   spatialZ: number;
   reverb: number;
+  transitionBuffer: number;
   offset: number;
 }
 
@@ -350,6 +351,7 @@ function play(
     spatialY: effect?.spatialY ?? 0,
     spatialZ: effect?.spatialZ ?? 0,
     reverb: effect?.reverb ?? 0,
+    transitionBuffer: effect?.transitionBuffer ?? 0,
     offset: 0,
   });
 }
@@ -404,6 +406,7 @@ function playStretched(
       pitchShift: effectData.pitchShift,
       tempo: effectData.speedShift,
       repeat,
+      transitionBuffer: effectData.transitionBuffer,
     },
     [channelL.buffer, channelR.buffer],
   );
@@ -508,6 +511,7 @@ function _playController(
     spatialY: controller.spatialY,
     spatialZ: controller.spatialZ,
     reverb: controller.reverb,
+    transitionBuffer: controller.transitionBuffer,
     offset: controller._pauseOffset,
   });
 }

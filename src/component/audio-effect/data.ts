@@ -46,6 +46,9 @@ export interface AudioEffectT
 
   /** Spatial Z position (front-back, default 0). */
   spatialZ: number;
+
+  /** Pre-buffer duration in ms for seamless pitch/speed transitions (default 0 = disabled). */
+  transitionBuffer: number;
 }
 
 export interface AudioEffectOptions extends ComponentOptions {
@@ -59,6 +62,7 @@ export interface AudioEffectOptions extends ComponentOptions {
   spatialX?: number;
   spatialY?: number;
   spatialZ?: number;
+  transitionBuffer?: number;
 }
 
 export function builder(options: AudioEffectOptions): AudioEffectT {
@@ -80,6 +84,7 @@ export function builder(options: AudioEffectOptions): AudioEffectT {
     spatialX: options.spatialX ?? 0,
     spatialY: options.spatialY ?? 0,
     spatialZ: options.spatialZ ?? 0,
+    transitionBuffer: options.transitionBuffer ?? 0,
   };
 
   return audioEffect as unknown as AudioEffectT;
@@ -103,6 +108,7 @@ function serialize(component: ComponentData): any {
     spatialX: ae.spatialX,
     spatialY: ae.spatialY,
     spatialZ: ae.spatialZ,
+    transitionBuffer: ae.transitionBuffer,
   };
 }
 
@@ -137,6 +143,7 @@ function deserialize(data: any): AudioEffectT {
     spatialX: (data.spatialX as number) ?? 0,
     spatialY: (data.spatialY as number) ?? 0,
     spatialZ: (data.spatialZ as number) ?? 0,
+    transitionBuffer: (data.transitionBuffer as number) ?? 0,
   });
 }
 
@@ -156,4 +163,5 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'spatialX',
   'spatialY',
   'spatialZ',
+  'transitionBuffer',
 ];

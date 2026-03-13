@@ -100,14 +100,17 @@ export class TrackController {
     gain.setValueAtTime(gain.value, now);
     gain.exponentialRampToValueAtTime(0.001, now + fadeSec);
 
-    this._crossfadeTimer = setTimeout(() => {
-      this._crossfadeTimer = null;
-      apply();
-      const t = ctx.currentTime;
-      gain.cancelScheduledValues(t);
-      gain.setValueAtTime(0.001, t);
-      gain.exponentialRampToValueAtTime(vol, t + fadeSec);
-    }, fadeSec * 1000 + 2);
+    this._crossfadeTimer = setTimeout(
+      () => {
+        this._crossfadeTimer = null;
+        apply();
+        const t = ctx.currentTime;
+        gain.cancelScheduledValues(t);
+        gain.setValueAtTime(0.001, t);
+        gain.exponentialRampToValueAtTime(vol, t + fadeSec);
+      },
+      fadeSec * 1000 + 2,
+    );
   }
 
   /** The AudioTrack this controller wraps. */
@@ -223,11 +226,7 @@ export class TrackController {
     this._mix = [...arr];
     const active = this._getActiveSource();
     if (active) {
-      for (
-        let i = 0;
-        i < active.filters.length && i < this._mix.length;
-        i++
-      ) {
+      for (let i = 0; i < active.filters.length && i < this._mix.length; i++) {
         active.filters[i].gain.value = this._mix[i] * 12;
       }
     }

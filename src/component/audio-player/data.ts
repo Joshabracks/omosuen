@@ -24,8 +24,7 @@ export interface ActiveSource {
 }
 
 export interface AudioPlayerT
-  extends ComponentData,
-    ComponentInstanceMethods<AudioPlayerMethods> {
+  extends ComponentData, ComponentInstanceMethods<AudioPlayerMethods> {
   type: 'audio-player';
   unique: ComponentUnique.GLOBAL;
 

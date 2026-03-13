@@ -75,8 +75,7 @@ async function init(component: ComponentData): Promise<void> {
   for (let ch = 0; ch < 2; ch++) {
     const data = irBuffer.getChannelData(ch);
     for (let i = 0; i < irLength; i++) {
-      data[i] =
-        (Math.random() * 2 - 1) * Math.pow(1 - i / irLength, 3);
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / irLength, 3);
     }
   }
   reverbConvolver.buffer = irBuffer;
@@ -423,7 +422,10 @@ function playStretched(
 
   // Detect worklet crashes and clean up leaked sources
   workletNode.addEventListener('processorerror', () => {
-    console.error('[audio-player] Worklet processor error for source', sourceId);
+    console.error(
+      '[audio-player] Worklet processor error for source',
+      sourceId,
+    );
     ap._activeSources.delete(sourceId);
     workletNode.disconnect();
   });

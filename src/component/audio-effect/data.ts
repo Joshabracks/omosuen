@@ -84,7 +84,7 @@ export function builder(options: AudioEffectOptions): AudioEffectT {
     spatialX: options.spatialX ?? 0,
     spatialY: options.spatialY ?? 0,
     spatialZ: options.spatialZ ?? 0,
-    transitionBuffer: options.transitionBuffer ?? 0,
+    transitionBuffer: options.transitionBuffer ?? 150,
   };
 
   return audioEffect as unknown as AudioEffectT;
@@ -143,7 +143,7 @@ function deserialize(data: any): AudioEffectT {
     spatialX: (data.spatialX as number) ?? 0,
     spatialY: (data.spatialY as number) ?? 0,
     spatialZ: (data.spatialZ as number) ?? 0,
-    transitionBuffer: (data.transitionBuffer as number) ?? 0,
+    transitionBuffer: (data.transitionBuffer as number) ?? 150,
   });
 }
 

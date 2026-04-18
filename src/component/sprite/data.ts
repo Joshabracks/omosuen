@@ -119,7 +119,8 @@ export function builder(options: SpriteOptions): SpriteT {
     tint: options.tint ?? new Vector4D(1, 1, 1, 1),
     opacity: options.opacity ?? 1.0,
     showSilhouette: options.showSilhouette ?? false,
-    silhouetteColor: options.silhouetteColor ?? new Vector4D(0.2, 0.4, 0.8, 0.5),
+    silhouetteColor:
+      options.silhouetteColor ?? new Vector4D(0.2, 0.4, 0.8, 0.5),
   };
 
   return sprite as unknown as SpriteT;
@@ -178,7 +179,17 @@ function serialize(component: ComponentData): any {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deserialize(data: any): SpriteT {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-  const { type, name, textureMapKeys, frame, anchor, tint, opacity, showSilhouette, silhouetteColor } = data;
+  const {
+    type,
+    name,
+    textureMapKeys,
+    frame,
+    anchor,
+    tint,
+    opacity,
+    showSilhouette,
+    silhouetteColor,
+  } = data;
 
   const errors = [];
   if (type !== 'sprite') {
@@ -210,8 +221,16 @@ function deserialize(data: any): SpriteT {
   // Reconstruct Vector4D silhouetteColor
   let silhouetteColorVec: Vector4D | undefined;
   if (silhouetteColor && typeof silhouetteColor === 'object') {
-    if ('_vectorType' in silhouetteColor && silhouetteColor._vectorType === 'Vector4D') {
-      silhouetteColorVec = new Vector4D(silhouetteColor.x, silhouetteColor.y, silhouetteColor.z, silhouetteColor.w);
+    if (
+      '_vectorType' in silhouetteColor &&
+      silhouetteColor._vectorType === 'Vector4D'
+    ) {
+      silhouetteColorVec = new Vector4D(
+        silhouetteColor.x,
+        silhouetteColor.y,
+        silhouetteColor.z,
+        silhouetteColor.w,
+      );
     }
   }
 

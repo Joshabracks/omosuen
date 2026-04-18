@@ -1,49 +1,6 @@
 import { BUILDERS, MethodRegistry, PROPERTY_ALLOWLIST } from './registry';
 import { queueInit } from '../loop/init';
 import { Nexus, NexusT } from './nexus';
-import { CameraT } from './camera';
-import { CellMapT } from './cell-map';
-import { ColliderT } from './collider';
-import { DataLayerT } from './data-layer';
-import { FlagManagerT } from './flag-manager';
-import { InputControllerT } from './input-controller';
-import { LightT } from './light';
-import { MessengerT } from './messenger';
-import { SpriteT } from './sprite';
-import { TextureMapT } from './texture-map';
-import { TimerT } from './timer';
-import { TransformT } from './transform';
-import { UIOverlayT } from './ui-overlay';
-import { ViewportT } from './viewport';
-import { AtlasManagerT } from './atlas-manager';
-import { AnimationControllerT } from './animation-controller';
-import { AudioTrackT } from './audio-track';
-import { AudioEffectT } from './audio-effect';
-import { AudioPlayerT } from './audio-player';
-import { EventColliderT } from './event-collider';
-
-export type ComponentDataType =
-  | AnimationControllerT
-  | AtlasManagerT
-  | AudioTrackT
-  | AudioEffectT
-  | AudioPlayerT
-  | CameraT
-  | CellMapT
-  | ColliderT
-  | DataLayerT
-  | FlagManagerT
-  | InputControllerT
-  | LightT
-  | MessengerT
-  | NexusT
-  | SpriteT
-  | TextureMapT
-  | TimerT
-  | TransformT
-  | UIOverlayT
-  | ViewportT
-  | EventColliderT;
 
 /**
  * Registry mapping raw component objects to their Proxy wrappers.
@@ -111,12 +68,10 @@ function ensureNexusMaps(): void {
  * const viewport = parentNexus.getComponentByName('My Viewport', false);
  * ```
  */
-export function castTo<T extends ComponentDataType>(
-  component: ComponentData,
-): T {
+export function castTo<T>(component: ComponentData): T {
   // Look up in registry - if not found, component might already be a Proxy or never registered
   const proxy = PROXY_REGISTRY.get(component);
-  return (proxy || component) as unknown as T;
+  return (proxy || component) as T;
 }
 
 let COMPONENT_COUNT = 0;

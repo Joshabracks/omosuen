@@ -4,12 +4,13 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import type { AudioEffectMethods } from './methods';
 
 export interface AudioEffectT
-  extends ComponentData,
-    ComponentInstanceMethods<AudioEffectMethods> {
+  extends ComponentData, ComponentInstanceMethods<AudioEffectMethods> {
   type: 'audio-effect';
   unique: ComponentUnique.FALSE;
 
@@ -113,38 +114,60 @@ function serialize(component: ComponentData): any {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): AudioEffectT {
+function deserialize(data: any): DeserializeResult<AudioEffectT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'audio-effect deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name } = data;
 
-  const errors: string[] = [];
   if (type !== 'audio-effect') {
-    errors.push(`type ${type} does not match "audio-effect"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      message: `type ${type} does not match "audio-effect"`,
+    });
   }
   if (!name) {
-    errors.push('audio-effect requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'audio-effect requires a name',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
-  return builder({
-    name: name as string,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    overrideKey: data.overrideKey,
-    pitchShift: (data.pitchShift as number) ?? 0,
-    speedShift: (data.speedShift as number) ?? 1.0,
-    reverb: (data.reverb as number) ?? 0,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    mix: Array.isArray(data.mix) ? (data.mix as number[]) : [],
-    volume: (data.volume as number) ?? 1.0,
-    pan: (data.pan as number) ?? 0,
-    spatial: !!data.spatial,
-    spatialX: (data.spatialX as number) ?? 0,
-    spatialY: (data.spatialY as number) ?? 0,
-    spatialZ: (data.spatialZ as number) ?? 0,
-    transitionBuffer: (data.transitionBuffer as number) ?? 150,
-  });
+  return {
+    component: builder({
+      name: name as string,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      overrideKey: data.overrideKey,
+      pitchShift: (data.pitchShift as number) ?? 0,
+      speedShift: (data.speedShift as number) ?? 1.0,
+      reverb: (data.reverb as number) ?? 0,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      mix: Array.isArray(data.mix) ? (data.mix as number[]) : [],
+      volume: (data.volume as number) ?? 1.0,
+      pan: (data.pan as number) ?? 0,
+      spatial: !!data.spatial,
+      spatialX: (data.spatialX as number) ?? 0,
+      spatialY: (data.spatialY as number) ?? 0,
+      spatialZ: (data.spatialZ as number) ?? 0,
+      transitionBuffer: (data.transitionBuffer as number) ?? 150,
+    }),
+    errors,
+  };
 }
 
 export const AudioEffectSerializer: ComponentSerializer = {

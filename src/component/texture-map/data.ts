@@ -2,6 +2,8 @@ import type {
   ComponentData,
   ComponentOptions,
   ComponentSerializer,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import { ComponentUnique } from '../types';
 import type {
@@ -239,10 +241,47 @@ function serialize(component: ComponentData): any {
 }
 
 /**
+ * Collapse errors sharing the same `code` into a single tallied entry.
+ * Preserves the first-seen message as representative; sums the counts.
+ * This keeps a texture-map with N broken frames from producing N error
+ * entries — the caller gets one entry with count = N instead.
+ */
+function tallyErrors(errors: DeserializationError[]): DeserializationError[] {
+  const map = new Map<string, DeserializationError>();
+  for (const err of errors) {
+    const existing = map.get(err.code);
+    const increment = err.count ?? 1;
+    if (existing) {
+      existing.count = (existing.count ?? 1) + increment;
+    } else {
+      map.set(err.code, { ...err, count: increment });
+    }
+  }
+  return Array.from(map.values());
+}
+
+/**
  * Deserializes a plain object back into a texture-map component.
+ * Errors of the same category are tallied (see tallyErrors) so a single
+ * texture-map with many malformed frames surfaces as one entry per code
+ * rather than hundreds of near-identical messages.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): TextureMapT {
+function deserialize(data: any): DeserializeResult<TextureMapT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'texture-map deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const {
     type,
@@ -252,18 +291,24 @@ function deserialize(data: any): TextureMapT {
     imageType: imageTypeData,
   } = data;
 
-  const errors = [];
   if (type !== 'texture-map') {
-    errors.push(`type ${type} does not match "texture-map"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      message: `type ${type} does not match "texture-map"`,
+    });
   }
   if (!name) {
-    errors.push('texture-map requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'texture-map requires a name',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors: tallyErrors(errors) };
   }
 
-  // Reconstruct imageType from serialized format
+  const componentName = name as string;
+
   let imageType: ImageType;
 
   if (imageTypeData && typeof imageTypeData === 'object') {
@@ -273,36 +318,111 @@ function deserialize(data: any): TextureMapT {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       Array.isArray(imageTypeData.frames)
     ) {
-      // Reconstruct FrameMap (Vector4D[])
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-      imageType = imageTypeData.frames.map(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (f: any) => new Vector4D(f.x, f.y, f.w, f.h),
-      );
+      // Reconstruct FrameMap (Vector4D[]), recording per-frame errors for
+      // malformed entries. These will be tallied before returning.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+      const frames = imageTypeData.frames as unknown[];
+      const vectors: Vector4D[] = [];
+      for (let i = 0; i < frames.length; i += 1) {
+        const f = frames[i];
+        if (!f || typeof f !== 'object') {
+          errors.push({
+            code: 'INVALID_FRAME',
+            message: `texture-map "${componentName}" has a malformed framemap entry (not an object); defaulted to (0, 0, 0, 0)`,
+          });
+          vectors.push(new Vector4D(0, 0, 0, 0));
+          continue;
+        }
+        const frame = f as {
+          x?: unknown;
+          y?: unknown;
+          w?: unknown;
+          h?: unknown;
+        };
+        const fields: Array<[keyof typeof frame, string]> = [
+          ['x', 'x'],
+          ['y', 'y'],
+          ['w', 'w'],
+          ['h', 'h'],
+        ];
+        const values: number[] = [0, 0, 0, 0];
+        for (let fi = 0; fi < fields.length; fi += 1) {
+          const [key] = fields[fi];
+          const v = frame[key];
+          if (typeof v !== 'number' || !Number.isFinite(v)) {
+            errors.push({
+              code: `INVALID_FRAME_${key.toString().toUpperCase()}`,
+              message: `texture-map "${componentName}" framemap entries have a non-numeric "${key.toString()}" coordinate; defaulted to 0`,
+            });
+          } else {
+            values[fi] = v;
+          }
+        }
+        vectors.push(new Vector4D(values[0], values[1], values[2], values[3]));
+      }
+      imageType = vectors;
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     } else if (imageTypeData.mode === 'grid') {
-      // Reconstruct GridConfig
+      const g = imageTypeData as {
+        cellWidth?: unknown;
+        cellHeight?: unknown;
+        cols?: unknown;
+        rows?: unknown;
+        cellCount?: unknown;
+      };
+      const cellWidth =
+        typeof g.cellWidth === 'number' && Number.isFinite(g.cellWidth)
+          ? g.cellWidth
+          : 0;
+      if (cellWidth === 0 && g.cellWidth !== 0) {
+        errors.push({
+          code: 'INVALID_GRID_CELL_WIDTH',
+          message: `texture-map "${componentName}" grid cellWidth is not a finite number; defaulted to 0`,
+        });
+      }
+      const cellHeight =
+        typeof g.cellHeight === 'number' && Number.isFinite(g.cellHeight)
+          ? g.cellHeight
+          : 0;
+      if (cellHeight === 0 && g.cellHeight !== 0) {
+        errors.push({
+          code: 'INVALID_GRID_CELL_HEIGHT',
+          message: `texture-map "${componentName}" grid cellHeight is not a finite number; defaulted to 0`,
+        });
+      }
+      const cols =
+        typeof g.cols === 'number' && Number.isFinite(g.cols) ? g.cols : 0;
+      if (cols === 0 && g.cols !== 0) {
+        errors.push({
+          code: 'INVALID_GRID_COLS',
+          message: `texture-map "${componentName}" grid cols is not a finite number; defaulted to 0`,
+        });
+      }
+      const rows =
+        typeof g.rows === 'number' && Number.isFinite(g.rows) ? g.rows : 0;
+      if (rows === 0 && g.rows !== 0) {
+        errors.push({
+          code: 'INVALID_GRID_ROWS',
+          message: `texture-map "${componentName}" grid rows is not a finite number; defaulted to 0`,
+        });
+      }
       imageType = {
-        cellSize: new Vector2D(
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-          imageTypeData.cellWidth,
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-          imageTypeData.cellHeight,
-        ),
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        gridSize: new Vector2D(imageTypeData.cols, imageTypeData.rows),
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
-        cellCount: imageTypeData.cellCount,
+        cellSize: new Vector2D(cellWidth, cellHeight),
+        gridSize: new Vector2D(cols, rows),
+        cellCount: g.cellCount,
       } as GridConfig;
     }
   }
 
-  return builder({
-    name: name as string,
-    textureMapKey: textureMapKey as string,
-    filePath: filePath as string,
-    imageType,
-  });
+  return {
+    component: builder({
+      name: componentName,
+      textureMapKey: textureMapKey as string,
+      filePath: filePath as string,
+      imageType,
+    }),
+    errors: tallyErrors(errors),
+  };
 }
 
 export const TextureMapSerializer: ComponentSerializer = {

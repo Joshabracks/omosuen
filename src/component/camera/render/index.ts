@@ -116,8 +116,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
   const heightScale = Math.cos(angleRad) * 1.1547005; // cos(a)/cos(30deg)
 
   // Project camera 3D world position to 2D axonometric space
-  const camIsoX =
-    transform.position.x * ISO_H - transform.position.z * ISO_H;
+  const camIsoX = transform.position.x * ISO_H - transform.position.z * ISO_H;
   const camIsoY =
     transform.position.x * sinA -
     transform.position.y * heightScale +

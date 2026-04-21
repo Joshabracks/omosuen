@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import type { CameraMethods } from './methods';
 
@@ -208,7 +210,21 @@ function serialize(component: ComponentData): any {
  * WebGL resources will be recreated during init.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): CameraT {
+function deserialize(data: any): DeserializeResult<CameraT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'camera deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const {
     type,
@@ -222,30 +238,42 @@ function deserialize(data: any): CameraT {
     revealRadius,
   } = data;
 
-  const errors = [];
   if (type !== 'camera') {
-    errors.push(`type ${type} does not match "camera"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+      message: `type ${type} does not match "camera"`,
+    });
   }
   if (!name) {
-    errors.push('camera requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'camera requires a name',
+    });
   }
   if (!viewportRef) {
-    errors.push('camera requires a viewportRef');
+    errors.push({
+      code: 'MISSING_VIEWPORT_REF',
+      message: 'camera requires a viewportRef',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
-  return builder({
-    name: name as string,
-    zoom: zoom as number,
-    pixelScale: pixelScale as number,
-    axonometricAngle: axonometricAngle as number,
-    viewportRef: viewportRef as string,
-    revealYOffset: revealYOffset as number | undefined,
-    revealFadeHeight: revealFadeHeight as number | undefined,
-    revealRadius: revealRadius as number | undefined,
-  });
+  return {
+    component: builder({
+      name: name as string,
+      zoom: zoom as number,
+      pixelScale: pixelScale as number,
+      axonometricAngle: axonometricAngle as number,
+      viewportRef: viewportRef as string,
+      revealYOffset: revealYOffset as number | undefined,
+      revealFadeHeight: revealFadeHeight as number | undefined,
+      revealRadius: revealRadius as number | undefined,
+    }),
+    errors,
+  };
 }
 
 export const CameraSerializer: ComponentSerializer = {

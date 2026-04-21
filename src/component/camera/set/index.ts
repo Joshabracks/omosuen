@@ -57,8 +57,7 @@ export function setZoom(camera: CameraT, zoom: number): void {
         }
       } else {
         transform.position.x += screenDx / (2 * ISO_H) + screenDy / (2 * sinA);
-        transform.position.z +=
-          -screenDx / (2 * ISO_H) + screenDy / (2 * sinA);
+        transform.position.z += -screenDx / (2 * ISO_H) + screenDy / (2 * sinA);
       }
     }
   }

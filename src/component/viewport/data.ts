@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import { Vector4D } from '../../math';
 import type { ViewportMethods } from './methods';
@@ -76,10 +78,10 @@ export function builder(options: ViewportOptions): ViewportT {
   let gl: WebGL2RenderingContext | null = null;
   try {
     gl = canvas.getContext('webgl2', {
-      depth: true,              // Explicitly request depth buffer for z-depth sorting
-      stencil: false,           // Stencil buffer not needed
-      alpha: true,              // Allow transparency
-      antialias: false,         // Pixel-perfect rendering (no antialiasing)
+      depth: true, // Explicitly request depth buffer for z-depth sorting
+      stencil: false, // Stencil buffer not needed
+      alpha: true, // Allow transparency
+      antialias: false, // Pixel-perfect rendering (no antialiasing)
       premultipliedAlpha: true, // Standard alpha blending
     });
     if (!gl) {
@@ -146,28 +148,59 @@ function serialize(component: ComponentData): any {
  * Recreates the canvas and WebGL2 context.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): ViewportT {
+function deserialize(data: any): DeserializeResult<ViewportT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'viewport deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, width, height, offsetX, offsetY, backgroundColor } = data;
 
-  const errors = [];
   if (type !== 'viewport') {
-    errors.push(`type ${type} does not match "viewport"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+      message: `type ${type} does not match "viewport"`,
+    });
   }
   if (!name) {
-    errors.push('viewport requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'viewport requires a name',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
-  // Reconstruct backgroundColor Vector4D
+  const componentName = name as string;
+
   let bgColor = new Vector4D(0, 0, 0, 1);
-  if (backgroundColor && typeof backgroundColor === 'object') {
-    if (
-      '_vectorType' in backgroundColor &&
-      backgroundColor._vectorType === 'Vector4D'
+  if (backgroundColor !== undefined) {
+    if (!backgroundColor || typeof backgroundColor !== 'object') {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `viewport "${componentName}" backgroundColor is not an object; defaulting to (0,0,0,1)`,
+      });
+    } else if (
+      !('_vectorType' in backgroundColor) ||
+      backgroundColor._vectorType !== 'Vector4D'
     ) {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `viewport "${componentName}" backgroundColor missing _vectorType='Vector4D' marker; defaulting`,
+      });
+    } else {
       bgColor = new Vector4D(
         backgroundColor.x,
         backgroundColor.y,
@@ -177,14 +210,17 @@ function deserialize(data: any): ViewportT {
     }
   }
 
-  return builder({
-    name: name as string,
-    width: width as number,
-    height: height as number,
-    offsetX: offsetX as number,
-    offsetY: offsetY as number,
-    backgroundColor: bgColor,
-  });
+  return {
+    component: builder({
+      name: componentName,
+      width: width as number,
+      height: height as number,
+      offsetX: offsetX as number,
+      offsetY: offsetY as number,
+      backgroundColor: bgColor,
+    }),
+    errors,
+  };
 }
 
 export const ViewportSerializer: ComponentSerializer = {

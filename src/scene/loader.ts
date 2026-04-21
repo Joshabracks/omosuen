@@ -26,6 +26,8 @@ import type {
   ComponentData,
   ComponentSerializer,
   COMPONENT_TYPE,
+  DeserializationError,
+  DeserializeResult,
 } from '../component/types';
 import {
   resetComponentCount,
@@ -326,23 +328,48 @@ export async function loadScript(nexus: NexusT): Promise<void> {
  * Recursively deserializes a component and its children.
  * Restores generic ComponentData fields and tracks max ID for counter reset.
  *
+ * Returns `{ component, errors }`:
+ *   - `component`: the Proxy-wrapped component, or null if deserialization
+ *     produced no usable object (unknown type, missing required identity
+ *     fields, catastrophic exception).
+ *   - `errors`: every structured problem encountered in this subtree. For
+ *     a nexus root this includes the nexus's own errors *plus* all errors
+ *     from recursively-deserialized children, flattened into one array.
+ *
  * @param data - Serialized component data
  * @param maxId - Track the maximum ID seen during deserialization (passed by reference via object)
- * @returns Deserialized component or null on error
  */
 
 export async function deserializeComponentRecursive(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: any,
   maxId: { value: number } = { value: -1 },
-): Promise<ComponentData | null> {
+): Promise<DeserializeResult<ComponentData>> {
   try {
-    let component: ComponentData | null = null;
+    if (!data || typeof data !== 'object') {
+      return {
+        component: null,
+        errors: [
+          {
+            code: 'INVALID_DATA',
+            message: 'deserializeComponentRecursive received non-object data',
+          },
+        ],
+      };
+    }
+
+    const errors: DeserializationError[] = [];
 
     // Call component-specific deserializer
     if (data.type === 'nexus') {
-      // Deserialize the nexus itself (creates empty nexus)
-      const nexusComp = NexusSerializer.deserialize(data) as NexusT;
+      const nexusResult = await Promise.resolve(
+        NexusSerializer.deserialize(data),
+      );
+      errors.push(...nexusResult.errors);
+      if (!nexusResult.component) {
+        return { component: null, errors };
+      }
+      const nexusComp = nexusResult.component as NexusT;
 
       // Restore generic fields BEFORE wrapping so the proxy has them
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
@@ -385,31 +412,40 @@ export async function deserializeComponentRecursive(
         queueInit(nexusComp.id);
       }
 
-      // Add children to the PROXY so parent references are correct
+      // Recursively deserialize children. Collect ALL their errors — even
+      // errors from children whose own component could not be constructed.
       if (data.components && Array.isArray(data.components)) {
         for (const childData of data.components) {
-          const child = await deserializeComponentRecursive(childData, maxId);
-          if (child) {
-            Nexus.addComponent(proxy as NexusT, child);
+          const childResult = await deserializeComponentRecursive(
+            childData,
+            maxId,
+          );
+          errors.push(...childResult.errors);
+          if (childResult.component) {
+            Nexus.addComponent(proxy as NexusT, childResult.component);
           }
         }
       }
 
-      return proxy;
-    } else {
-      const serializer = SERIALIZERS[data.type as COMPONENT_TYPE];
-      if (serializer) {
-        component = serializer.deserialize(data) as ComponentData;
-      } else {
-        console.error(
-          `[SCENE LOADER ERROR] Unknown component type: ${data.type}`,
-        );
-        return null;
-      }
+      return { component: proxy, errors };
     }
 
+    // Non-nexus component
+    const serializer = SERIALIZERS[data.type as COMPONENT_TYPE];
+    if (!serializer) {
+      errors.push({
+        code: 'UNKNOWN_COMPONENT_TYPE',
+        // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+        message: `Unknown component type: ${data.type}`,
+      });
+      return { component: null, errors };
+    }
+
+    const result = await Promise.resolve(serializer.deserialize(data));
+    errors.push(...result.errors);
+    const component = result.component;
     if (!component) {
-      return null;
+      return { component: null, errors };
     }
 
     // Restore generic ComponentData fields
@@ -457,7 +493,7 @@ export async function deserializeComponentRecursive(
       queueInit(component.id);
     }
 
-    return proxy;
+    return { component: proxy, errors };
   } catch (error) {
     const errorMessage =
       error instanceof Error
@@ -466,7 +502,15 @@ export async function deserializeComponentRecursive(
     console.error(
       `[SCENE LOADER ERROR] Failed to deserialize component: ${errorMessage}`,
     );
-    return null;
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'DESERIALIZE_EXCEPTION',
+          message: `Unexpected exception during deserialization: ${errorMessage}`,
+        },
+      ],
+    };
   }
 }
 
@@ -500,8 +544,19 @@ async function loadFromSerialized(
     const maxId = { value: -1 };
 
     // Recursively deserialize the entire scene hierarchy
-    const scene = (await deserializeComponentRecursive(data, maxId)) as NexusT;
+    const result = await deserializeComponentRecursive(data, maxId);
 
+    // Surface any accumulated errors to the console so the failure mode is
+    // visible even when the top-level component did come back non-null.
+    if (result.errors.length > 0) {
+      for (const err of result.errors) {
+        const suffix =
+          err.count !== undefined && err.count > 1 ? ` (×${err.count})` : '';
+        console.warn(`[SCENE LOADER ${err.code}] ${err.message}${suffix}`);
+      }
+    }
+
+    const scene = result.component as NexusT | null;
     if (!scene || scene.type !== 'nexus') {
       console.error(
         `[SCENE LOADER ERROR] Deserialized data from "${filePath}" is not a valid nexus component`,

@@ -319,7 +319,45 @@ export async function newComponent(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type SerializedData = Record<string, any>;
 
+/**
+ * Structured problem encountered during deserialization.
+ *
+ * Deserializers collect these rather than throwing so that the caller can
+ * inspect every issue in one pass. A non-empty errors array does not
+ * necessarily mean the component is null — malformed nested data (bad
+ * vectors, missing optional fields) is recorded here while the component
+ * is still reconstructed using sensible defaults.
+ */
+export interface DeserializationError {
+  /** Machine-readable category, e.g. 'TYPE_MISMATCH', 'MISSING_NAME', 'INVALID_VECTOR'. */
+  code: string;
+  /** Human-readable description. */
+  message: string;
+  /**
+   * Occurrence count. Defaults to 1 when undefined. Used by texture-map's
+   * tallying (where hundreds of identical per-frame errors collapse to one).
+   */
+  count?: number;
+}
+
+/**
+ * Return shape for every component deserializer.
+ *
+ * `component` is null only when deserialization can't produce a usable
+ * object — typically type mismatch or missing identity (`name`). For
+ * recoverable issues, `component` is non-null and `errors` describes what
+ * was coerced to defaults.
+ */
+export interface DeserializeResult<T = ComponentData> {
+  component: T | null;
+  errors: DeserializationError[];
+}
+
 export interface ComponentSerializer {
   serialize(component: ComponentData): SerializedData;
-  deserialize(data: SerializedData): ComponentData | Promise<ComponentData>;
+  deserialize(
+    data: SerializedData,
+  ):
+    | DeserializeResult<ComponentData>
+    | Promise<DeserializeResult<ComponentData>>;
 }

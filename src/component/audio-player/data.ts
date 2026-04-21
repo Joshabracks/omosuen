@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import type { AudioPlayerMethods } from './methods';
 
@@ -100,28 +102,50 @@ function serialize(component: ComponentData): any {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): AudioPlayerT {
+function deserialize(data: any): DeserializeResult<AudioPlayerT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'audio-player deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name } = data;
 
-  const errors: string[] = [];
   if (type !== 'audio-player') {
-    errors.push(`type ${type} does not match "audio-player"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      message: `type ${type} does not match "audio-player"`,
+    });
   }
   if (!name) {
-    errors.push('audio-player requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'audio-player requires a name',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
-  return builder({
-    name: name as string,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    overrideKey: data.overrideKey,
-    masterVolume: (data.masterVolume as number) ?? 1.0,
-    muted: !!data.muted,
-  });
+  return {
+    component: builder({
+      name: name as string,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      overrideKey: data.overrideKey,
+      masterVolume: (data.masterVolume as number) ?? 1.0,
+      muted: !!data.muted,
+    }),
+    errors,
+  };
 }
 
 export const AudioPlayerSerializer: ComponentSerializer = {

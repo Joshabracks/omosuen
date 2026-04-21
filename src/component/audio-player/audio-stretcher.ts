@@ -23,17 +23,14 @@ const SCAN_OFFSETS: number[][] = [
     1054, 1116, 1178, 1240, 1302, 1364, 1426, 1488, 0,
   ],
   [
-    -100, -75, -50, -25, 25, 50, 75, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0,
-  ],
-  [
-    -20, -15, -10, -5, 5, 10, 15, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    -100, -75, -50, -25, 25, 50, 75, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0,
   ],
   [
-    -4, -3, -2, -1, 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,
+    -20, -15, -10, -5, 5, 10, 15, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0,
   ],
+  [-4, -3, -2, -1, 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 ];
 
 // Auto sequence/seek parameters keyed to tempo range 0.5 – 2.0
@@ -48,8 +45,7 @@ const AUTOSEQ_C = AUTOSEQ_AT_MIN - AUTOSEQ_K * AUTOSEQ_TEMPO_LOW;
 const AUTOSEEK_AT_MIN = 25.0;
 const AUTOSEEK_AT_MAX = 15.0;
 const AUTOSEEK_K =
-  (AUTOSEEK_AT_MAX - AUTOSEEK_AT_MIN) /
-  (AUTOSEQ_TEMPO_TOP - AUTOSEQ_TEMPO_LOW);
+  (AUTOSEEK_AT_MAX - AUTOSEEK_AT_MIN) / (AUTOSEQ_TEMPO_TOP - AUTOSEQ_TEMPO_LOW);
 const AUTOSEEK_C = AUTOSEEK_AT_MIN - AUTOSEEK_K * AUTOSEQ_TEMPO_LOW;
 
 function clamp(x: number, lo: number, hi: number): number {
@@ -115,7 +111,11 @@ export class SampleBuffer {
   }
 
   receive(numFrames?: number): void {
-    if (numFrames === undefined || numFrames < 0 || numFrames > this._frameCount) {
+    if (
+      numFrames === undefined ||
+      numFrames < 0 ||
+      numFrames > this._frameCount
+    ) {
       numFrames = this._frameCount;
     }
     this._frameCount -= numFrames;
@@ -130,11 +130,7 @@ export class SampleBuffer {
     this.receive(numFrames);
   }
 
-  extract(
-    output: Float32Array,
-    position: number,
-    numFrames: number,
-  ): void {
+  extract(output: Float32Array, position: number, numFrames: number): void {
     const sourceOffset = this.startIndex + position * 2;
     output.set(
       this._vector.subarray(sourceOffset, sourceOffset + numFrames * 2),
@@ -329,10 +325,7 @@ class Stretch {
         this.inputBuffer.startIndex +
         2 * (offset + this.seekWindowLength - this.overlapLength);
       this.pMidBuffer.set(
-        this.inputBuffer.vector.subarray(
-          start,
-          start + 2 * this.overlapLength,
-        ),
+        this.inputBuffer.vector.subarray(start, start + 2 * this.overlapLength),
       );
 
       this.skipFract += this.nominalSkip;
@@ -401,8 +394,7 @@ class Stretch {
       const cnt2 = 2 * i;
       const inOff = cnt2 + pInputPos;
       const outOff = cnt2 + pOutputPos;
-      pOutput[outOff] =
-        pInput[inOff] * fi + this.pMidBuffer![cnt2] * fTemp;
+      pOutput[outOff] = pInput[inOff] * fi + this.pMidBuffer![cnt2] * fTemp;
       pOutput[outOff + 1] =
         pInput[inOff + 1] * fi + this.pMidBuffer![cnt2 + 1] * fTemp;
     }
@@ -435,9 +427,7 @@ class Stretch {
     this.seekWindowLength = Math.floor(
       (this.sampleRate * this.sequenceMs) / 1000,
     );
-    this.seekLength = Math.floor(
-      (this.sampleRate * this.seekWindowMs) / 1000,
-    );
+    this.seekLength = Math.floor((this.sampleRate * this.seekWindowMs) / 1000);
   }
 }
 

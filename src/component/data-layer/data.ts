@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import { Vector2D, Vector3D, Vector4D } from '../../math';
 import type { DataLayerMethods } from './methods';
@@ -202,78 +204,109 @@ function serialize(component: ComponentData): any {
  * Reconstructs Vector instances from serialized data.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): DataLayerT {
+function deserialize(data: any): DeserializeResult<DataLayerT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'data-layer deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, storage, typeMap } = data;
 
-  // Validate required fields
-  const errors = [];
   if (type !== 'data-layer') {
-    errors.push(`type ${type} does not match "data-layer"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+      message: `type ${type} does not match "data-layer"`,
+    });
   }
   if (!name) {
-    errors.push('data-layer requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'data-layer requires a name',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
-  // Create component using builder
-  const dataLayer = builder({ name });
+  const componentName = name as string;
+  const dataLayer = builder({ name: componentName });
 
-  // Restore storage
-  if (storage && typeof storage === 'object') {
-    for (const key in storage) {
-      const value = storage[key];
+  if (storage !== undefined) {
+    if (!storage || typeof storage !== 'object') {
+      errors.push({
+        code: 'INVALID_STORAGE',
+        message: `data-layer "${componentName}" storage field is not an object; ignored`,
+      });
+    } else {
+      for (const key in storage) {
+        const value = storage[key];
 
-      // Check if it's a serialized Vector
-      if (value && typeof value === 'object' && '_vectorType' in value) {
-        const vectorData = value as {
-          _vectorType: string;
-          x: number;
-          y: number;
-          z?: number;
-          w?: number;
-        };
+        if (value && typeof value === 'object' && '_vectorType' in value) {
+          const vectorData = value as {
+            _vectorType: string;
+            x: number;
+            y: number;
+            z?: number;
+            w?: number;
+          };
 
-        let vectorInstance: Vector2D | Vector3D | Vector4D;
-        if (vectorData._vectorType === 'Vector2D') {
-          vectorInstance = new Vector2D(vectorData.x, vectorData.y);
-        } else if (vectorData._vectorType === 'Vector3D') {
-          vectorInstance = new Vector3D(
-            vectorData.x,
-            vectorData.y,
-            vectorData.z!,
-          );
-        } else if (vectorData._vectorType === 'Vector4D') {
-          vectorInstance = new Vector4D(
-            vectorData.x,
-            vectorData.y,
-            vectorData.z!,
-            vectorData.w!,
-          );
+          let vectorInstance: Vector2D | Vector3D | Vector4D;
+          if (vectorData._vectorType === 'Vector2D') {
+            vectorInstance = new Vector2D(vectorData.x, vectorData.y);
+          } else if (vectorData._vectorType === 'Vector3D') {
+            vectorInstance = new Vector3D(
+              vectorData.x,
+              vectorData.y,
+              vectorData.z!,
+            );
+          } else if (vectorData._vectorType === 'Vector4D') {
+            vectorInstance = new Vector4D(
+              vectorData.x,
+              vectorData.y,
+              vectorData.z!,
+              vectorData.w!,
+            );
+          } else {
+            errors.push({
+              code: 'UNKNOWN_VECTOR_TYPE',
+              message: `data-layer "${componentName}" key "${key}" has unknown vector type "${vectorData._vectorType}"; skipped`,
+            });
+            continue;
+          }
+
+          dataLayer.storage.set(key, vectorInstance);
         } else {
-          console.warn(
-            `[data-layer] Unknown vector type: ${vectorData._vectorType}`,
-          );
-          continue;
+          dataLayer.storage.set(key, value as DataLayerType);
         }
-
-        dataLayer.storage.set(key, vectorInstance);
-      } else {
-        dataLayer.storage.set(key, value as DataLayerType);
       }
     }
   }
 
-  // Restore typeMap
-  if (typeMap && typeof typeMap === 'object') {
-    for (const key in typeMap) {
-      dataLayer.typeMap.set(key, typeMap[key]);
+  if (typeMap !== undefined) {
+    if (!typeMap || typeof typeMap !== 'object') {
+      errors.push({
+        code: 'INVALID_TYPEMAP',
+        message: `data-layer "${componentName}" typeMap field is not an object; ignored`,
+      });
+    } else {
+      for (const key in typeMap) {
+        dataLayer.typeMap.set(key, typeMap[key]);
+      }
     }
   }
 
-  return dataLayer;
+  return { component: dataLayer, errors };
 }
 
 export const DataLayerSerializer: ComponentSerializer = {

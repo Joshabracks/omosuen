@@ -203,8 +203,7 @@ export function renderSprites(
   // Project camera 3D world position to 2D axonometric space
   // (same projection the vertex shader applies to every world position)
   const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
-  const camIsoX =
-    transform.position.x * ISO_H - transform.position.z * ISO_H;
+  const camIsoX = transform.position.x * ISO_H - transform.position.z * ISO_H;
   const camIsoY =
     transform.position.x * sinA -
     transform.position.y * heightScale +

@@ -288,7 +288,9 @@ export function renderCellMaps(
         if (!albedoTextureMap || albedoTextureMap.packedFrames.length === 0)
           continue;
 
-        const albedoFrame = albedoTextureMap.frameIndexMap.get(material.albedoFrame ?? 0);
+        const albedoFrame = albedoTextureMap.frameIndexMap.get(
+          material.albedoFrame ?? 0,
+        );
         if (!albedoFrame) continue;
 
         const atlasTexture =

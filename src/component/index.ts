@@ -62,11 +62,7 @@ export type {
   EventColliderMethods,
 } from './event-collider';
 export type { TimerT as timer, TimerMethods } from './timer';
-export type {
-  LightT as light,
-  LightMethods,
-  LightType,
-} from './light';
+export type { LightT as light, LightMethods, LightType } from './light';
 export type {
   AudioTrackT as audio_track,
   AudioTrackMethods,

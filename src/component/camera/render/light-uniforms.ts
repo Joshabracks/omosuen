@@ -179,7 +179,9 @@ export function setLightUniforms(
   lights: LightT[],
 ): void {
   // Reset module-level categorization arrays
-  _ambientAccum[0] = 0; _ambientAccum[1] = 0; _ambientAccum[2] = 0;
+  _ambientAccum[0] = 0;
+  _ambientAccum[1] = 0;
+  _ambientAccum[2] = 0;
   let hasAmbient = false;
   _dirLightsArr.length = 0;
   _pointLightsArr.length = 0;

@@ -9,7 +9,10 @@ import postProcessVertexShader from '../shader/post.vert';
 import postProcessFragmentShader from '../shader/post.frag';
 import unifiedVertexShader from '../shader/unified.vert';
 import unifiedFragmentShader from '../shader/unified.frag';
-import { FBO_OVERSCAN_PX, cacheLightUniformLocations } from '../render/light-uniforms';
+import {
+  FBO_OVERSCAN_PX,
+  cacheLightUniformLocations,
+} from '../render/light-uniforms';
 
 /**
  * Initializes WebGL resources for the camera (shader programs, buffers).

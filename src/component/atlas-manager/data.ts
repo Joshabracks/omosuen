@@ -2,7 +2,8 @@ import type {
   ComponentData,
   ComponentOptions,
   ComponentSerializer,
-  SerializedData,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import { ComponentUnique } from '../types';
 import type { AtlasManagerMethods } from './methods';
@@ -153,18 +154,56 @@ function serialize(component: ComponentData): any {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): AtlasManagerT {
+function deserialize(data: any): DeserializeResult<AtlasManagerT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'atlas-manager deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, config } = data;
 
   if (type !== 'atlas-manager') {
-    throw new Error(`type ${type} does not match "atlas-manager"`);
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'TYPE_MISMATCH',
+          message: `type ${type} does not match "atlas-manager"`,
+        },
+      ],
+    };
   }
 
-  return builder({
-    name: (name as string) || 'AtlasManager',
-    config: config as AtlasManagerConfig | undefined,
-  });
+  const componentName = (name as string) || 'AtlasManager';
+
+  // atlas-manager's builder validates atlasSize/maxAtlases/padding and
+  // throws on invalid values. Convert any such throw into a structured error.
+  try {
+    return {
+      component: builder({
+        name: componentName,
+        config: config as AtlasManagerConfig | undefined,
+      }),
+      errors,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    errors.push({
+      code: 'INVALID_CONFIG',
+      message: `atlas-manager "${componentName}" config rejected: ${message}`,
+    });
+    return { component: null, errors };
+  }
 }
 
 export const AtlasManagerSerializer: ComponentSerializer = {

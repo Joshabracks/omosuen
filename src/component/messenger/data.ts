@@ -12,6 +12,8 @@ import {
   ComponentUnique,
   ComponentInstanceMethods,
   SerializedData,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import type { MessengerMethods } from './methods';
 import type { ListenerConfig } from './types';
@@ -164,66 +166,104 @@ function serialize(component: ComponentData): SerializedData {
  * @returns A new messenger component instance
  * @throws Error if validation fails
  */
-function deserialize(data: SerializedData): MessengerT {
+function deserialize(data: SerializedData): DeserializeResult<MessengerT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'messenger deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   const { type, name, listeners } = data;
 
-  // Validate required fields
-  const errors: string[] = [];
   if (type !== 'messenger') {
-    errors.push(`type ${type} does not match "messenger"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      message: `type ${type} does not match "messenger"`,
+    });
   }
   if (!name) {
-    errors.push('messenger requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'messenger requires a name',
+    });
   }
-  if (errors.length) {
-    throw new Error(
-      `[messenger] Deserialization failed:\n${errors.join('\n')}`,
-    );
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
-  // Reconstruct listeners
+  const componentName = name as string;
+
   const reconstructedListeners: ListenerConfig[] = [];
-  if (listeners && Array.isArray(listeners)) {
-    for (const listener of listeners) {
-      if (!listener.pattern || !listener.callbackKey) {
-        console.warn(
-          `[messenger] Skipping invalid listener during deserialization:`,
-          listener,
-        );
-        continue;
-      }
-
-      let pattern: string | RegExp | typeof ALL_MESSAGES | typeof ANY_MESSAGES;
-
-      // Reconstruct RegExp
-      if (typeof listener.pattern === 'object' && 'regex' in listener.pattern) {
-        pattern = new RegExp(listener.pattern.regex, listener.pattern.flags);
-      }
-      // Reconstruct Symbols (note: can't truly reconstruct symbol identity, but functionality preserved)
-      else if (typeof listener.pattern === 'string') {
-        if (listener.pattern.includes('ALL_MESSAGES')) {
-          pattern = ALL_MESSAGES;
-        } else if (listener.pattern.includes('ANY_MESSAGES')) {
-          pattern = ANY_MESSAGES;
-        } else {
-          pattern = listener.pattern;
-        }
-      } else {
-        pattern = listener.pattern as string;
-      }
-
-      reconstructedListeners.push({
-        pattern,
-        callbackKey: listener.callbackKey as string,
+  if (listeners !== undefined) {
+    if (!Array.isArray(listeners)) {
+      errors.push({
+        code: 'INVALID_LISTENERS',
+        message: `messenger "${componentName}" listeners field is not an array; ignored`,
       });
+    } else {
+      for (let i = 0; i < listeners.length; i += 1) {
+        const listener = listeners[i];
+        if (!listener || typeof listener !== 'object') {
+          errors.push({
+            code: 'INVALID_LISTENER_ENTRY',
+            message: `messenger "${componentName}" listeners[${i}] is not an object; skipped`,
+          });
+          continue;
+        }
+        if (!listener.pattern || !listener.callbackKey) {
+          errors.push({
+            code: 'INVALID_LISTENER',
+            message: `messenger "${componentName}" listeners[${i}] missing pattern or callbackKey; skipped`,
+          });
+          continue;
+        }
+
+        let pattern:
+          | string
+          | RegExp
+          | typeof ALL_MESSAGES
+          | typeof ANY_MESSAGES;
+
+        if (
+          typeof listener.pattern === 'object' &&
+          'regex' in listener.pattern
+        ) {
+          pattern = new RegExp(listener.pattern.regex, listener.pattern.flags);
+        } else if (typeof listener.pattern === 'string') {
+          if (listener.pattern.includes('ALL_MESSAGES')) {
+            pattern = ALL_MESSAGES;
+          } else if (listener.pattern.includes('ANY_MESSAGES')) {
+            pattern = ANY_MESSAGES;
+          } else {
+            pattern = listener.pattern;
+          }
+        } else {
+          pattern = listener.pattern as string;
+        }
+
+        reconstructedListeners.push({
+          pattern,
+          callbackKey: listener.callbackKey as string,
+        });
+      }
     }
   }
 
-  // Create messenger using builder
-  return builder({
-    name,
-    listeners: reconstructedListeners,
-  });
+  return {
+    component: builder({
+      name: componentName,
+      listeners: reconstructedListeners,
+    }),
+    errors,
+  };
 }
 
 /**

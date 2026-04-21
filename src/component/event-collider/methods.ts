@@ -36,15 +36,10 @@ export interface EventColliderMethods extends ComponentMethods {
 
   // Inherited collider geometry methods
   getWorldCenter: (ec: EventColliderT) => Vector3D;
-  getWorldBounds: (
-    ec: EventColliderT,
-  ) => { min: Vector3D; max: Vector3D };
+  getWorldBounds: (ec: EventColliderT) => { min: Vector3D; max: Vector3D };
   intersectsCollider: (ec: EventColliderT, other: ColliderT) => boolean;
   getOccupiedCells: (ec: EventColliderT, cellMap: CellMapT) => Vector3D[];
-  getOccupiedSolidCells: (
-    ec: EventColliderT,
-    cellMap: CellMapT,
-  ) => Vector3D[];
+  getOccupiedSolidCells: (ec: EventColliderT, cellMap: CellMapT) => Vector3D[];
   intersectsCellMap: (
     ec: EventColliderT,
     cellMap: CellMapT,
@@ -58,12 +53,7 @@ export interface EventColliderMethods extends ComponentMethods {
   setShape: (ec: EventColliderT, shape: 'box' | 'sphere') => void;
   setSize: (ec: EventColliderT, x: number, y: number, z: number) => void;
   setRadius: (ec: EventColliderT, radius: number) => void;
-  setOffset: (
-    ec: EventColliderT,
-    x: number,
-    y: number,
-    z: number,
-  ) => void;
+  setOffset: (ec: EventColliderT, x: number, y: number, z: number) => void;
 
   // EventCollider-specific methods
   addTrigger: (ec: EventColliderT, collider: ColliderT) => void;

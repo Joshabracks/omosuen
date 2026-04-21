@@ -4,12 +4,13 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import type { AudioTrackMethods } from './methods';
 
 export interface AudioTrackT
-  extends ComponentData,
-    ComponentInstanceMethods<AudioTrackMethods> {
+  extends ComponentData, ComponentInstanceMethods<AudioTrackMethods> {
   type: 'audio-track';
   unique: ComponentUnique.NAME;
 
@@ -49,27 +50,49 @@ function serialize(component: ComponentData): any {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): AudioTrackT {
+function deserialize(data: any): DeserializeResult<AudioTrackT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'audio-track deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name } = data;
 
-  const errors: string[] = [];
   if (type !== 'audio-track') {
-    errors.push(`type ${type} does not match "audio-track"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      message: `type ${type} does not match "audio-track"`,
+    });
   }
   if (!name) {
-    errors.push('audio-track requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'audio-track requires a name',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
-  return builder({
-    name: name as string,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    overrideKey: data.overrideKey,
-    filePath: data.filePath as string,
-  });
+  return {
+    component: builder({
+      name: name as string,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      overrideKey: data.overrideKey,
+      filePath: data.filePath as string,
+    }),
+    errors,
+  };
 }
 
 export const AudioTrackSerializer: ComponentSerializer = {

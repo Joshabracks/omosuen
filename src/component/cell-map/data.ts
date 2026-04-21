@@ -3,6 +3,8 @@ import {
   ComponentOptions,
   ComponentSerializer,
   ComponentUnique,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import { Array3D, Array3Dc, Array3Di, Vector3D } from '../../math';
 import {
@@ -318,12 +320,42 @@ export function generateDefaultCubeMesh(): Mesh {
   // Indices: 6 faces × 2 triangles × 3 vertices = 36 indices
   /* eslint-disable prettier/prettier */
   const indices = new Uint16Array([
-    0, 1, 2, 0, 2, 3, // Front
-    4, 5, 6, 4, 6, 7, // Back
-    8, 9, 10, 8, 10, 11, // Top
-    12, 13, 14, 12, 14, 15, // Bottom
-    16, 17, 18, 16, 18, 19, // Right
-    20, 21, 22, 20, 22, 23, // Left
+    0,
+    1,
+    2,
+    0,
+    2,
+    3, // Front
+    4,
+    5,
+    6,
+    4,
+    6,
+    7, // Back
+    8,
+    9,
+    10,
+    8,
+    10,
+    11, // Top
+    12,
+    13,
+    14,
+    12,
+    14,
+    15, // Bottom
+    16,
+    17,
+    18,
+    16,
+    18,
+    19, // Right
+    20,
+    21,
+    22,
+    20,
+    22,
+    23, // Left
   ]);
 
   return { vertices, uvs, indices };
@@ -597,7 +629,21 @@ function serialize(component: ComponentData): any {
  * Constructs CellMapT directly (mirrors builder logic) since builder is async.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): CellMapT {
+function deserialize(data: any): DeserializeResult<CellMapT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'cell-map deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const {
     type,
@@ -611,24 +657,38 @@ function deserialize(data: any): CellMapT {
     revealExempt: dataRevealExempt,
   } = data;
 
-  const errors: string[] = [];
   if (type !== 'cell-map') {
-    errors.push(`type ${type} does not match "cell-map"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      message: `type ${type} does not match "cell-map"`,
+    });
   }
   if (!name) {
-    errors.push('cell-map requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'cell-map requires a name',
+    });
   }
   if (!dataMaterials || !Array.isArray(dataMaterials)) {
-    errors.push('cell-map requires a materials array');
+    errors.push({
+      code: 'MISSING_MATERIALS',
+      message: 'cell-map requires a materials array',
+    });
   }
   if (!dataCellSize || !dataMapSize) {
-    errors.push('cell-map requires cellSize and mapSize');
+    errors.push({
+      code: 'MISSING_DIMENSIONS',
+      message: 'cell-map requires cellSize and mapSize',
+    });
   }
   if (!dataPackedData || !Array.isArray(dataPackedData)) {
-    errors.push('cell-map requires packedData array');
+    errors.push({
+      code: 'MISSING_PACKED_DATA',
+      message: 'cell-map requires packedData array',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
   // Reconstruct Vector3D for cellSize and mapSize
@@ -729,7 +789,10 @@ function deserialize(data: any): CellMapT {
   cmChunks = initChunks(dChunkGridSize);
   cmRevealExempt = (dataRevealExempt as boolean) ?? false;
 
-  return makeCellMapInstance(name as string);
+  return {
+    component: makeCellMapInstance(name as string),
+    errors,
+  };
 }
 
 export const CellMapSerializer: ComponentSerializer = {

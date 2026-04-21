@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import { Vector3D } from '../../math';
 import type { LightMethods } from './methods';
@@ -89,47 +91,104 @@ function serialize(component: ComponentData): any {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): LightT {
+function deserialize(data: any): DeserializeResult<LightT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'light deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, lightType } = data;
 
-  const errors: string[] = [];
   if (type !== 'light') {
-    errors.push(`type ${type} does not match "light"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      message: `type ${type} does not match "light"`,
+    });
   }
   if (!name) {
-    errors.push('light requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'light requires a name',
+    });
   }
   if (!lightType) {
-    errors.push('light requires a lightType');
+    errors.push({
+      code: 'MISSING_LIGHT_TYPE',
+      message: 'light requires a lightType',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
+  const componentName = name as string;
+
   let colorVec = new Vector3D(1, 1, 1);
-  if (data.color && typeof data.color === 'object') {
-    if ('_vectorType' in data.color && data.color._vectorType === 'Vector3D') {
+  if (data.color !== undefined) {
+    if (!data.color || typeof data.color !== 'object') {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `light "${componentName}" color is not an object; defaulting to (1, 1, 1)`,
+      });
+    } else if (
+      !('_vectorType' in data.color) ||
+      data.color._vectorType !== 'Vector3D'
+    ) {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `light "${componentName}" color missing _vectorType='Vector3D' marker; defaulting`,
+      });
+    } else {
       colorVec = new Vector3D(data.color.x, data.color.y, data.color.z);
     }
   }
 
   let directionVec = new Vector3D(0, -1, 0);
-  if (data.direction && typeof data.direction === 'object') {
-    if ('_vectorType' in data.direction && data.direction._vectorType === 'Vector3D') {
-      directionVec = new Vector3D(data.direction.x, data.direction.y, data.direction.z);
+  if (data.direction !== undefined) {
+    if (!data.direction || typeof data.direction !== 'object') {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `light "${componentName}" direction is not an object; defaulting`,
+      });
+    } else if (
+      !('_vectorType' in data.direction) ||
+      data.direction._vectorType !== 'Vector3D'
+    ) {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `light "${componentName}" direction missing _vectorType='Vector3D' marker; defaulting`,
+      });
+    } else {
+      directionVec = new Vector3D(
+        data.direction.x,
+        data.direction.y,
+        data.direction.z,
+      );
     }
   }
 
-  return builder({
-    name: name as string,
-    lightType: lightType as LightType,
-    color: colorVec,
-    brightness: data.brightness as number,
-    radius: data.radius as number,
-    hardness: data.hardness as number,
-    direction: directionVec,
-  });
+  return {
+    component: builder({
+      name: componentName,
+      lightType: lightType as LightType,
+      color: colorVec,
+      brightness: data.brightness as number,
+      radius: data.radius as number,
+      hardness: data.hardness as number,
+      direction: directionVec,
+    }),
+    errors,
+  };
 }
 
 export const LightSerializer: ComponentSerializer = {

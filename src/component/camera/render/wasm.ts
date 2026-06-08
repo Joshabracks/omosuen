@@ -29,6 +29,36 @@ interface RenderExports {
   memory: WebAssembly.Memory;
   solidity_reserve: (count: number) => number;
   solidity_run: (count: number) => number;
+  mesh_reserve_map: (cellCount: number) => number;
+  mesh_set_dims: (
+    mx: number,
+    my: number,
+    mz: number,
+    cx: number,
+    cy: number,
+    cz: number,
+  ) => void;
+  mesh_build_chunk: (cx: number, cy: number, cz: number) => void;
+  mesh_vertices_ptr: () => number;
+  mesh_vertices_len: () => number;
+  mesh_indices_ptr: () => number;
+  mesh_indices_len: () => number;
+  mesh_ranges_ptr: () => number;
+  mesh_ranges_len: () => number;
+}
+
+/** A draw range within a chunk's index buffer for one material. */
+export interface MeshDrawRange {
+  materialIndex: number;
+  indexOffset: number;
+  indexCount: number;
+}
+
+/** Result of building one chunk's greedy mesh in WASM. */
+export interface ChunkMeshResult {
+  vertices: Float32Array | null;
+  indices: Uint32Array | null;
+  ranges: MeshDrawRange[];
 }
 
 let wasmExports: RenderExports | null = null;
@@ -98,4 +128,77 @@ export function solidity(
   }
 
   return outputView;
+}
+
+/**
+ * Uploads the expanded packed map + dimensions into the module's linear memory.
+ * Call once per rebuild pass before any buildChunkMeshWasm() calls.
+ */
+export function setMeshMap(
+  packedFlat: ArrayLike<number>,
+  cellCount: number,
+  mapX: number,
+  mapY: number,
+  mapZ: number,
+  cellX: number,
+  cellY: number,
+  cellZ: number,
+): void {
+  if (!wasmExports) {
+    throw new Error('[omosuen] render WASM not initialized (setMeshMap).');
+  }
+  const ex = wasmExports;
+  const ptr = ex.mesh_reserve_map(cellCount);
+  const view = new Uint32Array(ex.memory.buffer, ptr, cellCount);
+  for (let i = 0; i < cellCount; i++) {
+    view[i] = packedFlat[i];
+  }
+  ex.mesh_set_dims(mapX, mapY, mapZ, cellX, cellY, cellZ);
+}
+
+/**
+ * Builds one chunk's greedy mesh in WASM and copies the result out into
+ * standalone arrays (the chunk retains them for GPU upload). Requires a prior
+ * setMeshMap() in the same rebuild pass. Throws if not initialized.
+ */
+export function buildChunkMeshWasm(
+  cx: number,
+  cy: number,
+  cz: number,
+): ChunkMeshResult {
+  if (!wasmExports) {
+    throw new Error(
+      '[omosuen] render WASM not initialized (buildChunkMeshWasm).',
+    );
+  }
+  const ex = wasmExports;
+  ex.mesh_build_chunk(cx, cy, cz);
+
+  const buffer = ex.memory.buffer;
+  const vlen = ex.mesh_vertices_len();
+  const ilen = ex.mesh_indices_len();
+  const rlen = ex.mesh_ranges_len();
+
+  const vertices =
+    vlen > 0
+      ? new Float32Array(buffer, ex.mesh_vertices_ptr(), vlen).slice()
+      : null;
+  const indices =
+    ilen > 0
+      ? new Uint32Array(buffer, ex.mesh_indices_ptr(), ilen).slice()
+      : null;
+
+  const ranges: MeshDrawRange[] = [];
+  if (rlen > 0) {
+    const rview = new Uint32Array(buffer, ex.mesh_ranges_ptr(), rlen);
+    for (let i = 0; i < rlen; i += 3) {
+      ranges.push({
+        materialIndex: rview[i],
+        indexOffset: rview[i + 1],
+        indexCount: rview[i + 2],
+      });
+    }
+  }
+
+  return { vertices, indices, ranges };
 }

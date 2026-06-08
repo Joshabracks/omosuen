@@ -1,6 +1,7 @@
 import { Array3D } from '../../math';
-import { CellMapT } from './data';
+import type { CellMapT } from './data';
 import { ChunkMesh, DrawRange, CHUNK_SIZE, unpackCell } from './types';
+import { setMeshMap, buildChunkMeshWasm } from '../camera/render/wasm';
 
 /**
  * Face directions with their normal vectors and neighbor offsets.
@@ -270,7 +271,7 @@ function computeSmoothNormals(
  * Indices are grouped by material for efficient multi-material rendering.
  * When smoothing > 0, delegates to buildSmoothedChunkMesh instead.
  */
-function buildChunkMesh(
+export function buildChunkMesh(
   cellMap: CellMapT,
   chunk: ChunkMesh,
   expanded: Array3D<number>,
@@ -772,14 +773,43 @@ export function rebuildDirtyChunks(cellMap: CellMapT): void {
   const hasDirty = cellMap.chunks.some((c) => c.dirty);
   if (!hasDirty) return;
 
-  // Expand packed data once for O(1) random access during mesh building
+  // Expand packed data once for O(1) random access during mesh building.
+  // (expand() is still JS-side; it moves into WASM with the canonical store in
+  // render-crate step 3.)
   const expanded = cellMap.packedData.expand();
-  const expandedWeights =
-    cellMap.smoothing > 0 ? cellMap.smoothingWeights.expand() : null;
 
+  if (cellMap.smoothing > 0) {
+    // Smoothed meshing still runs in JS — WASM port is step 2b. This is a
+    // per-cell-map feature split (by smoothing), not a runtime fallback.
+    const expandedWeights = cellMap.smoothingWeights.expand();
+    for (const chunk of cellMap.chunks) {
+      if (!chunk.dirty) continue;
+      buildSmoothedChunkMesh(cellMap, chunk, expanded, expandedWeights);
+    }
+    return;
+  }
+
+  // Greedy (non-smoothed) meshing runs in WASM (omosuen-render). Upload the map
+  // once, then build each dirty chunk.
+  const total = cellMap.mapSize.x * cellMap.mapSize.y * cellMap.mapSize.z;
+  setMeshMap(
+    expanded.value,
+    total,
+    cellMap.mapSize.x,
+    cellMap.mapSize.y,
+    cellMap.mapSize.z,
+    cellMap.cellSize.x,
+    cellMap.cellSize.y,
+    cellMap.cellSize.z,
+  );
   for (const chunk of cellMap.chunks) {
     if (!chunk.dirty) continue;
-    buildChunkMesh(cellMap, chunk, expanded, expandedWeights);
+    const result = buildChunkMeshWasm(chunk.cx, chunk.cy, chunk.cz);
+    chunk.vertices = result.vertices;
+    chunk.indices = result.indices;
+    chunk.drawRanges = result.ranges;
+    chunk.faceCount = result.indices ? result.indices.length / 6 : 0;
+    chunk.dirty = false;
   }
 }
 

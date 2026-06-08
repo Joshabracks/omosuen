@@ -2,7 +2,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { readFileSync } from 'fs';
 import webpack from 'webpack';
-import { buildRenderWasmBase64 } from './build-tools/wasm.mjs';
+import {
+  buildRenderWasmBase64,
+  buildAudioWasmBase64,
+} from './build-tools/wasm.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +19,9 @@ export default (env) => {
   // DefinePlugin (same mechanism as __ENGINE_VERSION__). A cargo failure throws
   // here and fails the build loudly.
   const renderWasmBase64 = buildRenderWasmBase64();
+  // The audio crate runs in the AudioWorklet realm; its base64 is interpolated
+  // into the worklet source string (see audio-stretcher.ts).
+  const audioWasmBase64 = buildAudioWasmBase64();
 
   return {
     mode: isDevelopment ? 'development' : 'production',
@@ -51,6 +57,7 @@ export default (env) => {
       new webpack.DefinePlugin({
         __ENGINE_VERSION__: JSON.stringify(pkg.version),
         __RENDER_WASM_BASE64__: JSON.stringify(renderWasmBase64),
+        __AUDIO_WASM_BASE64__: JSON.stringify(audioWasmBase64),
       }),
     ],
     optimization: {

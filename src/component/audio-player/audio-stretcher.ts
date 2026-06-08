@@ -12,6 +12,12 @@
  * `tempo` changes speed without affecting pitch.
  */
 
+// Base64-embedded omosuen-audio wasm, injected by webpack DefinePlugin (mirrors
+// __RENDER_WASM_BASE64__). Interpolated into the worklet source string below so
+// the AudioWorkletGlobalScope realm can decode + instantiate its own instance.
+// eslint-disable-next-line @typescript-eslint/naming-convention
+declare const __AUDIO_WASM_BASE64__: string;
+
 // ── Constants ──
 
 const DEFAULT_OVERLAP_MS = 8;
@@ -565,6 +571,48 @@ const AUTOSEEK_K = (AUTOSEEK_AT_MAX - AUTOSEEK_AT_MIN) / (AUTOSEQ_TEMPO_TOP - AU
 const AUTOSEEK_C = AUTOSEEK_AT_MIN - AUTOSEEK_K * AUTOSEQ_TEMPO_LOW;
 
 function clamp(x, lo, hi) { return x < lo ? lo : x > hi ? hi : x; }
+
+// ── omosuen-audio WASM (in-worklet instance) ──
+// Decoded + instantiated once per AudioWorkletGlobalScope realm and shared by
+// every StretcherProcessor node. atob/fetch are unavailable here, so the base64
+// is embedded by webpack and decoded by a tiny inline decoder. Step 1: proven
+// via audio_probe; the WSOLA DSP is ported onto this instance in later steps.
+const __AUDIO_WASM_B64 = "${__AUDIO_WASM_BASE64__}";
+function __b64ToBytes(s) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const lut = new Int16Array(256).fill(-1);
+  for (let i = 0; i < chars.length; i++) lut[chars.charCodeAt(i)] = i;
+  const len = s.length;
+  let pad = 0;
+  if (len > 0 && s[len - 1] === '=') pad++;
+  if (len > 1 && s[len - 2] === '=') pad++;
+  const outLen = ((len / 4) | 0) * 3 - pad;
+  const out = new Uint8Array(outLen);
+  let o = 0;
+  for (let i = 0; i < len; i += 4) {
+    const a = lut[s.charCodeAt(i)], b = lut[s.charCodeAt(i + 1)];
+    const c = lut[s.charCodeAt(i + 2)], d = lut[s.charCodeAt(i + 3)];
+    const n = (a << 18) | (b << 12) | ((c & 63) << 6) | (d & 63);
+    if (o < outLen) out[o++] = (n >> 16) & 255;
+    if (o < outLen) out[o++] = (n >> 8) & 255;
+    if (o < outLen) out[o++] = n & 255;
+  }
+  return out;
+}
+let __audioWasm = null;
+let __audioWasmReady = false;
+(function () {
+  try {
+    const bytes = __b64ToBytes(__AUDIO_WASM_B64);
+    WebAssembly.instantiate(bytes, {}).then((res) => {
+      __audioWasm = res.instance.exports;
+      __audioWasmReady = true;
+      try {
+        console.log('[omosuen-audio] worklet WASM ready; audio_probe(21) =', __audioWasm.audio_probe(21));
+      } catch (e) { console.error('[omosuen-audio] probe call failed', e); }
+    }).catch((e) => { console.error('[omosuen-audio] WASM instantiate failed', e); });
+  } catch (e) { console.error('[omosuen-audio] WASM decode failed', e); }
+})();
 
 class SampleBuffer {
   constructor() {

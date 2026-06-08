@@ -13,6 +13,7 @@ import {
   FBO_OVERSCAN_PX,
   cacheLightUniformLocations,
 } from '../render/light-uniforms';
+import { initRenderWasm } from '../../../wasm/render';
 
 /**
  * Initializes WebGL resources for the camera (shader programs, buffers).
@@ -49,6 +50,12 @@ export async function init(component: ComponentData): Promise<void> {
   }
 
   const gl = viewport.gl;
+
+  // Load the render-domain WASM compute backend before this camera can render.
+  // render() skips uninitialized cameras, and processInitQueue awaits this init,
+  // so the module is guaranteed ready before any solidity()/compute call. Hard
+  // requirement — no JS fallback. Idempotent across cameras.
+  await initRenderWasm();
 
   // Compile unified shader program
   const unifiedProgram = createShaderProgram(

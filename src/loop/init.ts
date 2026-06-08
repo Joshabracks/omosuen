@@ -92,7 +92,6 @@ export async function processInitQueue(
   }
 
   const startTime = performance.now();
-  let componentsInitialized = 0;
 
   INIT_QUEUE.sort((a, b) => {
     const componentA: ComponentData = scene.getComponentById(

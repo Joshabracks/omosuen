@@ -1,0 +1,15 @@
+# Omosuen WASM compute workspace.
+#
+# Hand-rolled extern "C" ABI — no wasm-bindgen / wasm-pack. Each crate compiles
+# to a cdylib (.wasm) that the engine base64-embeds. See
+# .claude/best-practices/wasm-in-omosuen.md.
+[workspace]
+resolver = "2"
+members = ["crates/render"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

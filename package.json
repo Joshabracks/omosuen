@@ -9,6 +9,7 @@
     "build": "npm run build:dev && npm run build:prod",
     "build:dev": "webpack --config webpack.config.js --env mode=development",
     "build:prod": "webpack --config webpack.config.js --env mode=production",
+    "test:wasm": "tsx test/wasm-solidity.test.ts",
     "test": "start http://localhost:3000/ && node test/integration-test-server.js",
     "test:cli": "tsx test/cli.test.ts",
     "lint": "eslint . --ext .ts",

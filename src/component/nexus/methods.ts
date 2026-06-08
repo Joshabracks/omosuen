@@ -1,5 +1,5 @@
 import { ComponentData, ComponentMethods, ComponentUnique } from '../types';
-import { MethodRegistry } from '../registry';
+import { MethodRegistry, unregisterMethod } from '../registry';
 import { NexusT } from './data';
 
 export interface NexusMethods extends ComponentMethods {
@@ -86,6 +86,25 @@ export const Nexus: NexusMethods = {
 
       // Note: Disposed components are automatically removed from their parent Nexus
       // during the dispose process or will be filtered out as _disposed
+    } else if (component.unique === ComponentUnique.NAME) {
+      // NAME: Dispose all instances with same type AND same name in entire scene
+      let root: ComponentData = n;
+      while (root.parent && root.parent.type === 'nexus') {
+        root = root.parent;
+      }
+
+      const allInstances = Nexus.getComponentsByTypeAndName(
+        root as NexusT,
+        component.type,
+        component.name,
+        true,
+      );
+      allInstances.forEach((c) => {
+        const C = MethodRegistry[c.type];
+        if (C.dispose && typeof C.dispose === 'function') {
+          C.dispose(c);
+        }
+      });
     }
 
     component.parent = n;
@@ -249,6 +268,7 @@ export const Nexus: NexusMethods = {
     return matches;
   },
   getComponentById: (n: NexusT, id: number, recursive: boolean = false) => {
+    if (n.id === id) return n;
     const match = n.components.find((c) => c.id === id);
     if (match || !recursive) return match ?? null;
 
@@ -272,6 +292,16 @@ export const Nexus: NexusMethods = {
         c._disposed = true;
       }
     });
+
+    // Unregister script methods if this nexus had a script
+    if (n.script) {
+      const filename = n.script.split('/').pop() || n.script;
+      const baseName = filename
+        .replace(/\.omo\.(ts|js)$/, '')
+        .replace(/\.(ts|js)$/, '');
+      unregisterMethod('nexus', `${baseName}-init`);
+      unregisterMethod('nexus', `${baseName}-update`);
+    }
 
     // Clear the components array
     n.components = [];

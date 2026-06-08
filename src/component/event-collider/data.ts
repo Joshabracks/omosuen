@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import { Vector3D } from '../../math';
 import type { ColliderT } from '../collider/data';
@@ -15,8 +17,7 @@ import type { EventColliderMethods } from './methods';
  * that fire when tracked colliders overlap with this volume.
  */
 export interface EventColliderT
-  extends ComponentData,
-    ComponentInstanceMethods<EventColliderMethods> {
+  extends ComponentData, ComponentInstanceMethods<EventColliderMethods> {
   type: 'event-collider';
   unique: ComponentUnique.FALSE;
 
@@ -98,42 +99,89 @@ function serialize(component: ComponentData): any {
  * Deserializes a plain object back into an event-collider component.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): EventColliderT {
+function deserialize(data: any): DeserializeResult<EventColliderT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'event-collider deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, shape, size, radius, offset } = data;
 
-  const errors = [];
   if (type !== 'event-collider') {
-    errors.push(`type ${type} does not match "event-collider"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      message: `type ${type} does not match "event-collider"`,
+    });
   }
   if (!name) {
-    errors.push('event-collider requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'event-collider requires a name',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
+  const componentName = name as string;
+
   let sizeVec = new Vector3D(0.5, 0.5, 0.5);
-  if (size && typeof size === 'object') {
-    if ('_vectorType' in size && size._vectorType === 'Vector3D') {
+  if (size !== undefined) {
+    if (!size || typeof size !== 'object') {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `event-collider "${componentName}" size is not an object; defaulting`,
+      });
+    } else if (!('_vectorType' in size) || size._vectorType !== 'Vector3D') {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `event-collider "${componentName}" size missing _vectorType='Vector3D' marker; defaulting`,
+      });
+    } else {
       sizeVec = new Vector3D(size.x, size.y, size.z);
     }
   }
 
   let offsetVec = new Vector3D(0, 0, 0);
-  if (offset && typeof offset === 'object') {
-    if ('_vectorType' in offset && offset._vectorType === 'Vector3D') {
+  if (offset !== undefined) {
+    if (!offset || typeof offset !== 'object') {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `event-collider "${componentName}" offset is not an object; defaulting`,
+      });
+    } else if (
+      !('_vectorType' in offset) ||
+      offset._vectorType !== 'Vector3D'
+    ) {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `event-collider "${componentName}" offset missing _vectorType='Vector3D' marker; defaulting`,
+      });
+    } else {
       offsetVec = new Vector3D(offset.x, offset.y, offset.z);
     }
   }
 
-  return builder({
-    name: name as string,
-    shape: shape as 'box' | 'sphere',
-    size: sizeVec,
-    radius: typeof radius === 'number' ? radius : 0.5,
-    offset: offsetVec,
-  });
+  return {
+    component: builder({
+      name: componentName,
+      shape: shape as 'box' | 'sphere',
+      size: sizeVec,
+      radius: typeof radius === 'number' ? radius : 0.5,
+      offset: offsetVec,
+    }),
+    errors,
+  };
 }
 
 export const EventColliderSerializer: ComponentSerializer = {

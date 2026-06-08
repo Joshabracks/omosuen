@@ -327,9 +327,22 @@ export function renderCellMaps(
     camera.glResources.baseResolution.height * camera.pixelScale;
   gl.uniform2f(uViewportSize, logicalWidth, logicalHeight);
 
+  // Project camera 3D world position to 2D axonometric space
+  const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
+  const clampedAngle = Math.max(0, Math.min(90, camera.axonometricAngle));
+  const angleRad = (clampedAngle * Math.PI) / 180;
+  const sinA = Math.sin(angleRad);
+  const heightScale = Math.cos(angleRad) * 1.1547005; // cos(a)/cos(30deg)
+  const camIsoX =
+    cameraTransform.position.x * ISO_H - cameraTransform.position.z * ISO_H;
+  const camIsoY =
+    cameraTransform.position.x * sinA -
+    cameraTransform.position.y * heightScale +
+    cameraTransform.position.z * sinA;
+
   const snapped = snapCameraPosition(
-    cameraTransform.position.x,
-    cameraTransform.position.z,
+    camIsoX,
+    camIsoY,
     camera.pixelScale,
     camera.zoom,
   );

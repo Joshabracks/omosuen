@@ -1,4 +1,10 @@
-import type { ComponentData, ComponentOptions } from '../types';
+import type {
+  ComponentData,
+  ComponentOptions,
+  ComponentSerializer,
+  DeserializationError,
+  DeserializeResult,
+} from '../types';
 import { ComponentUnique } from '../types';
 import type { AtlasManagerMethods } from './methods';
 import type { ComponentInstanceMethods } from '../types';
@@ -131,3 +137,76 @@ export function builder(options: AtlasManagerOptions): AtlasManagerT {
     imageLoading: new Map<string, Promise<HTMLImageElement>>(),
   } as unknown as AtlasManagerT;
 }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serialize(component: ComponentData): any {
+  const c = component as AtlasManagerT;
+  return {
+    type: 'atlas-manager',
+    name: c.name,
+    unique: ComponentUnique.GLOBAL,
+    config: {
+      atlasSize: c.config.atlasSize,
+      maxAtlases: c.config.maxAtlases,
+      padding: c.config.padding,
+    },
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function deserialize(data: any): DeserializeResult<AtlasManagerT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'atlas-manager deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const { type, name, config } = data;
+
+  if (type !== 'atlas-manager') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'TYPE_MISMATCH',
+          message: `type ${type} does not match "atlas-manager"`,
+        },
+      ],
+    };
+  }
+
+  const componentName = (name as string) || 'AtlasManager';
+
+  // atlas-manager's builder validates atlasSize/maxAtlases/padding and
+  // throws on invalid values. Convert any such throw into a structured error.
+  try {
+    return {
+      component: builder({
+        name: componentName,
+        config: config as AtlasManagerConfig | undefined,
+      }),
+      errors,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    errors.push({
+      code: 'INVALID_CONFIG',
+      message: `atlas-manager "${componentName}" config rejected: ${message}`,
+    });
+    return { component: null, errors };
+  }
+}
+
+export const AtlasManagerSerializer: ComponentSerializer = {
+  serialize,
+  deserialize,
+};

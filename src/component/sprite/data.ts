@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import { Vector2D, Vector4D } from '../../math';
 import type { SpriteMethods } from './methods';
@@ -15,7 +17,7 @@ import type { SpriteMethods } from './methods';
 export interface SpriteT
   extends ComponentData, ComponentInstanceMethods<SpriteMethods> {
   type: 'sprite';
-  unique: ComponentUnique.FALSE;
+  unique: ComponentUnique.LOCAL;
 
   /**
    * Texture map keys for different rendering channels.
@@ -97,7 +99,7 @@ export function builder(options: SpriteOptions): SpriteT {
   const sprite = {
     type: 'sprite' as const,
     name: options.name,
-    unique: ComponentUnique.FALSE,
+    unique: ComponentUnique.LOCAL,
     parent: null,
     _disposed: false,
 
@@ -119,7 +121,8 @@ export function builder(options: SpriteOptions): SpriteT {
     tint: options.tint ?? new Vector4D(1, 1, 1, 1),
     opacity: options.opacity ?? 1.0,
     showSilhouette: options.showSilhouette ?? false,
-    silhouetteColor: options.silhouetteColor ?? new Vector4D(0.2, 0.4, 0.8, 0.5),
+    silhouetteColor:
+      options.silhouetteColor ?? new Vector4D(0.2, 0.4, 0.8, 0.5),
   };
 
   return sprite as unknown as SpriteT;
@@ -135,7 +138,7 @@ function serialize(component: ComponentData): any {
   return {
     type: 'sprite',
     name: s.name,
-    unique: ComponentUnique.FALSE,
+    unique: ComponentUnique.LOCAL,
     textureMapKeys: {
       albedo: s.textureMapKeys.albedo,
       normal: s.textureMapKeys.normal,
@@ -176,55 +179,127 @@ function serialize(component: ComponentData): any {
  * Deserializes a plain object back into a sprite component.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): SpriteT {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-  const { type, name, textureMapKeys, frame, anchor, tint, opacity, showSilhouette, silhouetteColor } = data;
+function deserialize(data: any): DeserializeResult<SpriteT> {
+  const errors: DeserializationError[] = [];
 
-  const errors = [];
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'sprite deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const {
+    type,
+    name,
+    textureMapKeys,
+    frame,
+    anchor,
+    tint,
+    opacity,
+    showSilhouette,
+    silhouetteColor,
+  } = data;
+
   if (type !== 'sprite') {
-    errors.push(`type ${type} does not match "sprite"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      message: `type ${type} does not match "sprite"`,
+    });
   }
   if (!name) {
-    errors.push('sprite requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'sprite requires a name',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
-  // Reconstruct Vector2D anchor
+  const componentName = name as string;
+
   let anchorVec = new Vector2D(0, 0);
-  if (anchor && typeof anchor === 'object') {
-    if ('_vectorType' in anchor && anchor._vectorType === 'Vector2D') {
+  if (anchor !== undefined) {
+    if (!anchor || typeof anchor !== 'object') {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `sprite "${componentName}" anchor is not an object; defaulting to (0, 0)`,
+      });
+    } else if (
+      !('_vectorType' in anchor) ||
+      anchor._vectorType !== 'Vector2D'
+    ) {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `sprite "${componentName}" anchor missing _vectorType='Vector2D' marker; defaulting`,
+      });
+    } else {
       anchorVec = new Vector2D(anchor.x, anchor.y);
     }
   }
 
-  // Reconstruct Vector4D tint
   let tintVec = new Vector4D(1, 1, 1, 1);
-  if (tint && typeof tint === 'object') {
-    if ('_vectorType' in tint && tint._vectorType === 'Vector4D') {
+  if (tint !== undefined) {
+    if (!tint || typeof tint !== 'object') {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `sprite "${componentName}" tint is not an object; defaulting to (1, 1, 1, 1)`,
+      });
+    } else if (!('_vectorType' in tint) || tint._vectorType !== 'Vector4D') {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `sprite "${componentName}" tint missing _vectorType='Vector4D' marker; defaulting`,
+      });
+    } else {
       tintVec = new Vector4D(tint.x, tint.y, tint.z, tint.w);
     }
   }
 
-  // Reconstruct Vector4D silhouetteColor
   let silhouetteColorVec: Vector4D | undefined;
-  if (silhouetteColor && typeof silhouetteColor === 'object') {
-    if ('_vectorType' in silhouetteColor && silhouetteColor._vectorType === 'Vector4D') {
-      silhouetteColorVec = new Vector4D(silhouetteColor.x, silhouetteColor.y, silhouetteColor.z, silhouetteColor.w);
+  if (silhouetteColor !== undefined) {
+    if (!silhouetteColor || typeof silhouetteColor !== 'object') {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `sprite "${componentName}" silhouetteColor is not an object; defaulting`,
+      });
+    } else if (
+      !('_vectorType' in silhouetteColor) ||
+      silhouetteColor._vectorType !== 'Vector4D'
+    ) {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `sprite "${componentName}" silhouetteColor missing _vectorType='Vector4D' marker; defaulting`,
+      });
+    } else {
+      silhouetteColorVec = new Vector4D(
+        silhouetteColor.x,
+        silhouetteColor.y,
+        silhouetteColor.z,
+        silhouetteColor.w,
+      );
     }
   }
 
-  return builder({
-    name: name as string,
-    textureMapKeys: textureMapKeys as SpriteOptions['textureMapKeys'],
-    frame: frame as SpriteOptions['frame'],
-    anchor: anchorVec,
-    tint: tintVec,
-    opacity: opacity as number,
-    showSilhouette: showSilhouette as boolean | undefined,
-    silhouetteColor: silhouetteColorVec,
-  });
+  return {
+    component: builder({
+      name: componentName,
+      textureMapKeys: textureMapKeys as SpriteOptions['textureMapKeys'],
+      frame: frame as SpriteOptions['frame'],
+      anchor: anchorVec,
+      tint: tintVec,
+      opacity: opacity as number,
+      showSilhouette: showSilhouette as boolean | undefined,
+      silhouetteColor: silhouetteColorVec,
+    }),
+    errors,
+  };
 }
 
 export const SpriteSerializer: ComponentSerializer = {

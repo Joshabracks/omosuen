@@ -62,20 +62,21 @@ export type {
   EventColliderMethods,
 } from './event-collider';
 export type { TimerT as timer, TimerMethods } from './timer';
+export type { LightT as light, LightMethods, LightType } from './light';
 export type {
-  LightT as light,
-  LightMethods,
-  LightType,
-} from './light';
+  AudioTrackT as audio_track,
+  AudioTrackMethods,
+} from './audio-track';
 export type {
-  AudioManagerT as audio_manager,
-  AudioManagerMethods,
-} from './audio-manager';
+  AudioEffectT as audio_effect,
+  AudioEffectMethods,
+} from './audio-effect';
 export type {
-  AudioControllerT as audio_controller,
-  AudioControllerMethods,
-  SFXOptions,
-} from './audio-controller';
+  AudioPlayerT as audio_player,
+  AudioPlayerMethods,
+  ActiveSource,
+} from './audio-player';
+export { TrackController } from './audio-player';
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';
@@ -101,5 +102,6 @@ export { ColliderSerializer } from './collider/data';
 export { EventColliderSerializer } from './event-collider/data';
 export { TimerSerializer } from './timer/data';
 export { LightSerializer } from './light/data';
-export { AudioManagerSerializer } from './audio-manager/data';
-export { AudioControllerSerializer } from './audio-controller/data';
+export { AudioTrackSerializer } from './audio-track/data';
+export { AudioEffectSerializer } from './audio-effect/data';
+export { AudioPlayerSerializer } from './audio-player/data';

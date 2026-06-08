@@ -1,9 +1,5 @@
 import { Vector2D } from '../../math';
-import type {
-  UnpackedFrame,
-  AtlasSpace,
-  FrameBucket,
-} from './types';
+import type { UnpackedFrame, AtlasSpace, FrameBucket } from './types';
 import {
   createRootAtlasSpace,
   createChildAtlasSpace,
@@ -368,7 +364,10 @@ function removeSpaceFromBuckets(
 /**
  * Adds a space to all buckets and re-sorts.
  */
-function addSpaceToBuckets(spaceBuckets: SpaceBuckets, space: AtlasSpace): void {
+function addSpaceToBuckets(
+  spaceBuckets: SpaceBuckets,
+  space: AtlasSpace,
+): void {
   spaceBuckets.w.push(space);
   spaceBuckets.h.push(space);
   spaceBuckets.s.push(space);

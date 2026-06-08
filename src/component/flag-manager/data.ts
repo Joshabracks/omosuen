@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import type { FlagManagerMethods } from './methods';
 
@@ -80,38 +82,65 @@ function serialize(component: ComponentData): any {
  * Reconstructs Set<string> from Array<string>.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): FlagManagerT {
+function deserialize(data: any): DeserializeResult<FlagManagerT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'flag-manager deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, flags } = data;
 
-  // Validate required fields
-  const errors = [];
   if (type !== 'flag-manager') {
-    errors.push(`type ${type} does not match "flag-manager"`);
-  }
-  if (!name) {
-    errors.push('flag-manager requires a name');
-  }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
-  }
-
-  // Create component using builder
-  const flagManager = builder({ name });
-
-  // Restore flags from array
-  if (flags && Array.isArray(flags)) {
-    flags.forEach((flag: unknown) => {
-      if (typeof flag === 'string') {
-        flagManager.flags.add(flag);
-      } else {
-        console.warn(
-          `[flag-manager] Skipping non-string flag during deserialization: ${flag}`,
-        );
-      }
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+      message: `type ${type} does not match "flag-manager"`,
     });
   }
+  if (!name) {
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'flag-manager requires a name',
+    });
+  }
+  if (errors.length > 0) {
+    return { component: null, errors };
+  }
 
-  return flagManager;
+  const componentName = name as string;
+  const flagManager = builder({ name: componentName });
+
+  if (flags !== undefined) {
+    if (!Array.isArray(flags)) {
+      errors.push({
+        code: 'INVALID_FLAGS',
+        message: `flag-manager "${componentName}" flags field is not an array; ignored`,
+      });
+    } else {
+      flags.forEach((flag: unknown) => {
+        if (typeof flag === 'string') {
+          flagManager.flags.add(flag);
+        } else {
+          errors.push({
+            code: 'INVALID_FLAG',
+            message: `flag-manager "${componentName}" skipping non-string flag: ${JSON.stringify(flag)}`,
+          });
+        }
+      });
+    }
+  }
+
+  return { component: flagManager, errors };
 }
 
 export const FlagManagerSerializer: ComponentSerializer = {

@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import type { AnimationControllerMethods } from './methods';
 import type { Animation, AnimationState } from './types';
@@ -16,12 +18,7 @@ import type { ChannelType } from '../sprite/types';
 export interface AnimationControllerT
   extends ComponentData, ComponentInstanceMethods<AnimationControllerMethods> {
   type: 'animation-controller';
-  unique: ComponentUnique.FALSE;
-
-  /**
-   * ID of the target sprite component to animate.
-   */
-  spriteId: number;
+  unique: ComponentUnique.LOCAL;
 
   /**
    * Map of named animations.
@@ -62,7 +59,6 @@ export interface AnimationControllerT
 }
 
 export interface AnimationControllerOptions extends ComponentOptions {
-  spriteId: number;
   animations?: Animation[];
   channels?: ChannelType[];
   speed?: number;
@@ -93,11 +89,10 @@ export function builder(
   const controller = {
     type: 'animation-controller' as const,
     name: options.name,
-    unique: ComponentUnique.FALSE,
+    unique: ComponentUnique.LOCAL,
     parent: null,
     _disposed: false,
 
-    spriteId: options.spriteId,
     animations: animationsMap,
     state: 'stopped' as AnimationState,
     currentAnimation: null,
@@ -123,8 +118,7 @@ function serialize(component: ComponentData): any {
   return {
     type: 'animation-controller',
     name: ac.name,
-    unique: ComponentUnique.FALSE,
-    spriteId: ac.spriteId,
+    unique: ComponentUnique.LOCAL,
     animations: animationsArray,
     state: ac.state,
     currentAnimation: ac.currentAnimation,
@@ -139,12 +133,25 @@ function serialize(component: ComponentData): any {
  * Deserializes a plain object back into an animation controller component.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): AnimationControllerT {
+function deserialize(data: any): DeserializeResult<AnimationControllerT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'animation-controller deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const {
     type,
     name,
-    spriteId,
     animations,
     state,
     currentAnimation,
@@ -154,36 +161,61 @@ function deserialize(data: any): AnimationControllerT {
     channels,
   } = data;
 
-  const errors = [];
   if (type !== 'animation-controller') {
-    errors.push(`type ${type} does not match "animation-controller"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      message: `type ${type} does not match "animation-controller"`,
+    });
   }
   if (!name) {
-    errors.push('animation-controller requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'animation-controller requires a name',
+    });
   }
-  if (spriteId === undefined) {
-    errors.push('animation-controller requires a spriteId');
-  }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
-  // Reconstruct animations Map
+  const componentName = name as string;
+
   const animationsMap = new Map<string, Animation>();
-  if (Array.isArray(animations)) {
-    for (const anim of animations) {
-      animationsMap.set(anim.name, anim as Animation);
+  if (animations !== undefined) {
+    if (!Array.isArray(animations)) {
+      errors.push({
+        code: 'INVALID_ANIMATIONS',
+        message: `animation-controller "${componentName}" animations field is not an array; ignored`,
+      });
+    } else {
+      for (let i = 0; i < animations.length; i += 1) {
+        const anim = animations[i] as Animation | unknown;
+        if (!anim || typeof anim !== 'object') {
+          errors.push({
+            code: 'INVALID_ANIMATION_ENTRY',
+            message: `animation-controller "${componentName}" animations[${i}] is not an object; skipped`,
+          });
+          continue;
+        }
+        const a = anim as { name?: unknown } & Animation;
+        if (typeof a.name !== 'string' || a.name.length === 0) {
+          errors.push({
+            code: 'MISSING_ANIMATION_NAME',
+            message: `animation-controller "${componentName}" animations[${i}] missing name; skipped`,
+          });
+          continue;
+        }
+        animationsMap.set(a.name, a);
+      }
     }
   }
 
   const controller = {
     type: 'animation-controller' as const,
-    name: name as string,
-    unique: ComponentUnique.FALSE,
+    name: componentName,
+    unique: ComponentUnique.LOCAL,
     parent: null,
     _disposed: false,
 
-    spriteId: spriteId as number,
     animations: animationsMap,
     state: (state as AnimationState) ?? 'stopped',
     currentAnimation: (currentAnimation as string | null) ?? null,
@@ -193,7 +225,10 @@ function deserialize(data: any): AnimationControllerT {
     channels: (channels as ChannelType[]) ?? ['albedo'],
   };
 
-  return controller as unknown as AnimationControllerT;
+  return {
+    component: controller as unknown as AnimationControllerT,
+    errors,
+  };
 }
 
 export const AnimationControllerSerializer: ComponentSerializer = {
@@ -205,7 +240,6 @@ export const AnimationControllerSerializer: ComponentSerializer = {
  * Allowlist of animation-controller-specific properties accessible via component Proxy.
  */
 export const PROPERTY_ALLOWLIST: string[] = [
-  'spriteId',
   'animations',
   'state',
   'currentAnimation',

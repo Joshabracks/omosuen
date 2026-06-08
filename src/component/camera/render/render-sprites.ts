@@ -8,7 +8,11 @@ import { TransformT } from '../../transform';
 import { castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
-import { FBO_OVERSCAN_PX, setLightUniforms } from './light-uniforms';
+import {
+  FBO_OVERSCAN_PX,
+  setAngleUniform,
+  setLightUniforms,
+} from './light-uniforms';
 
 /** Default cell dimensions when no cell-maps are in the scene. */
 const DEFAULT_CELL_SIZE_X = 32;
@@ -92,6 +96,8 @@ export function renderSprites(
   textureMapCache: Map<string, TextureMapT>,
   lights: LightT[],
   subPixelOffset: { remainderX: number; remainderY: number },
+  sinA: number,
+  heightScale: number,
 ): void {
   const program = camera.glResources.unifiedProgram;
   if (!program) {
@@ -194,7 +200,15 @@ export function renderSprites(
     viewport.width / camera.zoom,
     viewport.height / camera.zoom,
   );
-  gl.uniform2f(u_cameraPosition, transform.position.x, transform.position.z);
+  // Project camera 3D world position to 2D axonometric space
+  // (same projection the vertex shader applies to every world position)
+  const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
+  const camIsoX = transform.position.x * ISO_H - transform.position.z * ISO_H;
+  const camIsoY =
+    transform.position.x * sinA -
+    transform.position.y * heightScale +
+    transform.position.z * sinA;
+  gl.uniform2f(u_cameraPosition, camIsoX, camIsoY);
   gl.uniform1f(u_zoom, camera.zoom);
   gl.uniform3f(
     u_cellSize,
@@ -206,6 +220,9 @@ export function renderSprites(
 
   // Set dynamic light uniforms (same lights as cell-maps)
   setLightUniforms(gl, camera.id!, lights);
+
+  // Set axonometric angle uniform (GPU computes cos/sin)
+  setAngleUniform(gl, camera.id!, camera.axonometricAngle);
 
   // Bind cell FBO depth texture for occlusion masking
   gl.activeTexture(gl.TEXTURE2);

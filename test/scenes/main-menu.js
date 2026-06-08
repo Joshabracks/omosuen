@@ -19,6 +19,7 @@ Omosuen.registerHtmlConstructor('mainMenu', (overlay) => {
                 <button id="btn-atlas-test" class="menu-button">Atlas Manager Test</button>
                 <button id="btn-sprite-test" class="menu-button">Sprite Rendering Test</button>
                 <button id="btn-cellmap-test" class="menu-button">Cell-Map Rendering Test</button>
+                <button id="btn-audio-test" class="menu-button">Audio Test Scene</button>
             </div>
             <p class="text center margin-top">
                 Press a button to load a test scene
@@ -53,6 +54,11 @@ Omosuen.registerBinding('loadSpriteTest', async (event) => {
 Omosuen.registerBinding('loadCellmapTest', async (event) => {
     console.log('Loading Cell-Map Test scene...');
     await Omosuen.switchScene('cellmap-test');
+});
+
+Omosuen.registerBinding('loadAudioTest', async (event) => {
+    console.log('Loading Audio Test scene...');
+    await Omosuen.switchScene('audio-test');
 });
 
 /**
@@ -93,6 +99,11 @@ export async function createScene() {
                 selector: '#btn-cellmap-test',
                 onActions: ['click'],
                 methodKey: 'loadCellmapTest'
+            },
+            {
+                selector: '#btn-audio-test',
+                onActions: ['click'],
+                methodKey: 'loadAudioTest'
             }
         ]
     });

@@ -166,10 +166,7 @@ export function compareBySize(a: UnpackedFrame, b: UnpackedFrame): number {
 /**
  * Comparator for sorting AtlasSpaces by width (ASC) then height (ASC)
  */
-export function compareSpacesByWidth(
-  a: AtlasSpace,
-  b: AtlasSpace,
-): number {
+export function compareSpacesByWidth(a: AtlasSpace, b: AtlasSpace): number {
   if (a.size.x !== b.size.x) {
     return a.size.x - b.size.x; // Smaller width first
   }
@@ -179,10 +176,7 @@ export function compareSpacesByWidth(
 /**
  * Comparator for sorting AtlasSpaces by height (ASC) then width (ASC)
  */
-export function compareSpacesByHeight(
-  a: AtlasSpace,
-  b: AtlasSpace,
-): number {
+export function compareSpacesByHeight(a: AtlasSpace, b: AtlasSpace): number {
   if (a.size.y !== b.size.y) {
     return a.size.y - b.size.y; // Smaller height first
   }

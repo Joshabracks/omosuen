@@ -10,10 +10,7 @@ export interface InputControllerMethods extends ComponentMethods {
   init: (component: ComponentData) => Promise<void>;
   update: (component: ComponentData, deltaTime: number) => void;
   dispose: (component: ComponentData) => void;
-  bindAction: (
-    ic: InputControllerT,
-    binding: ActionBinding,
-  ) => void;
+  bindAction: (ic: InputControllerT, binding: ActionBinding) => void;
   unbindAction: (
     ic: InputControllerT,
     action: string,
@@ -410,7 +407,9 @@ function handleTouchStart(ic: InputControllerT, e: TouchEvent): void {
 }
 
 function handleTouchEnd(ic: InputControllerT, e: TouchEvent): void {
-  const matchingBindings = ic.bindings.filter((b) => b.eventType === 'touchend');
+  const matchingBindings = ic.bindings.filter(
+    (b) => b.eventType === 'touchend',
+  );
 
   matchingBindings.forEach((binding) => {
     triggerAction(ic, binding.action, e);

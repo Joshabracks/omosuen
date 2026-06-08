@@ -1,4 +1,10 @@
-import type { ComponentData, ComponentOptions } from '../types';
+import type {
+  ComponentData,
+  ComponentOptions,
+  ComponentSerializer,
+  DeserializationError,
+  DeserializeResult,
+} from '../types';
 import { ComponentUnique } from '../types';
 import type {
   ImageType,
@@ -9,7 +15,7 @@ import type {
 import { isFrameMap, isGridConfig } from './types';
 import type { TextureMapMethods } from './methods';
 import type { ComponentInstanceMethods } from '../types';
-import { Vector2D } from '../../math';
+import { Vector2D, Vector4D } from '../../math';
 
 export interface TextureMapT
   extends ComponentData, ComponentInstanceMethods<TextureMapMethods> {
@@ -191,3 +197,235 @@ export function builder(options: TextureMapOptions): TextureMapT {
 
   return textureMap;
 }
+
+/**
+ * Serializes a texture-map component to a plain object.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serialize(component: ComponentData): any {
+  const t = component as TextureMapT;
+
+  // Serialize imageType based on mode
+  let imageTypeData: unknown = null;
+
+  if (isFrameMap(t.imageType)) {
+    imageTypeData = {
+      mode: 'framemap',
+      frames: t.imageType.map((rect) => ({
+        x: rect.x,
+        y: rect.y,
+        w: rect.z,
+        h: rect.w,
+      })),
+    };
+  } else if (isGridConfig(t.imageType)) {
+    const grid = t.imageType as GridConfig;
+    imageTypeData = {
+      mode: 'grid',
+      cellWidth: grid.cellSize.x,
+      cellHeight: grid.cellSize.y,
+      cols: grid.gridSize.x,
+      rows: grid.gridSize.y,
+      cellCount: grid.cellCount,
+    };
+  }
+
+  return {
+    type: 'texture-map',
+    name: t.name,
+    unique: ComponentUnique.FALSE,
+    textureMapKey: t.textureMapKey,
+    filePath: t.filePath,
+    imageType: imageTypeData,
+  };
+}
+
+/**
+ * Collapse errors sharing the same `code` into a single tallied entry.
+ * Preserves the first-seen message as representative; sums the counts.
+ * This keeps a texture-map with N broken frames from producing N error
+ * entries — the caller gets one entry with count = N instead.
+ */
+function tallyErrors(errors: DeserializationError[]): DeserializationError[] {
+  const map = new Map<string, DeserializationError>();
+  for (const err of errors) {
+    const existing = map.get(err.code);
+    const increment = err.count ?? 1;
+    if (existing) {
+      existing.count = (existing.count ?? 1) + increment;
+    } else {
+      map.set(err.code, { ...err, count: increment });
+    }
+  }
+  return Array.from(map.values());
+}
+
+/**
+ * Deserializes a plain object back into a texture-map component.
+ * Errors of the same category are tallied (see tallyErrors) so a single
+ * texture-map with many malformed frames surfaces as one entry per code
+ * rather than hundreds of near-identical messages.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function deserialize(data: any): DeserializeResult<TextureMapT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'texture-map deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const {
+    type,
+    name,
+    textureMapKey,
+    filePath,
+    imageType: imageTypeData,
+  } = data;
+
+  if (type !== 'texture-map') {
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      message: `type ${type} does not match "texture-map"`,
+    });
+  }
+  if (!name) {
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'texture-map requires a name',
+    });
+  }
+  if (errors.length > 0) {
+    return { component: null, errors: tallyErrors(errors) };
+  }
+
+  const componentName = name as string;
+
+  let imageType: ImageType;
+
+  if (imageTypeData && typeof imageTypeData === 'object') {
+    if (
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      imageTypeData.mode === 'framemap' &&
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      Array.isArray(imageTypeData.frames)
+    ) {
+      // Reconstruct FrameMap (Vector4D[]), recording per-frame errors for
+      // malformed entries. These will be tallied before returning.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+      const frames = imageTypeData.frames as unknown[];
+      const vectors: Vector4D[] = [];
+      for (let i = 0; i < frames.length; i += 1) {
+        const f = frames[i];
+        if (!f || typeof f !== 'object') {
+          errors.push({
+            code: 'INVALID_FRAME',
+            message: `texture-map "${componentName}" has a malformed framemap entry (not an object); defaulted to (0, 0, 0, 0)`,
+          });
+          vectors.push(new Vector4D(0, 0, 0, 0));
+          continue;
+        }
+        const frame = f as {
+          x?: unknown;
+          y?: unknown;
+          w?: unknown;
+          h?: unknown;
+        };
+        const fields: Array<[keyof typeof frame, string]> = [
+          ['x', 'x'],
+          ['y', 'y'],
+          ['w', 'w'],
+          ['h', 'h'],
+        ];
+        const values: number[] = [0, 0, 0, 0];
+        for (let fi = 0; fi < fields.length; fi += 1) {
+          const [key] = fields[fi];
+          const v = frame[key];
+          if (typeof v !== 'number' || !Number.isFinite(v)) {
+            errors.push({
+              code: `INVALID_FRAME_${key.toString().toUpperCase()}`,
+              message: `texture-map "${componentName}" framemap entries have a non-numeric "${key.toString()}" coordinate; defaulted to 0`,
+            });
+          } else {
+            values[fi] = v;
+          }
+        }
+        vectors.push(new Vector4D(values[0], values[1], values[2], values[3]));
+      }
+      imageType = vectors;
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    } else if (imageTypeData.mode === 'grid') {
+      const g = imageTypeData as {
+        cellWidth?: unknown;
+        cellHeight?: unknown;
+        cols?: unknown;
+        rows?: unknown;
+        cellCount?: unknown;
+      };
+      const cellWidth =
+        typeof g.cellWidth === 'number' && Number.isFinite(g.cellWidth)
+          ? g.cellWidth
+          : 0;
+      if (cellWidth === 0 && g.cellWidth !== 0) {
+        errors.push({
+          code: 'INVALID_GRID_CELL_WIDTH',
+          message: `texture-map "${componentName}" grid cellWidth is not a finite number; defaulted to 0`,
+        });
+      }
+      const cellHeight =
+        typeof g.cellHeight === 'number' && Number.isFinite(g.cellHeight)
+          ? g.cellHeight
+          : 0;
+      if (cellHeight === 0 && g.cellHeight !== 0) {
+        errors.push({
+          code: 'INVALID_GRID_CELL_HEIGHT',
+          message: `texture-map "${componentName}" grid cellHeight is not a finite number; defaulted to 0`,
+        });
+      }
+      const cols =
+        typeof g.cols === 'number' && Number.isFinite(g.cols) ? g.cols : 0;
+      if (cols === 0 && g.cols !== 0) {
+        errors.push({
+          code: 'INVALID_GRID_COLS',
+          message: `texture-map "${componentName}" grid cols is not a finite number; defaulted to 0`,
+        });
+      }
+      const rows =
+        typeof g.rows === 'number' && Number.isFinite(g.rows) ? g.rows : 0;
+      if (rows === 0 && g.rows !== 0) {
+        errors.push({
+          code: 'INVALID_GRID_ROWS',
+          message: `texture-map "${componentName}" grid rows is not a finite number; defaulted to 0`,
+        });
+      }
+      imageType = {
+        cellSize: new Vector2D(cellWidth, cellHeight),
+        gridSize: new Vector2D(cols, rows),
+        cellCount: g.cellCount,
+      } as GridConfig;
+    }
+  }
+
+  return {
+    component: builder({
+      name: componentName,
+      textureMapKey: textureMapKey as string,
+      filePath: filePath as string,
+      imageType,
+    }),
+    errors: tallyErrors(errors),
+  };
+}
+
+export const TextureMapSerializer: ComponentSerializer = {
+  serialize,
+  deserialize,
+};

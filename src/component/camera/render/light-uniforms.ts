@@ -4,6 +4,9 @@ import { TransformT } from '../../transform';
 import { castTo } from '../../types';
 import { Vector3D } from '../../../math';
 
+// Axonometric angle uniform location cache — keyed by camera component ID
+const _axonometricAngle = new Map<number, WebGLUniformLocation | null>();
+
 // Light uniform location caches — keyed by camera component ID
 const _ambientColor = new Map<number, WebGLUniformLocation | null>();
 const _ambientBrightness = new Map<number, WebGLUniformLocation | null>();
@@ -50,6 +53,10 @@ export function cacheLightUniformLocations(
   program: WebGLProgram,
   cameraId: number,
 ): void {
+  _axonometricAngle.set(
+    cameraId,
+    gl.getUniformLocation(program, 'u_axonometricAngle'),
+  );
   _ambientColor.set(cameraId, gl.getUniformLocation(program, 'u_ambientColor'));
   _ambientBrightness.set(
     cameraId,
@@ -124,6 +131,7 @@ export function cacheLightUniformLocations(
 }
 
 export function clearLightUniformCache(cameraId: number): void {
+  _axonometricAngle.delete(cameraId);
   _ambientColor.delete(cameraId);
   _ambientBrightness.delete(cameraId);
   _numDirLights.delete(cameraId);
@@ -145,6 +153,21 @@ export function clearLightUniformCache(cameraId: number): void {
 }
 
 /**
+ * Uploads the axonometric angle uniform to the GPU.
+ * Called once per render pass (cells + sprites share the same program).
+ */
+export function setAngleUniform(
+  gl: WebGL2RenderingContext,
+  cameraId: number,
+  angleDegrees: number,
+): void {
+  const loc = _axonometricAngle.get(cameraId);
+  if (loc) {
+    gl.uniform1f(loc, angleDegrees);
+  }
+}
+
+/**
  * Sets light uniform values on the unified shader program.
  * Categorizes lights by type and uploads to GPU uniform arrays.
  * Uses module-level cached uniform locations (populated by cacheLightUniformLocations).
@@ -156,7 +179,9 @@ export function setLightUniforms(
   lights: LightT[],
 ): void {
   // Reset module-level categorization arrays
-  _ambientAccum[0] = 0; _ambientAccum[1] = 0; _ambientAccum[2] = 0;
+  _ambientAccum[0] = 0;
+  _ambientAccum[1] = 0;
+  _ambientAccum[2] = 0;
   let hasAmbient = false;
   _dirLightsArr.length = 0;
   _pointLightsArr.length = 0;

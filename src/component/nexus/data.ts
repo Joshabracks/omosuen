@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import type { NexusMethods } from './methods';
 
@@ -13,6 +15,7 @@ export interface NexusT
   unique: ComponentUnique.FALSE;
   components: ComponentData[];
   paused: boolean;
+  script?: string;
 }
 
 export function builder(options: ComponentOptions): NexusT {
@@ -45,21 +48,64 @@ function serialize(component: ComponentData): any {
     name: nexus.name,
     unique: ComponentUnique.FALSE,
     components: serializedComponents,
+    script: nexus.script || undefined,
   };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): NexusT {
+function deserialize(data: any): DeserializeResult<NexusT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'nexus deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name } = data;
-  const errors = [];
-  if (type !== 'nexus') errors.push(`type ${type} does not match "nexus"`);
-  if (!name) errors.push(`Nexus requires a name`);
-  if (errors.length) throw new Error(errors.join('\n'));
 
-  const nexus = builder({ name });
+  if (type !== 'nexus') {
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+      message: `type ${type} does not match "nexus"`,
+    });
+  }
+  if (!name) {
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'nexus requires a name',
+    });
+  }
+  if (errors.length > 0) {
+    return { component: null, errors };
+  }
 
-  // Components will be added separately by the main deserializer
-  return nexus;
+  const nexus = builder({ name: name as string });
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  if (data.script !== undefined) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    if (typeof data.script !== 'string') {
+      errors.push({
+        code: 'INVALID_SCRIPT',
+        message: `nexus "${name as string}" script field is not a string; ignored`,
+      });
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+      nexus.script = data.script;
+    }
+  }
+
+  // Child components are walked separately by the recursive deserializer.
+  return { component: nexus, errors };
 }
 
 export const NexusSerializer: ComponentSerializer = {
@@ -71,4 +117,4 @@ export const NexusSerializer: ComponentSerializer = {
  * Allowlist of nexus-specific properties accessible via component Proxy.
  * These properties can be accessed directly without triggering method lookup.
  */
-export const PROPERTY_ALLOWLIST: string[] = ['components', 'paused'];
+export const PROPERTY_ALLOWLIST: string[] = ['components', 'paused', 'script'];

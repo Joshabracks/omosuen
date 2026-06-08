@@ -31,12 +31,7 @@ export interface CameraMethods extends ComponentMethods {
   setZoomTarget: (camera: CameraT, x: number, y: number) => void;
   resetZoomTarget: (camera: CameraT) => void;
   setPixelScale: (camera: CameraT, pixelScale: number) => void;
-  setRevealTarget: (
-    camera: CameraT,
-    x: number,
-    y: number,
-    z: number,
-  ) => void;
+  setRevealTarget: (camera: CameraT, x: number, y: number, z: number) => void;
   clearRevealTarget: (camera: CameraT) => void;
   setRevealVolume: (
     camera: CameraT,

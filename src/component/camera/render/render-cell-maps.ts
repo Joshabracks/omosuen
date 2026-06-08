@@ -5,7 +5,7 @@ import { NexusT } from '../../nexus';
 import { TextureMapT } from '../../texture-map';
 import { TransformT } from '../../transform';
 import { CameraT } from '../data';
-import { setLightUniforms } from './light-uniforms';
+import { setAngleUniform, setLightUniforms } from './light-uniforms';
 import { computeSolidityMap } from './visibility-mask';
 
 /**
@@ -78,6 +78,8 @@ export function renderCellMaps(
   gl: WebGL2RenderingContext,
   textureMapCache: Map<string, TextureMapT>,
   lights: LightT[],
+  sinA: number,
+  heightScale: number,
 ): void {
   const program = camera.glResources.unifiedProgram;
   if (!program) {
@@ -135,9 +137,19 @@ export function renderCellMaps(
     camera.glResources.baseResolution.height * camera.pixelScale;
   gl.uniform2f(uViewportSize, logicalWidth, logicalHeight);
 
+  // Project camera 3D world position to 2D axonometric space
+  // (same projection the vertex shader applies to every world position)
+  const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
+  const camIsoX =
+    cameraTransform.position.x * ISO_H - cameraTransform.position.z * ISO_H;
+  const camIsoY =
+    cameraTransform.position.x * sinA -
+    cameraTransform.position.y * heightScale +
+    cameraTransform.position.z * sinA;
+
   const snapped = snapCameraPosition(
-    cameraTransform.position.x,
-    cameraTransform.position.z,
+    camIsoX,
+    camIsoY,
     camera.pixelScale,
     camera.zoom,
   );
@@ -146,6 +158,9 @@ export function renderCellMaps(
 
   // Set dynamic light uniforms
   setLightUniforms(gl, camera.id!, lights);
+
+  // Set axonometric angle uniform (GPU computes cos/sin)
+  setAngleUniform(gl, camera.id!, camera.axonometricAngle);
 
   // Disable the UV attribute for chunk rendering (triplanar mapping doesn't use it)
   if (aUv >= 0) {
@@ -273,7 +288,9 @@ export function renderCellMaps(
         if (!albedoTextureMap || albedoTextureMap.packedFrames.length === 0)
           continue;
 
-        const albedoFrame = albedoTextureMap.packedFrames[0];
+        const albedoFrame = albedoTextureMap.frameIndexMap.get(
+          material.albedoFrame ?? 0,
+        );
         if (!albedoFrame) continue;
 
         const atlasTexture =
@@ -297,8 +314,10 @@ export function renderCellMaps(
 
         // Bind normal texture if available
         const normalTextureMap = textureMapCache.get(material.normalTextureKey);
-        if (normalTextureMap && normalTextureMap.packedFrames.length > 0) {
-          const normalFrame = normalTextureMap.packedFrames[0];
+        const normalFrame = normalTextureMap
+          ? normalTextureMap.frameIndexMap.get(material.normalFrame ?? 0)
+          : undefined;
+        if (normalFrame) {
           const normalAtlasTexture =
             camera.glResources.atlasTextures[normalFrame.atlasIndex];
 

@@ -40,8 +40,25 @@ export function setZoom(camera: CameraT, zoom: number): void {
       const offsetY = camera.zoomTarget.y - viewport.height / 2;
       const factor = 1 / (oldZoom * oldZoom) - 1 / (zoom * zoom);
 
-      transform.position.x += offsetX * factor;
-      transform.position.z += offsetY * factor;
+      // Inverse-project screen-space zoom offset to world-space
+      const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
+      const clampedAngle = Math.max(0, Math.min(90, camera.axonometricAngle));
+      const angleRad = (clampedAngle * Math.PI) / 180;
+      const sinA = Math.sin(angleRad);
+      const heightScale = Math.cos(angleRad) * 1.1547005; // cos(a)/cos(30deg)
+      const screenDx = offsetX * factor;
+      const screenDy = offsetY * factor;
+
+      if (sinA < 0.01) {
+        transform.position.x += screenDx / (2 * ISO_H);
+        transform.position.z += -screenDx / (2 * ISO_H);
+        if (heightScale > 0.01) {
+          transform.position.y -= screenDy / heightScale;
+        }
+      } else {
+        transform.position.x += screenDx / (2 * ISO_H) + screenDy / (2 * sinA);
+        transform.position.z += -screenDx / (2 * ISO_H) + screenDy / (2 * sinA);
+      }
     }
   }
 

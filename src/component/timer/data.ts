@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import type { TimerMethods } from './methods';
 
@@ -86,33 +88,59 @@ function serialize(component: ComponentData): any {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): TimerT {
+function deserialize(data: any): DeserializeResult<TimerT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'timer deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, duration } = data;
 
-  const errors: string[] = [];
   if (type !== 'timer') {
-    errors.push(`type ${type} does not match "timer"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+      message: `type ${type} does not match "timer"`,
+    });
   }
   if (!name) {
-    errors.push('timer requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'timer requires a name',
+    });
   }
   if (duration === undefined || duration === null) {
-    errors.push('timer requires a duration');
+    errors.push({
+      code: 'MISSING_DURATION',
+      message: 'timer requires a duration',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
-  return builder({
-    name: name as string,
-    time: data.time as number,
-    speed: data.speed as number,
-    duration: duration as number,
-    repeat: data.repeat as number | boolean,
-    destroy: data.destroy as boolean,
-    events: data.events as string[],
-  });
+  return {
+    component: builder({
+      name: name as string,
+      time: data.time as number,
+      speed: data.speed as number,
+      duration: duration as number,
+      repeat: data.repeat as number | boolean,
+      destroy: data.destroy as boolean,
+      events: data.events as string[],
+    }),
+    errors,
+  };
 }
 
 export const TimerSerializer: ComponentSerializer = {

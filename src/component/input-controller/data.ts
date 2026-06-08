@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import type { InputControllerMethods } from './methods';
 
@@ -63,8 +65,7 @@ export type ActionCallback = (event?: Event, value?: number) => void;
  * Manages input event handling without visual elements.
  */
 export interface InputControllerT
-  extends ComponentData,
-    ComponentInstanceMethods<InputControllerMethods> {
+  extends ComponentData, ComponentInstanceMethods<InputControllerMethods> {
   type: 'input-controller';
   unique: ComponentUnique.FALSE;
 
@@ -130,30 +131,52 @@ function serialize(component: ComponentData): any {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): InputControllerT {
+function deserialize(data: any): DeserializeResult<InputControllerT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'input-controller deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, bindings, preventDefault, overrideKey } = data;
 
-  const errors = [];
   if (type !== 'input-controller') {
-    errors.push(`type ${type} does not match "input-controller"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      message: `type ${type} does not match "input-controller"`,
+    });
   }
   if (!name) {
-    errors.push(`InputController requires a name`);
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'input-controller requires a name',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
-  return builder({
-    name: name as string,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    bindings: bindings || [],
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    preventDefault: preventDefault ?? true,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    overrideKey,
-  });
+  return {
+    component: builder({
+      name: name as string,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      bindings: bindings || [],
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      preventDefault: preventDefault ?? true,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      overrideKey,
+    }),
+    errors,
+  };
 }
 
 export const InputControllerSerializer: ComponentSerializer = {

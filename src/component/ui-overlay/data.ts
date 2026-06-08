@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import { hasMethod, getBinding } from '../registry';
 import type { UIOverlayMethods } from './methods';
@@ -259,7 +261,21 @@ function serialize(component: ComponentData): any {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): UIOverlayT {
+function deserialize(data: any): DeserializeResult<UIOverlayT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'ui-overlay deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const {
     type,
@@ -271,30 +287,39 @@ function deserialize(data: any): UIOverlayT {
     previousOverlayId,
   } = data;
 
-  const errors = [];
   if (type !== 'ui-overlay') {
-    errors.push(`type ${type} does not match "ui-overlay"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+      message: `type ${type} does not match "ui-overlay"`,
+    });
   }
   if (!name) {
-    errors.push(`UIOverlay requires a name`);
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'ui-overlay requires a name',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
-  return builder({
-    name: name as string,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    cssOverrides,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    overrideKey,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    htmlConstructorKey,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    previousOverlayId,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    bindings: bindings || [],
-  });
+  return {
+    component: builder({
+      name: name as string,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      cssOverrides,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      overrideKey,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      htmlConstructorKey,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      previousOverlayId,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      bindings: bindings || [],
+    }),
+    errors,
+  };
 }
 
 export const UIOverlaySerializer: ComponentSerializer = {

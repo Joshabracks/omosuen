@@ -13,14 +13,29 @@ import { LightSerializer } from '../component/light/data';
 import { TimerSerializer } from '../component/timer/data';
 import { MessengerSerializer } from '../component/messenger/data';
 import { InputControllerSerializer } from '../component/input-controller/data';
-import { AudioManagerSerializer } from '../component/audio-manager/data';
-import { AudioControllerSerializer } from '../component/audio-controller/data';
+import { AudioTrackSerializer } from '../component/audio-track/data';
+import { AudioEffectSerializer } from '../component/audio-effect/data';
+import { AudioPlayerSerializer } from '../component/audio-player/data';
 import { AnimationControllerSerializer } from '../component/animation-controller/data';
+import { AtlasManagerSerializer } from '../component/atlas-manager/data';
+import { TextureMapSerializer } from '../component/texture-map/data';
+import { CellMapSerializer } from '../component/cell-map/data';
 import { Nexus } from '../component/nexus/methods';
 import { getSceneEntry, hasScene } from './registry';
-import type { ComponentData, ComponentSerializer, COMPONENT_TYPE } from '../component/types';
-import { resetComponentCount, setComponentCount, wrapInProxy } from '../component/types';
+import type {
+  ComponentData,
+  ComponentSerializer,
+  COMPONENT_TYPE,
+  DeserializationError,
+  DeserializeResult,
+} from '../component/types';
+import {
+  resetComponentCount,
+  setComponentCount,
+  wrapInProxy,
+} from '../component/types';
 import { queueInit } from '../loop/init';
+import { registerMethod } from '../component/registry';
 
 /**
  * Registry of component serializers, keyed by component type.
@@ -30,19 +45,23 @@ const SERIALIZERS: Partial<Record<COMPONENT_TYPE, ComponentSerializer>> = {
   'ui-overlay': UIOverlaySerializer,
   'data-layer': DataLayerSerializer,
   'flag-manager': FlagManagerSerializer,
-  'viewport': ViewportSerializer,
-  'camera': CameraSerializer,
-  'transform': TransformSerializer,
-  'sprite': SpriteSerializer,
-  'collider': ColliderSerializer,
+  viewport: ViewportSerializer,
+  camera: CameraSerializer,
+  transform: TransformSerializer,
+  sprite: SpriteSerializer,
+  collider: ColliderSerializer,
   'event-collider': EventColliderSerializer,
-  'light': LightSerializer,
-  'timer': TimerSerializer,
-  'messenger': MessengerSerializer,
+  light: LightSerializer,
+  timer: TimerSerializer,
+  messenger: MessengerSerializer,
   'input-controller': InputControllerSerializer,
-  'audio-manager': AudioManagerSerializer,
-  'audio-controller': AudioControllerSerializer,
+  'audio-track': AudioTrackSerializer,
+  'audio-effect': AudioEffectSerializer,
+  'audio-player': AudioPlayerSerializer,
   'animation-controller': AnimationControllerSerializer,
+  'atlas-manager': AtlasManagerSerializer,
+  'texture-map': TextureMapSerializer,
+  'cell-map': CellMapSerializer,
 };
 
 /**
@@ -129,7 +148,10 @@ async function loadFromModule(
     // Use Function constructor to bypass webpack's static analysis
     // This ensures the import is handled at runtime by the browser, not bundled by webpack
     const importFunc = new Function('modulePath', 'return import(modulePath)');
-    const module = await importFunc(modulePath);
+    const importPath =
+      (modulePath.startsWith('/') ? '' : '/') +
+      modulePath.replace(/\.ts$/, '.js');
+    const module = await importFunc(importPath);
 
     // Try different export patterns
     let scene: NexusT | null = null;
@@ -226,31 +248,128 @@ export function serializeComponentRecursive(component: ComponentData): any {
     id: component.id,
     overrideKey: component.overrideKey,
     updateOverride: component.updateOverride,
+    initOverride: component.initOverride,
     loader: component.loader,
   };
+}
+
+/**
+ * Loads a script module for a nexus component.
+ * Dynamically imports the script file and registers its exported init/update
+ * functions in MethodRegistry under keys derived from the filename.
+ *
+ * @param nexus - The nexus component with a script field
+ */
+export async function loadScript(nexus: NexusT): Promise<void> {
+  if (!nexus.script) return;
+
+  const scriptPath = nexus.script as string;
+  const importPath = '/' + scriptPath.replace(/\.ts$/, '.js');
+
+  // Import the module
+  const importFunc = new Function('modulePath', 'return import(modulePath)');
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const module = await importFunc(importPath);
+
+  if (!module || typeof module !== 'object') {
+    console.error(
+      `[SCENE LOADER ERROR] Script "${scriptPath}" for nexus "${nexus.name}" did not return a valid module`,
+    );
+    return;
+  }
+
+  // Derive registry keys from filename
+  const filename = scriptPath.split('/').pop() || scriptPath;
+  const baseName = filename
+    .replace(/\.omo\.(ts|js)$/, '')
+    .replace(/\.(ts|js)$/, '');
+
+  if (!baseName) {
+    console.error(
+      `[SCENE LOADER ERROR] Could not derive base name from script path "${scriptPath}" for nexus "${nexus.name}"`,
+    );
+    return;
+  }
+
+  // Register exports
+  let registered = false;
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  if (typeof module.init === 'function') {
+    const key = `${baseName}-init`;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    registerMethod('nexus', key, module.init);
+    nexus.initOverride = key;
+    registered = true;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  if (typeof module.update === 'function') {
+    const key = `${baseName}-update`;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    registerMethod('nexus', key, module.update);
+    nexus.updateOverride = key;
+    registered = true;
+  }
+
+  if (!registered) {
+    console.warn(
+      `[SCENE LOADER WARNING] Script "${scriptPath}" for nexus "${nexus.name}" exports neither init() nor update()`,
+    );
+    return;
+  }
+
+  console.info(
+    `[SCENE LOADER] Script "${scriptPath}" loaded for nexus "${nexus.name}"`,
+  );
 }
 
 /**
  * Recursively deserializes a component and its children.
  * Restores generic ComponentData fields and tracks max ID for counter reset.
  *
+ * Returns `{ component, errors }`:
+ *   - `component`: the Proxy-wrapped component, or null if deserialization
+ *     produced no usable object (unknown type, missing required identity
+ *     fields, catastrophic exception).
+ *   - `errors`: every structured problem encountered in this subtree. For
+ *     a nexus root this includes the nexus's own errors *plus* all errors
+ *     from recursively-deserialized children, flattened into one array.
+ *
  * @param data - Serialized component data
  * @param maxId - Track the maximum ID seen during deserialization (passed by reference via object)
- * @returns Deserialized component or null on error
  */
 
-export function deserializeComponentRecursive(
+export async function deserializeComponentRecursive(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: any,
   maxId: { value: number } = { value: -1 },
-): ComponentData | null {
+): Promise<DeserializeResult<ComponentData>> {
   try {
-    let component: ComponentData | null = null;
+    if (!data || typeof data !== 'object') {
+      return {
+        component: null,
+        errors: [
+          {
+            code: 'INVALID_DATA',
+            message: 'deserializeComponentRecursive received non-object data',
+          },
+        ],
+      };
+    }
+
+    const errors: DeserializationError[] = [];
 
     // Call component-specific deserializer
     if (data.type === 'nexus') {
-      // Deserialize the nexus itself (creates empty nexus)
-      const nexusComp = NexusSerializer.deserialize(data) as NexusT;
+      const nexusResult = await Promise.resolve(
+        NexusSerializer.deserialize(data),
+      );
+      errors.push(...nexusResult.errors);
+      if (!nexusResult.component) {
+        return { component: null, errors };
+      }
+      const nexusComp = nexusResult.component as NexusT;
 
       // Restore generic fields BEFORE wrapping so the proxy has them
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
@@ -274,10 +393,18 @@ export function deserializeComponentRecursive(
         nexusComp.updateOverride = data.updateOverride;
       }
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      if (data.initOverride !== undefined) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+        nexusComp.initOverride = data.initOverride;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       if (data.loader !== undefined) {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         nexusComp.loader = data.loader;
       }
+
+      // Load script module before wrapping (registers methods in MethodRegistry)
+      await loadScript(nexusComp);
 
       // Wrap in proxy BEFORE adding children so child.parent = proxy
       const proxy = wrapInProxy(nexusComp);
@@ -285,32 +412,40 @@ export function deserializeComponentRecursive(
         queueInit(nexusComp.id);
       }
 
-      // Add children to the PROXY so parent references are correct
+      // Recursively deserialize children. Collect ALL their errors — even
+      // errors from children whose own component could not be constructed.
       if (data.components && Array.isArray(data.components)) {
         for (const childData of data.components) {
-          const child = deserializeComponentRecursive(childData, maxId);
-          if (child) {
-            Nexus.addComponent(proxy as NexusT, child);
+          const childResult = await deserializeComponentRecursive(
+            childData,
+            maxId,
+          );
+          errors.push(...childResult.errors);
+          if (childResult.component) {
+            Nexus.addComponent(proxy as NexusT, childResult.component);
           }
         }
       }
 
-      return proxy;
-    } else {
-      const serializer =
-        SERIALIZERS[data.type as COMPONENT_TYPE];
-      if (serializer) {
-        component = serializer.deserialize(data) as ComponentData;
-      } else {
-        console.error(
-          `[SCENE LOADER ERROR] Unknown component type: ${data.type}`,
-        );
-        return null;
-      }
+      return { component: proxy, errors };
     }
 
+    // Non-nexus component
+    const serializer = SERIALIZERS[data.type as COMPONENT_TYPE];
+    if (!serializer) {
+      errors.push({
+        code: 'UNKNOWN_COMPONENT_TYPE',
+        // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+        message: `Unknown component type: ${data.type}`,
+      });
+      return { component: null, errors };
+    }
+
+    const result = await Promise.resolve(serializer.deserialize(data));
+    errors.push(...result.errors);
+    const component = result.component;
     if (!component) {
-      return null;
+      return { component: null, errors };
     }
 
     // Restore generic ComponentData fields
@@ -339,6 +474,12 @@ export function deserializeComponentRecursive(
     }
 
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    if (data.initOverride !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+      component.initOverride = data.initOverride;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if (data.loader !== undefined) {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
       component.loader = data.loader;
@@ -352,7 +493,7 @@ export function deserializeComponentRecursive(
       queueInit(component.id);
     }
 
-    return proxy;
+    return { component: proxy, errors };
   } catch (error) {
     const errorMessage =
       error instanceof Error
@@ -361,7 +502,15 @@ export function deserializeComponentRecursive(
     console.error(
       `[SCENE LOADER ERROR] Failed to deserialize component: ${errorMessage}`,
     );
-    return null;
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'DESERIALIZE_EXCEPTION',
+          message: `Unexpected exception during deserialization: ${errorMessage}`,
+        },
+      ],
+    };
   }
 }
 
@@ -395,8 +544,19 @@ async function loadFromSerialized(
     const maxId = { value: -1 };
 
     // Recursively deserialize the entire scene hierarchy
-    const scene = deserializeComponentRecursive(data, maxId) as NexusT;
+    const result = await deserializeComponentRecursive(data, maxId);
 
+    // Surface any accumulated errors to the console so the failure mode is
+    // visible even when the top-level component did come back non-null.
+    if (result.errors.length > 0) {
+      for (const err of result.errors) {
+        const suffix =
+          err.count !== undefined && err.count > 1 ? ` (×${err.count})` : '';
+        console.warn(`[SCENE LOADER ${err.code}] ${err.message}${suffix}`);
+      }
+    }
+
+    const scene = result.component as NexusT | null;
     if (!scene || scene.type !== 'nexus') {
       console.error(
         `[SCENE LOADER ERROR] Deserialized data from "${filePath}" is not a valid nexus component`,

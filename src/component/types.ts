@@ -1,47 +1,6 @@
 import { BUILDERS, MethodRegistry, PROPERTY_ALLOWLIST } from './registry';
 import { queueInit } from '../loop/init';
 import { Nexus, NexusT } from './nexus';
-import { CameraT } from './camera';
-import { CellMapT } from './cell-map';
-import { ColliderT } from './collider';
-import { DataLayerT } from './data-layer';
-import { FlagManagerT } from './flag-manager';
-import { InputControllerT } from './input-controller';
-import { LightT } from './light';
-import { MessengerT } from './messenger';
-import { SpriteT } from './sprite';
-import { TextureMapT } from './texture-map';
-import { TimerT } from './timer';
-import { TransformT } from './transform';
-import { UIOverlayT } from './ui-overlay';
-import { ViewportT } from './viewport';
-import { AtlasManagerT } from './atlas-manager';
-import { AnimationControllerT } from './animation-controller';
-import { AudioManagerT } from './audio-manager';
-import { AudioControllerT } from './audio-controller';
-import { EventColliderT } from './event-collider';
-
-export type ComponentDataType =
-  | AnimationControllerT
-  | AtlasManagerT
-  | AudioManagerT
-  | AudioControllerT
-  | CameraT
-  | CellMapT
-  | ColliderT
-  | DataLayerT
-  | FlagManagerT
-  | InputControllerT
-  | LightT
-  | MessengerT
-  | NexusT
-  | SpriteT
-  | TextureMapT
-  | TimerT
-  | TransformT
-  | UIOverlayT
-  | ViewportT
-  | EventColliderT;
 
 /**
  * Registry mapping raw component objects to their Proxy wrappers.
@@ -54,6 +13,43 @@ export type ComponentDataType =
  * - Components can be used as keys
  */
 const PROXY_REGISTRY = new WeakMap<ComponentData, ComponentData>();
+
+/**
+ * Pre-computed lookup maps for nexus shorthand property access.
+ * Maps both kebab-case and camelCase forms to COMPONENT_TYPE strings.
+ *
+ * SINGULAR_TYPE_MAP: nexus.transform / nexus['cell-map'] → getComponentByType
+ * PLURAL_TYPE_MAP:   nexus.sprites / nexus['cell-maps']  → getComponentsByType
+ */
+const SINGULAR_TYPE_MAP = new Map<string, string>();
+const PLURAL_TYPE_MAP = new Map<string, string>();
+
+// Populated after BUILDERS is available (deferred to first wrapInProxy call)
+let nexusMapsBuilt = false;
+function ensureNexusMaps(): void {
+  if (nexusMapsBuilt) return;
+  nexusMapsBuilt = true;
+
+  for (const type of Object.keys(BUILDERS)) {
+    // Kebab-case entry (e.g. 'cell-map')
+    SINGULAR_TYPE_MAP.set(type, type);
+
+    // CamelCase entry (e.g. 'cellMap')
+    const camel = type.replace(/-([a-z])/g, (_, ch: string) =>
+      ch.toUpperCase(),
+    );
+    if (camel !== type) {
+      SINGULAR_TYPE_MAP.set(camel, type);
+    }
+
+    // Plurals: append 'es' for strings ending in s/x/z/sh/ch, otherwise 's'
+    const needsEs = /(?:s|x|z|sh|ch)$/.test(type);
+    PLURAL_TYPE_MAP.set(type + (needsEs ? 'es' : 's'), type);
+    if (camel !== type) {
+      PLURAL_TYPE_MAP.set(camel + (needsEs ? 'es' : 's'), type);
+    }
+  }
+}
 
 /**
  * Gets the Proxy wrapper for a component.
@@ -72,12 +68,10 @@ const PROXY_REGISTRY = new WeakMap<ComponentData, ComponentData>();
  * const viewport = parentNexus.getComponentByName('My Viewport', false);
  * ```
  */
-export function castTo<T extends ComponentDataType>(
-  component: ComponentData,
-): T {
+export function castTo<T>(component: ComponentData): T {
   // Look up in registry - if not found, component might already be a Proxy or never registered
   const proxy = PROXY_REGISTRY.get(component);
-  return (proxy || component) as unknown as T;
+  return (proxy || component) as T;
 }
 
 let COMPONENT_COUNT = 0;
@@ -111,6 +105,7 @@ export enum ComponentUnique {
   FALSE = 0,
   LOCAL = 1,
   GLOBAL = 2,
+  NAME = 3,
 }
 
 export type COMPONENT_TYPE =
@@ -132,13 +127,15 @@ export type COMPONENT_TYPE =
   | 'event-collider'
   | 'timer'
   | 'light'
-  | 'audio-manager'
-  | 'audio-controller';
+  | 'audio-track'
+  | 'audio-effect'
+  | 'audio-player';
 
 export interface ComponentOptions {
   name: string;
   overrideKey?: string;
   updateOverride?: string;
+  initOverride?: string;
 }
 
 export interface ComponentData {
@@ -151,6 +148,7 @@ export interface ComponentData {
   unique?: ComponentUnique;
   overrideKey?: string;
   updateOverride?: string;
+  initOverride?: string;
   _initialized?: boolean;
   _initDefer?: number;
 }
@@ -195,6 +193,7 @@ export type ComponentInstanceMethods<T extends ComponentMethods> = {
  * @returns Proxy-wrapped component
  */
 export function wrapInProxy(component: ComponentData): ComponentData {
+  ensureNexusMaps();
   const proxyKeys = Object.keys(MethodRegistry[component.type]);
 
   // Base ComponentData properties (always allowed)
@@ -208,6 +207,7 @@ export function wrapInProxy(component: ComponentData): ComponentData {
     'unique',
     'overrideKey',
     'updateOverride',
+    'initOverride',
     '_initialized',
     '_initDefer',
   ];
@@ -230,19 +230,36 @@ export function wrapInProxy(component: ComponentData): ComponentData {
       }
 
       // Check if it's a method
-      if (proxyKeys.indexOf(prop) === -1) {
-        console.error(
-          `${c.type} has no method named ${prop}. Available methods: ${proxyKeys.join(', ')}`,
-        );
-        // return do nothing func for graceful failure
-        return () => {};
+      if (proxyKeys.indexOf(prop) !== -1) {
+        // Return method wrapper
+        return (...args: unknown[]) => {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
+          return MethodRegistry[c.type][prop](c, ...args);
+        };
       }
 
-      // Return method wrapper
-      return (...args: unknown[]) => {
+      // Nexus shorthand: resolve child components by type or name
+      if (c.type === 'nexus') {
+        const singularType = SINGULAR_TYPE_MAP.get(prop);
+        if (singularType) {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
+          return MethodRegistry['nexus']['getComponentByType'](c, singularType);
+        }
+        const pluralType = PLURAL_TYPE_MAP.get(prop);
+        if (pluralType) {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
+          return MethodRegistry['nexus']['getComponentsByType'](c, pluralType);
+        }
+        // Name-based fallback
         // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
-        return MethodRegistry[c.type][prop](c, ...args);
-      };
+        return MethodRegistry['nexus']['getComponentByName'](c, prop);
+      }
+
+      console.error(
+        `${c.type} has no method named ${prop}. Available methods: ${proxyKeys.join(', ')}`,
+      );
+      // return do nothing func for graceful failure
+      return () => {};
     },
   };
 
@@ -283,6 +300,9 @@ export async function newComponent(
   if (options.updateOverride !== undefined) {
     component.updateOverride = options.updateOverride;
   }
+  if (options.initOverride !== undefined) {
+    component.initOverride = options.initOverride;
+  }
 
   // Automatically queue for initialization
   queueInit(component.id);
@@ -299,7 +319,45 @@ export async function newComponent(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type SerializedData = Record<string, any>;
 
+/**
+ * Structured problem encountered during deserialization.
+ *
+ * Deserializers collect these rather than throwing so that the caller can
+ * inspect every issue in one pass. A non-empty errors array does not
+ * necessarily mean the component is null — malformed nested data (bad
+ * vectors, missing optional fields) is recorded here while the component
+ * is still reconstructed using sensible defaults.
+ */
+export interface DeserializationError {
+  /** Machine-readable category, e.g. 'TYPE_MISMATCH', 'MISSING_NAME', 'INVALID_VECTOR'. */
+  code: string;
+  /** Human-readable description. */
+  message: string;
+  /**
+   * Occurrence count. Defaults to 1 when undefined. Used by texture-map's
+   * tallying (where hundreds of identical per-frame errors collapse to one).
+   */
+  count?: number;
+}
+
+/**
+ * Return shape for every component deserializer.
+ *
+ * `component` is null only when deserialization can't produce a usable
+ * object — typically type mismatch or missing identity (`name`). For
+ * recoverable issues, `component` is non-null and `errors` describes what
+ * was coerced to defaults.
+ */
+export interface DeserializeResult<T = ComponentData> {
+  component: T | null;
+  errors: DeserializationError[];
+}
+
 export interface ComponentSerializer {
   serialize(component: ComponentData): SerializedData;
-  deserialize(data: SerializedData): ComponentData | Promise<ComponentData>;
+  deserialize(
+    data: SerializedData,
+  ):
+    | DeserializeResult<ComponentData>
+    | Promise<DeserializeResult<ComponentData>>;
 }

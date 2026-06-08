@@ -227,6 +227,22 @@ export const AtlasManager: AtlasManagerMethods = {
   init: async (component: ComponentData): Promise<void> => {
     const am = component as AtlasManagerT;
 
+    // Auto-discover texture maps if none were explicitly registered
+    // (handles deserialized scenes where builder doesn't receive atlasManager option)
+    if (am.textureMapIds.size === 0) {
+      const rootNexus = getRootNexus(am);
+      if (rootNexus) {
+        const allTextureMaps = Nexus.getComponentsByType(
+          rootNexus,
+          'texture-map',
+          true,
+        ) as TextureMapT[];
+        for (const tm of allTextureMaps) {
+          am.textureMapIds.add(tm.textureMapKey);
+        }
+      }
+    }
+
     // Only compile if not already compiled and has pending texture maps
     if (!am.compiled && am.textureMapIds.size > 0) {
       try {
@@ -236,7 +252,7 @@ export const AtlasManager: AtlasManagerMethods = {
           '[atlas-manager] Auto-compilation failed during init:',
           error,
         );
-        throw error; // Re-throw to prevent camera from initializing
+        throw error;
       }
     }
   },

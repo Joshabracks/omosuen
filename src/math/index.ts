@@ -423,6 +423,13 @@ export class Array3Dc<T> {
       }
     }
 
+    // Apply dirty overrides (pending write-back cache)
+    if (this.dirtyMap !== null) {
+      for (const [idx, val] of this.dirtyMap) {
+        result.indexSet(idx, val);
+      }
+    }
+
     return result;
   };
   set = (coordinates: Vector3D, value: T): void => {

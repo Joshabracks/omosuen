@@ -1,6 +1,6 @@
 import { ComponentMethods } from '../types';
 import { Vector3D } from '../../math';
-import { CellMapT } from './data';
+import { CellMapT, resetCellMapState } from './data';
 import { CellData, Material, Mesh, packCell, unpackCell } from './types';
 import { markChunksDirty } from './mesh-builder';
 
@@ -216,5 +216,17 @@ export const CellMap: CellMapMethods = {
   flush: (component: CellMapT): void => {
     component.packedData.flush();
     component.needsGPUUpdate = true;
+  },
+
+  dispose: (c) => {
+    const cm = c as unknown as CellMapT;
+    for (const chunk of cm.chunks) {
+      chunk.glVertexBuffer = null;
+      chunk.glIndexBuffer = null;
+      chunk.vertices = null;
+      chunk.indices = null;
+    }
+    resetCellMapState();
+    cm._disposed = true;
   },
 };

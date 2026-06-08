@@ -4,6 +4,8 @@ import {
   ComponentSerializer,
   ComponentUnique,
   ComponentInstanceMethods,
+  DeserializationError,
+  DeserializeResult,
 } from '../types';
 import { Vector3D } from '../../math';
 import type { TransformMethods } from './methods';
@@ -102,51 +104,92 @@ function serialize(component: ComponentData): any {
  * Deserializes a plain object back into a transform component.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): TransformT {
+function deserialize(data: any): DeserializeResult<TransformT> {
+  const errors: DeserializationError[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return {
+      component: null,
+      errors: [
+        {
+          code: 'INVALID_DATA',
+          message: 'transform deserialize received non-object data',
+        },
+      ],
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, position, rotation, scale } = data;
 
-  const errors = [];
   if (type !== 'transform') {
-    errors.push(`type ${type} does not match "transform"`);
+    errors.push({
+      code: 'TYPE_MISMATCH',
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+      message: `type ${type} does not match "transform"`,
+    });
   }
   if (!name) {
-    errors.push('transform requires a name');
+    errors.push({
+      code: 'MISSING_NAME',
+      message: 'transform requires a name',
+    });
   }
-  if (errors.length) {
-    throw new Error(errors.join('\n'));
+  if (errors.length > 0) {
+    return { component: null, errors };
   }
 
-  // Reconstruct Vector3D position
-  let positionVec = new Vector3D(0, 0, 0);
-  if (position && typeof position === 'object') {
-    if ('_vectorType' in position && position._vectorType === 'Vector3D') {
-      positionVec = new Vector3D(position.x, position.y, position.z);
+  const componentName = name as string;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const parseVec3 = (
+    raw: unknown,
+    field: string,
+    fallback: Vector3D,
+  ): Vector3D => {
+    if (raw === undefined) {
+      errors.push({
+        code: 'MISSING_VECTOR',
+        message: `transform "${componentName}" ${field} missing; defaulting to (${fallback.x}, ${fallback.y}, ${fallback.z})`,
+      });
+      return fallback;
     }
-  }
-
-  // Reconstruct Vector3D rotation
-  let rotationVec = new Vector3D(0, 0, 0);
-  if (rotation && typeof rotation === 'object') {
-    if ('_vectorType' in rotation && rotation._vectorType === 'Vector3D') {
-      rotationVec = new Vector3D(rotation.x, rotation.y, rotation.z);
+    if (!raw || typeof raw !== 'object') {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `transform "${componentName}" ${field} is not an object; defaulting`,
+      });
+      return fallback;
     }
-  }
-
-  // Reconstruct Vector3D scale
-  let scaleVec = new Vector3D(1, 1, 1);
-  if (scale && typeof scale === 'object') {
-    if ('_vectorType' in scale && scale._vectorType === 'Vector3D') {
-      scaleVec = new Vector3D(scale.x, scale.y, scale.z);
+    const v = raw as {
+      _vectorType?: unknown;
+      x?: unknown;
+      y?: unknown;
+      z?: unknown;
+    };
+    if (v._vectorType !== 'Vector3D') {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `transform "${componentName}" ${field} missing _vectorType='Vector3D' marker; defaulting`,
+      });
+      return fallback;
     }
-  }
+    return new Vector3D(v.x as number, v.y as number, v.z as number);
+  };
 
-  return builder({
-    name: name as string,
-    position: positionVec,
-    rotation: rotationVec,
-    scale: scaleVec,
-  });
+  const positionVec = parseVec3(position, 'position', new Vector3D(0, 0, 0));
+  const rotationVec = parseVec3(rotation, 'rotation', new Vector3D(0, 0, 0));
+  const scaleVec = parseVec3(scale, 'scale', new Vector3D(1, 1, 1));
+
+  return {
+    component: builder({
+      name: componentName,
+      position: positionVec,
+      rotation: rotationVec,
+      scale: scaleVec,
+    }),
+    errors,
+  };
 }
 
 export const TransformSerializer: ComponentSerializer = {

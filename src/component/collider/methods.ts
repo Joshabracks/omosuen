@@ -101,6 +101,22 @@ const worldPos = new Vector3D(0, 0, 0);
 const worldRot = new Vector3D(0, 0, 0);
 const worldScale = new Vector3D(0, 0, 0);
 
+// Reusable scratch OBBs / sphere centers for the per-frame collider-vs-collider
+// path. computeOBBInto / computeSphereWorldInto write in place, so
+// intersectsCollider allocates nothing per test (vs. the old ~8 Vector3Ds per OBB).
+function makeScratchObb(): OBB {
+  return {
+    center: new Vector3D(0, 0, 0),
+    halfExtents: new Vector3D(0, 0, 0),
+    axes: [new Vector3D(0, 0, 0), new Vector3D(0, 0, 0), new Vector3D(0, 0, 0)],
+    worldAABB: { min: new Vector3D(0, 0, 0), max: new Vector3D(0, 0, 0) },
+  };
+}
+const scratchObbA = makeScratchObb();
+const scratchObbB = makeScratchObb();
+const scratchSphereCenterA = new Vector3D(0, 0, 0);
+const scratchSphereCenterB = new Vector3D(0, 0, 0);
+
 // ============================================================
 // Component access helpers
 // ============================================================
@@ -127,95 +143,107 @@ function getSceneRoot(collider: ColliderT): NexusT | null {
 // Geometry computation
 // ============================================================
 
-function computeOBB(collider: ColliderT): OBB {
+/**
+ * Writes the collider's world-space OBB into `out` (no allocation). Same math as
+ * the old allocating computeOBB.
+ */
+function computeOBBInto(collider: ColliderT, out: OBB): void {
   const transform = getSiblingTransform(collider);
 
-  let center: Vector3D;
-  let scale: Vector3D;
+  let sx: number;
+  let sy: number;
+  let sz: number;
   let yaw = 0;
 
   if (transform) {
     transform.getWorldInto(worldPos, worldRot, worldScale);
-    scale = worldScale;
+    sx = worldScale.x;
+    sy = worldScale.y;
+    sz = worldScale.z;
     yaw = worldRot.y;
-    center = new Vector3D(
-      worldPos.x + collider.offset.x,
-      worldPos.y + collider.offset.y,
-      worldPos.z + collider.offset.z,
-    );
+    out.center.x = worldPos.x + collider.offset.x;
+    out.center.y = worldPos.y + collider.offset.y;
+    out.center.z = worldPos.z + collider.offset.z;
   } else {
-    center = new Vector3D(
-      collider.offset.x,
-      collider.offset.y,
-      collider.offset.z,
-    );
-    scale = new Vector3D(1, 1, 1);
+    out.center.x = collider.offset.x;
+    out.center.y = collider.offset.y;
+    out.center.z = collider.offset.z;
+    sx = 1;
+    sy = 1;
+    sz = 1;
   }
 
-  const halfX = collider.size.x * scale.x;
-  const halfY = collider.size.y * scale.y;
-  const halfZ = collider.size.z * scale.z;
+  const halfX = collider.size.x * sx;
+  const halfY = collider.size.y * sy;
+  const halfZ = collider.size.z * sz;
 
   const cosT = Math.cos(yaw);
   const sinT = Math.sin(yaw);
 
-  const axes: [Vector3D, Vector3D, Vector3D] = [
-    new Vector3D(cosT, 0, sinT),
-    new Vector3D(0, 1, 0),
-    new Vector3D(-sinT, 0, cosT),
-  ];
+  out.axes[0].x = cosT;
+  out.axes[0].y = 0;
+  out.axes[0].z = sinT;
+  out.axes[1].x = 0;
+  out.axes[1].y = 1;
+  out.axes[1].z = 0;
+  out.axes[2].x = -sinT;
+  out.axes[2].y = 0;
+  out.axes[2].z = cosT;
 
-  const halfExtents = new Vector3D(halfX, halfY, halfZ);
+  out.halfExtents.x = halfX;
+  out.halfExtents.y = halfY;
+  out.halfExtents.z = halfZ;
 
   // World AABB enclosing the rotated OBB
   const worldHalfX = Math.abs(cosT) * halfX + Math.abs(sinT) * halfZ;
   const worldHalfY = halfY;
   const worldHalfZ = Math.abs(sinT) * halfX + Math.abs(cosT) * halfZ;
 
-  const worldAABB = {
-    min: new Vector3D(
-      center.x - worldHalfX,
-      center.y - worldHalfY,
-      center.z - worldHalfZ,
-    ),
-    max: new Vector3D(
-      center.x + worldHalfX,
-      center.y + worldHalfY,
-      center.z + worldHalfZ,
-    ),
-  };
-
-  return { center, halfExtents, axes, worldAABB };
+  out.worldAABB.min.x = out.center.x - worldHalfX;
+  out.worldAABB.min.y = out.center.y - worldHalfY;
+  out.worldAABB.min.z = out.center.z - worldHalfZ;
+  out.worldAABB.max.x = out.center.x + worldHalfX;
+  out.worldAABB.max.y = out.center.y + worldHalfY;
+  out.worldAABB.max.z = out.center.z + worldHalfZ;
 }
 
+/** Allocating OBB (for non-per-frame callers: getWorldBounds/Center, occupancy). */
+function computeOBB(collider: ColliderT): OBB {
+  const out = makeScratchObb();
+  computeOBBInto(collider, out);
+  return out;
+}
+
+/**
+ * Writes the collider's world-space sphere center into `outCenter` and returns
+ * its effective radius (no allocation).
+ */
+function computeSphereWorldInto(
+  collider: ColliderT,
+  outCenter: Vector3D,
+): number {
+  const transform = getSiblingTransform(collider);
+  if (transform) {
+    transform.getWorldInto(worldPos, null, worldScale);
+    outCenter.x = worldPos.x + collider.offset.x;
+    outCenter.y = worldPos.y + collider.offset.y;
+    outCenter.z = worldPos.z + collider.offset.z;
+    return collider.radius * Math.max(worldScale.x, worldScale.y, worldScale.z);
+  }
+  outCenter.x = collider.offset.x;
+  outCenter.y = collider.offset.y;
+  outCenter.z = collider.offset.z;
+  return collider.radius;
+}
+
+/** Allocating sphere (for non-per-frame callers). */
 function computeSphereWorld(collider: ColliderT): {
   center: Vector3D;
   radius: number;
 } {
-  const transform = getSiblingTransform(collider);
-
-  let center: Vector3D;
-  let effectiveRadius: number;
-
-  if (transform) {
-    transform.getWorldInto(worldPos, null, worldScale);
-    center = new Vector3D(
-      worldPos.x + collider.offset.x,
-      worldPos.y + collider.offset.y,
-      worldPos.z + collider.offset.z,
-    );
-    effectiveRadius =
-      collider.radius * Math.max(worldScale.x, worldScale.y, worldScale.z);
-  } else {
-    center = new Vector3D(
-      collider.offset.x,
-      collider.offset.y,
-      collider.offset.z,
-    );
-    effectiveRadius = collider.radius;
-  }
-
-  return { center, radius: effectiveRadius };
+  const center = new Vector3D(0, 0, 0);
+  const radius = computeSphereWorldInto(collider, center);
+  return { center, radius };
 }
 
 // ============================================================
@@ -299,30 +327,37 @@ function closestPointOnTriangle(
  * 5 axes = 2 from A's XZ + 2 from B's XZ + 1 shared Y axis.
  * All edge cross products collapse to Y or existing face axes.
  */
+function obbAxisSeparates(
+  dx: number,
+  dy: number,
+  dz: number,
+  a: OBB,
+  b: OBB,
+  ax: Vector3D,
+): boolean {
+  const d = Math.abs(dx * ax.x + dy * ax.y + dz * ax.z);
+  const rA =
+    Math.abs(dot3(a.axes[0], ax)) * a.halfExtents.x +
+    Math.abs(dot3(a.axes[1], ax)) * a.halfExtents.y +
+    Math.abs(dot3(a.axes[2], ax)) * a.halfExtents.z;
+  const rB =
+    Math.abs(dot3(b.axes[0], ax)) * b.halfExtents.x +
+    Math.abs(dot3(b.axes[1], ax)) * b.halfExtents.y +
+    Math.abs(dot3(b.axes[2], ax)) * b.halfExtents.z;
+  return d > rA + rB;
+}
+
 function obbVsObb(a: OBB, b: OBB): boolean {
-  const diff = b.center.subtract(a.center);
+  const dx = b.center.x - a.center.x;
+  const dy = b.center.y - a.center.y;
+  const dz = b.center.z - a.center.z;
 
-  // Test 5 separating axes
-  const axes = [
-    a.axes[0], // A local X
-    a.axes[2], // A local Z
-    b.axes[0], // B local X
-    b.axes[2], // B local Z
-    a.axes[1], // Y axis (shared)
-  ];
-
-  for (const axis of axes) {
-    const d = Math.abs(dot3(diff, axis));
-    const rA =
-      Math.abs(dot3(a.axes[0], axis)) * a.halfExtents.x +
-      Math.abs(dot3(a.axes[1], axis)) * a.halfExtents.y +
-      Math.abs(dot3(a.axes[2], axis)) * a.halfExtents.z;
-    const rB =
-      Math.abs(dot3(b.axes[0], axis)) * b.halfExtents.x +
-      Math.abs(dot3(b.axes[1], axis)) * b.halfExtents.y +
-      Math.abs(dot3(b.axes[2], axis)) * b.halfExtents.z;
-    if (d > rA + rB) return false;
-  }
+  // Test 5 separating axes: A local X, A local Z, B local X, B local Z, shared Y.
+  if (obbAxisSeparates(dx, dy, dz, a, b, a.axes[0])) return false;
+  if (obbAxisSeparates(dx, dy, dz, a, b, a.axes[2])) return false;
+  if (obbAxisSeparates(dx, dy, dz, a, b, b.axes[0])) return false;
+  if (obbAxisSeparates(dx, dy, dz, a, b, b.axes[2])) return false;
+  if (obbAxisSeparates(dx, dy, dz, a, b, a.axes[1])) return false;
 
   return true;
 }
@@ -346,12 +381,17 @@ function obbVsSphere(
   sphereCenter: Vector3D,
   sphereRadius: number,
 ): boolean {
-  const diff = sphereCenter.subtract(obb.center);
+  const diffX = sphereCenter.x - obb.center.x;
+  const diffY = sphereCenter.y - obb.center.y;
+  const diffZ = sphereCenter.z - obb.center.z;
 
   // Project to OBB local space
-  const localX = dot3(diff, obb.axes[0]);
-  const localY = dot3(diff, obb.axes[1]);
-  const localZ = dot3(diff, obb.axes[2]);
+  const localX =
+    diffX * obb.axes[0].x + diffY * obb.axes[0].y + diffZ * obb.axes[0].z;
+  const localY =
+    diffX * obb.axes[1].x + diffY * obb.axes[1].y + diffZ * obb.axes[1].z;
+  const localZ =
+    diffX * obb.axes[2].x + diffY * obb.axes[2].y + diffZ * obb.axes[2].z;
 
   // Clamp to AABB half-extents
   const closestX = clamp(localX, -obb.halfExtents.x, obb.halfExtents.x);
@@ -911,26 +951,28 @@ export const Collider: ColliderMethods = {
     const shapeB = other.shape;
 
     if (shapeA === 'box' && shapeB === 'box') {
-      return obbVsObb(computeOBB(collider), computeOBB(other));
+      computeOBBInto(collider, scratchObbA);
+      computeOBBInto(other, scratchObbB);
+      return obbVsObb(scratchObbA, scratchObbB);
     }
 
     if (shapeA === 'sphere' && shapeB === 'sphere') {
-      const sA = computeSphereWorld(collider);
-      const sB = computeSphereWorld(other);
-      return sphereVsSphere(sA.center, sA.radius, sB.center, sB.radius);
+      const rA = computeSphereWorldInto(collider, scratchSphereCenterA);
+      const rB = computeSphereWorldInto(other, scratchSphereCenterB);
+      return sphereVsSphere(scratchSphereCenterA, rA, scratchSphereCenterB, rB);
     }
 
     // OBB vs Sphere (order doesn't matter)
     if (shapeA === 'box' && shapeB === 'sphere') {
-      const obb = computeOBB(collider);
-      const sphere = computeSphereWorld(other);
-      return obbVsSphere(obb, sphere.center, sphere.radius);
+      computeOBBInto(collider, scratchObbA);
+      const r = computeSphereWorldInto(other, scratchSphereCenterB);
+      return obbVsSphere(scratchObbA, scratchSphereCenterB, r);
     }
 
     // Sphere vs OBB
-    const obb = computeOBB(other);
-    const sphere = computeSphereWorld(collider);
-    return obbVsSphere(obb, sphere.center, sphere.radius);
+    computeOBBInto(other, scratchObbA);
+    const r = computeSphereWorldInto(collider, scratchSphereCenterA);
+    return obbVsSphere(scratchObbA, scratchSphereCenterA, r);
   },
 
   getOccupiedCells(collider: ColliderT, cellMap: CellMapT): Vector3D[] {

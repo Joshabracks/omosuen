@@ -1,25 +1,27 @@
 /**
- * Loader + boundary glue for the render-domain WASM module (`omosuen-render`).
+ * Render-domain WASM glue (`omosuen-render`).
  *
- * Hand-rolled extern "C" ABI — no wasm-bindgen. The `.wasm` is compiled by
- * webpack (build-tools/wasm.mjs) and injected as a base64 string via DefinePlugin
- * (`__RENDER_WASM_BASE64__`, same mechanism as `__ENGINE_VERSION__`), so the
- * UMD bundle stays a single self-contained file that runs from `file://`.
+ * Lives with the camera because rendering is the camera's domain. It owns the
+ * render-specific concerns: which module to load (`__RENDER_WASM_BASE64__`,
+ * injected by webpack DefinePlugin — same mechanism as `__ENGINE_VERSION__`) and
+ * the typed boundary to the module's exports. The generic compile/instantiate
+ * step lives in `src/wasm` (reusable across WASM modules).
  *
- * The render WASM is a hard requirement (no JS fallback). It is instantiated
- * during the camera's async init(), which processInitQueue awaits before the
- * camera is marked _initialized — and render() skips uninitialized cameras — so
- * the module is always ready before any solidity() call.
+ * The render WASM is a hard requirement (no JS fallback). It is instantiated in
+ * the camera's async init(), which processInitQueue awaits before the camera is
+ * marked _initialized — and render() skips uninitialized cameras — so the module
+ * is always ready before any solidity() call.
  *
  * The boundary is allocation-free in steady state: input/output live in the
  * module's linear memory, and the typed-array views over them are cached and
  * recreated only when a pointer, the backing buffer, or the element count
  * changes (i.e. after the map grows).
  */
+import { base64ToBytes, initWasm } from '../../../wasm';
 
 // Injected by webpack DefinePlugin. Only defined in webpack builds; the Node
 // parity test passes bytes to initRenderWasm() instead, so this is never read
-// there (see the `??` in initRenderWasm).
+// there (the `??` short-circuits).
 // eslint-disable-next-line @typescript-eslint/naming-convention
 declare const __RENDER_WASM_BASE64__: string;
 
@@ -31,16 +33,6 @@ interface RenderExports {
 
 let wasmExports: RenderExports | null = null;
 
-function base64ToBytes(b64: string): Uint8Array {
-  const binary = globalThis.atob(b64);
-  const len = binary.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
 /**
  * Instantiates the render WASM module. Idempotent. Awaited from the camera's
  * init(). `wasmBytes` is an injection point for non-webpack environments (the
@@ -49,9 +41,7 @@ function base64ToBytes(b64: string): Uint8Array {
 export async function initRenderWasm(wasmBytes?: Uint8Array): Promise<void> {
   if (wasmExports) return;
   const bytes = wasmBytes ?? base64ToBytes(__RENDER_WASM_BASE64__);
-  const module = await WebAssembly.compile(bytes as BufferSource);
-  const instance = await WebAssembly.instantiate(module, {});
-  wasmExports = instance.exports as unknown as RenderExports;
+  wasmExports = await initWasm<RenderExports>(bytes);
 }
 
 // Cached linear-memory views — recreated only when the pointer, backing buffer,

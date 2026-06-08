@@ -10,7 +10,7 @@
  */
 import { Array3D, Array3Dc, Vector3D } from '../src/math';
 import { packCell } from '../src/component/cell-map/types';
-import { initRenderWasm } from '../src/wasm/render';
+import { initRenderWasm } from '../src/component/camera/render/wasm';
 import { computeSolidityMap } from '../src/component/camera/render/visibility-mask';
 import { buildRenderWasm } from '../build-tools/wasm.mjs';
 

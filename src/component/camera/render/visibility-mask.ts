@@ -1,5 +1,5 @@
 import { Array3Dc } from '../../../math';
-import { solidity } from '../../../wasm/render';
+import { solidity } from './wasm';
 
 /**
  * Computes a per-cell solidity map for GPU-side line-of-sight raycasting.

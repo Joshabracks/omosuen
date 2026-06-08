@@ -13,7 +13,7 @@ import {
   FBO_OVERSCAN_PX,
   cacheLightUniformLocations,
 } from '../render/light-uniforms';
-import { initRenderWasm } from '../../../wasm/render';
+import { initRenderWasm } from '../render/wasm';
 
 /**
  * Initializes WebGL resources for the camera (shader programs, buffers).

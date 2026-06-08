@@ -39,6 +39,9 @@ interface RenderExports {
     cz: number,
   ) => void;
   mesh_build_chunk: (cx: number, cy: number, cz: number) => void;
+  mesh_reserve_weights: (count: number) => number;
+  mesh_set_smoothing: (smoothing: number, normalSmoothing: number) => void;
+  mesh_build_chunk_smoothed: (cx: number, cy: number, cz: number) => void;
   mesh_vertices_ptr: () => number;
   mesh_vertices_len: () => number;
   mesh_indices_ptr: () => number;
@@ -157,23 +160,32 @@ export function setMeshMap(
 }
 
 /**
- * Builds one chunk's greedy mesh in WASM and copies the result out into
- * standalone arrays (the chunk retains them for GPU upload). Requires a prior
- * setMeshMap() in the same rebuild pass. Throws if not initialized.
+ * Uploads the per-cell smoothing weights (0–15) into linear memory, and sets the
+ * smoothing iteration count + normal-smoothing factor. Call once per rebuild
+ * pass (after setMeshMap) before buildChunkMeshSmoothedWasm().
  */
-export function buildChunkMeshWasm(
-  cx: number,
-  cy: number,
-  cz: number,
-): ChunkMeshResult {
+export function setMeshSmoothing(
+  weightsFlat: ArrayLike<number>,
+  cellCount: number,
+  smoothing: number,
+  normalSmoothing: number,
+): void {
   if (!wasmExports) {
     throw new Error(
-      '[omosuen] render WASM not initialized (buildChunkMeshWasm).',
+      '[omosuen] render WASM not initialized (setMeshSmoothing).',
     );
   }
   const ex = wasmExports;
-  ex.mesh_build_chunk(cx, cy, cz);
+  const ptr = ex.mesh_reserve_weights(cellCount);
+  const view = new Uint32Array(ex.memory.buffer, ptr, cellCount);
+  for (let i = 0; i < cellCount; i++) {
+    view[i] = weightsFlat[i];
+  }
+  ex.mesh_set_smoothing(smoothing, normalSmoothing);
+}
 
+/** Copies the current MESH_* output buffers out into standalone arrays. */
+function readMeshOutput(ex: RenderExports): ChunkMeshResult {
   const buffer = ex.memory.buffer;
   const vlen = ex.mesh_vertices_len();
   const ilen = ex.mesh_indices_len();
@@ -201,4 +213,43 @@ export function buildChunkMeshWasm(
   }
 
   return { vertices, indices, ranges };
+}
+
+/**
+ * Builds one chunk's greedy mesh in WASM and copies the result out into
+ * standalone arrays (the chunk retains them for GPU upload). Requires a prior
+ * setMeshMap() in the same rebuild pass. Throws if not initialized.
+ */
+export function buildChunkMeshWasm(
+  cx: number,
+  cy: number,
+  cz: number,
+): ChunkMeshResult {
+  if (!wasmExports) {
+    throw new Error(
+      '[omosuen] render WASM not initialized (buildChunkMeshWasm).',
+    );
+  }
+  const ex = wasmExports;
+  ex.mesh_build_chunk(cx, cy, cz);
+  return readMeshOutput(ex);
+}
+
+/**
+ * Builds one chunk's smoothed (Laplacian) mesh in WASM. Requires a prior
+ * setMeshMap() and setMeshSmoothing() in the same rebuild pass.
+ */
+export function buildChunkMeshSmoothedWasm(
+  cx: number,
+  cy: number,
+  cz: number,
+): ChunkMeshResult {
+  if (!wasmExports) {
+    throw new Error(
+      '[omosuen] render WASM not initialized (buildChunkMeshSmoothedWasm).',
+    );
+  }
+  const ex = wasmExports;
+  ex.mesh_build_chunk_smoothed(cx, cy, cz);
+  return readMeshOutput(ex);
 }

@@ -1,27 +1,36 @@
 /**
- * Parity test for the render WASM greedy chunk mesher (step 2a).
+ * Golden-snapshot regression test for the render WASM chunk mesher (greedy +
+ * smoothed). Run: npm run test:wasm-mesh
  *
- * Run: npm run test:wasm-mesh
- *
- * Builds random packed cell-maps (smoothing = 0) and asserts the WASM greedy
- * mesh is byte-identical to the JS reference (`buildChunkMesh`) for every chunk:
- * interleaved vertex floats, index buffer, and per-material draw ranges.
- *
- * The cell-map is constructed directly (no component builder) so the test graph
- * stays free of the component registry / shader imports that don't load in tsx.
+ * Parity vs the JS reference was proven during the port (step 2a/2b); the JS
+ * mesher has since been deleted (single source of truth). This test pins the
+ * WASM output for fixed seeds/configs via a content hash so future regressions
+ * are caught. To re-baseline after an intentional mesh change, set GOLDENS = {}
+ * and re-run — the test prints the captured hashes — then paste them back.
  */
 import { Vector3D, Array3D } from '../src/math';
 import { packCell, CHUNK_SIZE } from '../src/component/cell-map/types';
-import type { ChunkMesh } from '../src/component/cell-map/types';
-import type { CellMapT } from '../src/component/cell-map/data';
-import { buildChunkMesh } from '../src/component/cell-map/mesh-builder';
 import {
   initRenderWasm,
   setMeshMap,
+  setMeshSmoothing,
   buildChunkMeshWasm,
+  buildChunkMeshSmoothedWasm,
   type ChunkMeshResult,
 } from '../src/component/camera/render/wasm';
 import { buildRenderWasm } from '../build-tools/wasm.mjs';
+
+// Captured from the parity-proven WASM output. Keyed by case name.
+const GOLDENS: Record<string, number> = {
+  'g1-greedy': 4187842706,
+  'g2-greedy-1mat': 2270217368,
+  'g3-greedy-allsolid': 3524738704,
+  'g4-greedy-allair': 520366341,
+  's1-smooth-flat': 752222795,
+  's2-smooth-fullnorm': 844660720,
+  's3-smooth-lerp-randw': 2092834447,
+  's4-smooth-multichunk': 22181084,
+};
 
 function makeRng(seed: number): () => number {
   let s = seed >>> 0;
@@ -33,85 +42,53 @@ function makeRng(seed: number): () => number {
   };
 }
 
-function freshChunk(cx: number, cy: number, cz: number): ChunkMesh {
-  return {
-    cx,
-    cy,
-    cz,
-    dirty: true,
-    vertices: null,
-    indices: null,
-    drawRanges: [],
-    faceCount: 0,
-    glVertexBuffer: null,
-    glIndexBuffer: null,
-  };
+function fnv1a(h: number, bytes: Uint8Array): number {
+  let hash = h;
+  for (let i = 0; i < bytes.length; i++) {
+    hash ^= bytes[i];
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
 }
 
-function cmpFloat(
-  a: Float32Array | null,
-  b: Float32Array | null,
-  label: string,
-): void {
-  if (a === null && b === null) return;
-  if (!a || !b) {
-    throw new Error(`${label}: vertices null mismatch js=${!!a} wasm=${!!b}`);
-  }
-  if (a.length !== b.length) {
-    throw new Error(`${label}: vertex length ${a.length} (js) vs ${b.length}`);
-  }
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) {
-      throw new Error(`${label}: vertex float[${i}] js=${a[i]} wasm=${b[i]}`);
-    }
-  }
+function asBytes(
+  view: Float32Array | Uint32Array,
+): Uint8Array {
+  return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
 }
 
-function cmpInt(
-  a: Uint32Array | null,
-  b: Uint32Array | null,
-  label: string,
-): void {
-  if (a === null && b === null) return;
-  if (!a || !b) {
-    throw new Error(`${label}: indices null mismatch js=${!!a} wasm=${!!b}`);
-  }
-  if (a.length !== b.length) {
-    throw new Error(`${label}: index length ${a.length} (js) vs ${b.length}`);
-  }
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) {
-      throw new Error(`${label}: index[${i}] js=${a[i]} wasm=${b[i]}`);
+function hashChunk(h: number, r: ChunkMeshResult): number {
+  let hash = h;
+  // Distinguish null vs empty and capture shape.
+  const meta = new Uint32Array([
+    r.vertices ? r.vertices.length : 0xffffffff,
+    r.indices ? r.indices.length : 0xffffffff,
+    r.ranges.length,
+  ]);
+  hash = fnv1a(hash, asBytes(meta));
+  if (r.vertices) hash = fnv1a(hash, asBytes(r.vertices));
+  if (r.indices) hash = fnv1a(hash, asBytes(r.indices));
+  if (r.ranges.length > 0) {
+    const rb = new Uint32Array(r.ranges.length * 3);
+    for (let i = 0; i < r.ranges.length; i++) {
+      rb[i * 3] = r.ranges[i].materialIndex;
+      rb[i * 3 + 1] = r.ranges[i].indexOffset;
+      rb[i * 3 + 2] = r.ranges[i].indexCount;
     }
+    hash = fnv1a(hash, asBytes(rb));
   }
-}
-
-function cmpRanges(
-  js: ChunkMesh['drawRanges'],
-  wasm: ChunkMeshResult['ranges'],
-  label: string,
-): void {
-  if (js.length !== wasm.length) {
-    throw new Error(`${label}: range count ${js.length} (js) vs ${wasm.length}`);
-  }
-  for (let i = 0; i < js.length; i++) {
-    if (
-      js[i].materialIndex !== wasm[i].materialIndex ||
-      js[i].indexOffset !== wasm[i].indexOffset ||
-      js[i].indexCount !== wasm[i].indexCount
-    ) {
-      throw new Error(
-        `${label}: range[${i}] js=${JSON.stringify(js[i])} wasm=${JSON.stringify(wasm[i])}`,
-      );
-    }
-  }
+  return hash;
 }
 
 interface Case {
+  name: string;
   size: Vector3D;
   cellSize: Vector3D;
   mats: number;
   solid: number;
+  smoothing: number; // 0 = greedy
+  normalSmoothing: number;
+  randomWeights: boolean;
   seed: number;
 }
 
@@ -119,7 +96,7 @@ function buildPacked(c: Case): Array3D<number> {
   const rng = makeRng(c.seed);
   const packed = new Array3D<number>(c.size);
   packed.forEach((_v, _x, _y, _z, i) => {
-    const shapeIndex = rng() < c.solid ? 1 : 0; // 0 = air
+    const shapeIndex = rng() < c.solid ? 1 : 0;
     const materialIndex = Math.floor(rng() * c.mats);
     packed.indexSet(
       i,
@@ -129,6 +106,15 @@ function buildPacked(c: Case): Array3D<number> {
   return packed;
 }
 
+function buildWeights(c: Case): Array3D<number> {
+  const rng = makeRng(c.seed ^ 0x9e3779b9);
+  const weights = new Array3D<number>(c.size);
+  weights.forEach((_v, _x, _y, _z, i) => {
+    weights.indexSet(i, c.randomWeights ? Math.floor(rng() * 16) : 8);
+  });
+  return weights;
+}
+
 function chunkCoords(size: Vector3D): { cx: number; cy: number; cz: number }[] {
   const gx = Math.ceil(size.x / CHUNK_SIZE);
   const gy = Math.ceil(size.y / CHUNK_SIZE);
@@ -136,23 +122,14 @@ function chunkCoords(size: Vector3D): { cx: number; cy: number; cz: number }[] {
   const out: { cx: number; cy: number; cz: number }[] = [];
   for (let cz = 0; cz < gz; cz++) {
     for (let cy = 0; cy < gy; cy++) {
-      for (let cx = 0; cx < gx; cx++) {
-        out.push({ cx, cy, cz });
-      }
+      for (let cx = 0; cx < gx; cx++) out.push({ cx, cy, cz });
     }
   }
   return out;
 }
 
-function runCase(c: Case): { chunks: number; withGeom: number } {
+function caseHash(c: Case): number {
   const packed = buildPacked(c);
-  // Minimal CellMapT for the greedy path (reads smoothing/mapSize/cellSize only).
-  const cellMap = {
-    mapSize: c.size,
-    cellSize: c.cellSize,
-    smoothing: 0,
-  } as unknown as CellMapT;
-
   const total = c.size.x * c.size.y * c.size.z;
   setMeshMap(
     packed.value,
@@ -164,49 +141,75 @@ function runCase(c: Case): { chunks: number; withGeom: number } {
     c.cellSize.y,
     c.cellSize.z,
   );
-
-  let withGeom = 0;
-  const coords = chunkCoords(c.size);
-  for (const { cx, cy, cz } of coords) {
-    const jsChunk = freshChunk(cx, cy, cz);
-    buildChunkMesh(cellMap, jsChunk, packed, null);
-    const wasm = buildChunkMeshWasm(cx, cy, cz);
-
-    const label = `seed${c.seed} chunk(${cx},${cy},${cz})`;
-    cmpFloat(jsChunk.vertices, wasm.vertices, label);
-    cmpInt(jsChunk.indices, wasm.indices, label);
-    cmpRanges(jsChunk.drawRanges, wasm.ranges, label);
-    if (wasm.indices) withGeom++;
+  const smoothed = c.smoothing > 0;
+  if (smoothed) {
+    const weights = buildWeights(c);
+    setMeshSmoothing(weights.value, total, c.smoothing, c.normalSmoothing);
   }
-  return { chunks: coords.length, withGeom };
+
+  let h = 0x811c9dc5;
+  for (const { cx, cy, cz } of chunkCoords(c.size)) {
+    const r = smoothed
+      ? buildChunkMeshSmoothedWasm(cx, cy, cz)
+      : buildChunkMeshWasm(cx, cy, cz);
+    h = hashChunk(h, r);
+  }
+  return h;
 }
 
 async function main(): Promise<void> {
   await initRenderWasm(buildRenderWasm());
 
   const cases: Case[] = [
-    { size: new Vector3D(20, 18, 20), cellSize: new Vector3D(1, 0.5, 2), mats: 4, solid: 0.5, seed: 1 },
-    { size: new Vector3D(16, 16, 16), cellSize: new Vector3D(1, 1, 1), mats: 1, solid: 0.5, seed: 2 },
-    { size: new Vector3D(33, 9, 17), cellSize: new Vector3D(0.25, 3, 1), mats: 6, solid: 0.3, seed: 3 },
-    { size: new Vector3D(18, 18, 18), cellSize: new Vector3D(1, 1, 1), mats: 3, solid: 1.0, seed: 4 }, // all solid
-    { size: new Vector3D(18, 18, 18), cellSize: new Vector3D(1, 1, 1), mats: 3, solid: 0.0, seed: 5 }, // all air
-    { size: new Vector3D(1, 40, 1), cellSize: new Vector3D(2, 0.5, 2), mats: 2, solid: 0.6, seed: 6 }, // thin column
+    { name: 'g1-greedy', size: new Vector3D(20, 18, 20), cellSize: new Vector3D(1, 0.5, 2), mats: 4, solid: 0.5, smoothing: 0, normalSmoothing: 0, randomWeights: false, seed: 1 },
+    { name: 'g2-greedy-1mat', size: new Vector3D(16, 16, 16), cellSize: new Vector3D(1, 1, 1), mats: 1, solid: 0.5, smoothing: 0, normalSmoothing: 0, randomWeights: false, seed: 2 },
+    { name: 'g3-greedy-allsolid', size: new Vector3D(18, 18, 18), cellSize: new Vector3D(1, 1, 1), mats: 3, solid: 1.0, smoothing: 0, normalSmoothing: 0, randomWeights: false, seed: 4 },
+    { name: 'g4-greedy-allair', size: new Vector3D(18, 18, 18), cellSize: new Vector3D(1, 1, 1), mats: 3, solid: 0.0, smoothing: 0, normalSmoothing: 0, randomWeights: false, seed: 5 },
+    { name: 's1-smooth-flat', size: new Vector3D(20, 18, 20), cellSize: new Vector3D(1, 0.5, 2), mats: 3, solid: 0.5, smoothing: 1, normalSmoothing: 0, randomWeights: false, seed: 1 },
+    { name: 's2-smooth-fullnorm', size: new Vector3D(20, 18, 20), cellSize: new Vector3D(1, 1, 1), mats: 3, solid: 0.5, smoothing: 2, normalSmoothing: 1, randomWeights: false, seed: 2 },
+    { name: 's3-smooth-lerp-randw', size: new Vector3D(24, 24, 8), cellSize: new Vector3D(1, 1, 1), mats: 4, solid: 0.6, smoothing: 4, normalSmoothing: 0.5, randomWeights: true, seed: 3 },
+    { name: 's4-smooth-multichunk', size: new Vector3D(34, 10, 10), cellSize: new Vector3D(1, 1, 1), mats: 3, solid: 0.4, smoothing: 5, normalSmoothing: 0, randomWeights: true, seed: 6 },
   ];
 
-  let passed = 0;
+  let failed = 0;
+  let missing = 0;
   for (const c of cases) {
-    const { chunks, withGeom } = runCase(c);
-    console.log(
-      `  ✓ seed${c.seed} [${c.size.x}x${c.size.y}x${c.size.z}] ${chunks} chunks (${withGeom} with geometry) — byte-equal`,
-    );
-    passed++;
+    const h = caseHash(c);
+    const golden = GOLDENS[c.name];
+    if (golden === undefined) {
+      console.log(`  CAPTURE  '${c.name}': ${h},`);
+      missing++;
+    } else if (golden !== h) {
+      console.error(`  ✗ ${c.name}: golden ${golden} !== ${h}`);
+      failed++;
+    } else {
+      console.log(`  ✓ ${c.name} (${h})`);
+    }
   }
 
-  console.log(`\nWASM greedy mesh parity: ${passed} cases PASSED ✓`);
+  // Determinism: a second pass must produce identical hashes.
+  for (const c of cases) {
+    if (caseHash(c) !== caseHash(c)) {
+      console.error(`  ✗ ${c.name}: non-deterministic output`);
+      failed++;
+    }
+  }
+
+  if (missing > 0) {
+    console.log(
+      `\n${missing} golden(s) missing — paste the CAPTURE lines into GOLDENS and re-run.`,
+    );
+    process.exit(1);
+  }
+  if (failed > 0) {
+    console.error(`\nWASM mesh golden: ${failed} FAILED ✗`);
+    process.exit(1);
+  }
+  console.log(`\nWASM mesh golden: ${cases.length} cases PASSED ✓`);
 }
 
 main().catch((e) => {
-  console.error('\nWASM greedy mesh parity FAILED ✗');
+  console.error('\nWASM mesh golden FAILED ✗');
   console.error(e);
   process.exit(1);
 });

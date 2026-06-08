@@ -92,6 +92,14 @@ function clamp(v: number, min: number, max: number): number {
   return v < min ? min : v > max ? max : v;
 }
 
+// Reused scratch for world-transform reads via Transform.getWorldInto — avoids
+// the per-call Vector3D allocations the old getPosition/getScale/getRotation
+// trio produced. Each is fully consumed within the calling function before the
+// next getWorldInto call, so sharing is safe (synchronous, non-reentrant).
+const worldPos = new Vector3D(0, 0, 0);
+const worldRot = new Vector3D(0, 0, 0);
+const worldScale = new Vector3D(0, 0, 0);
+
 // ============================================================
 // Component access helpers
 // ============================================================
@@ -126,14 +134,13 @@ function computeOBB(collider: ColliderT): OBB {
   let yaw = 0;
 
   if (transform) {
-    const pos = transform.getPosition() as Vector3D;
-    scale = transform.getScale() as Vector3D;
-    const rot = transform.getRotation() as Vector3D;
-    yaw = rot.y;
+    transform.getWorldInto(worldPos, worldRot, worldScale);
+    scale = worldScale;
+    yaw = worldRot.y;
     center = new Vector3D(
-      pos.x + collider.offset.x,
-      pos.y + collider.offset.y,
-      pos.z + collider.offset.z,
+      worldPos.x + collider.offset.x,
+      worldPos.y + collider.offset.y,
+      worldPos.z + collider.offset.z,
     );
   } else {
     center = new Vector3D(
@@ -190,14 +197,14 @@ function computeSphereWorld(collider: ColliderT): {
   let effectiveRadius: number;
 
   if (transform) {
-    const pos = transform.getPosition() as Vector3D;
-    const scale = transform.getScale() as Vector3D;
+    transform.getWorldInto(worldPos, null, worldScale);
     center = new Vector3D(
-      pos.x + collider.offset.x,
-      pos.y + collider.offset.y,
-      pos.z + collider.offset.z,
+      worldPos.x + collider.offset.x,
+      worldPos.y + collider.offset.y,
+      worldPos.z + collider.offset.z,
     );
-    effectiveRadius = collider.radius * Math.max(scale.x, scale.y, scale.z);
+    effectiveRadius =
+      collider.radius * Math.max(worldScale.x, worldScale.y, worldScale.z);
   } else {
     center = new Vector3D(
       collider.offset.x,

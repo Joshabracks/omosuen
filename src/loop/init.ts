@@ -145,7 +145,6 @@ export async function processInitQueue(
 
     // Mark as initialized
     component._initialized = true;
-    componentsInitialized++;
 
     // Check time budget
     const elapsed = performance.now() - startTime;

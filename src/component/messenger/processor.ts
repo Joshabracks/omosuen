@@ -17,6 +17,14 @@ import type {
 import { ALL_MESSAGES, ANY_MESSAGES } from './types';
 import { MESSAGE_QUEUE, MESSAGE_LISTENERS } from './methods';
 
+// Reused scratch buffers to avoid per-frame / per-message array allocation.
+// Each is consumed synchronously before the next (re)use at the same nesting
+// level, so sharing is safe (processMessageQueue is not reentrant).
+const processingBuffer: MessageEnvelope[] = [];
+const listenerMatches: ListenerEntry[] = [];
+const candidateBuffer: ComponentData[] = [];
+const componentMatches: ComponentData[] = [];
+
 /**
  * Finds all listeners that match the given message pattern.
  *
@@ -27,7 +35,8 @@ import { MESSAGE_QUEUE, MESSAGE_LISTENERS } from './methods';
  * @returns Array of matching listener entries
  */
 function findMatchingListeners(message: string): ListenerEntry[] {
-  const matches: ListenerEntry[] = [];
+  const matches = listenerMatches;
+  matches.length = 0;
 
   // Iterate through all registered listeners
   for (const [_messengerId, listeners] of MESSAGE_LISTENERS) {
@@ -117,25 +126,29 @@ function findMatchingComponents(
     return [];
   }
 
-  // Build candidate list: parent, messenger, and all siblings
-  const candidates: ComponentData[] = [
-    parent, // Parent Nexus
-    messenger, // Messenger itself
-  ];
+  // Build candidate list: parent, messenger, and all siblings (reused buffer)
+  const candidates = candidateBuffer;
+  candidates.length = 0;
+  candidates.push(parent); // Parent Nexus
+  candidates.push(messenger); // Messenger itself
 
   // Add siblings (all components in parent, including messenger)
   if (parent.type === 'nexus') {
     const nexus = parent as NexusT;
-    candidates.push(...nexus.components);
+    for (let i = 0; i < nexus.components.length; i++) {
+      candidates.push(nexus.components[i]);
+    }
   }
 
-  const matches: ComponentData[] = [];
   const options = envelope.receiverOptions;
 
   // ALL_MESSAGES: Skip filter check, return all candidates
   if (listener.pattern === ALL_MESSAGES) {
     return candidates;
   }
+
+  const matches = componentMatches;
+  matches.length = 0;
 
   // ANY_MESSAGES: Only filter check, message pattern already matched
   // Regular patterns: Message pattern AND filter check
@@ -167,8 +180,17 @@ function findMatchingComponents(
  * ```
  */
 export function processMessageQueue(): void {
-  // Copy queue and clear (allows new messages to be queued during processing)
-  const messages = [...MESSAGE_QUEUE];
+  // Nothing to do — avoid allocating on quiet frames (the common case).
+  if (MESSAGE_QUEUE.length === 0) return;
+
+  // Drain the queue into a reused buffer instead of copying with a spread.
+  // New messages queued by callbacks during processing land in the (now empty)
+  // MESSAGE_QUEUE and are handled on the next pass — same deferral as the old
+  // copy-and-clear.
+  const messages = processingBuffer;
+  for (let i = 0; i < MESSAGE_QUEUE.length; i++) {
+    messages.push(MESSAGE_QUEUE[i]);
+  }
   MESSAGE_QUEUE.length = 0;
 
   // Process each message
@@ -211,4 +233,7 @@ export function processMessageQueue(): void {
       }
     }
   }
+
+  // Release references held in the reused buffer.
+  messages.length = 0;
 }

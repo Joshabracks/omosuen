@@ -36,6 +36,12 @@ const _dirLightsArr: LightT[] = [];
 const _pointLightsArr: { light: LightT; pos: Vector3D }[] = [];
 const _spotLightsArr: { light: LightT; pos: Vector3D }[] = [];
 
+// Reused scratch for vec3/scalar uniform uploads. gl.uniform*fv copy the array
+// synchronously, so one shared buffer per call is safe and removes the per-light
+// array-literal allocation that ran every frame.
+const scratchVec3 = new Float32Array(3);
+const scratchScalar = new Float32Array(1);
+
 /** Pixels of overscan padding added to FBO dimensions (1px border each side). */
 export const FBO_OVERSCAN_PX = 2;
 
@@ -239,8 +245,12 @@ export function setLightUniforms(
     gl.uniform1f(locAmbientBrightness, 1.0);
     gl.uniform1i(locNumDir, 1);
     gl.uniform3fv(locDirDir[0], DEFAULT_DIR_DIRECTION);
-    gl.uniform3fv(locDirColor[0], [1.0, 1.0, 1.0]);
-    gl.uniform1fv(locDirBrightness[0], [DEFAULT_DIR_BRIGHTNESS]);
+    scratchVec3[0] = 1.0;
+    scratchVec3[1] = 1.0;
+    scratchVec3[2] = 1.0;
+    gl.uniform3fv(locDirColor[0], scratchVec3);
+    scratchScalar[0] = DEFAULT_DIR_BRIGHTNESS;
+    gl.uniform1fv(locDirBrightness[0], scratchScalar);
     gl.uniform1i(locNumPoint, 0);
     gl.uniform1i(locNumSpot, 0);
     return;
@@ -265,9 +275,16 @@ export function setLightUniforms(
   gl.uniform1i(locNumDir, numDir);
   for (let i = 0; i < numDir; i++) {
     const l = _dirLightsArr[i];
-    gl.uniform3fv(locDirDir[i], [l.direction.x, l.direction.y, l.direction.z]);
-    gl.uniform3fv(locDirColor[i], [l.color.x, l.color.y, l.color.z]);
-    gl.uniform1fv(locDirBrightness[i], [l.brightness]);
+    scratchVec3[0] = l.direction.x;
+    scratchVec3[1] = l.direction.y;
+    scratchVec3[2] = l.direction.z;
+    gl.uniform3fv(locDirDir[i], scratchVec3);
+    scratchVec3[0] = l.color.x;
+    scratchVec3[1] = l.color.y;
+    scratchVec3[2] = l.color.z;
+    gl.uniform3fv(locDirColor[i], scratchVec3);
+    scratchScalar[0] = l.brightness;
+    gl.uniform1fv(locDirBrightness[i], scratchScalar);
   }
 
   // Point lights (capped at 8)
@@ -275,11 +292,20 @@ export function setLightUniforms(
   gl.uniform1i(locNumPoint, numPoint);
   for (let i = 0; i < numPoint; i++) {
     const { light: l, pos } = _pointLightsArr[i];
-    gl.uniform3fv(locPtPos[i], [pos.x, pos.y, pos.z]);
-    gl.uniform3fv(locPtColor[i], [l.color.x, l.color.y, l.color.z]);
-    gl.uniform1fv(locPtBrightness[i], [l.brightness]);
-    gl.uniform1fv(locPtRadius[i], [l.radius]);
-    gl.uniform1fv(locPtHardness[i], [l.hardness]);
+    scratchVec3[0] = pos.x;
+    scratchVec3[1] = pos.y;
+    scratchVec3[2] = pos.z;
+    gl.uniform3fv(locPtPos[i], scratchVec3);
+    scratchVec3[0] = l.color.x;
+    scratchVec3[1] = l.color.y;
+    scratchVec3[2] = l.color.z;
+    gl.uniform3fv(locPtColor[i], scratchVec3);
+    scratchScalar[0] = l.brightness;
+    gl.uniform1fv(locPtBrightness[i], scratchScalar);
+    scratchScalar[0] = l.radius;
+    gl.uniform1fv(locPtRadius[i], scratchScalar);
+    scratchScalar[0] = l.hardness;
+    gl.uniform1fv(locPtHardness[i], scratchScalar);
   }
 
   // Spot lights (capped at 8)
@@ -287,10 +313,19 @@ export function setLightUniforms(
   gl.uniform1i(locNumSpot, numSpot);
   for (let i = 0; i < numSpot; i++) {
     const { light: l, pos } = _spotLightsArr[i];
-    gl.uniform3fv(locSpPos[i], [pos.x, pos.y, pos.z]);
-    gl.uniform3fv(locSpColor[i], [l.color.x, l.color.y, l.color.z]);
-    gl.uniform1fv(locSpBrightness[i], [l.brightness]);
-    gl.uniform1fv(locSpRadius[i], [l.radius]);
-    gl.uniform1fv(locSpHardness[i], [l.hardness]);
+    scratchVec3[0] = pos.x;
+    scratchVec3[1] = pos.y;
+    scratchVec3[2] = pos.z;
+    gl.uniform3fv(locSpPos[i], scratchVec3);
+    scratchVec3[0] = l.color.x;
+    scratchVec3[1] = l.color.y;
+    scratchVec3[2] = l.color.z;
+    gl.uniform3fv(locSpColor[i], scratchVec3);
+    scratchScalar[0] = l.brightness;
+    gl.uniform1fv(locSpBrightness[i], scratchScalar);
+    scratchScalar[0] = l.radius;
+    gl.uniform1fv(locSpRadius[i], scratchScalar);
+    scratchScalar[0] = l.hardness;
+    gl.uniform1fv(locSpHardness[i], scratchScalar);
   }
 }

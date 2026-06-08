@@ -242,211 +242,115 @@ function getAxis(
 
 // ===== Event Handlers =====
 
-function handleKeyDown(ic: InputControllerT, e: KeyboardEvent): void {
-  const key = e.key;
-  const inputId = `key:${key}`;
+/**
+ * Dispatches every binding matching `eventType` (and optional key / button) to
+ * triggerAction by iterating ic.bindings directly. Avoids the per-event
+ * `.filter()` array and the `.forEach()` closure that the old per-handler
+ * implementation allocated on every input event — notably costly for
+ * high-frequency mousemove/pointermove events. `key`/`button` use `null` as the
+ * "don't care" sentinel so a real button value of 0 still matches.
+ */
+function dispatchBindings(
+  ic: InputControllerT,
+  eventType: InputEventType,
+  e: Event,
+  key: string | null,
+  button: number | null,
+  value: number | undefined,
+  allowPreventDefault: boolean,
+): void {
+  const bindings = ic.bindings;
+  for (let i = 0; i < bindings.length; i++) {
+    const binding = bindings[i];
+    if (binding.eventType !== eventType) continue;
+    if (key !== null && binding.key !== key) continue;
+    if (button !== null && binding.button !== button) continue;
 
-  // Add to active inputs
-  ic.activeInputs.add(inputId);
+    triggerAction(ic, binding.action, e, value);
 
-  // Find matching bindings and trigger actions
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'keydown' && b.key === key,
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-
-    // Prevent default if configured
-    if (ic.preventDefault) {
+    if (allowPreventDefault && ic.preventDefault) {
       e.preventDefault();
     }
-  });
+  }
+}
+
+function handleKeyDown(ic: InputControllerT, e: KeyboardEvent): void {
+  const key = e.key;
+  ic.activeInputs.add(`key:${key}`);
+  dispatchBindings(ic, 'keydown', e, key, null, undefined, true);
 }
 
 function handleKeyUp(ic: InputControllerT, e: KeyboardEvent): void {
   const key = e.key;
-  const inputId = `key:${key}`;
-
-  // Remove from active inputs
-  ic.activeInputs.delete(inputId);
-
-  // Find matching bindings and trigger actions
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'keyup' && b.key === key,
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-
-    // Prevent default if configured
-    if (ic.preventDefault) {
-      e.preventDefault();
-    }
-  });
+  ic.activeInputs.delete(`key:${key}`);
+  dispatchBindings(ic, 'keyup', e, key, null, undefined, true);
 }
 
 function handleMouseDown(ic: InputControllerT, e: MouseEvent): void {
   const button = e.button;
-  const inputId = `button:${button}`;
-
-  ic.activeInputs.add(inputId);
-
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'mousedown' && b.button === button,
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-  });
+  ic.activeInputs.add(`button:${button}`);
+  dispatchBindings(ic, 'mousedown', e, null, button, undefined, false);
 }
 
 function handleMouseUp(ic: InputControllerT, e: MouseEvent): void {
   const button = e.button;
-  const inputId = `button:${button}`;
-
-  ic.activeInputs.delete(inputId);
-
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'mouseup' && b.button === button,
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-  });
+  ic.activeInputs.delete(`button:${button}`);
+  dispatchBindings(ic, 'mouseup', e, null, button, undefined, false);
 }
 
 function handleMouseMove(ic: InputControllerT, e: MouseEvent): void {
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'mousemove',
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-  });
+  dispatchBindings(ic, 'mousemove', e, null, null, undefined, false);
 }
 
 function handleWheel(ic: InputControllerT, e: WheelEvent): void {
-  const matchingBindings = ic.bindings.filter((b) => b.eventType === 'wheel');
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e, e.deltaY);
-  });
+  dispatchBindings(ic, 'wheel', e, null, null, e.deltaY, false);
 }
 
 function handleClick(ic: InputControllerT, e: MouseEvent): void {
-  const matchingBindings = ic.bindings.filter((b) => b.eventType === 'click');
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-  });
+  dispatchBindings(ic, 'click', e, null, null, undefined, false);
 }
 
 function handleContextMenu(ic: InputControllerT, e: MouseEvent): void {
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'contextmenu',
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-
-    if (ic.preventDefault) {
-      e.preventDefault();
-    }
-  });
+  dispatchBindings(ic, 'contextmenu', e, null, null, undefined, true);
 }
 
 function handlePointerDown(ic: InputControllerT, e: PointerEvent): void {
   const button = e.button;
-  const inputId = `pointer:${button}`;
-
-  ic.activeInputs.add(inputId);
-
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'pointerdown' && b.button === button,
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-  });
+  ic.activeInputs.add(`pointer:${button}`);
+  dispatchBindings(ic, 'pointerdown', e, null, button, undefined, false);
 }
 
 function handlePointerUp(ic: InputControllerT, e: PointerEvent): void {
   const button = e.button;
-  const inputId = `pointer:${button}`;
-
-  ic.activeInputs.delete(inputId);
-
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'pointerup' && b.button === button,
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-  });
+  ic.activeInputs.delete(`pointer:${button}`);
+  dispatchBindings(ic, 'pointerup', e, null, button, undefined, false);
 }
 
 function handlePointerMove(ic: InputControllerT, e: PointerEvent): void {
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'pointermove',
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-  });
+  dispatchBindings(ic, 'pointermove', e, null, null, undefined, false);
 }
 
 function handleTouchStart(ic: InputControllerT, e: TouchEvent): void {
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'touchstart',
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-  });
+  dispatchBindings(ic, 'touchstart', e, null, null, undefined, false);
 }
 
 function handleTouchEnd(ic: InputControllerT, e: TouchEvent): void {
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'touchend',
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-  });
+  dispatchBindings(ic, 'touchend', e, null, null, undefined, false);
 }
 
 function handleTouchMove(ic: InputControllerT, e: TouchEvent): void {
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'touchmove',
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-  });
+  dispatchBindings(ic, 'touchmove', e, null, null, undefined, false);
 }
 
 function handleGamepadConnected(ic: InputControllerT, e: GamepadEvent): void {
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'gamepadconnected',
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-  });
+  dispatchBindings(ic, 'gamepadconnected', e, null, null, undefined, false);
 }
 
 function handleGamepadDisconnected(
   ic: InputControllerT,
   e: GamepadEvent,
 ): void {
-  const matchingBindings = ic.bindings.filter(
-    (b) => b.eventType === 'gamepaddisconnected',
-  );
-
-  matchingBindings.forEach((binding) => {
-    triggerAction(ic, binding.action, e);
-  });
+  dispatchBindings(ic, 'gamepaddisconnected', e, null, null, undefined, false);
 }
 
 /**
@@ -461,16 +365,16 @@ function triggerAction(
   const callbacks = ic.actionCallbacks.get(action);
   if (!callbacks || callbacks.length === 0) return;
 
-  callbacks.forEach((callback) => {
+  for (let i = 0; i < callbacks.length; i++) {
     try {
-      callback(event, value);
+      callbacks[i](event, value);
     } catch (error) {
       console.error(
         `[input-controller] Error in action callback for '${action}':`,
         error,
       );
     }
-  });
+  }
 }
 
 export const InputController: InputControllerMethods = {

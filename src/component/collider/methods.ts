@@ -5,6 +5,7 @@ import { NexusT } from '../nexus';
 import { TransformT } from '../transform';
 import { Vector3D } from '../../math';
 import { unpackCell, Mesh, CHUNK_SIZE } from '../cell-map/types';
+import { cellStoreGet } from '../camera/render/wasm';
 
 // ============================================================
 // Result types
@@ -450,17 +451,27 @@ function triangleVsSphere(
 // Cell-map helpers
 // ============================================================
 
+function inBounds(cellMap: CellMapT, coords: Vector3D): boolean {
+  const m = cellMap.mapSize;
+  return (
+    coords.x >= 0 &&
+    coords.x < m.x &&
+    coords.y >= 0 &&
+    coords.y < m.y &&
+    coords.z >= 0 &&
+    coords.z < m.z
+  );
+}
+
 function isCellSolid(cellMap: CellMapT, coords: Vector3D): boolean {
-  const packed = cellMap.packedData.get(coords);
-  if (packed === undefined) return false;
-  const cell = unpackCell(packed);
+  if (!inBounds(cellMap, coords)) return false;
+  const cell = unpackCell(cellStoreGet(coords.x, coords.y, coords.z));
   return cell.visible && cell.shapeIndex !== 0;
 }
 
 function getCellShapeIndex(cellMap: CellMapT, coords: Vector3D): number {
-  const packed = cellMap.packedData.get(coords);
-  if (packed === undefined) return 0;
-  return unpackCell(packed).shapeIndex;
+  if (!inBounds(cellMap, coords)) return 0;
+  return unpackCell(cellStoreGet(coords.x, coords.y, coords.z)).shapeIndex;
 }
 
 /**

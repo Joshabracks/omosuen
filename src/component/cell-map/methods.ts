@@ -3,6 +3,11 @@ import { Vector3D } from '../../math';
 import { CellMapT, resetCellMapState } from './data';
 import { CellData, Material, Mesh, packCell, unpackCell } from './types';
 import { markChunksDirty } from './mesh-builder';
+import {
+  cellStoreGet,
+  cellStoreSet,
+  cellStoreFlush,
+} from '../camera/render/wasm';
 
 export interface CellMapMethods extends ComponentMethods {
   type: 'cell-map';
@@ -97,13 +102,19 @@ export const CellMap: CellMapMethods = {
   type: 'cell-map',
 
   getCellData: (component: CellMapT, coordinates: Vector3D): CellData => {
-    const packed = component.packedData.get(coordinates);
-    if (packed === undefined) {
-      throw new Error(
-        `Invalid coordinates: (${coordinates.x}, ${coordinates.y}, ${coordinates.z})`,
-      );
+    const { x, y, z } = coordinates;
+    const { mapSize } = component;
+    if (
+      x < 0 ||
+      x >= mapSize.x ||
+      y < 0 ||
+      y >= mapSize.y ||
+      z < 0 ||
+      z >= mapSize.z
+    ) {
+      throw new Error(`Invalid coordinates: (${x}, ${y}, ${z})`);
     }
-    return unpackCell(packed);
+    return unpackCell(cellStoreGet(x, y, z));
   },
 
   setCellData: (
@@ -120,7 +131,7 @@ export const CellMap: CellMapMethods = {
     };
 
     const packed = packCell(clamped);
-    component.packedData.set(coordinates, packed);
+    cellStoreSet(coordinates.x, coordinates.y, coordinates.z, packed);
     component.needsGPUUpdate = true;
     markChunksDirty(component, coordinates.x, coordinates.y, coordinates.z);
   },
@@ -214,7 +225,7 @@ export const CellMap: CellMapMethods = {
   },
 
   flush: (component: CellMapT): void => {
-    component.packedData.flush();
+    cellStoreFlush();
     component.needsGPUUpdate = true;
   },
 

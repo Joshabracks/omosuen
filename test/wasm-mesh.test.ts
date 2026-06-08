@@ -12,7 +12,8 @@ import { Vector3D, Array3D } from '../src/math';
 import { packCell, CHUNK_SIZE } from '../src/component/cell-map/types';
 import {
   initRenderWasm,
-  setMeshMap,
+  loadCellStore,
+  setMeshCellSize,
   setMeshSmoothing,
   buildChunkMeshWasm,
   buildChunkMeshSmoothedWasm,
@@ -131,16 +132,8 @@ function chunkCoords(size: Vector3D): { cx: number; cy: number; cz: number }[] {
 function caseHash(c: Case): number {
   const packed = buildPacked(c);
   const total = c.size.x * c.size.y * c.size.z;
-  setMeshMap(
-    packed.value,
-    total,
-    c.size.x,
-    c.size.y,
-    c.size.z,
-    c.cellSize.x,
-    c.cellSize.y,
-    c.cellSize.z,
-  );
+  loadCellStore(packed.value, total, c.size.x, c.size.y, c.size.z);
+  setMeshCellSize(c.cellSize.x, c.cellSize.y, c.cellSize.z);
   const smoothed = c.smoothing > 0;
   if (smoothed) {
     const weights = buildWeights(c);

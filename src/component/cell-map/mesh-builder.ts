@@ -1,7 +1,7 @@
 import type { CellMapT } from './data';
 import { CHUNK_SIZE } from './types';
 import {
-  setMeshMap,
+  setMeshCellSize,
   setMeshSmoothing,
   buildChunkMeshWasm,
   buildChunkMeshSmoothedWasm,
@@ -17,25 +17,15 @@ export function rebuildDirtyChunks(cellMap: CellMapT): void {
   const hasDirty = cellMap.chunks.some((c) => c.dirty);
   if (!hasDirty) return;
 
-  // Expand packed data once for O(1) random access during mesh building, and
-  // upload it to the render WASM module. (expand() is still JS-side; it moves
-  // into WASM with the canonical store in render-crate step 3.)
-  const expanded = cellMap.packedData.expand();
-  const total = cellMap.mapSize.x * cellMap.mapSize.y * cellMap.mapSize.z;
-  setMeshMap(
-    expanded.value,
-    total,
-    cellMap.mapSize.x,
-    cellMap.mapSize.y,
-    cellMap.mapSize.z,
-    cellMap.cellSize.x,
-    cellMap.cellSize.y,
-    cellMap.cellSize.z,
-  );
+  // The packed cells are resident in the canonical WASM store (mutated via
+  // setCellData), so there is no upload/expand here — just set the cell size,
+  // and the smoothing inputs when smoothing is enabled.
+  setMeshCellSize(cellMap.cellSize.x, cellMap.cellSize.y, cellMap.cellSize.z);
 
   const smoothed = cellMap.smoothing > 0;
   if (smoothed) {
     const weights = cellMap.smoothingWeights.expand();
+    const total = cellMap.mapSize.x * cellMap.mapSize.y * cellMap.mapSize.z;
     setMeshSmoothing(
       weights.value,
       total,

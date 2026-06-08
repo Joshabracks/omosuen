@@ -2,9 +2,13 @@
 //!
 //! Hand-rolled `extern "C"` ABI — no wasm-bindgen. JS drives the boundary
 //! through pointers into this module's linear memory. Buffers are persistent and
-//! grow-only, so steady-state calls allocate nothing on either side. JS must
-//! re-create its typed-array views after any call that may grow memory
-//! (`solidity_reserve`), because growth can move/replace the backing buffer.
+//! grow-only, so steady-state calls allocate nothing on the JS heap.
+//!
+//! The cell data is held canonically here as an RLE-compressed store (CellStore),
+//! mutated via store_get/store_set and bulk-loaded via store_load. Visibility and
+//! meshing read the store's internally-expanded buffer — so the decompression
+//! that used to happen in JS (Array3Dc.expand()) now happens in linear memory and
+//! is cached until the store changes.
 //!
 //! Cell packing (mirrors `src/component/cell-map/types.ts`):
 //!   bits  0..12  materialIndex
@@ -12,64 +16,10 @@
 //!   bits 24..29  emissionIntensity
 //!   bit  29      visible
 
-// Persistent grow-only scratch buffers, reused across calls.
-static mut INPUT: Vec<u32> = Vec::new();
-static mut OUTPUT: Vec<u8> = Vec::new();
-
-/// Ensures the input/output buffers each hold at least `count` elements and
-/// returns a pointer to the input buffer (packed `u32` cells). JS writes `count`
-/// packed cells there, then calls [`solidity_run`].
-///
-/// May grow linear memory; the returned pointer is valid until the next
-/// `solidity_reserve` that grows further.
-#[no_mangle]
-pub extern "C" fn solidity_reserve(count: usize) -> *mut u32 {
-    // SAFETY: single-threaded wasm; no aliasing references escape this call.
-    unsafe {
-        let input = &mut *core::ptr::addr_of_mut!(INPUT);
-        let output = &mut *core::ptr::addr_of_mut!(OUTPUT);
-        if input.len() < count {
-            input.resize(count, 0);
-        }
-        if output.len() < count {
-            output.resize(count, 0);
-        }
-        input.as_mut_ptr()
-    }
-}
-
-/// Computes the solidity map for the first `count` cells currently in the input
-/// buffer, writing `0`/`255` into the output buffer, and returns a pointer to
-/// the output buffer (`u8`). A cell is solid when it is visible (bit 29) and its
-/// shapeIndex (bits 12..24) is non-zero.
-#[no_mangle]
-pub extern "C" fn solidity_run(count: usize) -> *const u8 {
-    // SAFETY: single-threaded wasm; INPUT/OUTPUT sized >= count by reserve.
-    unsafe {
-        let input = &*core::ptr::addr_of!(INPUT);
-        let output = &mut *core::ptr::addr_of_mut!(OUTPUT);
-        for i in 0..count {
-            let packed = input[i];
-            let shape_index = (packed >> 12) & 0xfff;
-            let visible = (packed >> 29) & 0x1;
-            output[i] = if visible == 1 && shape_index != 0 {
-                255
-            } else {
-                0
-            };
-        }
-        output.as_ptr()
-    }
-}
-
-// ── Greedy chunk meshing ──────────────────────────────────────────────────
-//
-// Byte-exact port of buildChunkMesh (greedy, non-smoothed) from
-// src/component/cell-map/mesh-builder.ts. All float math is done in f64 and
-// truncated to f32 only when written to the vertex buffer — matching the JS
-// path, which computes in f64 (JS numbers) then stores into a Float32Array.
+use std::collections::BTreeMap;
 
 const CHUNK_SIZE: usize = 16;
+const FLUSH_THRESHOLD: f64 = 0.05;
 
 #[inline]
 fn unpack_visible_solid(packed: u32) -> bool {
@@ -82,6 +32,240 @@ fn unpack_visible_solid(packed: u32) -> bool {
 fn unpack_material(packed: u32) -> i32 {
     (packed & 0xfff) as i32
 }
+
+// ── Canonical RLE cell store ───────────────────────────────────────────────
+//
+// Single store (module-level), matching the engine's single-cell-map storage
+// model (cell-map uses module-level singletons too). RLE pairs (values/counts) +
+// cumulative counts for O(log n) get; a lazy dirty map for set, flushed to RLE at
+// FLUSH_THRESHOLD; an internally-cached expanded buffer for the read-heavy
+// visibility/meshing passes.
+
+struct CellStore {
+    dims: [usize; 3],
+    total: usize,
+    values: Vec<u32>,
+    counts: Vec<u32>,
+    cumulative: Vec<u32>,
+    dirty: BTreeMap<usize, u32>,
+    expanded: Vec<u32>,
+    expanded_valid: bool,
+}
+
+impl CellStore {
+    const fn new() -> Self {
+        CellStore {
+            dims: [0, 0, 0],
+            total: 0,
+            values: Vec::new(),
+            counts: Vec::new(),
+            cumulative: Vec::new(),
+            dirty: BTreeMap::new(),
+            expanded: Vec::new(),
+            expanded_valid: false,
+        }
+    }
+
+    fn rebuild_cumulative(&mut self) {
+        self.cumulative.clear();
+        self.cumulative.push(0);
+        let mut acc: u32 = 0;
+        for &c in &self.counts {
+            acc += c;
+            self.cumulative.push(acc);
+        }
+    }
+
+    /// RLE-compresses a flat packed array into the store and clears dirty state.
+    fn compress_from(&mut self, flat: &[u32]) {
+        self.values.clear();
+        self.counts.clear();
+        if !flat.is_empty() {
+            let mut current = flat[0];
+            let mut count: u32 = 1;
+            for i in 1..flat.len() {
+                if flat[i] != current {
+                    self.values.push(current);
+                    self.counts.push(count);
+                    count = 1;
+                    current = flat[i];
+                } else {
+                    count += 1;
+                }
+            }
+            self.values.push(current);
+            self.counts.push(count);
+        }
+        self.rebuild_cumulative();
+        self.dirty.clear();
+        self.expanded_valid = false;
+    }
+
+    fn coord_index(&self, x: usize, y: usize, z: usize) -> usize {
+        z * self.dims[1] * self.dims[0] + y * self.dims[0] + x
+    }
+
+    fn get_index(&self, idx: usize) -> u32 {
+        if let Some(&v) = self.dirty.get(&idx) {
+            return v;
+        }
+        let target = idx as u32;
+        let mut left: i64 = 0;
+        let mut right: i64 = self.values.len() as i64 - 1;
+        while left <= right {
+            let mid = ((left + right) / 2) as usize;
+            let start = self.cumulative[mid];
+            let end = self.cumulative[mid + 1];
+            if target >= start && target < end {
+                return self.values[mid];
+            } else if target < start {
+                right = mid as i64 - 1;
+            } else {
+                left = mid as i64 + 1;
+            }
+        }
+        0
+    }
+
+    fn set(&mut self, idx: usize, packed: u32) {
+        self.dirty.insert(idx, packed);
+        self.expanded_valid = false;
+        if self.total > 0
+            && (self.dirty.len() as f64) / (self.total as f64) >= FLUSH_THRESHOLD
+        {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.dirty.is_empty() {
+            return;
+        }
+        self.ensure_expanded();
+        // Recompress from the (valid) expanded buffer.
+        let flat = core::mem::take(&mut self.expanded);
+        self.compress_from(&flat);
+        self.expanded = flat;
+        self.expanded_valid = true;
+    }
+
+    fn ensure_expanded(&mut self) {
+        if self.expanded_valid {
+            return;
+        }
+        self.expanded.clear();
+        self.expanded.resize(self.total, 0);
+        let mut idx = 0usize;
+        for p in 0..self.values.len() {
+            let v = self.values[p];
+            let c = self.counts[p];
+            for _ in 0..c {
+                self.expanded[idx] = v;
+                idx += 1;
+            }
+        }
+        for (&i, &val) in &self.dirty {
+            self.expanded[i] = val;
+        }
+        self.expanded_valid = true;
+    }
+}
+
+static mut STORE: CellStore = CellStore::new();
+static mut STORE_INPUT: Vec<u32> = Vec::new();
+static mut CELL_SIZE: [f64; 3] = [0.0, 0.0, 0.0];
+
+/// Reserves the bulk-load input buffer (`count` u32s) and returns its pointer.
+/// JS writes the flat packed map here, then calls `store_load`.
+#[no_mangle]
+pub extern "C" fn store_reserve(count: usize) -> *mut u32 {
+    unsafe {
+        let m = &mut *core::ptr::addr_of_mut!(STORE_INPUT);
+        if m.len() < count {
+            m.resize(count, 0);
+        }
+        m.as_mut_ptr()
+    }
+}
+
+/// Bulk-loads the store from the input buffer (RLE-compresses it) and sets dims.
+#[no_mangle]
+pub extern "C" fn store_load(mx: usize, my: usize, mz: usize) {
+    unsafe {
+        let total = mx * my * mz;
+        let input = &*core::ptr::addr_of!(STORE_INPUT);
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        store.dims = [mx, my, mz];
+        store.total = total;
+        store.compress_from(&input[..total]);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn store_get(x: usize, y: usize, z: usize) -> u32 {
+    unsafe {
+        let store = &*core::ptr::addr_of!(STORE);
+        store.get_index(store.coord_index(x, y, z))
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn store_set(x: usize, y: usize, z: usize, packed: u32) {
+    unsafe {
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        let idx = store.coord_index(x, y, z);
+        store.set(idx, packed);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn store_flush() {
+    unsafe {
+        (*core::ptr::addr_of_mut!(STORE)).flush();
+    }
+}
+
+/// Ensures the expanded buffer is current and returns its pointer (flat packed
+/// cells). Used by the serializer (dump) and is also what the read passes use.
+#[no_mangle]
+pub extern "C" fn store_expanded_ptr() -> *const u32 {
+    unsafe {
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        store.ensure_expanded();
+        store.expanded.as_ptr()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn store_expanded_len() -> usize {
+    unsafe { (*core::ptr::addr_of!(STORE)).total }
+}
+
+// ── Visibility (solidity) ──────────────────────────────────────────────────
+
+static mut SOLIDITY_OUT: Vec<u8> = Vec::new();
+
+/// Computes the solidity map (0/255 per cell) from the resident store and returns
+/// a pointer to the output buffer. Length is `store_expanded_len()`.
+#[no_mangle]
+pub extern "C" fn solidity_run() -> *const u8 {
+    unsafe {
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        store.ensure_expanded();
+        let total = store.total;
+        let exp = &store.expanded;
+        let out = &mut *core::ptr::addr_of_mut!(SOLIDITY_OUT);
+        if out.len() < total {
+            out.resize(total, 0);
+        }
+        for i in 0..total {
+            out[i] = if unpack_visible_solid(exp[i]) { 255 } else { 0 };
+        }
+        out.as_ptr()
+    }
+}
+
+// ── Greedy / smoothed chunk meshing ────────────────────────────────────────
 
 #[derive(Clone, Copy)]
 struct FaceDir {
@@ -102,12 +286,12 @@ struct FaceConfig {
 }
 
 const FACE_DIRS: [FaceDir; 6] = [
-    FaceDir { nx: 0, ny: 0, nz: 1, dx: 0, dy: 0, dz: 1 }, // Front +Z
-    FaceDir { nx: 0, ny: 0, nz: -1, dx: 0, dy: 0, dz: -1 }, // Back -Z
-    FaceDir { nx: 0, ny: 1, nz: 0, dx: 0, dy: 1, dz: 0 }, // Top +Y
-    FaceDir { nx: 0, ny: -1, nz: 0, dx: 0, dy: -1, dz: 0 }, // Bottom -Y
-    FaceDir { nx: 1, ny: 0, nz: 0, dx: 1, dy: 0, dz: 0 }, // Right +X
-    FaceDir { nx: -1, ny: 0, nz: 0, dx: -1, dy: 0, dz: 0 }, // Left -X
+    FaceDir { nx: 0, ny: 0, nz: 1, dx: 0, dy: 0, dz: 1 },
+    FaceDir { nx: 0, ny: 0, nz: -1, dx: 0, dy: 0, dz: -1 },
+    FaceDir { nx: 0, ny: 1, nz: 0, dx: 0, dy: 1, dz: 0 },
+    FaceDir { nx: 0, ny: -1, nz: 0, dx: 0, dy: -1, dz: 0 },
+    FaceDir { nx: 1, ny: 0, nz: 0, dx: 1, dy: 0, dz: 0 },
+    FaceDir { nx: -1, ny: 0, nz: 0, dx: -1, dy: 0, dz: 0 },
 ];
 
 const FACE_CONFIGS: [FaceConfig; 6] = [
@@ -119,13 +303,12 @@ const FACE_CONFIGS: [FaceConfig; 6] = [
     FaceConfig { u_axis: 2, v_axis: 1, n_axis: 0, quad: [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]] },
 ];
 
-// Inputs (set per rebuild) and outputs (rebuilt per chunk).
-static mut MAP_PACKED: Vec<u32> = Vec::new();
-static mut MAP_DIM: [usize; 3] = [0, 0, 0];
-static mut CELL_SIZE: [f64; 3] = [0.0, 0.0, 0.0];
 static mut MESH_VERTS: Vec<f32> = Vec::new();
 static mut MESH_INDICES: Vec<u32> = Vec::new();
-static mut MESH_RANGES: Vec<u32> = Vec::new(); // flat triples: [materialIndex, indexOffset, indexCount]
+static mut MESH_RANGES: Vec<u32> = Vec::new(); // flat triples [materialIndex, indexOffset, indexCount]
+static mut MAP_WEIGHTS: Vec<u32> = Vec::new();
+static mut SMOOTHING: usize = 0;
+static mut NORMAL_SMOOTHING: f64 = 0.0;
 
 struct Quad {
     material: i32,
@@ -133,37 +316,44 @@ struct Quad {
     normal: [f32; 3],
 }
 
-/// Ensures the packed-map buffer holds `cell_count` u32s and returns its pointer.
-/// JS writes the expanded packed map here, then calls `mesh_set_dims`.
+/// Sets the cell size (world units per cell) used for vertex positions.
 #[no_mangle]
-pub extern "C" fn mesh_reserve_map(cell_count: usize) -> *mut u32 {
+pub extern "C" fn mesh_set_cell_size(cx: f64, cy: f64, cz: f64) {
     unsafe {
-        let m = &mut *core::ptr::addr_of_mut!(MAP_PACKED);
-        if m.len() < cell_count {
-            m.resize(cell_count, 0);
+        *core::ptr::addr_of_mut!(CELL_SIZE) = [cx, cy, cz];
+    }
+}
+
+/// Reserves the smoothing-weights buffer (0–15 per cell) and returns its pointer.
+#[no_mangle]
+pub extern "C" fn mesh_reserve_weights(count: usize) -> *mut u32 {
+    unsafe {
+        let m = &mut *core::ptr::addr_of_mut!(MAP_WEIGHTS);
+        if m.len() < count {
+            m.resize(count, 0);
         }
         m.as_mut_ptr()
     }
 }
 
-/// Sets map dimensions (cells) and cell size (world units). Call once per rebuild
-/// after filling the buffer from `mesh_reserve_map`.
+/// Sets smoothing iteration count and normal-smoothing factor (0..1).
 #[no_mangle]
-pub extern "C" fn mesh_set_dims(mx: usize, my: usize, mz: usize, cx: f64, cy: f64, cz: f64) {
+pub extern "C" fn mesh_set_smoothing(smoothing: usize, normal_smoothing: f64) {
     unsafe {
-        *core::ptr::addr_of_mut!(MAP_DIM) = [mx, my, mz];
-        *core::ptr::addr_of_mut!(CELL_SIZE) = [cx, cy, cz];
+        *core::ptr::addr_of_mut!(SMOOTHING) = smoothing;
+        *core::ptr::addr_of_mut!(NORMAL_SMOOTHING) = normal_smoothing;
     }
 }
 
-/// Builds the greedy mesh for one chunk into MESH_VERTS / MESH_INDICES /
-/// MESH_RANGES. Read the results via the `mesh_*_ptr`/`mesh_*_len` getters.
+/// Builds one chunk's greedy mesh from the resident store.
 #[no_mangle]
 pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
     unsafe {
-        let map_dim = *core::ptr::addr_of!(MAP_DIM);
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        store.ensure_expanded();
+        let packed = &store.expanded;
+        let map_dim = store.dims;
         let cell_size = *core::ptr::addr_of!(CELL_SIZE);
-        let packed = &*core::ptr::addr_of!(MAP_PACKED);
         let verts_out = &mut *core::ptr::addr_of_mut!(MESH_VERTS);
         let idx_out = &mut *core::ptr::addr_of_mut!(MESH_INDICES);
         let ranges_out = &mut *core::ptr::addr_of_mut!(MESH_RANGES);
@@ -312,7 +502,6 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
             }
         }
 
-        // Stable sort by material (matches JS Array.sort stability).
         quads.sort_by(|a, b| a.material.cmp(&b.material));
 
         let mut current_material: i32 = -1;
@@ -327,7 +516,6 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
             let n = q.normal;
             for i in 0..4 {
                 let p = q.verts[i];
-                // pos, normal, origPos (origPos == pos for non-smoothed)
                 verts_out.push(p[0] as f32);
                 verts_out.push(p[1] as f32);
                 verts_out.push(p[2] as f32);
@@ -375,51 +563,10 @@ pub extern "C" fn mesh_ranges_len() -> usize {
     unsafe { (*core::ptr::addr_of!(MESH_RANGES)).len() }
 }
 
-// ── Smoothed (Laplacian) chunk meshing ────────────────────────────────────
-//
-// Byte-exact port of buildSmoothedChunkMesh / smoothVertices / computeSmoothNormals
-// from src/component/cell-map/mesh-builder.ts.
-//
-// Vertex dedup: the JS path keys vertices by the string `${px},${py},${pz}` of
-// their f64 positions. Distinct f64 values produce distinct shortest round-trip
-// strings, so a bit-exact f64 dedup is equivalent. A BTreeMap is used (not a
-// HashMap) for deterministic, entropy-free behavior on wasm32-unknown-unknown.
-// adjacency uses insertion-ordered Vecs to mirror JS Set iteration order, which
-// matters because the Laplacian average sums neighbors in that order.
-
-use std::collections::BTreeMap;
-
-static mut MAP_WEIGHTS: Vec<u32> = Vec::new();
-static mut SMOOTHING: usize = 0;
-static mut NORMAL_SMOOTHING: f64 = 0.0;
-
-/// Ensures the per-cell smoothing-weights buffer holds `count` u32s (values
-/// 0–15) and returns its pointer.
-#[no_mangle]
-pub extern "C" fn mesh_reserve_weights(count: usize) -> *mut u32 {
-    unsafe {
-        let m = &mut *core::ptr::addr_of_mut!(MAP_WEIGHTS);
-        if m.len() < count {
-            m.resize(count, 0);
-        }
-        m.as_mut_ptr()
-    }
-}
-
-/// Sets smoothing iteration count and normal-smoothing factor (0..1).
-#[no_mangle]
-pub extern "C" fn mesh_set_smoothing(smoothing: usize, normal_smoothing: f64) {
-    unsafe {
-        *core::ptr::addr_of_mut!(SMOOTHING) = smoothing;
-        *core::ptr::addr_of_mut!(NORMAL_SMOOTHING) = normal_smoothing;
-    }
-}
-
 #[inline]
 fn pos_key(p: [f64; 3]) -> (u64, u64, u64) {
     #[inline]
     fn b(f: f64) -> u64 {
-        // Canonicalize -0.0 to +0.0 (matches `(-0).toString() === "0"`).
         (if f == 0.0 { 0.0 } else { f }).to_bits()
     }
     (b(p[0]), b(p[1]), b(p[2]))
@@ -509,15 +656,16 @@ fn compute_smooth_normals(
     vn
 }
 
-/// Builds the smoothed mesh for one chunk into MESH_VERTS / MESH_INDICES /
-/// MESH_RANGES. Requires the packed map (mesh_reserve_map/mesh_set_dims), the
-/// weights (mesh_reserve_weights), and mesh_set_smoothing to be set.
+/// Builds one chunk's smoothed (Laplacian) mesh from the resident store and the
+/// weights buffer. Requires mesh_reserve_weights + mesh_set_smoothing.
 #[no_mangle]
 pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
     unsafe {
-        let map_dim = *core::ptr::addr_of!(MAP_DIM);
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        store.ensure_expanded();
+        let packed = &store.expanded;
+        let map_dim = store.dims;
         let cell_size = *core::ptr::addr_of!(CELL_SIZE);
-        let packed = &*core::ptr::addr_of!(MAP_PACKED);
         let weights_map = &*core::ptr::addr_of!(MAP_WEIGHTS);
         let smoothing = *core::ptr::addr_of!(SMOOTHING);
         let normal_smoothing = *core::ptr::addr_of!(NORMAL_SMOOTHING);
@@ -673,7 +821,6 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
             None
         };
 
-        // Interior faces, stable sort by material.
         let mut interior: Vec<&SmoothFace> =
             faces.iter().filter(|f| f.interior).collect();
         interior.sort_by(|a, b| a.material.cmp(&b.material));

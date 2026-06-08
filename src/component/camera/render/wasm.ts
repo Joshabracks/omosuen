@@ -1,46 +1,43 @@
 /**
- * Render-domain WASM glue (`omosuen-render`).
+ * Loader + boundary glue for the render-domain WASM module (`omosuen-render`).
  *
- * Lives with the camera because rendering is the camera's domain. It owns the
- * render-specific concerns: which module to load (`__RENDER_WASM_BASE64__`,
- * injected by webpack DefinePlugin — same mechanism as `__ENGINE_VERSION__`) and
- * the typed boundary to the module's exports. The generic compile/instantiate
- * step lives in `src/wasm` (reusable across WASM modules).
+ * Hand-rolled extern "C" ABI — no wasm-bindgen. The `.wasm` is compiled by
+ * webpack (build-tools/wasm.mjs) and injected as a base64 string via DefinePlugin
+ * (`__RENDER_WASM_BASE64__`), so the UMD bundle stays self-contained.
  *
- * The render WASM is a hard requirement (no JS fallback). It is instantiated in
- * the camera's async init(), which processInitQueue awaits before the camera is
- * marked _initialized — and render() skips uninitialized cameras — so the module
- * is always ready before any solidity() call.
+ * Cell data is held canonically in this module as an RLE store (see lib.rs).
+ * cell-map loads it via loadCellStore() and mutates it via cellStoreGet/Set; the
+ * visibility and meshing passes read the store's internally-cached expanded
+ * buffer, so there is no per-frame JS decompression or copy-in.
  *
- * The boundary is allocation-free in steady state: input/output live in the
- * module's linear memory, and the typed-array views over them are cached and
- * recreated only when a pointer, the backing buffer, or the element count
- * changes (i.e. after the map grows).
+ * The render WASM is a hard requirement (no JS fallback); it is instantiated in
+ * the cell-map builder/deserializer (which awaits initRenderWasm) and the camera
+ * init, all of which run before any read.
  */
 import { base64ToBytes, initWasm } from '../../../wasm';
 
 // Injected by webpack DefinePlugin. Only defined in webpack builds; the Node
-// parity test passes bytes to initRenderWasm() instead, so this is never read
-// there (the `??` short-circuits).
+// tests pass bytes to initRenderWasm() instead (the `??` short-circuits).
 // eslint-disable-next-line @typescript-eslint/naming-convention
 declare const __RENDER_WASM_BASE64__: string;
 
 interface RenderExports {
   memory: WebAssembly.Memory;
-  solidity_reserve: (count: number) => number;
-  solidity_run: (count: number) => number;
-  mesh_reserve_map: (cellCount: number) => number;
-  mesh_set_dims: (
-    mx: number,
-    my: number,
-    mz: number,
-    cx: number,
-    cy: number,
-    cz: number,
-  ) => void;
-  mesh_build_chunk: (cx: number, cy: number, cz: number) => void;
+  // Canonical cell store
+  store_reserve: (count: number) => number;
+  store_load: (mx: number, my: number, mz: number) => void;
+  store_get: (x: number, y: number, z: number) => number;
+  store_set: (x: number, y: number, z: number, packed: number) => void;
+  store_flush: () => void;
+  store_expanded_ptr: () => number;
+  store_expanded_len: () => number;
+  // Visibility
+  solidity_run: () => number;
+  // Meshing
+  mesh_set_cell_size: (cx: number, cy: number, cz: number) => void;
   mesh_reserve_weights: (count: number) => number;
   mesh_set_smoothing: (smoothing: number, normalSmoothing: number) => void;
+  mesh_build_chunk: (cx: number, cy: number, cz: number) => void;
   mesh_build_chunk_smoothed: (cx: number, cy: number, cz: number) => void;
   mesh_vertices_ptr: () => number;
   mesh_vertices_len: () => number;
@@ -57,7 +54,7 @@ export interface MeshDrawRange {
   indexCount: number;
 }
 
-/** Result of building one chunk's greedy mesh in WASM. */
+/** Result of building one chunk's mesh in WASM. */
 export interface ChunkMeshResult {
   vertices: Float32Array | null;
   indices: Uint32Array | null;
@@ -66,10 +63,20 @@ export interface ChunkMeshResult {
 
 let wasmExports: RenderExports | null = null;
 
+function ex(): RenderExports {
+  if (!wasmExports) {
+    throw new Error(
+      '[omosuen] render WASM not initialized — initRenderWasm() must run ' +
+        '(awaited in the cell-map builder/deserializer and camera init) first.',
+    );
+  }
+  return wasmExports;
+}
+
 /**
- * Instantiates the render WASM module. Idempotent. Awaited from the camera's
- * init(). `wasmBytes` is an injection point for non-webpack environments (the
- * Node parity test); production decodes the DefinePlugin base64.
+ * Instantiates the render WASM module. Idempotent. Awaited from the cell-map
+ * builder/deserializer and camera init. `wasmBytes` is an injection point for
+ * non-webpack environments (the Node tests); production decodes the base64.
  */
 export async function initRenderWasm(wasmBytes?: Uint8Array): Promise<void> {
   if (wasmExports) return;
@@ -77,92 +84,99 @@ export async function initRenderWasm(wasmBytes?: Uint8Array): Promise<void> {
   wasmExports = await initWasm<RenderExports>(bytes);
 }
 
-// Cached linear-memory views — recreated only when the pointer, backing buffer,
-// or element count changes (memory growth on a larger map).
-let inputView: Uint32Array | null = null;
-let outputView: Uint8Array | null = null;
-let inputPtr = -1;
-let outputPtr = -1;
-let viewBuffer: ArrayBufferLike | null = null;
-let viewCount = -1;
-
-/**
- * Runs the solidity compute over `count` packed cells, copying them into linear
- * memory and returning a (reused) Uint8Array view of the 0/255 result. The
- * caller must consume the result before the next call (it is reused).
- *
- * Throws if the module has not been initialized — there is no JS fallback.
- */
-export function solidity(
-  packedFlat: ArrayLike<number>,
-  count: number,
-): Uint8Array {
-  if (!wasmExports) {
-    throw new Error(
-      '[omosuen] render WASM not initialized — initRenderWasm() must run ' +
-        '(it is awaited in the camera init) before solidity() is called.',
-    );
-  }
-  const ex = wasmExports;
-
-  const reservedPtr = ex.solidity_reserve(count);
-  const buffer = ex.memory.buffer;
-  if (
-    buffer !== viewBuffer ||
-    reservedPtr !== inputPtr ||
-    viewCount !== count
-  ) {
-    inputView = new Uint32Array(buffer, reservedPtr, count);
-    inputPtr = reservedPtr;
-    viewBuffer = buffer;
-    viewCount = count;
-    outputView = null; // output view must be rebuilt against the new buffer
-  }
-
-  const iv = inputView!;
-  for (let i = 0; i < count; i++) {
-    iv[i] = packedFlat[i];
-  }
-
-  const resultPtr = ex.solidity_run(count);
-  if (!outputView || resultPtr !== outputPtr || outputView.buffer !== buffer) {
-    outputView = new Uint8Array(buffer, resultPtr, count);
-    outputPtr = resultPtr;
-  }
-
-  return outputView;
+export function isRenderWasmReady(): boolean {
+  return wasmExports !== null;
 }
 
-/**
- * Uploads the expanded packed map + dimensions into the module's linear memory.
- * Call once per rebuild pass before any buildChunkMeshWasm() calls.
- */
-export function setMeshMap(
+// ── Canonical cell store ───────────────────────────────────────────────────
+
+/** Bulk-loads the canonical store from a flat packed array (RLE-compressed in
+ *  WASM). Called by the cell-map builder/deserializer. */
+export function loadCellStore(
   packedFlat: ArrayLike<number>,
-  cellCount: number,
+  total: number,
   mapX: number,
   mapY: number,
   mapZ: number,
-  cellX: number,
-  cellY: number,
-  cellZ: number,
 ): void {
-  if (!wasmExports) {
-    throw new Error('[omosuen] render WASM not initialized (setMeshMap).');
-  }
-  const ex = wasmExports;
-  const ptr = ex.mesh_reserve_map(cellCount);
-  const view = new Uint32Array(ex.memory.buffer, ptr, cellCount);
-  for (let i = 0; i < cellCount; i++) {
+  const e = ex();
+  const ptr = e.store_reserve(total);
+  const view = new Uint32Array(e.memory.buffer, ptr, total);
+  for (let i = 0; i < total; i++) {
     view[i] = packedFlat[i];
   }
-  ex.mesh_set_dims(mapX, mapY, mapZ, cellX, cellY, cellZ);
+  e.store_load(mapX, mapY, mapZ);
+}
+
+/** Returns the packed cell value at (x,y,z). */
+export function cellStoreGet(x: number, y: number, z: number): number {
+  return ex().store_get(x, y, z) >>> 0;
+}
+
+/** Sets the packed cell value at (x,y,z). */
+export function cellStoreSet(
+  x: number,
+  y: number,
+  z: number,
+  packed: number,
+): void {
+  ex().store_set(x, y, z, packed);
+}
+
+/** Flushes pending writes (recompresses the RLE store). */
+export function cellStoreFlush(): void {
+  ex().store_flush();
+}
+
+/** Returns a copy of the store as a flat packed array (for serialization). */
+export function cellStoreDump(): Uint32Array {
+  const e = ex();
+  const len = e.store_expanded_len();
+  if (len === 0) return new Uint32Array(0);
+  return new Uint32Array(e.memory.buffer, e.store_expanded_ptr(), len).slice();
+}
+
+// ── Visibility ─────────────────────────────────────────────────────────────
+
+let solidityView: Uint8Array | null = null;
+let solidityPtr = -1;
+let solidityBuffer: ArrayBufferLike | null = null;
+let solidityLen = -1;
+
+/**
+ * Computes the solidity map (0/255 per cell) from the resident store and returns
+ * a reused Uint8Array view of the result. Consume before the next call.
+ */
+export function solidity(): Uint8Array {
+  const e = ex();
+  const ptr = e.solidity_run();
+  const len = e.store_expanded_len();
+  const buffer = e.memory.buffer;
+  if (
+    !solidityView ||
+    ptr !== solidityPtr ||
+    solidityBuffer !== buffer ||
+    solidityLen !== len
+  ) {
+    solidityView = new Uint8Array(buffer, ptr, len);
+    solidityPtr = ptr;
+    solidityBuffer = buffer;
+    solidityLen = len;
+  }
+  return solidityView;
+}
+
+// ── Meshing ────────────────────────────────────────────────────────────────
+
+/** Sets the cell size (world units per cell) used for vertex positions. */
+export function setMeshCellSize(cx: number, cy: number, cz: number): void {
+  ex().mesh_set_cell_size(cx, cy, cz);
 }
 
 /**
- * Uploads the per-cell smoothing weights (0–15) into linear memory, and sets the
- * smoothing iteration count + normal-smoothing factor. Call once per rebuild
- * pass (after setMeshMap) before buildChunkMeshSmoothedWasm().
+ * Uploads per-cell smoothing weights (0–15) and sets the smoothing iteration
+ * count + normal-smoothing factor. Call once per rebuild pass (before any
+ * buildChunkMeshSmoothedWasm).
  */
 export function setMeshSmoothing(
   weightsFlat: ArrayLike<number>,
@@ -170,39 +184,34 @@ export function setMeshSmoothing(
   smoothing: number,
   normalSmoothing: number,
 ): void {
-  if (!wasmExports) {
-    throw new Error(
-      '[omosuen] render WASM not initialized (setMeshSmoothing).',
-    );
-  }
-  const ex = wasmExports;
-  const ptr = ex.mesh_reserve_weights(cellCount);
-  const view = new Uint32Array(ex.memory.buffer, ptr, cellCount);
+  const e = ex();
+  const ptr = e.mesh_reserve_weights(cellCount);
+  const view = new Uint32Array(e.memory.buffer, ptr, cellCount);
   for (let i = 0; i < cellCount; i++) {
     view[i] = weightsFlat[i];
   }
-  ex.mesh_set_smoothing(smoothing, normalSmoothing);
+  e.mesh_set_smoothing(smoothing, normalSmoothing);
 }
 
 /** Copies the current MESH_* output buffers out into standalone arrays. */
-function readMeshOutput(ex: RenderExports): ChunkMeshResult {
-  const buffer = ex.memory.buffer;
-  const vlen = ex.mesh_vertices_len();
-  const ilen = ex.mesh_indices_len();
-  const rlen = ex.mesh_ranges_len();
+function readMeshOutput(e: RenderExports): ChunkMeshResult {
+  const buffer = e.memory.buffer;
+  const vlen = e.mesh_vertices_len();
+  const ilen = e.mesh_indices_len();
+  const rlen = e.mesh_ranges_len();
 
   const vertices =
     vlen > 0
-      ? new Float32Array(buffer, ex.mesh_vertices_ptr(), vlen).slice()
+      ? new Float32Array(buffer, e.mesh_vertices_ptr(), vlen).slice()
       : null;
   const indices =
     ilen > 0
-      ? new Uint32Array(buffer, ex.mesh_indices_ptr(), ilen).slice()
+      ? new Uint32Array(buffer, e.mesh_indices_ptr(), ilen).slice()
       : null;
 
   const ranges: MeshDrawRange[] = [];
   if (rlen > 0) {
-    const rview = new Uint32Array(buffer, ex.mesh_ranges_ptr(), rlen);
+    const rview = new Uint32Array(buffer, e.mesh_ranges_ptr(), rlen);
     for (let i = 0; i < rlen; i += 3) {
       ranges.push({
         materialIndex: rview[i],
@@ -215,41 +224,24 @@ function readMeshOutput(ex: RenderExports): ChunkMeshResult {
   return { vertices, indices, ranges };
 }
 
-/**
- * Builds one chunk's greedy mesh in WASM and copies the result out into
- * standalone arrays (the chunk retains them for GPU upload). Requires a prior
- * setMeshMap() in the same rebuild pass. Throws if not initialized.
- */
+/** Builds one chunk's greedy mesh from the resident store. */
 export function buildChunkMeshWasm(
   cx: number,
   cy: number,
   cz: number,
 ): ChunkMeshResult {
-  if (!wasmExports) {
-    throw new Error(
-      '[omosuen] render WASM not initialized (buildChunkMeshWasm).',
-    );
-  }
-  const ex = wasmExports;
-  ex.mesh_build_chunk(cx, cy, cz);
-  return readMeshOutput(ex);
+  const e = ex();
+  e.mesh_build_chunk(cx, cy, cz);
+  return readMeshOutput(e);
 }
 
-/**
- * Builds one chunk's smoothed (Laplacian) mesh in WASM. Requires a prior
- * setMeshMap() and setMeshSmoothing() in the same rebuild pass.
- */
+/** Builds one chunk's smoothed mesh. Requires a prior setMeshSmoothing(). */
 export function buildChunkMeshSmoothedWasm(
   cx: number,
   cy: number,
   cz: number,
 ): ChunkMeshResult {
-  if (!wasmExports) {
-    throw new Error(
-      '[omosuen] render WASM not initialized (buildChunkMeshSmoothedWasm).',
-    );
-  }
-  const ex = wasmExports;
-  ex.mesh_build_chunk_smoothed(cx, cy, cz);
-  return readMeshOutput(ex);
+  const e = ex();
+  e.mesh_build_chunk_smoothed(cx, cy, cz);
+  return readMeshOutput(e);
 }

@@ -6,16 +6,6 @@ import { Vector2D } from '../../math';
  */
 export interface UnpackedFrame {
   /**
-   * Unique key for the texture map this frame belongs to
-   */
-  textureMapKey: string;
-
-  /**
-   * Frame index within its texture map
-   */
-  frameIndex: number;
-
-  /**
    * Size of the frame (width, height)
    */
   size: Vector2D;

@@ -187,26 +187,23 @@ function removeLoadingOverlay(overlay) {
  * initialization is complete, showing progress in the meantime.
  */
 function watchInitThenRemoveOverlay(overlay) {
-    let started = false;
     const startTime = performance.now();
-    console.log(`init start time: ${startTime}`)
     const intervalId = setInterval(() => {
         const queueLength = Omosuen.getInitQueueLength();
-        const queueSize = Omosuen.getInitQueueSize();
-        
         if (queueLength > 0) {
             // Init is running — show progress + the current component, keep waiting.
-            started = true;
+            const queueSize = Omosuen.getInitQueueSize();
             const done = queueLength - queueSize;
             const current = Omosuen.getInitializingComponent?.();
             const label = current && current.name ? ` — ${current.name}` : '';
             overlay.textContent = `Creating test assets, please wait... (${done} / ${queueLength})${label}`;
             return;
         }
-        console.log(`scene init total time: ${performance.now() - startTime}ms`)
-        // queueLength === -1 means idle/complete. Remove once we've actually seen
-        // init run, or after a 1s grace (covers a trivially-fast init).
-        if (started || performance.now() - startTime > 1000) {
+        // queueLength === -1 (idle). Init is done once the scene is active. Using
+        // getActiveScene() (not a "saw it running" flag) handles a fast init that
+        // finishes before the first poll — otherwise the overlay would linger.
+        if (Omosuen.getActiveScene()) {
+            console.log(`scene init total time: ${(performance.now() - startTime).toFixed(0)}ms`);
             removeLoadingOverlay(overlay);
             clearInterval(intervalId);
         }

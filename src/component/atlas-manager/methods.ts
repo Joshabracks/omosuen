@@ -190,6 +190,15 @@ function getTextureMaps(
 }
 
 /**
+ * Dedup key for a frame: same source file + same source rect ⇒ identical pixels,
+ * so such frames share a single packed atlas region. Granularity matches
+ * loadImage's filePath cache (distinct path strings for one file aren't merged).
+ */
+function frameKey(filePath: string, pos: Vector2D, size: Vector2D): string {
+  return `${filePath}|${pos.x},${pos.y},${size.x},${size.y}`;
+}
+
+/**
  * Compiles all pending texture maps into atlases as a resumable generator: it
  * `yield`s between work batches (after image load, after pack, every N blits,
  * between per-atlas reads) so the progressive-init scheduler can spread the
@@ -230,8 +239,13 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
   }
   yield;
 
-  // Frame metadata only — no per-frame canvas/getImageData extraction.
-  const unpackedFrames: UnpackedFrame[] = [];
+  // Build UNIQUE frames (dedup by source file + source rect). Multiple texture
+  // maps that reference the same file+rect share ONE packed atlas region — common
+  // when sprites each spin up their own texture-map from a shared sheet. No
+  // per-frame canvas/getImageData extraction (pixels are blitted at build time).
+  const uniqueFrames: UnpackedFrame[] = [];
+  const keyToUnique = new Map<string, number>();
+  let totalFrames = 0;
   for (let i = 0; i < textureMaps.length; i++) {
     const tm = textureMaps[i];
     const image = images[i];
@@ -245,13 +259,20 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
       ];
     }
     for (const originalFrame of tm.originalFrames) {
-      unpackedFrames.push({
-        textureMapKey: tm.textureMapKey,
-        frameIndex: originalFrame.frameIndex,
-        size: originalFrame.size,
-        sourceImage: image,
-        sourcePosition: originalFrame.position,
-      });
+      totalFrames++;
+      const key = frameKey(
+        tm.filePath,
+        originalFrame.position,
+        originalFrame.size,
+      );
+      if (!keyToUnique.has(key)) {
+        keyToUnique.set(key, uniqueFrames.length);
+        uniqueFrames.push({
+          size: originalFrame.size,
+          sourceImage: image,
+          sourcePosition: originalFrame.position,
+        });
+      }
     }
   }
   yield;
@@ -261,7 +282,7 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
   let packedFrames: UnpackedFrame[];
   try {
     packedFrames = packFrames(
-      unpackedFrames,
+      uniqueFrames,
       am.config.atlasSize,
       am.config.maxAtlases,
       am.config.padding,
@@ -325,27 +346,26 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
     yield;
   }
 
-  // Assign packed frames to texture maps. Group by key once (O(F)) instead of
-  // the old O(textureMaps × frames) nested scan.
-  const framesByKey = new Map<string, PackedFrame[]>();
-  for (const frame of packedFrames) {
-    if (frame.atlasIndex === undefined || frame.atlasPosition === undefined) {
-      continue;
-    }
-    let arr = framesByKey.get(frame.textureMapKey);
-    if (!arr) {
-      arr = [];
-      framesByKey.set(frame.textureMapKey, arr);
-    }
-    arr.push({
-      frameIndex: frame.frameIndex,
-      atlasPosition: frame.atlasPosition,
-      atlasIndex: frame.atlasIndex,
-      size: frame.size,
-    });
-  }
+  // Assign each texture-map frame to its (possibly shared) unique packed region.
   for (const tm of textureMaps) {
-    TextureMap.setPackedFrames(tm, framesByKey.get(tm.textureMapKey) ?? []);
+    const packed: PackedFrame[] = [];
+    for (const originalFrame of tm.originalFrames) {
+      const key = frameKey(
+        tm.filePath,
+        originalFrame.position,
+        originalFrame.size,
+      );
+      const u = uniqueFrames[keyToUnique.get(key)!];
+      if (u && u.atlasIndex !== undefined && u.atlasPosition !== undefined) {
+        packed.push({
+          frameIndex: originalFrame.frameIndex,
+          atlasPosition: u.atlasPosition,
+          atlasIndex: u.atlasIndex,
+          size: originalFrame.size,
+        });
+      }
+    }
+    TextureMap.setPackedFrames(tm, packed);
   }
 
   am.textureMapIds.clear();
@@ -353,8 +373,8 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
   invalidateAllTextureMapCaches();
 
   console.log(
-    `[atlas-manager] compiled ${unpackedFrames.length} frames → ` +
-      `${usedAtlasIndices.size} atlases (pack ${packMs.toFixed(0)} ms; ` +
+    `[atlas-manager] compiled ${uniqueFrames.length} unique of ${totalFrames} ` +
+      `frames → ${usedAtlasIndices.size} atlases (pack ${packMs.toFixed(0)} ms; ` +
       `build spread across frames)`,
   );
 }

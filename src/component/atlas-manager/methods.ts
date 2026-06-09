@@ -245,7 +245,6 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
   // per-frame canvas/getImageData extraction (pixels are blitted at build time).
   const uniqueFrames: UnpackedFrame[] = [];
   const keyToUnique = new Map<string, number>();
-  let totalFrames = 0;
   for (let i = 0; i < textureMaps.length; i++) {
     const tm = textureMaps[i];
     const image = images[i];
@@ -259,7 +258,6 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
       ];
     }
     for (const originalFrame of tm.originalFrames) {
-      totalFrames++;
       const key = frameKey(
         tm.filePath,
         originalFrame.position,
@@ -278,7 +276,6 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
   yield;
 
   // Pack (single synchronous chunk).
-  const tPack = performance.now();
   let packedFrames: UnpackedFrame[];
   try {
     packedFrames = packFrames(
@@ -291,7 +288,6 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
     console.error('[atlas-manager] Failed to pack frames', error);
     throw error;
   }
-  const packMs = performance.now() - tPack;
   yield;
 
   // Create the atlas canvases that are actually used.

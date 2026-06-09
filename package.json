@@ -16,6 +16,7 @@
     "test:wasm-audio-harness": "tsx test/wasm-audio-harness.test.ts",
     "test": "start http://localhost:3000/ && node test/integration-test-server.js",
     "test:cli": "tsx test/cli.test.ts",
+    "test:packer": "tsx test/packer-bench.test.ts",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write \"src/**/*.ts\" \"*.js\" \"*.json\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"*.js\" \"*.json\""

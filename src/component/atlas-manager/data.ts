@@ -8,7 +8,7 @@ import type {
 import { ComponentUnique } from '../types';
 import type { AtlasManagerMethods } from './methods';
 import type { ComponentInstanceMethods } from '../types';
-import type { PackerState, PackedRegion } from './types';
+import type { PackerState, PackedRegion, AtlasDirtyRegion } from './types';
 
 /**
  * Valid atlas sizes (power of 2)
@@ -127,6 +127,21 @@ export interface AtlasManagerT
    * coalescing the auto-release so it runs once after cameras have uploaded.
    */
   _releaseScheduled: boolean;
+
+  /**
+   * Changed atlas rects since the last full compile (retain mode), each tagged
+   * with the atlasVersion that produced it. Cameras upload just the delta newer
+   * than their last-uploaded version via texSubImage2D. Cleared on a full
+   * compile; bounded by a cap (overflow forces a one-time full upload).
+   */
+  dirtyRegions: AtlasDirtyRegion[];
+
+  /**
+   * atlasVersion of the last FULL (re)compile. A camera whose uploaded version
+   * is below this missed a full rebuild and must full-upload rather than apply
+   * the incremental dirty regions.
+   */
+  fullVersion: number;
 }
 
 export const PROPERTY_ALLOWLIST = [
@@ -141,6 +156,8 @@ export const PROPERTY_ALLOWLIST = [
   'packState',
   'packedByKey',
   '_releaseScheduled',
+  'dirtyRegions',
+  'fullVersion',
 ];
 
 /**
@@ -197,6 +214,8 @@ export function builder(options: AtlasManagerOptions): AtlasManagerT {
     packState: null,
     packedByKey: new Map<string, PackedRegion>(),
     _releaseScheduled: false,
+    dirtyRegions: [],
+    fullVersion: 0,
   } as unknown as AtlasManagerT;
 }
 

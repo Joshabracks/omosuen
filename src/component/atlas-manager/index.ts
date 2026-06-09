@@ -15,4 +15,5 @@ export type {
   PackerState,
   PackedRegion,
   SpaceBuckets,
+  AtlasDirtyRegion,
 } from './types';

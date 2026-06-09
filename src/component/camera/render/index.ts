@@ -9,7 +9,7 @@ import { Camera } from '../methods';
 import { renderSprites } from './render-sprites';
 import { renderPostProcess } from './post-process';
 import { renderCellMaps, snapCameraPosition } from './render-cell-maps';
-import { uploadAtlasTextures } from './atlas-textures';
+import { uploadAtlasTextures, uploadAtlasDelta } from './atlas-textures';
 
 // TextureMap lookup cache — keyed by camera component ID
 const TEXTURE_MAP_CACHE = new Map<number, Map<string, TextureMapT>>();
@@ -174,7 +174,18 @@ export function render(camera: CameraT, _deltaTime: number): void {
     atlasManager.compiled &&
     camera.glResources.atlasVersion !== atlasManager.atlasVersion
   ) {
-    uploadAtlasTextures(gl, camera, atlasManager);
+    // Retain mode: if this camera already has textures and didn't miss a full
+    // rebuild, upload just the changed regions (texSubImage2D). Otherwise
+    // (release mode, first upload, or a missed full recompile) full-upload.
+    if (
+      atlasManager.config.retainAtlas &&
+      camera.glResources.atlasVersion >= atlasManager.fullVersion &&
+      camera.glResources.atlasTextures.length > 0
+    ) {
+      uploadAtlasDelta(gl, camera, atlasManager);
+    } else {
+      uploadAtlasTextures(gl, camera, atlasManager);
+    }
   }
 
   // Release mode (default): once this camera is caught up to the current atlas

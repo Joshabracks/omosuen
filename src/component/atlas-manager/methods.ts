@@ -2,7 +2,7 @@ import type { ComponentData, ComponentMethods } from '../types';
 import type { AtlasManagerT } from './data';
 import type { TextureMapT } from '../texture-map/data';
 import type { NexusT } from '../nexus/data';
-import type { UnpackedFrame, PackedRegion } from './types';
+import type { UnpackedFrame, PackedRegion, AtlasDirtyRegion } from './types';
 import { createPackerState, packFramesInto } from './packer';
 import { Vector2D } from '../../math';
 import type { PackedFrame } from '../texture-map/types';
@@ -210,12 +210,20 @@ function frameKey(filePath: string, pos: Vector2D, size: Vector2D): string {
 }
 
 /**
- * Creates a blank atlas-sized 2D canvas.
+ * Creates a blank atlas-sized 2D canvas. When `willReadFrequently` is set, the
+ * 2D context is primed with that hint now (its attributes are fixed on first
+ * `getContext`) — retain-mode atlases are read back per region on every delta
+ * GPU upload, so they opt into the fast-readback backing; release canvases are
+ * drawn once + read once and keep the default (draw-optimized) backing.
  */
-function createAtlasCanvas(size: number): HTMLCanvasElement {
+function createAtlasCanvas(
+  size: number,
+  willReadFrequently = false,
+): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
+  canvas.getContext('2d', { willReadFrequently });
   return canvas;
 }
 
@@ -370,7 +378,10 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
     if (frame.atlasIndex !== undefined) usedAtlasIndices.add(frame.atlasIndex);
   }
   for (const index of usedAtlasIndices) {
-    const canvas = createAtlasCanvas(am.config.atlasSize);
+    const canvas = createAtlasCanvas(
+      am.config.atlasSize,
+      am.config.retainAtlas,
+    );
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       throw new Error(`Failed to get 2D context for atlas ${index}`);
@@ -439,8 +450,17 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
   // flips it false again.
   am.compiled = true;
   am.atlasVersion++;
+  // A full compile changes everything → no per-region delta to log. Cameras
+  // below fullVersion full-upload; the dirty-region log starts fresh from here.
+  am.fullVersion = am.atlasVersion;
+  am.dirtyRegions = [];
   invalidateAllTextureMapCaches();
 }
+
+// Cap on the retained dirty-region log; on overflow the log is cleared and
+// fullVersion is reset, forcing a one-time full upload for any straggler camera
+// (the canvas is the source of truth, so this is always safe).
+const DIRTY_REGION_CAP = 4096;
 
 /**
  * Incremental retain-mode add: packs + blits ONLY the texture-map frames whose
@@ -505,6 +525,9 @@ async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
     }
   }
 
+  // Changed rects logged for delta GPU upload (tagged with the new version below).
+  const newRegions: AtlasDirtyRegion[] = [];
+
   // Pack + blit ONLY the new frames into the retained free space + canvases.
   if (newFrames.length > 0) {
     try {
@@ -524,7 +547,7 @@ async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
       if (ctx) return ctx;
       let canvas = am.atlasCanvases[index];
       if (!canvas) {
-        canvas = createAtlasCanvas(am.config.atlasSize);
+        canvas = createAtlasCanvas(am.config.atlasSize, true);
         am.atlasCanvases[index] = canvas;
       }
       const c = canvas.getContext('2d');
@@ -560,6 +583,16 @@ async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
         atlasPosition: frame.atlasPosition,
         size: frame.size,
       });
+      // Record the changed rect so cameras can texSubImage2D just this region
+      // (version is tagged after the bump below).
+      newRegions.push({
+        version: 0,
+        atlasIndex: frame.atlasIndex,
+        x: frame.atlasPosition.x,
+        y: frame.atlasPosition.y,
+        w: frame.size.x,
+        h: frame.size.y,
+      });
       if (++drawn % BUILD_BATCH === 0) yield;
     }
   }
@@ -569,6 +602,19 @@ async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
 
   am.compiled = true;
   am.atlasVersion++;
+
+  // Tag the new regions with this version and append them to the delta log so
+  // cameras upload only these rects (texSubImage2D). Overflow → clear + reset
+  // fullVersion so stragglers fall back to a full upload (canvas is truth).
+  for (const region of newRegions) {
+    region.version = am.atlasVersion;
+  }
+  am.dirtyRegions.push(...newRegions);
+  if (am.dirtyRegions.length > DIRTY_REGION_CAP) {
+    am.dirtyRegions = [];
+    am.fullVersion = am.atlasVersion;
+  }
+
   invalidateAllTextureMapCaches();
 }
 
@@ -730,6 +776,8 @@ export const AtlasManager: AtlasManagerMethods = {
     am.packState = null;
     am.packedByKey.clear();
     am._releaseScheduled = false;
+    am.dirtyRegions = [];
+    am.fullVersion = 0;
   },
 
   loadImage: async (
@@ -809,6 +857,8 @@ export const AtlasManager: AtlasManagerMethods = {
     am.packState = null;
     am.packedByKey.clear();
     am._releaseScheduled = false;
+    am.dirtyRegions = [];
+    am.fullVersion = 0;
     am._disposed = true;
   },
 };

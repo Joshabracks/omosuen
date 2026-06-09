@@ -95,6 +95,23 @@ export interface PackedRegion {
 }
 
 /**
+ * A rectangle of an atlas that changed in a particular (incremental) compile,
+ * tagged with the atlasVersion that produced it. Retain mode logs these so a
+ * camera can upload just the delta since its last-uploaded version via
+ * texSubImage2D (reading the pixels from the retained canvas on demand) instead
+ * of re-uploading the whole atlas. Stores only the rect — the canvas is the
+ * source of truth, so a full re-upload is always a valid fallback.
+ */
+export interface AtlasDirtyRegion {
+  version: number;
+  atlasIndex: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
  * Space buckets for finding best-fit free space, sorted by different criteria.
  * Held inside PackerState so the free-space tree can persist across incremental
  * adds (retain mode) instead of being rebuilt from scratch every compile.

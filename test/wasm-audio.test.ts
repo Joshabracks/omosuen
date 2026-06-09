@@ -1,18 +1,35 @@
 /**
- * Differential parity test for the omosuen-audio WASM core DSP (step 2):
- * SampleBuffer / RateTransposer / Stretch / AudioStretcher.
+ * Golden-snapshot regression for the omosuen-audio WASM core DSP
+ * (SampleBuffer / RateTransposer / Stretch / AudioStretcher) via the low-level
+ * `core_*` ABI.
  *
- * Drives the WASM `core_*` ABI and the runnable oracle (test/audio-oracle.ts,
- * extracted from the worklet string) through identical feed/process/pull
- * sequences and asserts the output streams are BYTE-EXACT. The pitch is passed
- * as a ratio (Math.pow stays JS-side) so no transcendental drift can creep in.
+ * Parity vs the in-house TS WSOLA was proven byte-exact during the port (against
+ * a runnable oracle extracted from the worklet string); the JS DSP has since been
+ * deleted (single source of truth). This pins the WASM output per fixed case via
+ * a content hash so regressions are caught. To re-baseline after an intentional
+ * DSP change, set GOLDENS = {} and re-run — the test prints the captured hashes —
+ * then paste them back.
  *
  * Run: npm run test:wasm-audio
  */
-import { AudioStretcher } from './audio-oracle';
 import { buildAudioWasm } from '../build-tools/wasm.mjs';
 
 const SR = 44100;
+
+// Captured from the parity-proven WASM output. Keyed by case name.
+const GOLDENS: Record<string, number> = {
+  passthrough: 1742283671,
+  'pitch-up': 1030187222,
+  'pitch-down': 3793877779,
+  'tempo-slow': 2916304829,
+  'tempo-fast': 2468786648,
+  'both-A': 2830985358,
+  'both-B': 3134975508,
+  'quantum-128': 2080401836,
+  'big-4096': 2117384940,
+  'extreme-slow': 20752206,
+  'extreme-fast': 2083025537,
+};
 
 interface AudioExports {
   memory: WebAssembly.Memory;
@@ -20,7 +37,6 @@ interface AudioExports {
   core_destroy(id: number): void;
   core_set_tempo(id: number, t: number): void;
   core_set_pitch(id: number, ratio: number): void;
-  core_clear(id: number): void;
   core_feed_ptr(id: number, frames: number): number;
   core_feed(id: number, frames: number): void;
   core_process(id: number): void;
@@ -45,9 +61,6 @@ function makeRng(seed: number): () => number {
   };
 }
 
-/** Deterministic stereo source: two detuned tones + light noise (correlated L/R
- * so cross-correlation has structure to seek on). Stored as f32 so the oracle
- * and WASM read byte-identical inputs. */
 function makeSource(frames: number, seed: number): Float32Array {
   const rng = makeRng(seed);
   const out = new Float32Array(frames * 2);
@@ -55,40 +68,26 @@ function makeSource(frames: number, seed: number): Float32Array {
   const fR = fL * 1.5;
   for (let i = 0; i < frames; i++) {
     const t = i / SR;
-    const l = 0.6 * Math.sin(2 * Math.PI * fL * t) + 0.05 * (rng() * 2 - 1);
-    const r = 0.6 * Math.sin(2 * Math.PI * fR * t + 0.3) + 0.05 * (rng() * 2 - 1);
-    out[i * 2] = l;
-    out[i * 2 + 1] = r;
+    out[i * 2] = 0.6 * Math.sin(2 * Math.PI * fL * t) + 0.05 * (rng() * 2 - 1);
+    out[i * 2 + 1] = 0.6 * Math.sin(2 * Math.PI * fR * t + 0.3) + 0.05 * (rng() * 2 - 1);
   }
   return out;
 }
 
-function runOracle(
-  src: Float32Array,
-  frames: number,
-  tempo: number,
-  pitchRatio: number,
-  block: number,
-): Float32Array {
-  const s = new AudioStretcher(SR);
-  s.tempo = tempo;
-  s.pitch = pitchRatio;
-  const out: number[] = [];
-  let pos = 0;
-  while (pos < frames) {
-    const n = Math.min(block, frames - pos);
-    s.inputBuffer.putSamples(src, pos, n);
-    s.process();
-    const avail = s.outputBuffer.frameCount;
-    if (avail > 0) {
-      const tmp = new Float32Array(avail * 2);
-      s.outputBuffer.extract(tmp, 0, avail);
-      s.outputBuffer.receive(avail);
-      for (let i = 0; i < tmp.length; i++) out.push(tmp[i]);
-    }
-    pos += n;
+function fnv1a(h: number, bytes: Uint8Array): number {
+  let hash = h;
+  for (let i = 0; i < bytes.length; i++) {
+    hash ^= bytes[i];
+    hash = Math.imul(hash, 0x01000193);
   }
-  return Float32Array.from(out);
+  return hash >>> 0;
+}
+
+function hashF32(arr: Float32Array): number {
+  const meta = new Uint8Array(new Uint32Array([arr.length]).buffer);
+  let h = fnv1a(0x811c9dc5, meta);
+  h = fnv1a(h, new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength));
+  return h;
 }
 
 function runWasm(
@@ -106,11 +105,8 @@ function runWasm(
   let pos = 0;
   while (pos < frames) {
     const n = Math.min(block, frames - pos);
-    // Re-fetch ptr + view each call (memory may have grown → buffer detached).
     const fptr = ex.core_feed_ptr(id, n);
-    new Float32Array(ex.memory.buffer, fptr, n * 2).set(
-      src.subarray(pos * 2, pos * 2 + n * 2),
-    );
+    new Float32Array(ex.memory.buffer, fptr, n * 2).set(src.subarray(pos * 2, pos * 2 + n * 2));
     ex.core_feed(id, n);
     ex.core_process(id);
     const avail = ex.core_output_frames(id);
@@ -134,12 +130,9 @@ interface Case {
   block: number;
 }
 
-function firstMismatch(a: Float32Array, b: Float32Array): number {
-  if (a.length !== b.length) return Math.min(a.length, b.length);
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i] && !(Number.isNaN(a[i]) && Number.isNaN(b[i]))) return i;
-  }
-  return -1;
+function caseHash(ex: AudioExports, c: Case): number {
+  const src = makeSource(c.frames, c.seed);
+  return hashF32(runWasm(ex, src, c.frames, c.tempo, c.pitchRatio, c.block));
 }
 
 async function main(): Promise<void> {
@@ -147,48 +140,55 @@ async function main(): Promise<void> {
 
   const cases: Case[] = [
     { name: 'passthrough', seed: 1, frames: 12000, tempo: 1.0, pitchRatio: 1.0, block: 1024 },
-    { name: 'pitch-up(rate>1)', seed: 2, frames: 12000, tempo: 1.0, pitchRatio: 1.5, block: 1024 },
-    { name: 'pitch-down(rate<1)', seed: 3, frames: 12000, tempo: 1.0, pitchRatio: 0.75, block: 1024 },
+    { name: 'pitch-up', seed: 2, frames: 12000, tempo: 1.0, pitchRatio: 1.5, block: 1024 },
+    { name: 'pitch-down', seed: 3, frames: 12000, tempo: 1.0, pitchRatio: 0.75, block: 1024 },
     { name: 'tempo-slow', seed: 4, frames: 14000, tempo: 0.7, pitchRatio: 1.0, block: 1024 },
     { name: 'tempo-fast', seed: 5, frames: 14000, tempo: 1.4, pitchRatio: 1.0, block: 1024 },
     { name: 'both-A', seed: 6, frames: 16000, tempo: 0.85, pitchRatio: 1.2, block: 1024 },
     { name: 'both-B', seed: 7, frames: 16000, tempo: 1.3, pitchRatio: 0.9, block: 1024 },
-    { name: 'quantum-block-128', seed: 8, frames: 9000, tempo: 0.9, pitchRatio: 1.1, block: 128 },
-    { name: 'big-block-4096', seed: 9, frames: 20000, tempo: 1.25, pitchRatio: 0.8, block: 4096 },
+    { name: 'quantum-128', seed: 8, frames: 9000, tempo: 0.9, pitchRatio: 1.1, block: 128 },
+    { name: 'big-4096', seed: 9, frames: 20000, tempo: 1.25, pitchRatio: 0.8, block: 4096 },
     { name: 'extreme-slow', seed: 10, frames: 14000, tempo: 0.5, pitchRatio: 1.0, block: 512 },
     { name: 'extreme-fast', seed: 11, frames: 14000, tempo: 2.0, pitchRatio: 1.0, block: 512 },
   ];
 
   let failed = 0;
+  let missing = 0;
   for (const c of cases) {
-    const src = makeSource(c.frames, c.seed);
-    const oracle = runOracle(src, c.frames, c.tempo, c.pitchRatio, c.block);
-    const wasm = runWasm(ex, src, c.frames, c.tempo, c.pitchRatio, c.block);
-    const mm = firstMismatch(oracle, wasm);
-    if (mm === -1 && oracle.length === wasm.length) {
-      console.log(`  ✓ ${c.name} (${oracle.length / 2} frames out)`);
-    } else if (oracle.length !== wasm.length) {
-      console.error(
-        `  ✗ ${c.name}: length ${oracle.length} (oracle) !== ${wasm.length} (wasm)`,
-      );
+    const h = caseHash(ex, c);
+    const golden = GOLDENS[c.name];
+    if (golden === undefined) {
+      console.log(`  CAPTURE  '${c.name}': ${h},`);
+      missing++;
+    } else if (golden !== h) {
+      console.error(`  ✗ ${c.name}: golden ${golden} !== ${h}`);
       failed++;
     } else {
-      console.error(
-        `  ✗ ${c.name}: sample ${mm} oracle=${oracle[mm]} wasm=${wasm[mm]}`,
-      );
+      console.log(`  ✓ ${c.name} (${h})`);
+    }
+  }
+
+  // Determinism: a second pass must produce identical hashes.
+  for (const c of cases) {
+    if (caseHash(ex, c) !== caseHash(ex, c)) {
+      console.error(`  ✗ ${c.name}: non-deterministic output`);
       failed++;
     }
   }
 
-  if (failed > 0) {
-    console.error(`\nWASM audio core parity: ${failed} FAILED ✗`);
+  if (missing > 0) {
+    console.log(`\n${missing} golden(s) missing — paste the CAPTURE lines into GOLDENS and re-run.`);
     process.exit(1);
   }
-  console.log(`\nWASM audio core parity: ${cases.length} cases PASSED ✓`);
+  if (failed > 0) {
+    console.error(`\nWASM audio core golden: ${failed} FAILED ✗`);
+    process.exit(1);
+  }
+  console.log(`\nWASM audio core golden: ${cases.length} cases PASSED ✓`);
 }
 
 main().catch((e) => {
-  console.error('\nWASM audio core parity FAILED ✗');
+  console.error('\nWASM audio core golden FAILED ✗');
   console.error(e);
   process.exit(1);
 });

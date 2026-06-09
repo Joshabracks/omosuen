@@ -5,7 +5,11 @@ import type { AudioPlayerT, ActiveSource } from './data';
 import type { AudioTrackT } from '../audio-track/data';
 import type { AudioEffectT } from '../audio-effect/data';
 import type { TrackController } from './track-controller';
-import { getWorkletProcessorSource } from './audio-stretcher';
+
+// Fully-processed AudioWorklet shell source (worklet shell + inlined audio wasm
+// base64), injected by webpack DefinePlugin from audioWorklet.script.js.
+// eslint-disable-next-line @typescript-eslint/naming-convention
+declare const __AUDIO_WORKLET_SCRIPT__: string;
 
 export interface AudioPlayerMethods extends ComponentMethods {
   type: 'audio-player';
@@ -83,7 +87,7 @@ async function init(component: ComponentData): Promise<void> {
   ap._reverbConvolver = reverbConvolver;
 
   // Register AudioWorklet for stretched playback (WSOLA pitch/speed separation)
-  const workletSource = getWorkletProcessorSource();
+  const workletSource = __AUDIO_WORKLET_SCRIPT__;
   const blob = new Blob([workletSource], { type: 'application/javascript' });
   ap._workletBlobUrl = URL.createObjectURL(blob);
   await audioContext.audioWorklet.addModule(ap._workletBlobUrl);

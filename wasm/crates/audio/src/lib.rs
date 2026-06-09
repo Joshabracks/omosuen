@@ -5,10 +5,10 @@
 //! several concurrent stretched sources in one worklet realm share this single
 //! module + linear memory.
 //!
-//! Hand-port of the in-house WSOLA in `src/component/audio-player/audio-stretcher.ts`
-//! (the **worklet-string** copy, which is the runtime truth — note its
-//! `seekBestOverlapPosition` seeds `bestCorr = -Infinity`, unlike the stale TS
-//! class copy). Float parity: all arithmetic in f64, every buffer store truncates
+//! Hand-port of the engine's in-house WSOLA (formerly the JS in
+//! `src/component/audio-player`, now deleted — this crate is the single source of
+//! truth; the worklet shell `audioWorklet.script.js` drives it). Float parity:
+//! all arithmetic in f64, every buffer store truncates
 //! to f32 — byte-identical to the JS `Float32Array` path. `Math.pow` for the pitch
 //! ratio stays in JS; the ABI takes the ratio, not semitones, to avoid powf drift.
 //!
@@ -17,7 +17,7 @@
 //! processor harness (feed loop, transition/crossfade, output, position) and the
 //! high-level `stretcher_*` ABI land in step 3.
 
-// ── Constants (mirror audio-stretcher.ts) ──────────────────────────────────
+// ── Constants (WSOLA auto-sequence/seek tuning) ────────────────────────────
 
 const DEFAULT_OVERLAP_MS: f64 = 8.0;
 
@@ -619,12 +619,6 @@ static mut INSTANCES: Vec<Option<Box<AudioStretcher>>> = Vec::new();
 unsafe fn inst(id: u32) -> &'static mut AudioStretcher {
     let v = &mut *core::ptr::addr_of_mut!(INSTANCES);
     v[id as usize].as_mut().unwrap()
-}
-
-/// Step-1 probe; kept until the worklet shell stops calling it (step 4).
-#[no_mangle]
-pub extern "C" fn audio_probe(x: i32) -> i32 {
-    x * 2
 }
 
 #[no_mangle]

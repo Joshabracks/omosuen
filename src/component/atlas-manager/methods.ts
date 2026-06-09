@@ -371,12 +371,6 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
   am.textureMapIds.clear();
   am.compiled = true;
   invalidateAllTextureMapCaches();
-
-  console.log(
-    `[atlas-manager] compiled ${uniqueFrames.length} unique of ${totalFrames} ` +
-      `frames → ${usedAtlasIndices.size} atlases (pack ${packMs.toFixed(0)} ms; ` +
-      `build spread across frames)`,
-  );
 }
 
 export const AtlasManager: AtlasManagerMethods = {

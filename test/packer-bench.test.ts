@@ -77,6 +77,79 @@ const ATLAS_SIZE = 4096;
 const MAX_ATLASES = 16;
 const PADDING = 1;
 
+// ── Layout parity ────────────────────────────────────────────────────────────
+// Hash each INPUT frame's final placement (atlasIndex, atlasPosition) in input
+// order. packFrames mutates the frame objects in place, so this is stable
+// regardless of allocation order — it pins WHERE each frame lands. Captured from
+// the current array-based packer; the O(N log N) refactor must reproduce it
+// byte-for-byte (identical packing → same atlas count / utilization).
+function fnv1a(h: number, n: number): number {
+  let hash = h;
+  // mix 4 bytes of n
+  for (let i = 0; i < 4; i++) {
+    hash ^= (n >>> (i * 8)) & 0xff;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+function hashPacking(frames: UnpackedFrame[]): number {
+  let h = 0x811c9dc5;
+  for (const f of frames) {
+    h = fnv1a(h, f.atlasIndex ?? -1);
+    h = fnv1a(h, f.atlasPosition ? f.atlasPosition.x : -1);
+    h = fnv1a(h, f.atlasPosition ? f.atlasPosition.y : -1);
+  }
+  return h >>> 0;
+}
+
+interface ParityCase {
+  dist: Dist;
+  n: number;
+  seed: number;
+}
+
+const PARITY_CASES: ParityCase[] = [];
+for (const dist of ['uniform', 'few', 'random'] as Dist[]) {
+  for (const n of [500, 2000, 8000]) {
+    for (const seed of [1, 2, 3]) {
+      PARITY_CASES.push({ dist, n, seed });
+    }
+  }
+}
+
+// Captured from the current (array-based) packer. The O(N log N) refactor must
+// reproduce these exactly. Set to {} to re-capture (prints a paste-ready block).
+const GOLDENS: Record<string, number> = {
+  'uniform-500-1': 1882073653,
+  'uniform-500-2': 1882073653,
+  'uniform-500-3': 1882073653,
+  'uniform-2000-1': 3801090557,
+  'uniform-2000-2': 3801090557,
+  'uniform-2000-3': 3801090557,
+  'uniform-8000-1': 2867122353,
+  'uniform-8000-2': 2867122353,
+  'uniform-8000-3': 2867122353,
+  'few-500-1': 3597354628,
+  'few-500-2': 2237373687,
+  'few-500-3': 369823040,
+  'few-2000-1': 715817746,
+  'few-2000-2': 3624484888,
+  'few-2000-3': 3207822108,
+  'few-8000-1': 3709777116,
+  'few-8000-2': 3030523522,
+  'few-8000-3': 2206312934,
+  'random-500-1': 4151994965,
+  'random-500-2': 795078067,
+  'random-500-3': 3552034576,
+  'random-2000-1': 2586407695,
+  'random-2000-2': 518130844,
+  'random-2000-3': 98365021,
+  'random-8000-1': 385028678,
+  'random-8000-2': 877777612,
+  'random-8000-3': 257453726,
+};
+
 function utilization(frames: UnpackedFrame[], atlasCount: number): number {
   if (atlasCount === 0) return 0;
   let area = 0;
@@ -166,6 +239,46 @@ function fmt(ms: number): string {
   return ms.toFixed(ms < 10 ? 2 : ms < 100 ? 1 : 0);
 }
 
+// Returns true if all parity cases match goldens (or capture mode). Prints a
+// paste-ready GOLDENS block when capturing or on mismatch.
+export function runParity(): boolean {
+  console.log(`${colors.bright}Layout parity (packing must be byte-identical)${colors.reset}`);
+  const captured: Record<string, number> = {};
+  let allPass = true;
+  let haveGoldens = Object.keys(GOLDENS).length > 0;
+  for (const c of PARITY_CASES) {
+    const key = `${c.dist}-${c.n}-${c.seed}`;
+    const frames = makeFrames(c.dist, c.n, c.seed);
+    try {
+      packFrames(frames, ATLAS_SIZE, MAX_ATLASES, PADDING);
+    } catch {
+      // overflow shouldn't happen at these N with small frames; treat as fail.
+    }
+    const h = hashPacking(frames);
+    captured[key] = h;
+    if (haveGoldens) {
+      const want = GOLDENS[key];
+      const ok = want === h;
+      if (!ok) allPass = false;
+      console.log(
+        `  ${ok ? colors.green + 'PASS' : colors.red + 'FAIL'}${colors.reset} ${key.padEnd(16)} ${h}` +
+          (ok ? '' : ` (expected ${want})`),
+      );
+    }
+  }
+  if (!haveGoldens) {
+    console.log(`  ${colors.yellow}capture mode${colors.reset} — paste into GOLDENS:`);
+    console.log('const GOLDENS: Record<string, number> = {');
+    for (const c of PARITY_CASES) {
+      const key = `${c.dist}-${c.n}-${c.seed}`;
+      console.log(`  '${key}': ${captured[key]},`);
+    }
+    console.log('};');
+  }
+  console.log('');
+  return allPass;
+}
+
 export function runPackerBench(): boolean {
   console.log(
     `\n${colors.bright}${colors.cyan}Packer scaling benchmark${colors.reset} ` +
@@ -225,6 +338,7 @@ export function runPackerBench(): boolean {
 // Entry guard — pathToFileURL handles Windows paths (backslashes/drive letters)
 // correctly, unlike a raw `file://${argv[1]}` string compare.
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const ok = runPackerBench();
-  process.exit(ok ? 0 : 1);
+  const parityOk = runParity();
+  runPackerBench();
+  process.exit(parityOk ? 0 : 1);
 }

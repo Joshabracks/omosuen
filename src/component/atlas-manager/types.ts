@@ -1,4 +1,5 @@
 import { Vector2D } from '../../math';
+import type { SpaceTree } from './space-tree';
 
 /**
  * UnpackedFrame: A frame that needs to be packed into an atlas.
@@ -76,6 +77,14 @@ export interface AtlasSpace {
    * Root atlas index (0-15) if this is a root space, otherwise -1
    */
   rootIndex: number;
+
+  /**
+   * Monotonic unique id, assigned at creation. Used as the stable tiebreak in the
+   * free-space ordered sets (SpaceTree) so equal-size spaces keep insertion order
+   * — matching the previous sorted-array packing exactly — and so removal can
+   * locate a space by a unique key.
+   */
+  uid: number;
 }
 
 /**
@@ -112,14 +121,14 @@ export interface AtlasDirtyRegion {
 }
 
 /**
- * Space buckets for finding best-fit free space, sorted by different criteria.
- * Held inside PackerState so the free-space tree can persist across incremental
- * adds (retain mode) instead of being rebuilt from scratch every compile.
+ * Free-space ordered sets for finding best-fit space, keyed by different criteria
+ * (width / height / size). Held inside PackerState so the free-space trees persist
+ * across incremental adds (retain mode) instead of being rebuilt every compile.
  */
 export interface SpaceBuckets {
-  w: AtlasSpace[]; // Sorted by width (ASC)
-  h: AtlasSpace[]; // Sorted by height (ASC)
-  s: AtlasSpace[]; // Sorted by size (ASC)
+  w: SpaceTree; // ordered by width then height
+  h: SpaceTree; // ordered by height then width
+  s: SpaceTree; // ordered by width+height
 }
 
 /**
@@ -136,6 +145,11 @@ export interface PackerState {
   padding: number;
 }
 
+// Monotonic source of AtlasSpace uids (unique tiebreak / removal key for the
+// free-space ordered sets). Module-global; the absolute values don't matter, only
+// that they're unique and increase with creation order (= stable insertion order).
+let nextSpaceUid = 0;
+
 /**
  * Helper function to create a root AtlasSpace
  */
@@ -151,6 +165,7 @@ export function createRootAtlasSpace(
     '0': null,
     '1': null,
     rootIndex: index,
+    uid: nextSpaceUid++,
   };
 }
 
@@ -170,6 +185,7 @@ export function createChildAtlasSpace(
     '0': null,
     '1': null,
     rootIndex: -1,
+    uid: nextSpaceUid++,
   };
 }
 

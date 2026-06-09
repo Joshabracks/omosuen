@@ -17,6 +17,7 @@ import {
   compareSpacesByHeight,
   compareSpacesBySize,
 } from './types';
+import { SpaceTree } from './space-tree';
 
 /**
  * Frame buckets for bin packing.
@@ -26,6 +27,68 @@ interface FrameBuckets {
   w: UnpackedFrame[]; // Width > height
   h: UnpackedFrame[]; // Height > width
   s: UnpackedFrame[]; // Width === height (square)
+}
+
+// Free-space ordering for each bucket: the existing size comparators, made into a
+// strict total order with a uid tiebreak (so equal-size spaces keep insertion
+// order — identical to the old sorted-array packing).
+const cmpW = (a: AtlasSpace, b: AtlasSpace): number =>
+  compareSpacesByWidth(a, b) || a.uid - b.uid;
+const cmpH = (a: AtlasSpace, b: AtlasSpace): number =>
+  compareSpacesByHeight(a, b) || a.uid - b.uid;
+const cmpS = (a: AtlasSpace, b: AtlasSpace): number =>
+  compareSpacesBySize(a, b) || a.uid - b.uid;
+
+/**
+ * Builds the three empty free-space ordered sets (width / height / size keyed).
+ */
+function createSpaceBuckets(): SpaceBuckets {
+  return {
+    // width-keyed → residual fit dimension is height.
+    w: new SpaceTree({
+      cmp: cmpW,
+      primary: (s) => s.size.x,
+      primaryMin: (x) => x,
+      secondary: (s) => s.size.y,
+      secondaryMin: (_x, y) => y,
+    }),
+    // height-keyed → residual fit dimension is width.
+    h: new SpaceTree({
+      cmp: cmpH,
+      primary: (s) => s.size.y,
+      primaryMin: (_x, y) => y,
+      secondary: (s) => s.size.x,
+      secondaryMin: (x) => x,
+    }),
+    // size-keyed (square frames only: needX === needY, so x≥n && y≥n ⇔ min≥n).
+    s: new SpaceTree({
+      cmp: cmpS,
+      primary: (s) => s.size.x + s.size.y,
+      primaryMin: (x, y) => x + y,
+      secondary: (s) => Math.min(s.size.x, s.size.y),
+      secondaryMin: (x) => x,
+    }),
+  };
+}
+
+/** Inserts a free space into all three buckets. */
+function addSpaceToBuckets(
+  spaceBuckets: SpaceBuckets,
+  space: AtlasSpace,
+): void {
+  spaceBuckets.w.insert(space);
+  spaceBuckets.h.insert(space);
+  spaceBuckets.s.insert(space);
+}
+
+/** Removes a free space from all three buckets. */
+function removeSpaceFromBuckets(
+  spaceBuckets: SpaceBuckets,
+  space: AtlasSpace,
+): void {
+  spaceBuckets.w.remove(space);
+  spaceBuckets.h.remove(space);
+  spaceBuckets.s.remove(space);
 }
 
 /**
@@ -45,13 +108,13 @@ export function createPackerState(
       createRootAtlasSpace(i, new Vector2D(atlasSize, atlasSize)),
     );
   }
+  const spaceBuckets = createSpaceBuckets();
+  // Only the first atlas's free space is available initially; subsequent atlases
+  // are opened lazily as frames overflow.
+  addSpaceToBuckets(spaceBuckets, rootSpaces[0]);
   return {
     rootSpaces,
-    spaceBuckets: {
-      w: [rootSpaces[0]],
-      h: [rootSpaces[0]],
-      s: [rootSpaces[0]],
-    },
+    spaceBuckets,
     currentAtlasIndex: 0,
     atlasSize,
     maxAtlases,
@@ -78,40 +141,38 @@ export function packFramesInto(
 
   const { rootSpaces, spaceBuckets, atlasSize, maxAtlases, padding } = state;
 
-  // Sort frames into buckets
+  // Sort frames into buckets (DESC, largest first)
   const frameBuckets = sortFramesIntoBuckets(frames);
 
   const packedFrames: UnpackedFrame[] = [];
 
-  // Pack frames by rotating through buckets
+  // Consume each bucket front-to-back via an index (not shift()/unshift(), which
+  // are O(n) and would make a large pack O(N²)). A frame that doesn't fit is
+  // retried against the next atlas by simply not advancing its index.
+  const idx: Record<FrameBucket, number> = { w: 0, h: 0, s: 0 };
+
+  // Pack frames by rotating through buckets (h -> w -> s)
   while (
-    frameBuckets.h.length > 0 ||
-    frameBuckets.w.length > 0 ||
-    frameBuckets.s.length > 0
+    idx.h < frameBuckets.h.length ||
+    idx.w < frameBuckets.w.length ||
+    idx.s < frameBuckets.s.length
   ) {
-    // Determine which bucket to pull from (h -> w -> s rotation)
-    let frame: UnpackedFrame | undefined;
+    // Determine which bucket to pull from (peek, don't advance yet)
     let bucketType: FrameBucket;
-
-    if (frameBuckets.h.length > 0) {
-      frame = frameBuckets.h.shift();
-      bucketType = 'h';
-    } else if (frameBuckets.w.length > 0) {
-      frame = frameBuckets.w.shift();
-      bucketType = 'w';
-    } else {
-      frame = frameBuckets.s.shift();
-      bucketType = 's';
-    }
-
-    if (!frame) break;
+    if (idx.h < frameBuckets.h.length) bucketType = 'h';
+    else if (idx.w < frameBuckets.w.length) bucketType = 'w';
+    else bucketType = 's';
+    const frame = frameBuckets[bucketType][idx[bucketType]];
 
     // Find best-fit space for this frame (including padding)
     const paddedSize = new Vector2D(
       frame.size.x + padding,
       frame.size.y + padding,
     );
-    const space = findBestFitSpace(spaceBuckets, paddedSize, bucketType);
+    const space = spaceBuckets[bucketType].findBestFit(
+      paddedSize.x,
+      paddedSize.y,
+    );
 
     if (!space) {
       // No space found, try next atlas
@@ -123,21 +184,16 @@ export function packFramesInto(
         );
       }
 
-      // Add next root atlas to available spaces
-      const nextRoot = rootSpaces[state.currentAtlasIndex];
-      spaceBuckets.w.push(nextRoot);
-      spaceBuckets.h.push(nextRoot);
-      spaceBuckets.s.push(nextRoot);
-      sortSpaceBuckets(spaceBuckets);
-
-      // Try again with the same frame
-      frameBuckets[bucketType].unshift(frame);
+      // Open the next atlas: add its root free space to the buckets, then retry
+      // the same frame (index not advanced).
+      addSpaceToBuckets(spaceBuckets, rootSpaces[state.currentAtlasIndex]);
       continue;
     }
 
     // Allocate frame to space
     allocateFrameToSpace(frame, space, padding);
     packedFrames.push(frame);
+    idx[bucketType]++;
 
     // Remove allocated space from available spaces
     removeSpaceFromBuckets(spaceBuckets, space);
@@ -191,45 +247,6 @@ function sortFramesIntoBuckets(frames: UnpackedFrame[]): FrameBuckets {
   buckets.s.sort(compareBySize);
 
   return buckets;
-}
-
-/**
- * Finds the best-fit space for a frame based on bucket type.
- */
-function findBestFitSpace(
-  spaceBuckets: SpaceBuckets,
-  size: Vector2D,
-  bucketType: FrameBucket,
-): AtlasSpace | null {
-  let candidates: AtlasSpace[];
-
-  // Select candidate spaces based on bucket type
-  if (bucketType === 'h') {
-    // For tall frames, prioritize spaces sorted by height
-    candidates = spaceBuckets.h;
-  } else if (bucketType === 'w') {
-    // For wide frames, prioritize spaces sorted by width
-    candidates = spaceBuckets.w;
-  } else {
-    // For square frames, use spaces sorted by total size
-    candidates = spaceBuckets.s;
-  }
-
-  // First pass: look for exact fit
-  for (const space of candidates) {
-    if (space.size.x === size.x && space.size.y === size.y) {
-      return space;
-    }
-  }
-
-  // Second pass: look for smallest space that fits
-  for (const space of candidates) {
-    if (space.size.x >= size.x && space.size.y >= size.y) {
-      return space;
-    }
-  }
-
-  return null;
 }
 
 /**
@@ -370,64 +387,6 @@ function getRootIndex(space: AtlasSpace): number {
     current = current.parent;
   }
   return current.rootIndex;
-}
-
-/**
- * Sorts all space buckets.
- */
-function sortSpaceBuckets(spaceBuckets: SpaceBuckets): void {
-  spaceBuckets.w.sort(compareSpacesByWidth);
-  spaceBuckets.h.sort(compareSpacesByHeight);
-  spaceBuckets.s.sort(compareSpacesBySize);
-}
-
-/**
- * Inserts `item` into an already-sorted array at its sorted position (binary
- * search + splice), keeping the array sorted without a full re-sort. Equal
- * elements are inserted *after* existing ones, matching the previous
- * push-then-stable-sort behaviour (so packing layout is unchanged).
- */
-function sortedInsert<T>(arr: T[], item: T, cmp: (a: T, b: T) => number): void {
-  let lo = 0;
-  let hi = arr.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (cmp(item, arr[mid]) < 0) {
-      hi = mid;
-    } else {
-      lo = mid + 1;
-    }
-  }
-  arr.splice(lo, 0, item);
-}
-
-/**
- * Removes a space from all buckets in place (index + splice), avoiding the
- * whole-array rebuild a `filter` would do every allocation.
- */
-function removeSpaceFromBuckets(
-  spaceBuckets: SpaceBuckets,
-  space: AtlasSpace,
-): void {
-  const wi = spaceBuckets.w.indexOf(space);
-  if (wi !== -1) spaceBuckets.w.splice(wi, 1);
-  const hi = spaceBuckets.h.indexOf(space);
-  if (hi !== -1) spaceBuckets.h.splice(hi, 1);
-  const si = spaceBuckets.s.indexOf(space);
-  if (si !== -1) spaceBuckets.s.splice(si, 1);
-}
-
-/**
- * Adds a space to all buckets at its sorted position (no full re-sort of each
- * bucket every allocation — the old O(n log n)×3-per-frame cost).
- */
-function addSpaceToBuckets(
-  spaceBuckets: SpaceBuckets,
-  space: AtlasSpace,
-): void {
-  sortedInsert(spaceBuckets.w, space, compareSpacesByWidth);
-  sortedInsert(spaceBuckets.h, space, compareSpacesByHeight);
-  sortedInsert(spaceBuckets.s, space, compareSpacesBySize);
 }
 
 /**

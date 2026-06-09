@@ -105,11 +105,17 @@ async function runAtlasCompilation(scene) {
 
     // Process texture maps (compile atlases)
     updateStatus('Compiling atlases... (this may take a moment)');
+    let compileMs = 0;
     try {
+        const compileStart = performance.now();
         await atlasManager.processTextureMaps();
+        compileMs = performance.now() - compileStart;
         updateStatus('✓ Atlas compilation complete!');
-        console.log('[Atlas Test] Atlas compilation successful');
-        console.log(`[Atlas Test] Compiled ${atlasManager.getAtlasCount()} atlases`);
+        console.log(
+            `[Atlas Test] Atlas compilation (load+extract+pack+build) took ` +
+                `${compileMs.toFixed(1)} ms for ${totalFrames} frames → ` +
+                `${atlasManager.getAtlasCount()} atlases`,
+        );
     } catch (error) {
         updateStatus(`✗ Atlas compilation failed: ${error.message}`);
         console.error('[Atlas Test] Compilation failed:', error);
@@ -118,13 +124,24 @@ async function runAtlasCompilation(scene) {
 
     // Display compiled atlases
     updateStatus('Displaying compiled atlases...');
+    const displayStart = performance.now();
     displayCompiledAtlases(atlasManager);
+    const displayMs = performance.now() - displayStart;
+    console.log(`[Atlas Test] Rendered atlas images in ${displayMs.toFixed(1)} ms`);
 
     // Display frame information
     updateStatus('Generating frame information table...');
+    const tableStart = performance.now();
     displayFrameInfo(textureMaps);
+    const tableMs = performance.now() - tableStart;
+    console.log(
+        `[Atlas Test] Built frame table (${totalFrames} rows) in ${tableMs.toFixed(1)} ms`,
+    );
 
-    updateStatus(`✓ Atlas test complete! Packed ${totalFrames} frames into ${atlasManager.getAtlasCount()} atlases.`);
+    updateStatus(
+        `✓ Packed ${totalFrames} frames into ${atlasManager.getAtlasCount()} atlases ` +
+            `in ${compileMs.toFixed(0)} ms (display ${(displayMs + tableMs).toFixed(0)} ms)`,
+    );
     console.log('[Atlas Test] Compilation complete');
 }
 
@@ -137,6 +154,61 @@ function updateStatus(message) {
         statusEl.textContent = message;
     }
     console.log('[Atlas Test]', message);
+}
+
+/**
+ * Shows a full-screen "please wait" overlay during the (slow) scene asset
+ * creation so testers don't mistake the long build for a hang. The returned
+ * element is passed to removeLoadingOverlay() once the scene is ready.
+ */
+function showLoadingOverlay(message) {
+    const overlay = document.createElement('div');
+    overlay.id = 'atlas-loading-overlay';
+    overlay.style.cssText =
+        'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;' +
+        'justify-content:center;background:#000;color:#00ff00;font-family:monospace;' +
+        'font-size:1.5em;text-align:center;padding:40px;';
+    overlay.textContent = message;
+    document.body.appendChild(overlay);
+    return overlay;
+}
+
+function removeLoadingOverlay(overlay) {
+    if (overlay && overlay.parentNode) {
+        overlay.parentNode.removeChild(overlay);
+    }
+}
+
+/**
+ * Keeps the loading overlay up through the real wait — component init, which
+ * drains across game-loop frames AFTER createScene() returns (the loader only
+ * marks the scene active once createScene resolves, then inits over frames). We
+ * poll the init queue (same API sprite-test uses) and remove the overlay once
+ * initialization is complete, showing progress in the meantime.
+ */
+function watchInitThenRemoveOverlay(overlay) {
+    let started = false;
+    const startTime = performance.now();
+    console.log(`init start time: ${startTime}`)
+    const intervalId = setInterval(() => {
+        const queueLength = Omosuen.getInitQueueLength();
+        const queueSize = Omosuen.getInitQueueSize();
+        
+        if (queueLength > 0) {
+            // Init is running — show progress, keep waiting.
+            started = true;
+            const done = queueLength - queueSize;
+            overlay.textContent = `Creating test assets, please wait... (${done} / ${queueLength})`;
+            return;
+        }
+        console.log(`scene init total time: ${performance.now() - startTime}ms`)
+        // queueLength === -1 means idle/complete. Remove once we've actually seen
+        // init run, or after a 1s grace (covers a trivially-fast init).
+        if (started || performance.now() - startTime > 1000) {
+            removeLoadingOverlay(overlay);
+            clearInterval(intervalId);
+        }
+    }, 80);
 }
 
 /**
@@ -245,6 +317,13 @@ function displayFrameInfo(textureMaps) {
  */
 export async function createScene() {
     console.log('[Atlas Test] Creating scene...');
+
+    // The scene builds ~750 texture-map components (~7,750 frames), which takes a
+    // while — show a "please wait" message so the slow build isn't mistaken for a
+    // hang. Yield one macrotask so it paints before the heavy loops below.
+    const sceneStart = performance.now();
+    const loadingOverlay = showLoadingOverlay('Creating test assets, please wait...');
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Create root nexus
     const scene = await Omosuen.newComponent('nexus', {
@@ -358,6 +437,16 @@ export async function createScene() {
     });
     scene.addComponent(ui);
     console.log('[Atlas Test] UI overlay created');
+
+    const sceneMs = performance.now() - sceneStart;
+    console.log(
+        `[Atlas Test] Scene assets created in ${sceneMs.toFixed(0)} ms ` +
+            `(750 texture maps, ~7,750 frames)`,
+    );
+
+    // Keep the overlay up through component init (the real wait, after this
+    // returns) — the watcher removes it once initialization completes.
+    watchInitThenRemoveOverlay(loadingOverlay);
 
     console.log('[Atlas Test] Scene created successfully');
     return scene;

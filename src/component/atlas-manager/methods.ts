@@ -229,6 +229,8 @@ export const AtlasManager: AtlasManagerMethods = {
 
     // Auto-discover texture maps if none were explicitly registered
     // (handles deserialized scenes where builder doesn't receive atlasManager option)
+    console.log('[atlas-manager] get texture maps...');
+    const start = performance.now();
     if (am.textureMapIds.size === 0) {
       const rootNexus = getRootNexus(am);
       if (rootNexus) {
@@ -242,7 +244,12 @@ export const AtlasManager: AtlasManagerMethods = {
         }
       }
     }
-
+    let textureMapTime = performance.now() - start;
+    console.log(
+      `got ${am.textureMapIds.size} texture maps in ${textureMapTime}ms`,
+    );
+    console.log(`compiling maps...`);
+    const compileStart = performance.now();
     // Only compile if not already compiled and has pending texture maps
     if (!am.compiled && am.textureMapIds.size > 0) {
       try {
@@ -255,6 +262,7 @@ export const AtlasManager: AtlasManagerMethods = {
         throw error;
       }
     }
+    console.log(`maps compiled in ${performance.now() - compileStart}ms`);
   },
 
   addTextureMap: (am: AtlasManagerT, textureMap: TextureMapT): void => {
@@ -285,6 +293,7 @@ export const AtlasManager: AtlasManagerMethods = {
     }
 
     // Load all images using internal image cache
+    const tLoad = performance.now();
     const imageLoadPromises = textureMaps.map((tm) =>
       AtlasManager.loadImage(am, tm.filePath),
     );
@@ -296,8 +305,10 @@ export const AtlasManager: AtlasManagerMethods = {
       console.error('[atlas-manager] Failed to load images', error);
       throw error;
     }
+    const loadMs = performance.now() - tLoad;
 
     // Create unpacked frames
+    const tExtract = performance.now();
     const unpackedFrames: UnpackedFrame[] = [];
 
     for (let i = 0; i < textureMaps.length; i++) {
@@ -332,7 +343,10 @@ export const AtlasManager: AtlasManagerMethods = {
       }
     }
 
+    const extractMs = performance.now() - tExtract;
+
     // Pack frames into atlases
+    const tPack = performance.now();
     let packedFrames: UnpackedFrame[];
     try {
       packedFrames = packFrames(
@@ -345,8 +359,10 @@ export const AtlasManager: AtlasManagerMethods = {
       console.error('[atlas-manager] Failed to pack frames', error);
       throw error;
     }
+    const packMs = performance.now() - tPack;
 
     // Create atlas canvases and contexts
+    const tBuild = performance.now();
     const atlasCanvases: HTMLCanvasElement[] = [];
     const atlasContexts: CanvasRenderingContext2D[] = [];
     const usedAtlasIndices = new Set<number>();
@@ -399,6 +415,15 @@ export const AtlasManager: AtlasManagerMethods = {
         am.config.atlasSize,
       );
     }
+    const buildMs = performance.now() - tBuild;
+
+    console.log(
+      `[atlas-manager] compiled ${unpackedFrames.length} frames → ` +
+        `${usedAtlasIndices.size} atlases in ` +
+        `${(loadMs + extractMs + packMs + buildMs).toFixed(0)} ms ` +
+        `(load ${loadMs.toFixed(0)}, extract ${extractMs.toFixed(0)}, ` +
+        `pack ${packMs.toFixed(0)}, build ${buildMs.toFixed(0)})`,
+    );
 
     // Update texture maps with packed frames
 

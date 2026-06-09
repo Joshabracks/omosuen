@@ -29,6 +29,30 @@ let INIT_QUEUE_LENGTH = -1;
 let INITIALIZATION_IN_PROGRESS = false;
 
 /**
+ * Per-cycle `id → component` index and a "queue is sorted" flag. The queue is
+ * resolved + sorted ONCE per cycle (rebuilt only when new items are queued
+ * mid-cycle), instead of re-sorting every frame with O(scene) lookups in the
+ * comparator — which was O(Q² log Q) per frame and dominated large scene loads.
+ */
+let ID_TO_COMPONENT: Map<number, ComponentData> | null = null;
+let QUEUE_SORTED = false;
+
+/**
+ * Indexes every component in the scene tree by id (single O(scene) walk), so the
+ * init cycle can resolve queued ids in O(1) instead of recursive getComponentById.
+ */
+function indexScene(n: NexusT, map: Map<number, ComponentData>): void {
+  if (n.id !== undefined) map.set(n.id, n);
+  for (let i = 0; i < n.components.length; i++) {
+    const c = n.components[i];
+    if (c.id !== undefined) map.set(c.id, c);
+    if (c.type === 'nexus') {
+      indexScene(c as NexusT, map);
+    }
+  }
+}
+
+/**
  * Adds a component ID to the initialization queue.
  *
  * This function is called automatically by newComponent() when a
@@ -45,6 +69,9 @@ let INITIALIZATION_IN_PROGRESS = false;
  */
 export function queueInit(id: number): void {
   INIT_QUEUE.push(id);
+  // Force a re-index + re-sort on the next processInitQueue (handles components
+  // created mid-cycle by another component's init()).
+  QUEUE_SORTED = false;
 }
 
 /**
@@ -88,28 +115,34 @@ export async function processInitQueue(
   if (INIT_QUEUE.length === 0) {
     INITIALIZATION_IN_PROGRESS = false;
     INIT_QUEUE_LENGTH = -1;
+    ID_TO_COMPONENT = null;
+    QUEUE_SORTED = false;
     return;
   }
 
-  const startTime = performance.now();
+  // Resolve + sort ONCE per cycle (rebuilt only when items are queued mid-cycle,
+  // flagged by queueInit). The id index makes both the defer-sort comparator and
+  // the per-component fetch O(1) instead of O(scene). Previously this sort ran
+  // every frame with two recursive getComponentById calls per comparison.
+  if (!QUEUE_SORTED) {
+    const index = new Map<number, ComponentData>();
+    indexScene(scene, index);
+    ID_TO_COMPONENT = index;
+    INIT_QUEUE.sort((a, b) => {
+      const deferA = index.get(a)?._initDefer || 0;
+      const deferB = index.get(b)?._initDefer || 0;
+      return deferA - deferB;
+    });
+    QUEUE_SORTED = true;
+  }
 
-  INIT_QUEUE.sort((a, b) => {
-    const componentA: ComponentData = scene.getComponentById(
-      a,
-      true,
-    ) as ComponentData;
-    const componentB: ComponentData = scene.getComponentById(
-      b,
-      true,
-    ) as ComponentData;
-    const deferA = componentA?._initDefer || 0;
-    const deferB = componentB?._initDefer || 0;
-    return deferA - deferB;
-  });
+  const index = ID_TO_COMPONENT!;
+  const startTime = performance.now();
 
   while (INIT_QUEUE.length > 0) {
     const id = INIT_QUEUE.shift()!;
-    const component: ComponentData | null = scene.getComponentById(id, true);
+    const component: ComponentData | null =
+      index.get(id) ?? scene.getComponentById(id, true);
 
     if (!component) {
       console.warn(`[INIT] Component ID ${id} not found in scene`);
@@ -156,6 +189,8 @@ export async function processInitQueue(
   // All done
   INITIALIZATION_IN_PROGRESS = false;
   INIT_QUEUE_LENGTH = -1;
+  ID_TO_COMPONENT = null;
+  QUEUE_SORTED = false;
 }
 
 /**

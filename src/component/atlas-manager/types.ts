@@ -84,6 +84,42 @@ export interface AtlasSpace {
 export type FrameBucket = 'w' | 'h' | 's';
 
 /**
+ * A packed atlas region: where a unique frame ended up. Stored in the atlas
+ * manager's `packedByKey` dedup map (retain mode) so re-referenced frames reuse
+ * the region and genuinely new frames are detected on a runtime add.
+ */
+export interface PackedRegion {
+  atlasIndex: number;
+  atlasPosition: Vector2D;
+  size: Vector2D;
+}
+
+/**
+ * Space buckets for finding best-fit free space, sorted by different criteria.
+ * Held inside PackerState so the free-space tree can persist across incremental
+ * adds (retain mode) instead of being rebuilt from scratch every compile.
+ */
+export interface SpaceBuckets {
+  w: AtlasSpace[]; // Sorted by width (ASC)
+  h: AtlasSpace[]; // Sorted by height (ASC)
+  s: AtlasSpace[]; // Sorted by size (ASC)
+}
+
+/**
+ * Persistent guillotine-packer state. `packFrames` builds a throwaway one per
+ * call (release/full compile); retain mode keeps one on the atlas manager so
+ * `packFramesInto` can place new frames into the existing free space.
+ */
+export interface PackerState {
+  rootSpaces: AtlasSpace[];
+  spaceBuckets: SpaceBuckets;
+  currentAtlasIndex: number;
+  atlasSize: number;
+  maxAtlases: number;
+  padding: number;
+}
+
+/**
  * Helper function to create a root AtlasSpace
  */
 export function createRootAtlasSpace(

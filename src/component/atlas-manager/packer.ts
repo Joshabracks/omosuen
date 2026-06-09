@@ -1,5 +1,11 @@
 import { Vector2D } from '../../math';
-import type { UnpackedFrame, AtlasSpace, FrameBucket } from './types';
+import type {
+  UnpackedFrame,
+  AtlasSpace,
+  FrameBucket,
+  SpaceBuckets,
+  PackerState,
+} from './types';
 import {
   createRootAtlasSpace,
   createChildAtlasSpace,
@@ -23,54 +29,58 @@ interface FrameBuckets {
 }
 
 /**
- * Space buckets for finding best-fit spaces.
- * Spaces are sorted by different criteria for efficient lookup.
+ * Creates a fresh persistent packer state: `maxAtlases` empty root spaces, with
+ * only the first atlas's free space initially available (subsequent atlases are
+ * opened lazily as frames overflow). Retain mode keeps one of these on the atlas
+ * manager so incremental adds reuse the accumulated free space.
  */
-interface SpaceBuckets {
-  w: AtlasSpace[]; // Sorted by width (ASC)
-  h: AtlasSpace[]; // Sorted by height (ASC)
-  s: AtlasSpace[]; // Sorted by size (ASC)
-}
-
-/**
- * Packs unpacked frames into atlases using the guillotine bin packing algorithm.
- *
- * @param frames - Array of unpacked frames to pack
- * @param atlasSize - Size of each atlas (power of 2)
- * @param maxAtlases - Maximum number of atlases (1-16)
- * @param padding - Padding between frames in pixels
- * @returns Array of packed frames with atlas positions
- * @throws Error if frames cannot fit in available atlases
- */
-export function packFrames(
-  frames: UnpackedFrame[],
+export function createPackerState(
   atlasSize: number,
   maxAtlases: number,
   padding: number,
-): UnpackedFrame[] {
-  if (frames.length === 0) {
-    return [];
-  }
-
-  // Sort frames into buckets
-  const frameBuckets = sortFramesIntoBuckets(frames);
-
-  // Create root atlas spaces
+): PackerState {
   const rootSpaces: AtlasSpace[] = [];
   for (let i = 0; i < maxAtlases; i++) {
     rootSpaces.push(
       createRootAtlasSpace(i, new Vector2D(atlasSize, atlasSize)),
     );
   }
-
-  // Initialize available spaces with the first root
-  const spaceBuckets: SpaceBuckets = {
-    w: [rootSpaces[0]],
-    h: [rootSpaces[0]],
-    s: [rootSpaces[0]],
+  return {
+    rootSpaces,
+    spaceBuckets: {
+      w: [rootSpaces[0]],
+      h: [rootSpaces[0]],
+      s: [rootSpaces[0]],
+    },
+    currentAtlasIndex: 0,
+    atlasSize,
+    maxAtlases,
+    padding,
   };
+}
 
-  let currentAtlasIndex = 0;
+/**
+ * Packs `frames` into the (possibly already-partially-filled) packer `state`,
+ * mutating its free-space tree and assigning each frame's `atlasIndex` /
+ * `atlasPosition`. Used by both the full compile (via `packFrames`, a fresh
+ * state) and incremental runtime adds (a retained state). Returns the same
+ * frames, now positioned.
+ *
+ * @throws Error if a frame cannot fit in any available atlas
+ */
+export function packFramesInto(
+  state: PackerState,
+  frames: UnpackedFrame[],
+): UnpackedFrame[] {
+  if (frames.length === 0) {
+    return [];
+  }
+
+  const { rootSpaces, spaceBuckets, atlasSize, maxAtlases, padding } = state;
+
+  // Sort frames into buckets
+  const frameBuckets = sortFramesIntoBuckets(frames);
+
   const packedFrames: UnpackedFrame[] = [];
 
   // Pack frames by rotating through buckets
@@ -105,8 +115,8 @@ export function packFrames(
 
     if (!space) {
       // No space found, try next atlas
-      currentAtlasIndex++;
-      if (currentAtlasIndex >= maxAtlases) {
+      state.currentAtlasIndex++;
+      if (state.currentAtlasIndex >= maxAtlases) {
         throw new Error(
           `Cannot fit frame (${frame.size.x}x${frame.size.y}) into any available atlas. ` +
             `MaxAtlases: ${maxAtlases}, AtlasSize: ${atlasSize}x${atlasSize}`,
@@ -114,7 +124,7 @@ export function packFrames(
       }
 
       // Add next root atlas to available spaces
-      const nextRoot = rootSpaces[currentAtlasIndex];
+      const nextRoot = rootSpaces[state.currentAtlasIndex];
       spaceBuckets.w.push(nextRoot);
       spaceBuckets.h.push(nextRoot);
       spaceBuckets.s.push(nextRoot);
@@ -140,6 +150,28 @@ export function packFrames(
   }
 
   return packedFrames;
+}
+
+/**
+ * Packs unpacked frames into atlases using the guillotine bin packing algorithm.
+ * Thin wrapper over a throwaway PackerState — preserves the original behaviour
+ * and layout for the full-compile path and tests.
+ *
+ * @param frames - Array of unpacked frames to pack
+ * @param atlasSize - Size of each atlas (power of 2)
+ * @param maxAtlases - Maximum number of atlases (1-16)
+ * @param padding - Padding between frames in pixels
+ * @returns Array of packed frames with atlas positions
+ * @throws Error if frames cannot fit in available atlases
+ */
+export function packFrames(
+  frames: UnpackedFrame[],
+  atlasSize: number,
+  maxAtlases: number,
+  padding: number,
+): UnpackedFrame[] {
+  const state = createPackerState(atlasSize, maxAtlases, padding);
+  return packFramesInto(state, frames);
 }
 
 /**

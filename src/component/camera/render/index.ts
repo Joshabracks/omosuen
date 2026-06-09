@@ -177,6 +177,34 @@ export function render(camera: CameraT, _deltaTime: number): void {
     uploadAtlasTextures(gl, camera, atlasManager);
   }
 
+  // Release mode (default): once this camera is caught up to the current atlas
+  // version, schedule a one-shot drop of the CPU-side atlas ImageData to free
+  // memory. Coalesced via _releaseScheduled + deferred with requestAnimationFrame
+  // so it runs ONCE after the current frame's renders (all cameras that rendered
+  // this frame have uploaded by then); late/new cameras and getAtlas fall back to
+  // rebuild-on-demand. Captures the version so a recompile mid-wait isn't dropped.
+  if (
+    atlasManager &&
+    !atlasManager.config.retainAtlas &&
+    atlasManager.compiled &&
+    atlasManager.atlases.length > 0 &&
+    camera.glResources.atlasVersion === atlasManager.atlasVersion &&
+    !atlasManager._releaseScheduled &&
+    typeof requestAnimationFrame === 'function'
+  ) {
+    atlasManager._releaseScheduled = true;
+    const releasedVersion = atlasManager.atlasVersion;
+    requestAnimationFrame(() => {
+      if (
+        !atlasManager.config.retainAtlas &&
+        atlasManager.atlasVersion === releasedVersion
+      ) {
+        atlasManager.atlases = [];
+      }
+      atlasManager._releaseScheduled = false;
+    });
+  }
+
   // Render cell-maps FIRST (before sprites) with depth writes enabled
   // This populates the depth buffer with solid geometry
   if (cellMaps.length > 0) {

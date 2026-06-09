@@ -248,9 +248,12 @@ export async function createScene() {
 
   // AtlasManager — 4096 fits a 20-frame 480px sheet in a single atlas; grows as
   // animations are added. maxAtlases 16 leaves headroom for many selections.
+  // retainAtlas: true → procedural/incremental mode: each animation added at
+  // runtime packs + blits only its NEW frames into the retained atlas canvas
+  // (no full re-pack/re-blit), and cameras re-upload straight from the canvas.
   const atlasManager = await Omosuen.newComponent('atlas-manager', {
     name: 'AtlasManager',
-    config: { atlasSize: 4096, maxAtlases: 16, padding: 1 },
+    config: { atlasSize: 4096, maxAtlases: 16, padding: 1, retainAtlas: true },
   });
   scene.addComponent(atlasManager);
 

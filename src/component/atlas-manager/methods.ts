@@ -2,8 +2,8 @@ import type { ComponentData, ComponentMethods } from '../types';
 import type { AtlasManagerT } from './data';
 import type { TextureMapT } from '../texture-map/data';
 import type { NexusT } from '../nexus/data';
-import type { UnpackedFrame } from './types';
-import { packFrames } from './packer';
+import type { UnpackedFrame, PackedRegion } from './types';
+import { createPackerState, packFramesInto } from './packer';
 import { Vector2D } from '../../math';
 import type { PackedFrame } from '../texture-map/types';
 import { Nexus } from '../nexus/methods';
@@ -64,6 +64,17 @@ export interface AtlasManagerMethods extends ComponentMethods {
    * @returns Number of atlases
    */
   getAtlasCount: (am: AtlasManagerT) => number;
+
+  /**
+   * Rebuilds the CPU-side atlas ImageData (`am.atlases`) on demand. Used as the
+   * safety net for release mode (where the atlases are auto-dropped after GPU
+   * upload) and to back `getAtlas`. In retain mode it snapshots the live atlas
+   * canvases; in release mode it re-blits from the cached source images + the
+   * texture-maps' stored packed layout. Synchronous (source images are cached).
+   *
+   * @param am - AtlasManager component
+   */
+  rebuildAtlases: (am: AtlasManagerT) => void;
 
   /**
    * Clears all atlases and pending texture maps.
@@ -199,6 +210,61 @@ function frameKey(filePath: string, pos: Vector2D, size: Vector2D): string {
 }
 
 /**
+ * Creates a blank atlas-sized 2D canvas.
+ */
+function createAtlasCanvas(size: number): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  return canvas;
+}
+
+/**
+ * Fills in a default whole-image frame for a texture map that declared none.
+ */
+function ensureOriginalFrames(tm: TextureMapT, image: HTMLImageElement): void {
+  if (tm.originalFrames.length === 0) {
+    tm.originalFrames = [
+      {
+        frameIndex: 0,
+        position: new Vector2D(0, 0),
+        size: new Vector2D(image.width, image.height),
+      },
+    ];
+  }
+}
+
+/**
+ * Points every texture-map frame at its (possibly shared) packed atlas region,
+ * looked up by frame key. Shared by the full compile and the incremental add.
+ */
+function assignPackedFrames(
+  textureMaps: TextureMapT[],
+  regions: Map<string, PackedRegion>,
+): void {
+  for (const tm of textureMaps) {
+    const packed: PackedFrame[] = [];
+    for (const originalFrame of tm.originalFrames) {
+      const key = frameKey(
+        tm.filePath,
+        originalFrame.position,
+        originalFrame.size,
+      );
+      const region = regions.get(key);
+      if (region) {
+        packed.push({
+          frameIndex: originalFrame.frameIndex,
+          atlasPosition: region.atlasPosition,
+          atlasIndex: region.atlasIndex,
+          size: originalFrame.size,
+        });
+      }
+    }
+    TextureMap.setPackedFrames(tm, packed);
+  }
+}
+
+/**
  * Compiles all pending texture maps into atlases as a resumable generator: it
  * `yield`s between work batches (after image load, after pack, every N blits,
  * between per-atlas reads) so the progressive-init scheduler can spread the
@@ -248,15 +314,7 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
   for (let i = 0; i < textureMaps.length; i++) {
     const tm = textureMaps[i];
     const image = images[i];
-    if (tm.originalFrames.length === 0) {
-      tm.originalFrames = [
-        {
-          frameIndex: 0,
-          position: new Vector2D(0, 0),
-          size: new Vector2D(image.width, image.height),
-        },
-      ];
-    }
+    ensureOriginalFrames(tm, image);
     for (const originalFrame of tm.originalFrames) {
       const key = frameKey(
         tm.filePath,
@@ -275,48 +333,61 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
   }
   yield;
 
-  // Pack (single synchronous chunk).
-  let packedFrames: UnpackedFrame[];
+  // Pack into a persistent packer state so retain mode can keep packing new
+  // frames into the same free space on later incremental adds.
+  const packState = createPackerState(
+    am.config.atlasSize,
+    am.config.maxAtlases,
+    am.config.padding,
+  );
   try {
-    packedFrames = packFrames(
-      uniqueFrames,
-      am.config.atlasSize,
-      am.config.maxAtlases,
-      am.config.padding,
-    );
+    packFramesInto(packState, uniqueFrames);
   } catch (error) {
     console.error('[atlas-manager] Failed to pack frames', error);
     throw error;
   }
   yield;
 
+  // Region map (frame key → packed location): used to assign texture maps and,
+  // in retain mode, persisted as the dedup map for incremental adds.
+  const regions = new Map<string, PackedRegion>();
+  for (const [key, idx] of keyToUnique) {
+    const u = uniqueFrames[idx];
+    if (u.atlasIndex !== undefined && u.atlasPosition !== undefined) {
+      regions.set(key, {
+        atlasIndex: u.atlasIndex,
+        atlasPosition: u.atlasPosition,
+        size: u.size,
+      });
+    }
+  }
+
   // Create the atlas canvases that are actually used.
-  const atlasContexts: CanvasRenderingContext2D[] = [];
+  const canvases: HTMLCanvasElement[] = [];
+  const contexts: CanvasRenderingContext2D[] = [];
   const usedAtlasIndices = new Set<number>();
-  for (const frame of packedFrames) {
+  for (const frame of uniqueFrames) {
     if (frame.atlasIndex !== undefined) usedAtlasIndices.add(frame.atlasIndex);
   }
   for (const index of usedAtlasIndices) {
-    const canvas = document.createElement('canvas');
-    canvas.width = am.config.atlasSize;
-    canvas.height = am.config.atlasSize;
+    const canvas = createAtlasCanvas(am.config.atlasSize);
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       throw new Error(`Failed to get 2D context for atlas ${index}`);
     }
-    atlasContexts[index] = ctx;
+    canvases[index] = canvas;
+    contexts[index] = ctx;
   }
 
-  // Blit frames straight onto the atlas canvases (chunked + yielding).
+  // Blit unique frames straight onto the atlas canvases (chunked + yielding).
   const BUILD_BATCH = 512;
   let drawn = 0;
-  for (const frame of packedFrames) {
+  for (const frame of uniqueFrames) {
     if (frame.atlasIndex === undefined || frame.atlasPosition === undefined) {
       console.error('[atlas-manager] Frame missing atlas info', frame);
       continue;
     }
-    const ctx = atlasContexts[frame.atlasIndex];
-    ctx.drawImage(
+    contexts[frame.atlasIndex].drawImage(
       frame.sourceImage,
       frame.sourcePosition.x,
       frame.sourcePosition.y,
@@ -330,39 +401,34 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
     if (++drawn % BUILD_BATCH === 0) yield;
   }
 
-  // One getImageData per atlas → am.atlases stays ImageData[] (renderer unchanged).
-  am.atlases = [];
-  for (const index of usedAtlasIndices) {
-    am.atlases[index] = atlasContexts[index].getImageData(
-      0,
-      0,
-      am.config.atlasSize,
-      am.config.atlasSize,
-    );
-    yield;
+  if (am.config.retainAtlas) {
+    // Retain: keep the canvases + packer state + dedup map alive so a later
+    // runtime add only packs/blits the NEW frames. Cameras upload straight from
+    // the canvas, so the per-atlas getImageData snapshot is skipped here.
+    am.atlasCanvases = canvases;
+    am.packState = packState;
+    am.packedByKey = regions;
+    am.atlases = [];
+  } else {
+    // Release: snapshot to ImageData (the upload source); the canvases + packer
+    // state are not retained (they GC). am.atlases is auto-dropped after upload.
+    am.atlasCanvases = [];
+    am.packState = null;
+    am.packedByKey = new Map();
+    am.atlases = [];
+    for (const index of usedAtlasIndices) {
+      am.atlases[index] = contexts[index].getImageData(
+        0,
+        0,
+        am.config.atlasSize,
+        am.config.atlasSize,
+      );
+      yield;
+    }
   }
 
-  // Assign each texture-map frame to its (possibly shared) unique packed region.
-  for (const tm of textureMaps) {
-    const packed: PackedFrame[] = [];
-    for (const originalFrame of tm.originalFrames) {
-      const key = frameKey(
-        tm.filePath,
-        originalFrame.position,
-        originalFrame.size,
-      );
-      const u = uniqueFrames[keyToUnique.get(key)!];
-      if (u && u.atlasIndex !== undefined && u.atlasPosition !== undefined) {
-        packed.push({
-          frameIndex: originalFrame.frameIndex,
-          atlasPosition: u.atlasPosition,
-          atlasIndex: u.atlasIndex,
-          size: originalFrame.size,
-        });
-      }
-    }
-    TextureMap.setPackedFrames(tm, packed);
-  }
+  // Point each texture-map frame at its (possibly shared) packed region.
+  assignPackedFrames(textureMaps, regions);
 
   // NOTE: textureMapIds is the set of ALL registered texture maps, not a
   // pending queue — it is intentionally NOT cleared here. Every (re)compile
@@ -371,6 +437,136 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
   // recompile (their sprites would then sample whatever now occupies those
   // atlas regions). compiled=true gates re-compilation until addTextureMap
   // flips it false again.
+  am.compiled = true;
+  am.atlasVersion++;
+  invalidateAllTextureMapCaches();
+}
+
+/**
+ * Incremental retain-mode add: packs + blits ONLY the texture-map frames whose
+ * region isn't already in `am.packedByKey`, into the retained free space and
+ * canvases — no full re-pack/re-blit of previously-packed frames. Reassigns
+ * every texture map's packed frames (old + new) and bumps the atlas version so
+ * cameras re-upload (from the retained canvas). Falls back to a full compile if
+ * there's no retained state yet.
+ */
+async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
+  if (!am.packState) {
+    yield* compileSteps(am);
+    return;
+  }
+
+  const rootNexus = getRootNexus(am);
+  if (!rootNexus) {
+    throw new Error(
+      '[atlas-manager] Cannot process texture maps: not attached to a scene',
+    );
+  }
+
+  const textureMaps = getTextureMaps(rootNexus, am.textureMapIds);
+  if (textureMaps.length === 0) {
+    return;
+  }
+
+  // Load any not-yet-cached source images.
+  let images: HTMLImageElement[];
+  try {
+    images = await Promise.all(
+      textureMaps.map((tm) => AtlasManager.loadImage(am, tm.filePath)),
+    );
+  } catch (error) {
+    console.error('[atlas-manager] Failed to load images', error);
+    throw error;
+  }
+  yield;
+
+  // Collect only the frames whose region isn't already packed (genuinely new).
+  const newFrames: UnpackedFrame[] = [];
+  const newKeys: string[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < textureMaps.length; i++) {
+    const tm = textureMaps[i];
+    const image = images[i];
+    ensureOriginalFrames(tm, image);
+    for (const originalFrame of tm.originalFrames) {
+      const key = frameKey(
+        tm.filePath,
+        originalFrame.position,
+        originalFrame.size,
+      );
+      if (am.packedByKey.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      newKeys.push(key);
+      newFrames.push({
+        size: originalFrame.size,
+        sourceImage: image,
+        sourcePosition: originalFrame.position,
+      });
+    }
+  }
+
+  // Pack + blit ONLY the new frames into the retained free space + canvases.
+  if (newFrames.length > 0) {
+    try {
+      packFramesInto(am.packState, newFrames);
+    } catch (error) {
+      console.error(
+        '[atlas-manager] Failed to pack new frames (atlas full?)',
+        error,
+      );
+      throw error;
+    }
+    yield;
+
+    const ctxCache = new Map<number, CanvasRenderingContext2D>();
+    const getCtx = (index: number): CanvasRenderingContext2D => {
+      let ctx = ctxCache.get(index);
+      if (ctx) return ctx;
+      let canvas = am.atlasCanvases[index];
+      if (!canvas) {
+        canvas = createAtlasCanvas(am.config.atlasSize);
+        am.atlasCanvases[index] = canvas;
+      }
+      const c = canvas.getContext('2d');
+      if (!c) {
+        throw new Error(`Failed to get 2D context for atlas ${index}`);
+      }
+      ctx = c;
+      ctxCache.set(index, ctx);
+      return ctx;
+    };
+
+    const BUILD_BATCH = 512;
+    let drawn = 0;
+    for (let i = 0; i < newFrames.length; i++) {
+      const frame = newFrames[i];
+      if (frame.atlasIndex === undefined || frame.atlasPosition === undefined) {
+        console.error('[atlas-manager] New frame missing atlas info', frame);
+        continue;
+      }
+      getCtx(frame.atlasIndex).drawImage(
+        frame.sourceImage,
+        frame.sourcePosition.x,
+        frame.sourcePosition.y,
+        frame.size.x,
+        frame.size.y,
+        frame.atlasPosition.x,
+        frame.atlasPosition.y,
+        frame.size.x,
+        frame.size.y,
+      );
+      am.packedByKey.set(newKeys[i], {
+        atlasIndex: frame.atlasIndex,
+        atlasPosition: frame.atlasPosition,
+        size: frame.size,
+      });
+      if (++drawn % BUILD_BATCH === 0) yield;
+    }
+  }
+
+  // Reassign every texture map from the (now-updated) dedup map (old + new).
+  assignPackedFrames(textureMaps, am.packedByKey);
+
   am.compiled = true;
   am.atlasVersion++;
   invalidateAllTextureMapCaches();
@@ -415,7 +611,14 @@ export const AtlasManager: AtlasManagerMethods = {
     // Drives the progressive compile straight to completion (no frame yielding).
     // Used by direct/manual callers; the auto-init path runs `compileSteps` via
     // `initProgressive` so the scheduler can spread it across frames.
-    const gen = compileSteps(am);
+    //
+    // Retain mode with an existing compile → incremental add (pack/blit only the
+    // new frames). Otherwise (release mode, or the very first retain compile) →
+    // full compile.
+    const gen =
+      am.config.retainAtlas && am.packState
+        ? incrementalSteps(am)
+        : compileSteps(am);
     while (!(await gen.next()).done) {
       // run every step back-to-back
     }
@@ -429,10 +632,91 @@ export const AtlasManager: AtlasManagerMethods = {
       return undefined;
     }
 
+    // Rebuild on demand if the CPU atlas was released after GPU upload.
+    if (am.atlases.length === 0 && am.compiled) {
+      AtlasManager.rebuildAtlases(am);
+    }
+
     return am.atlases[index];
   },
 
+  rebuildAtlases: (am: AtlasManagerT): void => {
+    if (!am.compiled) return;
+    const size = am.config.atlasSize;
+
+    // Retain mode: the atlas canvases are alive — just snapshot them.
+    if (am.config.retainAtlas && am.atlasCanvases.length > 0) {
+      const atlases: ImageData[] = [];
+      for (let i = 0; i < am.atlasCanvases.length; i++) {
+        const canvas = am.atlasCanvases[i];
+        if (!canvas) continue;
+        const ctx = canvas.getContext('2d');
+        if (ctx) atlases[i] = ctx.getImageData(0, 0, size, size);
+      }
+      am.atlases = atlases;
+      return;
+    }
+
+    // Release mode: re-blit from cached source images + the texture maps'
+    // stored packed layout onto fresh canvases, then snapshot to ImageData.
+    const rootNexus = getRootNexus(am);
+    if (!rootNexus) return;
+    const textureMaps = getTextureMaps(rootNexus, am.textureMapIds);
+    const contexts: CanvasRenderingContext2D[] = [];
+    const getCtx = (index: number): CanvasRenderingContext2D | null => {
+      let ctx = contexts[index];
+      if (ctx) return ctx;
+      const c = createAtlasCanvas(size).getContext('2d');
+      if (!c) return null;
+      ctx = c;
+      contexts[index] = ctx;
+      return ctx;
+    };
+
+    for (const tm of textureMaps) {
+      const image = am.imageCache.get(tm.filePath);
+      if (!image) {
+        console.warn(
+          `[atlas-manager] Cannot rebuild atlas region for '${tm.filePath}' — source image not cached`,
+        );
+        continue;
+      }
+      for (const pf of tm.packedFrames) {
+        const original = TextureMap.getOriginalFrame(tm, pf.frameIndex);
+        const sx = original ? original.position.x : 0;
+        const sy = original ? original.position.y : 0;
+        const ctx = getCtx(pf.atlasIndex);
+        if (!ctx) continue;
+        ctx.drawImage(
+          image,
+          sx,
+          sy,
+          pf.size.x,
+          pf.size.y,
+          pf.atlasPosition.x,
+          pf.atlasPosition.y,
+          pf.size.x,
+          pf.size.y,
+        );
+      }
+    }
+
+    const atlases: ImageData[] = [];
+    for (let i = 0; i < contexts.length; i++) {
+      if (contexts[i]) atlases[i] = contexts[i].getImageData(0, 0, size, size);
+    }
+    am.atlases = atlases;
+  },
+
   getAtlasCount: (am: AtlasManagerT): number => {
+    // Retain mode holds the atlases as canvases (am.atlases is left empty);
+    // release mode holds them as ImageData (but may have been auto-dropped after
+    // upload — fall back to the packer state's atlas count when compiled).
+    if (am.config.retainAtlas) {
+      return am.atlasCanvases.filter(Boolean).length;
+    }
+    if (am.atlases.length > 0) return am.atlases.length;
+    if (am.compiled && am.packState) return am.packState.currentAtlasIndex + 1;
     return am.atlases.length;
   },
 
@@ -442,6 +726,10 @@ export const AtlasManager: AtlasManagerMethods = {
     am.compiled = false;
     am.imageCache.clear();
     am.imageLoading.clear();
+    am.atlasCanvases = [];
+    am.packState = null;
+    am.packedByKey.clear();
+    am._releaseScheduled = false;
   },
 
   loadImage: async (
@@ -517,6 +805,10 @@ export const AtlasManager: AtlasManagerMethods = {
     am.compiled = false;
     am.imageCache.clear();
     am.imageLoading.clear();
+    am.atlasCanvases = [];
+    am.packState = null;
+    am.packedByKey.clear();
+    am._releaseScheduled = false;
     am._disposed = true;
   },
 };

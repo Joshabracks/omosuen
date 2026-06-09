@@ -364,7 +364,13 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
     TextureMap.setPackedFrames(tm, packed);
   }
 
-  am.textureMapIds.clear();
+  // NOTE: textureMapIds is the set of ALL registered texture maps, not a
+  // pending queue — it is intentionally NOT cleared here. Every (re)compile
+  // re-packs the full set so the atlas stays complete when texture maps are
+  // added at runtime; clearing it would drop previously-packed maps on the next
+  // recompile (their sprites would then sample whatever now occupies those
+  // atlas regions). compiled=true gates re-compilation until addTextureMap
+  // flips it false again.
   am.compiled = true;
   am.atlasVersion++;
   invalidateAllTextureMapCaches();

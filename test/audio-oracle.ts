@@ -301,3 +301,323 @@ export class AudioStretcher {
     }
   }
 }
+
+/**
+ * Runnable extraction of `StretcherProcessor` (the worklet harness): feed loop,
+ * pre-buffer + transition/crossfade/fade-out, output, pending params, position.
+ * port/AudioWorkletProcessor I/O is replaced by explicit methods
+ * (init/msgPitch/msgTempo/msgRepeat/stop + process(outL, outR)) so it can be
+ * driven offline. `process` returns true to continue, false to terminate
+ * (ended OR stopped) — matching the JS return. Position is `outputSourcePos`.
+ */
+export class Processor {
+  constructor() {
+    this.stretcher = null;
+    this.channelL = null;
+    this.channelR = null;
+    this.sourcePos = 0;
+    this.totalFrames = 0;
+    this.repeat = false;
+    this.ended = false;
+    this.initialized = false;
+    this.stopped = false;
+    this.feedBuffer = null;
+    this.extractBuffer = new Float32Array(256);
+    this.outputSourcePos = 0;
+    this.reverse = false;
+
+    this.preBuffer = null;
+    this.transitionBufferFrames = 0;
+    this.fadeOutBuffer = null;
+    this.fadeOutLen = 0;
+    this.fadeOutPos = 0;
+    this.transitioning = false;
+    this.newAudioArrived = false;
+    this.crossfadePos = 0;
+    this.crossfadeLen = 0;
+    this.pendingPitch = null;
+    this.pendingTempo = null;
+  }
+
+  get position() { return this.outputSourcePos; }
+
+  init(sampleRate, channelL, channelR, sourcePos, pitchShift, tempo, repeat, transitionBuffer) {
+    this.sampleRate = sampleRate;
+    this.channelL = channelL;
+    this.channelR = channelR;
+    this.totalFrames = this.channelL.length;
+    this.repeat = repeat;
+    this.sourcePos = sourcePos;
+    this.stretcher = new AudioStretcher(sampleRate);
+    this.stretcher.pitchSemitones = pitchShift;
+    this.reverse = tempo < 0;
+    this.stretcher.tempo = Math.max(0.05, Math.abs(tempo));
+    this.feedBuffer = new Float32Array(16384);
+    this.outputSourcePos = sourcePos;
+    this.ended = false;
+    this.stopped = false;
+    if (transitionBuffer > 0) {
+      this.transitionBufferFrames = Math.ceil((sampleRate * transitionBuffer) / 1000);
+      this.preBuffer = new SampleBuffer();
+    }
+    this.initialized = true;
+  }
+
+  msgPitch(value) {
+    if (this.stretcher) {
+      if (this.preBuffer) {
+        this.pendingPitch = value;
+      } else {
+        this.sourcePos = Math.round(this.outputSourcePos);
+        this.stretcher.pitchSemitones = value;
+        this.stretcher.clear();
+      }
+    }
+  }
+
+  msgTempo(value) {
+    if (this.stretcher) {
+      if (this.preBuffer) {
+        this.pendingTempo = value;
+      } else {
+        this.sourcePos = Math.round(this.outputSourcePos);
+        this.reverse = value < 0;
+        this.stretcher.tempo = Math.max(0.05, Math.abs(value));
+        this.stretcher.clear();
+      }
+    }
+  }
+
+  msgRepeat(value) { this.repeat = value; }
+  stop() { this.stopped = true; }
+
+  _beginTransition() {
+    if (this.preBuffer && this.preBuffer.frameCount > 0) {
+      this.fadeOutLen = this.preBuffer.frameCount;
+      this.fadeOutBuffer = new Float32Array(this.fadeOutLen * 2);
+      this.preBuffer.extract(this.fadeOutBuffer, 0, this.fadeOutLen);
+      this.preBuffer.receive(this.fadeOutLen);
+      this.fadeOutPos = 0;
+      this.transitioning = true;
+      this.newAudioArrived = false;
+      this.crossfadePos = 0;
+      this.crossfadeLen = 0;
+    }
+  }
+
+  process(outputL, outputR) {
+    if (!this.initialized || this.stopped) return !this.stopped;
+
+    const numFrames = outputL.length;
+
+    const skipFeed = this.preBuffer && this.preBuffer.frameCount > this.transitionBufferFrames * 2;
+    if (!this.ended && !skipFeed) {
+      const effectiveRate = Math.max(0.1, this.stretcher.virtualTempo * this.stretcher.virtualPitch);
+      const preDeficit = this.preBuffer ? Math.max(0, this.transitionBufferFrames - this.preBuffer.frameCount) : 0;
+      const framesToFeed = Math.min(Math.ceil((numFrames + preDeficit) * effectiveRate) + 128, 16384);
+
+      if (this.feedBuffer.length < framesToFeed * 2) {
+        this.feedBuffer = new Float32Array(framesToFeed * 2);
+      }
+
+      let fed = 0;
+      while (fed < framesToFeed) {
+        if (this.reverse) {
+          if (this.sourcePos <= 0) {
+            if (this.repeat) { this.sourcePos = this.totalFrames; }
+            else { this.ended = true; break; }
+          }
+          const remaining = this.sourcePos;
+          const chunk = Math.min(framesToFeed - fed, remaining);
+          for (let i = 0; i < chunk; i++) {
+            this.feedBuffer[(fed + i) * 2] = this.channelL[this.sourcePos - 1 - i];
+            this.feedBuffer[(fed + i) * 2 + 1] = this.channelR[this.sourcePos - 1 - i];
+          }
+          this.sourcePos -= chunk;
+          fed += chunk;
+        } else {
+          if (this.sourcePos >= this.totalFrames) {
+            if (this.repeat) { this.sourcePos = 0; }
+            else { this.ended = true; break; }
+          }
+          const remaining = this.totalFrames - this.sourcePos;
+          const chunk = Math.min(framesToFeed - fed, remaining);
+          for (let i = 0; i < chunk; i++) {
+            this.feedBuffer[(fed + i) * 2] = this.channelL[this.sourcePos + i];
+            this.feedBuffer[(fed + i) * 2 + 1] = this.channelR[this.sourcePos + i];
+          }
+          this.sourcePos += chunk;
+          fed += chunk;
+        }
+      }
+      if (fed > 0) this.stretcher.inputBuffer.putSamples(this.feedBuffer, 0, fed);
+    }
+
+    this.stretcher.process();
+
+    let outputFrames = 0;
+
+    if (this.preBuffer) {
+      const strAvail = this.stretcher.outputBuffer.frameCount;
+      if (strAvail > 0) {
+        if (this.extractBuffer.length < strAvail * 2) {
+          this.extractBuffer = new Float32Array(strAvail * 2);
+        }
+        this.stretcher.outputBuffer.extract(this.extractBuffer, 0, strAvail);
+        this.stretcher.outputBuffer.receive(strAvail);
+        this.preBuffer.putSamples(this.extractBuffer, 0, strAvail);
+      }
+
+      if (this.transitioning) {
+        let written = 0;
+
+        while (written < numFrames && this.transitioning) {
+          const hasOld = this.fadeOutPos < this.fadeOutLen;
+          const hasNew = this.preBuffer.frameCount > 0;
+
+          if (!this.newAudioArrived) {
+            if (hasNew) {
+              this.newAudioArrived = true;
+              const remainingOld = this.fadeOutLen - this.fadeOutPos;
+              this.crossfadeLen = Math.min(remainingOld, 2048);
+              this.crossfadePos = 0;
+            } else if (hasOld) {
+              const n = Math.min(numFrames - written, this.fadeOutLen - this.fadeOutPos);
+              for (let i = 0; i < n; i++) {
+                const idx = (this.fadeOutPos + i) * 2;
+                outputL[written + i] = this.fadeOutBuffer[idx];
+                outputR[written + i] = this.fadeOutBuffer[idx + 1];
+              }
+              this.fadeOutPos += n;
+              written += n;
+              break;
+            } else {
+              this.transitioning = false;
+              break;
+            }
+          }
+
+          if (this.newAudioArrived && this.transitioning) {
+            if (hasOld && this.crossfadePos < this.crossfadeLen && hasNew) {
+              const n = Math.min(
+                numFrames - written,
+                this.crossfadeLen - this.crossfadePos,
+                this.fadeOutLen - this.fadeOutPos,
+                this.preBuffer.frameCount
+              );
+              if (n <= 0) break;
+
+              if (this.extractBuffer.length < n * 2) {
+                this.extractBuffer = new Float32Array(n * 2);
+              }
+              this.preBuffer.extract(this.extractBuffer, 0, n);
+              this.preBuffer.receive(n);
+
+              for (let i = 0; i < n; i++) {
+                const t = (this.crossfadePos + i) / this.crossfadeLen;
+                const oldIdx = (this.fadeOutPos + i) * 2;
+                outputL[written + i] = this.fadeOutBuffer[oldIdx] * (1 - t) + this.extractBuffer[i * 2] * t;
+                outputR[written + i] = this.fadeOutBuffer[oldIdx + 1] * (1 - t) + this.extractBuffer[i * 2 + 1] * t;
+              }
+              this.fadeOutPos += n;
+              this.crossfadePos += n;
+              written += n;
+            } else {
+              this.transitioning = false;
+            }
+          }
+        }
+
+        if (!this.transitioning && written < numFrames) {
+          const n = Math.min(numFrames - written, this.preBuffer.frameCount);
+          if (n > 0) {
+            if (this.extractBuffer.length < n * 2) this.extractBuffer = new Float32Array(n * 2);
+            this.preBuffer.extract(this.extractBuffer, 0, n);
+            this.preBuffer.receive(n);
+            for (let i = 0; i < n; i++) {
+              outputL[written + i] = this.extractBuffer[i * 2];
+              outputR[written + i] = this.extractBuffer[i * 2 + 1];
+            }
+            written += n;
+          }
+        }
+
+        for (let i = written; i < numFrames; i++) { outputL[i] = 0; outputR[i] = 0; }
+        outputFrames = written;
+      } else {
+        const avail = this.preBuffer.frameCount;
+        const toPull = Math.min(numFrames, avail);
+        if (toPull > 0) {
+          if (this.extractBuffer.length < toPull * 2) this.extractBuffer = new Float32Array(toPull * 2);
+          this.preBuffer.extract(this.extractBuffer, 0, toPull);
+          this.preBuffer.receive(toPull);
+          for (let i = 0; i < toPull; i++) {
+            outputL[i] = this.extractBuffer[i * 2];
+            outputR[i] = this.extractBuffer[i * 2 + 1];
+          }
+        }
+        for (let i = toPull; i < numFrames; i++) { outputL[i] = 0; outputR[i] = 0; }
+        outputFrames = toPull;
+      }
+    } else {
+      const available = this.stretcher.outputBuffer.frameCount;
+      const toPull = Math.min(numFrames, available);
+      if (toPull > 0) {
+        if (this.extractBuffer.length < toPull * 2) this.extractBuffer = new Float32Array(toPull * 2);
+        this.stretcher.outputBuffer.extract(this.extractBuffer, 0, toPull);
+        this.stretcher.outputBuffer.receive(toPull);
+        for (let i = 0; i < toPull; i++) {
+          outputL[i] = this.extractBuffer[i * 2];
+          outputR[i] = this.extractBuffer[i * 2 + 1];
+        }
+      }
+      for (let i = toPull; i < numFrames; i++) { outputL[i] = 0; outputR[i] = 0; }
+      outputFrames = toPull;
+    }
+
+    for (let i = 0; i < numFrames; i++) {
+      if (!(outputL[i] >= -1 && outputL[i] <= 1)) outputL[i] = 0;
+      if (!(outputR[i] >= -1 && outputR[i] <= 1)) outputR[i] = 0;
+    }
+
+    if (this.preBuffer && !this.transitioning) {
+      const hasPending = this.pendingPitch !== null || this.pendingTempo !== null;
+      if (hasPending && this.preBuffer.frameCount >= this.transitionBufferFrames / 2) {
+        this._beginTransition();
+        this.sourcePos = Math.round(this.outputSourcePos);
+        if (this.pendingPitch !== null) {
+          this.stretcher.pitchSemitones = this.pendingPitch;
+          this.pendingPitch = null;
+        }
+        if (this.pendingTempo !== null) {
+          this.reverse = this.pendingTempo < 0;
+          this.stretcher.tempo = Math.max(0.05, Math.abs(this.pendingTempo));
+          this.pendingTempo = null;
+        }
+        this.stretcher.clear();
+      }
+    }
+
+    if (outputFrames > 0) {
+      if (this.reverse) {
+        this.outputSourcePos -= outputFrames * this.stretcher.virtualTempo;
+        if (this.repeat && this.outputSourcePos < 0) {
+          this.outputSourcePos = this.totalFrames + (this.outputSourcePos % this.totalFrames);
+        }
+      } else {
+        this.outputSourcePos += outputFrames * this.stretcher.virtualTempo;
+        if (this.repeat && this.outputSourcePos >= this.totalFrames) {
+          this.outputSourcePos %= this.totalFrames;
+        }
+      }
+    }
+
+    const stretcherEmpty = this.stretcher.outputBuffer.frameCount === 0;
+    const preEmpty = !this.preBuffer || this.preBuffer.frameCount === 0;
+    if (this.ended && stretcherEmpty && preEmpty) {
+      return false;
+    }
+
+    return true;
+  }
+}

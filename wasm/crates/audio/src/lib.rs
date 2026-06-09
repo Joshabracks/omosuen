@@ -562,8 +562,16 @@ impl AudioStretcher {
     }
 
     fn clear(&mut self) {
+        // In the JS class, RateTransposer/Stretch were rewired to point at the
+        // three shared buffers, so their .clear() cleared input/intermediate/
+        // output. Here those buffers are owned by AudioStretcher, so clear them
+        // explicitly (clear is idempotent — the JS double-clear of intermediate
+        // is a no-op second time).
         self.rate_transposer.clear();
         self.stretch.clear();
+        self.input_buffer.clear();
+        self.intermediate_buffer.clear();
+        self.output_buffer.clear();
     }
 
     fn process(&mut self) {
@@ -708,5 +716,523 @@ pub extern "C" fn core_pull_ptr(id: u32, frames: usize) -> *mut f32 {
         a.output_buffer.extract(&mut *scratch, 0, frames);
         a.output_buffer.receive(frames);
         a.pull_scratch.as_mut_ptr()
+    }
+}
+
+// ── Processor (worklet harness) ────────────────────────────────────────────
+//
+// Full port of `StretcherProcessor` from the worklet string: source feed
+// (reverse/repeat/chunked), pre-buffer + transition/crossfade/fade-out,
+// per-quantum output (written planar), pending param changes, and the
+// output-derived source position. The JS shell becomes a thin I/O layer: it
+// copies the planar output into the Web Audio output arrays and posts
+// position/ended; everything else runs here.
+
+struct Processor {
+    stretcher: AudioStretcher,
+    channel_l: Vec<f32>,
+    channel_r: Vec<f32>,
+    total_frames: i64,
+    source_pos: i64,
+    repeat: bool,
+    ended: bool,
+    stopped: bool,
+    reverse: bool,
+    output_source_pos: f64,
+    feed_buffer: Vec<f32>,
+    extract_buffer: Vec<f32>,
+    has_pre_buffer: bool,
+    pre_buffer: SampleBuffer,
+    transition_buffer_frames: i64,
+    fade_out_buffer: Vec<f32>,
+    fade_out_len: i64,
+    fade_out_pos: i64,
+    transitioning: bool,
+    new_audio_arrived: bool,
+    crossfade_pos: i64,
+    crossfade_len: i64,
+    pending_pitch: Option<f64>, // ratio (Math.pow done JS-side)
+    pending_tempo: Option<f64>, // signed value
+    out_scratch: Vec<f32>,      // planar [L block | R block]
+}
+
+impl Processor {
+    fn new(
+        sample_rate: f64,
+        source_pos: i64,
+        pitch_ratio: f64,
+        tempo: f64,
+        repeat: bool,
+        transition_buffer_ms: f64,
+    ) -> Self {
+        let mut stretcher = AudioStretcher::new(sample_rate);
+        stretcher.set_pitch(pitch_ratio);
+        let reverse = tempo < 0.0;
+        stretcher.set_tempo(tempo.abs().max(0.05));
+        let has_pre = transition_buffer_ms > 0.0;
+        let tbf = if has_pre {
+            (sample_rate * transition_buffer_ms / 1000.0).ceil() as i64
+        } else {
+            0
+        };
+        Processor {
+            stretcher,
+            channel_l: Vec::new(),
+            channel_r: Vec::new(),
+            total_frames: 0,
+            source_pos,
+            repeat,
+            ended: false,
+            stopped: false,
+            reverse,
+            output_source_pos: source_pos as f64,
+            feed_buffer: vec![0.0; 16384],
+            extract_buffer: vec![0.0; 256],
+            has_pre_buffer: has_pre,
+            pre_buffer: SampleBuffer::new(),
+            transition_buffer_frames: tbf,
+            fade_out_buffer: Vec::new(),
+            fade_out_len: 0,
+            fade_out_pos: 0,
+            transitioning: false,
+            new_audio_arrived: false,
+            crossfade_pos: 0,
+            crossfade_len: 0,
+            pending_pitch: None,
+            pending_tempo: None,
+            out_scratch: Vec::new(),
+        }
+    }
+
+    fn alloc_channels(&mut self, frames: usize) {
+        self.channel_l.resize(frames, 0.0);
+        self.channel_r.resize(frames, 0.0);
+        self.total_frames = frames as i64;
+    }
+
+    fn set_pitch(&mut self, ratio: f64) {
+        if self.has_pre_buffer {
+            self.pending_pitch = Some(ratio);
+        } else {
+            self.source_pos = self.output_source_pos.round() as i64;
+            self.stretcher.set_pitch(ratio);
+            self.stretcher.clear();
+        }
+    }
+
+    fn set_tempo(&mut self, value: f64) {
+        if self.has_pre_buffer {
+            self.pending_tempo = Some(value);
+        } else {
+            self.source_pos = self.output_source_pos.round() as i64;
+            self.reverse = value < 0.0;
+            self.stretcher.set_tempo(value.abs().max(0.05));
+            self.stretcher.clear();
+        }
+    }
+
+    fn begin_transition(&mut self) {
+        if self.has_pre_buffer && self.pre_buffer.frame_count > 0 {
+            self.fade_out_len = self.pre_buffer.frame_count as i64;
+            let n = (self.fade_out_len * 2) as usize;
+            if self.fade_out_buffer.len() < n {
+                self.fade_out_buffer.resize(n, 0.0);
+            }
+            let fl = self.fade_out_len as usize;
+            self.pre_buffer.extract(&mut self.fade_out_buffer, 0, fl);
+            self.pre_buffer.receive(fl);
+            self.fade_out_pos = 0;
+            self.transitioning = true;
+            self.new_audio_arrived = false;
+            self.crossfade_pos = 0;
+            self.crossfade_len = 0;
+        }
+    }
+
+    /// Returns 0 = continue, 1 = ended (post 'ended'), 2 = stopped.
+    fn process(&mut self, num_frames: usize) -> u32 {
+        if self.stopped {
+            return 2;
+        }
+        let nf = num_frames;
+        if self.out_scratch.len() < nf * 2 {
+            self.out_scratch.resize(nf * 2, 0.0);
+        }
+
+        // ── Feed ──
+        let skip_feed = self.has_pre_buffer
+            && (self.pre_buffer.frame_count as i64) > self.transition_buffer_frames * 2;
+        if !self.ended && !skip_feed {
+            let effective_rate =
+                (self.stretcher.virtual_tempo * self.stretcher.virtual_pitch).max(0.1);
+            let pre_deficit = if self.has_pre_buffer {
+                (self.transition_buffer_frames - self.pre_buffer.frame_count as i64).max(0)
+            } else {
+                0
+            };
+            let frames_to_feed = (((nf as i64 + pre_deficit) as f64 * effective_rate).ceil()
+                as i64
+                + 128)
+                .min(16384);
+            let ftf = frames_to_feed as usize;
+            if self.feed_buffer.len() < ftf * 2 {
+                self.feed_buffer.resize(ftf * 2, 0.0);
+            }
+            let mut fed: i64 = 0;
+            while fed < frames_to_feed {
+                if self.reverse {
+                    if self.source_pos <= 0 {
+                        if self.repeat {
+                            self.source_pos = self.total_frames;
+                        } else {
+                            self.ended = true;
+                            break;
+                        }
+                    }
+                    let remaining = self.source_pos;
+                    let chunk = (frames_to_feed - fed).min(remaining);
+                    for i in 0..chunk {
+                        let sp = (self.source_pos - 1 - i) as usize;
+                        let fi = ((fed + i) * 2) as usize;
+                        self.feed_buffer[fi] = self.channel_l[sp];
+                        self.feed_buffer[fi + 1] = self.channel_r[sp];
+                    }
+                    self.source_pos -= chunk;
+                    fed += chunk;
+                } else {
+                    if self.source_pos >= self.total_frames {
+                        if self.repeat {
+                            self.source_pos = 0;
+                        } else {
+                            self.ended = true;
+                            break;
+                        }
+                    }
+                    let remaining = self.total_frames - self.source_pos;
+                    let chunk = (frames_to_feed - fed).min(remaining);
+                    for i in 0..chunk {
+                        let sp = (self.source_pos + i) as usize;
+                        let fi = ((fed + i) * 2) as usize;
+                        self.feed_buffer[fi] = self.channel_l[sp];
+                        self.feed_buffer[fi + 1] = self.channel_r[sp];
+                    }
+                    self.source_pos += chunk;
+                    fed += chunk;
+                }
+            }
+            if fed > 0 {
+                self.stretcher
+                    .input_buffer
+                    .put_samples(&self.feed_buffer, 0, fed as usize);
+            }
+        }
+
+        self.stretcher.process();
+
+        // ── Output ── (assigned on every branch below)
+        let output_frames: usize;
+
+        if self.has_pre_buffer {
+            let str_avail = self.stretcher.output_buffer.frame_count;
+            if str_avail > 0 {
+                if self.extract_buffer.len() < str_avail * 2 {
+                    self.extract_buffer.resize(str_avail * 2, 0.0);
+                }
+                self.stretcher
+                    .output_buffer
+                    .extract(&mut self.extract_buffer, 0, str_avail);
+                self.stretcher.output_buffer.receive(str_avail);
+                self.pre_buffer.put_samples(&self.extract_buffer, 0, str_avail);
+            }
+
+            if self.transitioning {
+                let mut written: i64 = 0;
+                while written < nf as i64 && self.transitioning {
+                    let has_old = self.fade_out_pos < self.fade_out_len;
+                    let has_new = self.pre_buffer.frame_count > 0;
+
+                    if !self.new_audio_arrived {
+                        if has_new {
+                            self.new_audio_arrived = true;
+                            let remaining_old = self.fade_out_len - self.fade_out_pos;
+                            self.crossfade_len = remaining_old.min(2048);
+                            self.crossfade_pos = 0;
+                        } else if has_old {
+                            let n = (nf as i64 - written).min(self.fade_out_len - self.fade_out_pos);
+                            for i in 0..n {
+                                let idx = ((self.fade_out_pos + i) * 2) as usize;
+                                let w = (written + i) as usize;
+                                self.out_scratch[w] = self.fade_out_buffer[idx];
+                                self.out_scratch[nf + w] = self.fade_out_buffer[idx + 1];
+                            }
+                            self.fade_out_pos += n;
+                            written += n;
+                            break;
+                        } else {
+                            self.transitioning = false;
+                            break;
+                        }
+                    }
+
+                    if self.new_audio_arrived && self.transitioning {
+                        if has_old && self.crossfade_pos < self.crossfade_len && has_new {
+                            let n = (nf as i64 - written)
+                                .min(self.crossfade_len - self.crossfade_pos)
+                                .min(self.fade_out_len - self.fade_out_pos)
+                                .min(self.pre_buffer.frame_count as i64);
+                            if n <= 0 {
+                                break;
+                            }
+                            let nu = n as usize;
+                            if self.extract_buffer.len() < nu * 2 {
+                                self.extract_buffer.resize(nu * 2, 0.0);
+                            }
+                            self.pre_buffer.extract(&mut self.extract_buffer, 0, nu);
+                            self.pre_buffer.receive(nu);
+                            for i in 0..n {
+                                let t = (self.crossfade_pos + i) as f64 / self.crossfade_len as f64;
+                                let old_idx = ((self.fade_out_pos + i) * 2) as usize;
+                                let ei = (i * 2) as usize;
+                                let w = (written + i) as usize;
+                                self.out_scratch[w] = (self.fade_out_buffer[old_idx] as f64
+                                    * (1.0 - t)
+                                    + self.extract_buffer[ei] as f64 * t)
+                                    as f32;
+                                self.out_scratch[nf + w] = (self.fade_out_buffer[old_idx + 1] as f64
+                                    * (1.0 - t)
+                                    + self.extract_buffer[ei + 1] as f64 * t)
+                                    as f32;
+                            }
+                            self.fade_out_pos += n;
+                            self.crossfade_pos += n;
+                            written += n;
+                        } else {
+                            self.transitioning = false;
+                        }
+                    }
+                }
+
+                if !self.transitioning && written < nf as i64 {
+                    let n = (nf as i64 - written).min(self.pre_buffer.frame_count as i64);
+                    if n > 0 {
+                        let nu = n as usize;
+                        if self.extract_buffer.len() < nu * 2 {
+                            self.extract_buffer.resize(nu * 2, 0.0);
+                        }
+                        self.pre_buffer.extract(&mut self.extract_buffer, 0, nu);
+                        self.pre_buffer.receive(nu);
+                        for i in 0..n {
+                            let ei = (i * 2) as usize;
+                            let w = (written + i) as usize;
+                            self.out_scratch[w] = self.extract_buffer[ei];
+                            self.out_scratch[nf + w] = self.extract_buffer[ei + 1];
+                        }
+                        written += n;
+                    }
+                }
+
+                for i in (written as usize)..nf {
+                    self.out_scratch[i] = 0.0;
+                    self.out_scratch[nf + i] = 0.0;
+                }
+                output_frames = written as usize;
+            } else {
+                let avail = self.pre_buffer.frame_count;
+                let to_pull = nf.min(avail);
+                if to_pull > 0 {
+                    if self.extract_buffer.len() < to_pull * 2 {
+                        self.extract_buffer.resize(to_pull * 2, 0.0);
+                    }
+                    self.pre_buffer.extract(&mut self.extract_buffer, 0, to_pull);
+                    self.pre_buffer.receive(to_pull);
+                    for i in 0..to_pull {
+                        self.out_scratch[i] = self.extract_buffer[i * 2];
+                        self.out_scratch[nf + i] = self.extract_buffer[i * 2 + 1];
+                    }
+                }
+                for i in to_pull..nf {
+                    self.out_scratch[i] = 0.0;
+                    self.out_scratch[nf + i] = 0.0;
+                }
+                output_frames = to_pull;
+            }
+        } else {
+            let available = self.stretcher.output_buffer.frame_count;
+            let to_pull = nf.min(available);
+            if to_pull > 0 {
+                if self.extract_buffer.len() < to_pull * 2 {
+                    self.extract_buffer.resize(to_pull * 2, 0.0);
+                }
+                self.stretcher
+                    .output_buffer
+                    .extract(&mut self.extract_buffer, 0, to_pull);
+                self.stretcher.output_buffer.receive(to_pull);
+                for i in 0..to_pull {
+                    self.out_scratch[i] = self.extract_buffer[i * 2];
+                    self.out_scratch[nf + i] = self.extract_buffer[i * 2 + 1];
+                }
+            }
+            for i in to_pull..nf {
+                self.out_scratch[i] = 0.0;
+                self.out_scratch[nf + i] = 0.0;
+            }
+            output_frames = to_pull;
+        }
+
+        // ── Sanitize (NaN/Inf/out-of-range → 0) ──
+        for i in 0..nf {
+            let l = self.out_scratch[i];
+            if !(l >= -1.0 && l <= 1.0) {
+                self.out_scratch[i] = 0.0;
+            }
+            let r = self.out_scratch[nf + i];
+            if !(r >= -1.0 && r <= 1.0) {
+                self.out_scratch[nf + i] = 0.0;
+            }
+        }
+
+        // ── Pending param changes ──
+        if self.has_pre_buffer && !self.transitioning {
+            let has_pending = self.pending_pitch.is_some() || self.pending_tempo.is_some();
+            if has_pending
+                && (self.pre_buffer.frame_count as i64) >= self.transition_buffer_frames / 2
+            {
+                self.begin_transition();
+                self.source_pos = self.output_source_pos.round() as i64;
+                if let Some(ratio) = self.pending_pitch.take() {
+                    self.stretcher.set_pitch(ratio);
+                }
+                if let Some(value) = self.pending_tempo.take() {
+                    self.reverse = value < 0.0;
+                    self.stretcher.set_tempo(value.abs().max(0.05));
+                }
+                self.stretcher.clear();
+            }
+        }
+
+        // ── Track output-derived source position ──
+        if output_frames > 0 {
+            let vt = self.stretcher.virtual_tempo;
+            let tf = self.total_frames as f64;
+            if self.reverse {
+                self.output_source_pos -= output_frames as f64 * vt;
+                if self.repeat && self.output_source_pos < 0.0 {
+                    self.output_source_pos = tf + (self.output_source_pos % tf);
+                }
+            } else {
+                self.output_source_pos += output_frames as f64 * vt;
+                if self.repeat && self.output_source_pos >= tf {
+                    self.output_source_pos %= tf;
+                }
+            }
+        }
+
+        // ── Ended? ──
+        let stretcher_empty = self.stretcher.output_buffer.frame_count == 0;
+        let pre_empty = !self.has_pre_buffer || self.pre_buffer.frame_count == 0;
+        if self.ended && stretcher_empty && pre_empty {
+            return 1;
+        }
+        0
+    }
+}
+
+static mut PROCESSORS: Vec<Option<Box<Processor>>> = Vec::new();
+
+#[inline]
+unsafe fn proc(id: u32) -> &'static mut Processor {
+    let v = &mut *core::ptr::addr_of_mut!(PROCESSORS);
+    v[id as usize].as_mut().unwrap()
+}
+
+#[no_mangle]
+pub extern "C" fn stretcher_create(
+    sample_rate: u32,
+    source_pos: i32,
+    pitch_ratio: f64,
+    tempo: f64,
+    repeat: u32,
+    transition_buffer_ms: f64,
+) -> u32 {
+    unsafe {
+        let v = &mut *core::ptr::addr_of_mut!(PROCESSORS);
+        let p = Box::new(Processor::new(
+            sample_rate as f64,
+            source_pos as i64,
+            pitch_ratio,
+            tempo,
+            repeat != 0,
+            transition_buffer_ms,
+        ));
+        match (0..v.len()).find(|&i| v[i].is_none()) {
+            Some(i) => {
+                v[i] = Some(p);
+                i as u32
+            }
+            None => {
+                v.push(Some(p));
+                (v.len() - 1) as u32
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn stretcher_alloc_channels(id: u32, frames: usize) {
+    unsafe { proc(id).alloc_channels(frames) }
+}
+
+#[no_mangle]
+pub extern "C" fn stretcher_channel_l_ptr(id: u32) -> *mut f32 {
+    unsafe { proc(id).channel_l.as_mut_ptr() }
+}
+
+#[no_mangle]
+pub extern "C" fn stretcher_channel_r_ptr(id: u32) -> *mut f32 {
+    unsafe { proc(id).channel_r.as_mut_ptr() }
+}
+
+#[no_mangle]
+pub extern "C" fn stretcher_set_pitch(id: u32, ratio: f64) {
+    unsafe { proc(id).set_pitch(ratio) }
+}
+
+#[no_mangle]
+pub extern "C" fn stretcher_set_tempo(id: u32, value: f64) {
+    unsafe { proc(id).set_tempo(value) }
+}
+
+#[no_mangle]
+pub extern "C" fn stretcher_set_repeat(id: u32, repeat: u32) {
+    unsafe { proc(id).repeat = repeat != 0 }
+}
+
+#[no_mangle]
+pub extern "C" fn stretcher_stop(id: u32) {
+    unsafe { proc(id).stopped = true }
+}
+
+#[no_mangle]
+pub extern "C" fn stretcher_process(id: u32, num_frames: usize) -> u32 {
+    unsafe { proc(id).process(num_frames) }
+}
+
+#[no_mangle]
+pub extern "C" fn stretcher_output_ptr(id: u32) -> *mut f32 {
+    unsafe { proc(id).out_scratch.as_mut_ptr() }
+}
+
+#[no_mangle]
+pub extern "C" fn stretcher_position(id: u32) -> f64 {
+    unsafe { proc(id).output_source_pos }
+}
+
+#[no_mangle]
+pub extern "C" fn stretcher_destroy(id: u32) {
+    unsafe {
+        let v = &mut *core::ptr::addr_of_mut!(PROCESSORS);
+        if (id as usize) < v.len() {
+            v[id as usize] = None;
+        }
     }
 }

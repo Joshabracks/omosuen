@@ -38,6 +38,19 @@ let ID_TO_COMPONENT: Map<number, ComponentData> | null = null;
 let QUEUE_SORTED = false;
 
 /**
+ * The component whose init is currently running (or paused mid-progressive-init),
+ * exposed via getInitializingComponent() so a loading UI can show what's loading.
+ */
+let CURRENT_INIT: ComponentData | null = null;
+
+/**
+ * Active progressive-init generator, persisted across frames so a heavy init can
+ * be advanced in per-frame slices (resumed where it left off) instead of blocking
+ * the game loop for its full duration.
+ */
+let ACTIVE_GEN: AsyncGenerator<void> | null = null;
+
+/**
  * Indexes every component in the scene tree by id (single O(scene) walk), so the
  * init cycle can resolve queued ids in O(1) instead of recursive getComponentById.
  */
@@ -111,12 +124,35 @@ export async function processInitQueue(
     INIT_QUEUE_LENGTH = INIT_QUEUE.length;
   }
 
+  const deadline = performance.now() + targetFrameTime;
+
+  // Resume a progressive init that paused on a previous frame.
+  if (ACTIVE_GEN) {
+    let done: boolean;
+    try {
+      done = await pumpGenerator(ACTIVE_GEN, deadline);
+    } catch (error) {
+      resetInitState();
+      throw error;
+    }
+    if (!done) {
+      INITIALIZATION_IN_PROGRESS = true;
+      return; // still initializing — continue next frame
+    }
+    if (CURRENT_INIT) CURRENT_INIT._initialized = true;
+    ACTIVE_GEN = null;
+    CURRENT_INIT = null;
+  }
+
   // Nothing to initialize
   if (INIT_QUEUE.length === 0) {
-    INITIALIZATION_IN_PROGRESS = false;
-    INIT_QUEUE_LENGTH = -1;
-    ID_TO_COMPONENT = null;
-    QUEUE_SORTED = false;
+    resetInitState();
+    return;
+  }
+
+  // Budget already spent this frame (e.g. by the resumed generator) — yield.
+  if (performance.now() >= deadline) {
+    INITIALIZATION_IN_PROGRESS = true;
     return;
   }
 
@@ -125,19 +161,18 @@ export async function processInitQueue(
   // the per-component fetch O(1) instead of O(scene). Previously this sort ran
   // every frame with two recursive getComponentById calls per comparison.
   if (!QUEUE_SORTED) {
-    const index = new Map<number, ComponentData>();
-    indexScene(scene, index);
-    ID_TO_COMPONENT = index;
+    const idx = new Map<number, ComponentData>();
+    indexScene(scene, idx);
+    ID_TO_COMPONENT = idx;
     INIT_QUEUE.sort((a, b) => {
-      const deferA = index.get(a)?._initDefer || 0;
-      const deferB = index.get(b)?._initDefer || 0;
+      const deferA = idx.get(a)?._initDefer || 0;
+      const deferB = idx.get(b)?._initDefer || 0;
       return deferA - deferB;
     });
     QUEUE_SORTED = true;
   }
 
   const index = ID_TO_COMPONENT!;
-  const startTime = performance.now();
 
   while (INIT_QUEUE.length > 0) {
     const id = INIT_QUEUE.shift()!;
@@ -154,43 +189,93 @@ export async function processInitQueue(
       continue;
     }
 
-    // Call init if it exists (async)
     const method = MethodRegistry[component.type];
-    if (method.init && typeof method.init === 'function') {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-      await method.init(component);
-    }
+    CURRENT_INIT = component;
 
-    // Call instance-specific init override if set
-    if (component.initOverride) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-      const overrideMethod = method[component.initOverride];
-      if (overrideMethod && typeof overrideMethod === 'function') {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-        await overrideMethod(component);
-      } else {
-        console.warn(
-          `[INIT] Custom init method '${component.initOverride}' not found for component '${component.name}'`,
-        );
+    if (
+      method.initProgressive &&
+      typeof method.initProgressive === 'function'
+    ) {
+      // Resumable init: drive the generator within the frame budget. If it
+      // doesn't finish this frame, it's persisted in ACTIVE_GEN and resumed
+      // next frame (the loop keeps rendering in between).
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
+      const gen: AsyncGenerator<void> = method.initProgressive(component);
+      ACTIVE_GEN = gen;
+      let done: boolean;
+      try {
+        done = await pumpGenerator(gen, deadline);
+      } catch (error) {
+        resetInitState();
+        throw error;
       }
-    }
+      if (!done) {
+        INITIALIZATION_IN_PROGRESS = true;
+        return; // paused — resume next frame
+      }
+      component._initialized = true;
+      ACTIVE_GEN = null;
+      CURRENT_INIT = null;
+    } else {
+      // Call init if it exists (async)
+      if (method.init && typeof method.init === 'function') {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+        await method.init(component);
+      }
 
-    // Mark as initialized
-    component._initialized = true;
+      // Call instance-specific init override if set
+      if (component.initOverride) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const overrideMethod = method[component.initOverride];
+        if (overrideMethod && typeof overrideMethod === 'function') {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+          await overrideMethod(component);
+        } else {
+          console.warn(
+            `[INIT] Custom init method '${component.initOverride}' not found for component '${component.name}'`,
+          );
+        }
+      }
+
+      component._initialized = true;
+      CURRENT_INIT = null;
+    }
 
     // Check time budget
-    const elapsed = performance.now() - startTime;
-    if (elapsed >= targetFrameTime) {
+    if (performance.now() >= deadline) {
       INITIALIZATION_IN_PROGRESS = true;
       return; // Exit early, continue next frame
     }
   }
 
   // All done
+  resetInitState();
+}
+
+/**
+ * Advances a progressive-init generator until it completes or the per-frame
+ * deadline is reached. Always runs at least one step so progress is guaranteed.
+ * Returns true when the generator is done.
+ */
+async function pumpGenerator(
+  gen: AsyncGenerator<void>,
+  deadline: number,
+): Promise<boolean> {
+  for (;;) {
+    const res = await gen.next();
+    if (res.done) return true;
+    if (performance.now() >= deadline) return false;
+  }
+}
+
+/** Resets the scheduler to idle (no cycle in progress). */
+function resetInitState(): void {
   INITIALIZATION_IN_PROGRESS = false;
   INIT_QUEUE_LENGTH = -1;
   ID_TO_COMPONENT = null;
   QUEUE_SORTED = false;
+  ACTIVE_GEN = null;
+  CURRENT_INIT = null;
 }
 
 /**
@@ -214,6 +299,15 @@ export async function processInitQueue(
  */
 export function isInitializing(): boolean {
   return INITIALIZATION_IN_PROGRESS;
+}
+
+/**
+ * Returns the component currently being initialized (running, or paused
+ * mid-progressive-init), or null when idle. Lets a loading UI show what's
+ * loading, e.g. `Omosuen.getInitializingComponent()?.name`.
+ */
+export function getInitializingComponent(): ComponentData | null {
+  return CURRENT_INIT;
 }
 
 /**

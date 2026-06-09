@@ -158,6 +158,14 @@ export interface ComponentMethods {
   dispose?: (component: ComponentData) => void;
   update?: (component: ComponentData, deltaTime: number) => void;
   init?: (component: ComponentData) => Promise<void>;
+  /**
+   * Resumable initialization for components whose init is too heavy to run in a
+   * single frame (e.g. atlas compilation). The progressive-init scheduler
+   * advances the generator within the per-frame time budget and resumes it on
+   * the next frame, so the game loop keeps rendering (loading UI stays live).
+   * `yield` between work batches. Takes precedence over `init` when present.
+   */
+  initProgressive?: (component: ComponentData) => AsyncGenerator<void>;
 }
 
 /**

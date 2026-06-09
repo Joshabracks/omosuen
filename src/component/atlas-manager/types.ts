@@ -21,9 +21,15 @@ export interface UnpackedFrame {
   size: Vector2D;
 
   /**
-   * Image data for this frame (extracted from source image)
+   * Source image this frame is cut from. The frame is blitted straight onto the
+   * atlas at build time via drawImage — no per-frame ImageData is extracted.
    */
-  imageData: ImageData;
+  sourceImage: HTMLImageElement;
+
+  /**
+   * Top-left position of the frame within `sourceImage`.
+   */
+  sourcePosition: Vector2D;
 
   /**
    * Position in the atlas (set during packing)

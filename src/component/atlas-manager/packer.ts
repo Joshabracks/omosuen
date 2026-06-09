@@ -350,28 +350,52 @@ function sortSpaceBuckets(spaceBuckets: SpaceBuckets): void {
 }
 
 /**
- * Removes a space from all buckets.
+ * Inserts `item` into an already-sorted array at its sorted position (binary
+ * search + splice), keeping the array sorted without a full re-sort. Equal
+ * elements are inserted *after* existing ones, matching the previous
+ * push-then-stable-sort behaviour (so packing layout is unchanged).
+ */
+function sortedInsert<T>(arr: T[], item: T, cmp: (a: T, b: T) => number): void {
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (cmp(item, arr[mid]) < 0) {
+      hi = mid;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  arr.splice(lo, 0, item);
+}
+
+/**
+ * Removes a space from all buckets in place (index + splice), avoiding the
+ * whole-array rebuild a `filter` would do every allocation.
  */
 function removeSpaceFromBuckets(
   spaceBuckets: SpaceBuckets,
   space: AtlasSpace,
 ): void {
-  spaceBuckets.w = spaceBuckets.w.filter((s) => s !== space);
-  spaceBuckets.h = spaceBuckets.h.filter((s) => s !== space);
-  spaceBuckets.s = spaceBuckets.s.filter((s) => s !== space);
+  const wi = spaceBuckets.w.indexOf(space);
+  if (wi !== -1) spaceBuckets.w.splice(wi, 1);
+  const hi = spaceBuckets.h.indexOf(space);
+  if (hi !== -1) spaceBuckets.h.splice(hi, 1);
+  const si = spaceBuckets.s.indexOf(space);
+  if (si !== -1) spaceBuckets.s.splice(si, 1);
 }
 
 /**
- * Adds a space to all buckets and re-sorts.
+ * Adds a space to all buckets at its sorted position (no full re-sort of each
+ * bucket every allocation — the old O(n log n)×3-per-frame cost).
  */
 function addSpaceToBuckets(
   spaceBuckets: SpaceBuckets,
   space: AtlasSpace,
 ): void {
-  spaceBuckets.w.push(space);
-  spaceBuckets.h.push(space);
-  spaceBuckets.s.push(space);
-  sortSpaceBuckets(spaceBuckets);
+  sortedInsert(spaceBuckets.w, space, compareSpacesByWidth);
+  sortedInsert(spaceBuckets.h, space, compareSpacesByHeight);
+  sortedInsert(spaceBuckets.s, space, compareSpacesBySize);
 }
 
 /**

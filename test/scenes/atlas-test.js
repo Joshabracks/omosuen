@@ -195,10 +195,12 @@ function watchInitThenRemoveOverlay(overlay) {
         const queueSize = Omosuen.getInitQueueSize();
         
         if (queueLength > 0) {
-            // Init is running — show progress, keep waiting.
+            // Init is running — show progress + the current component, keep waiting.
             started = true;
             const done = queueLength - queueSize;
-            overlay.textContent = `Creating test assets, please wait... (${done} / ${queueLength})`;
+            const current = Omosuen.getInitializingComponent?.();
+            const label = current && current.name ? ` — ${current.name}` : '';
+            overlay.textContent = `Creating test assets, please wait... (${done} / ${queueLength})${label}`;
             return;
         }
         console.log(`scene init total time: ${performance.now() - startTime}ms`)

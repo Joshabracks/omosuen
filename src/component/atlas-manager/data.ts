@@ -60,6 +60,13 @@ export interface AtlasManagerT
   compiled: boolean;
 
   /**
+   * Monotonic counter bumped on every successful (re)compile. Cameras compare it
+   * against their last-uploaded version to detect when the atlas changed and
+   * re-upload their GL textures (so runtime recompiles reach the GPU).
+   */
+  atlasVersion: number;
+
+  /**
    * Configuration for atlas management
    */
   config: Required<AtlasManagerConfig>;
@@ -82,6 +89,7 @@ export const PROPERTY_ALLOWLIST = [
   'textureMapIds',
   'atlases',
   'compiled',
+  'atlasVersion',
   'config',
   'imageCache',
   'imageLoading',
@@ -132,6 +140,7 @@ export function builder(options: AtlasManagerOptions): AtlasManagerT {
     textureMapIds: new Set<string>(),
     atlases: [],
     compiled: false,
+    atlasVersion: 0,
     config,
     imageCache: new Map<string, HTMLImageElement>(),
     imageLoading: new Map<string, Promise<HTMLImageElement>>(),

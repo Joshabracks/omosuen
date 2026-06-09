@@ -366,6 +366,7 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
 
   am.textureMapIds.clear();
   am.compiled = true;
+  am.atlasVersion++;
   invalidateAllTextureMapCaches();
 }
 

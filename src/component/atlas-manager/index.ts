@@ -7,5 +7,13 @@ export type {
 } from './data';
 export { AtlasManager } from './methods';
 export type { AtlasManagerMethods } from './methods';
-export { packFrames } from './packer';
-export type { UnpackedFrame, AtlasSpace, FrameBucket } from './types';
+export { packFrames, packFramesInto, createPackerState } from './packer';
+export type {
+  UnpackedFrame,
+  AtlasSpace,
+  FrameBucket,
+  PackerState,
+  PackedRegion,
+  SpaceBuckets,
+  AtlasDirtyRegion,
+} from './types';

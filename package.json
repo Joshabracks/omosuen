@@ -1,6 +1,6 @@
 {
   "name": "omosuen",
-  "version": "0.1.30",
+  "version": "0.3.1",
   "description": "Omosuen - An axonometric game engine with fixed z-axis camera. Etymology: Omos (Greek: shoulder/axis) + Suen (Mesopotamian moon deity/measurement)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,8 +9,14 @@
     "build": "npm run build:dev && npm run build:prod",
     "build:dev": "webpack --config webpack.config.js --env mode=development",
     "build:prod": "webpack --config webpack.config.js --env mode=production",
+    "test:wasm": "tsx test/wasm-solidity.test.ts",
+    "test:wasm-store": "tsx test/wasm-store.test.ts",
+    "test:wasm-mesh": "tsx test/wasm-mesh.test.ts",
+    "test:wasm-audio": "tsx test/wasm-audio.test.ts",
+    "test:wasm-audio-harness": "tsx test/wasm-audio-harness.test.ts",
     "test": "start http://localhost:3000/ && node test/integration-test-server.js",
     "test:cli": "tsx test/cli.test.ts",
+    "test:packer": "tsx test/packer-bench.test.ts",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write \"src/**/*.ts\" \"*.js\" \"*.json\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"*.js\" \"*.json\""

@@ -1,4 +1,4 @@
-import { ComponentData, ComponentMethods } from '../types';
+import { ComponentData, ComponentMethods, castTo } from '../types';
 import { AnimationControllerT } from './data';
 import type { Animation, AnimationState } from './types';
 import type { ChannelType } from '../sprite/types';
@@ -49,14 +49,14 @@ export const AnimationController: AnimationControllerMethods = {
    */
   async init(component: ComponentData): Promise<void> {
     const ac = component as AnimationControllerT;
-    const parent = ac.parent as NexusT | null;
-
-    if (!parent) {
+    if (!ac.parent) {
       console.warn(
         `[animation-controller] Cannot initialize '${ac.name}' - no parent nexus`,
       );
       return;
     }
+    // parent is stored raw; wrap it to reach the nexus's proxy methods.
+    const parent = castTo<NexusT>(ac.parent);
 
     // Validate sibling sprite exists
     const sprite = parent.getComponentByType('sprite') as SpriteT | null;
@@ -337,10 +337,11 @@ function updateSpriteFrame(
   controller: AnimationControllerT,
   frameNumber: number,
 ): void {
-  const parent = controller.parent as NexusT | null;
-  if (!parent) {
+  if (!controller.parent) {
     return;
   }
+  // parent is stored raw; wrap it to reach the nexus's proxy methods.
+  const parent = castTo<NexusT>(controller.parent);
 
   const sprite = parent.getComponentByType('sprite') as SpriteT | null;
   if (!sprite) {

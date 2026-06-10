@@ -2,6 +2,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { readFileSync } from 'fs';
 import webpack from 'webpack';
+import {
+  buildRenderWasmBase64,
+  buildAudioWasmBase64,
+} from './build-tools/wasm.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,6 +14,20 @@ const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
 
 export default (env) => {
   const isDevelopment = env.mode === 'development';
+
+  // Compile the hand-rolled Rust render crate to wasm and embed it as base64 via
+  // DefinePlugin (same mechanism as __ENGINE_VERSION__). A cargo failure throws
+  // here and fails the build loudly.
+  const renderWasmBase64 = buildRenderWasmBase64();
+  // The audio crate runs in the AudioWorklet realm. Read the standalone worklet
+  // shell, inline the audio wasm base64 in place of its sentinel, and ship the
+  // finished script via DefinePlugin as __AUDIO_WORKLET_SCRIPT__. (Function
+  // replacer → literal substitution, no `$` interpretation.)
+  const audioWasmBase64 = buildAudioWasmBase64();
+  const audioWorkletScript = readFileSync(
+    './src/component/audio-player/audioWorklet.script.js',
+    'utf-8',
+  ).replace('__AUDIO_WASM_BASE64__', () => audioWasmBase64);
 
   return {
     mode: isDevelopment ? 'development' : 'production',
@@ -44,6 +62,8 @@ export default (env) => {
     plugins: [
       new webpack.DefinePlugin({
         __ENGINE_VERSION__: JSON.stringify(pkg.version),
+        __RENDER_WASM_BASE64__: JSON.stringify(renderWasmBase64),
+        __AUDIO_WORKLET_SCRIPT__: JSON.stringify(audioWorkletScript),
       }),
     ],
     optimization: {

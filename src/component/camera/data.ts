@@ -86,6 +86,8 @@ export interface CameraT
     unifiedProgram: WebGLProgram | null;
     renderModeLocation: WebGLUniformLocation | null;
     atlasTextures: (WebGLTexture | null)[];
+    /** AtlasManager.atlasVersion last uploaded into atlasTextures (-1 = none). */
+    atlasVersion: number;
     quadVertexBuffer: WebGLBuffer | null;
     quadUVBuffer: WebGLBuffer | null;
     // Post-processing framebuffer resources for pixel-perfect zoom
@@ -167,6 +169,7 @@ export function builder(options: CameraOptions): CameraT {
       unifiedProgram: null,
       renderModeLocation: null,
       atlasTextures: [],
+      atlasVersion: -1,
       quadVertexBuffer: null,
       quadUVBuffer: null,
       // Post-processing resources

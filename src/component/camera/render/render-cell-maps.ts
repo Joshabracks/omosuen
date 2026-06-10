@@ -199,10 +199,7 @@ export function renderCellMaps(
     // Per-fragment raycasting (per cell-map — respects revealExempt)
     if (camera.revealTarget && !cellMap.revealExempt) {
       // Upload solidity map (recompute every frame — cheap for small maps)
-      const solidityMap = computeSolidityMap(
-        cellMap.packedData,
-        cellMap.mapSize,
-      );
+      const solidityMap = computeSolidityMap();
       uploadVisibilityTexture(gl, camera, solidityMap, cellMap.mapSize);
 
       // Bind solidity texture and set reveal target

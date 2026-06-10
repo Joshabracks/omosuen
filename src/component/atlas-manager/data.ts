@@ -8,6 +8,7 @@ import type {
 import { ComponentUnique } from '../types';
 import type { AtlasManagerMethods } from './methods';
 import type { ComponentInstanceMethods } from '../types';
+import type { PackerState, PackedRegion, AtlasDirtyRegion } from './types';
 
 /**
  * Valid atlas sizes (power of 2)
@@ -36,6 +37,22 @@ export interface AtlasManagerConfig {
    * Default: 1
    */
   padding?: number;
+
+  /**
+   * Whether to retain the atlas in CPU memory for incremental runtime updates.
+   *
+   * - `false` (default — non-procedural games): after cameras upload the atlas
+   *   to the GPU, the CPU-side atlas ImageData is auto-dropped to free memory.
+   *   A later need for it (a late camera, `getAtlas`, a recompile) rebuilds it
+   *   on demand from the cached source images + the stored packed layout.
+   * - `true` (procedural games): keep the atlas canvases + packer free-space so
+   *   a runtime add packs/blits only the NEW frames (no full re-pack/re-blit)
+   *   and cameras upload straight from the canvas. Trades memory for per-add
+   *   cost that scales with new frames, not total frames.
+   *
+   * Default: false
+   */
+  retainAtlas?: boolean;
 }
 
 export interface AtlasManagerT
@@ -60,6 +77,13 @@ export interface AtlasManagerT
   compiled: boolean;
 
   /**
+   * Monotonic counter bumped on every successful (re)compile. Cameras compare it
+   * against their last-uploaded version to detect when the atlas changed and
+   * re-upload their GL textures (so runtime recompiles reach the GPU).
+   */
+  atlasVersion: number;
+
+  /**
    * Configuration for atlas management
    */
   config: Required<AtlasManagerConfig>;
@@ -76,15 +100,64 @@ export interface AtlasManagerT
    * Merged from image-registry component.
    */
   imageLoading: Map<string, Promise<HTMLImageElement>>;
+
+  /**
+   * Retained atlas canvases (retain mode only). Kept alive across compiles so
+   * runtime adds blit only the new frames onto them and cameras upload straight
+   * from the canvas (no per-atlas getImageData). Empty in release mode.
+   */
+  atlasCanvases: HTMLCanvasElement[];
+
+  /**
+   * Persistent packer free-space state (retain mode only). Lets a runtime add
+   * place new frames into existing free space without re-packing everything.
+   * Null until the first compile / in release mode.
+   */
+  packState: PackerState | null;
+
+  /**
+   * Dedup map of already-packed unique frames (retain mode only), keyed by
+   * `${filePath}|${sx},${sy},${w},${h}`. Persisted across incremental adds so a
+   * re-referenced frame reuses its region and a genuinely new frame is detected.
+   */
+  packedByKey: Map<string, PackedRegion>;
+
+  /**
+   * Internal: true while a one-shot CPU-atlas drop is scheduled (release mode),
+   * coalescing the auto-release so it runs once after cameras have uploaded.
+   */
+  _releaseScheduled: boolean;
+
+  /**
+   * Changed atlas rects since the last full compile (retain mode), each tagged
+   * with the atlasVersion that produced it. Cameras upload just the delta newer
+   * than their last-uploaded version via texSubImage2D. Cleared on a full
+   * compile; bounded by a cap (overflow forces a one-time full upload).
+   */
+  dirtyRegions: AtlasDirtyRegion[];
+
+  /**
+   * atlasVersion of the last FULL (re)compile. A camera whose uploaded version
+   * is below this missed a full rebuild and must full-upload rather than apply
+   * the incremental dirty regions.
+   */
+  fullVersion: number;
 }
 
 export const PROPERTY_ALLOWLIST = [
   'textureMapIds',
   'atlases',
   'compiled',
+  'atlasVersion',
   'config',
   'imageCache',
   'imageLoading',
+  'atlasCanvases',
+  'packState',
+  'packedByKey',
+  '_releaseScheduled',
+  'dirtyRegions',
+  'fullVersion',
 ];
 
 /**
@@ -103,6 +176,7 @@ export function builder(options: AtlasManagerOptions): AtlasManagerT {
     atlasSize: options.config?.atlasSize ?? 4096,
     maxAtlases: options.config?.maxAtlases ?? 16,
     padding: options.config?.padding ?? 1,
+    retainAtlas: options.config?.retainAtlas ?? false,
   };
 
   // Validate config
@@ -132,9 +206,16 @@ export function builder(options: AtlasManagerOptions): AtlasManagerT {
     textureMapIds: new Set<string>(),
     atlases: [],
     compiled: false,
+    atlasVersion: 0,
     config,
     imageCache: new Map<string, HTMLImageElement>(),
     imageLoading: new Map<string, Promise<HTMLImageElement>>(),
+    atlasCanvases: [],
+    packState: null,
+    packedByKey: new Map<string, PackedRegion>(),
+    _releaseScheduled: false,
+    dirtyRegions: [],
+    fullVersion: 0,
   } as unknown as AtlasManagerT;
 }
 
@@ -149,6 +230,7 @@ function serialize(component: ComponentData): any {
       atlasSize: c.config.atlasSize,
       maxAtlases: c.config.maxAtlases,
       padding: c.config.padding,
+      retainAtlas: c.config.retainAtlas,
     },
   };
 }

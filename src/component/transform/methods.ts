@@ -19,6 +19,18 @@ export interface TransformMethods extends ComponentMethods {
   setScale: (transform: TransformT, x: number, y: number, z: number) => void;
   scaleBy: (transform: TransformT, sx: number, sy: number, sz: number) => void;
   getScale: (transform: TransformT) => Vector3D;
+  /**
+   * Writes the world-space position/rotation/scale into the provided vectors
+   * without allocating. Pass null for any channel you don't need. Walks the
+   * parent chain once. Use this on hot paths (e.g. collision) instead of the
+   * allocating getPosition/getRotation/getScale getters.
+   */
+  getWorldInto: (
+    transform: TransformT,
+    outPosition: Vector3D | null,
+    outRotation: Vector3D | null,
+    outScale: Vector3D | null,
+  ) => void;
 }
 
 /**
@@ -47,6 +59,85 @@ function getParentTransform(transform: TransformT): TransformT | null {
   if (!transform.parent || transform.parent.type !== 'nexus') return null;
   const myNexus = castTo<NexusT>(transform.parent);
   return findAncestorTransform(myNexus);
+}
+
+/**
+ * Reused scratch buffer for the leaf→root ancestor chain, to avoid per-call
+ * array allocation. Safe to share because composeWorld is a flat, synchronous
+ * loop (no nesting/reentrancy).
+ */
+const ancestorChain: TransformT[] = [];
+
+/**
+ * Composes the world-space transform by folding local transforms from root down
+ * to the leaf with scalar accumulators — zero Vector3D allocation. Writes each
+ * requested channel into the provided out-vector (pass null to skip).
+ *
+ * Matches the previous recursive getters exactly:
+ *   worldPos   = parentWorldPos + localPos * parentWorldScale
+ *   worldScale = parentWorldScale * localScale
+ *   worldRot   = parentWorldRot + localRot
+ */
+function composeWorld(
+  transform: TransformT,
+  outPosition: Vector3D | null,
+  outRotation: Vector3D | null,
+  outScale: Vector3D | null,
+): void {
+  // Collect the chain leaf → root without allocating (reuse ancestorChain).
+  ancestorChain.length = 0;
+  let cur: TransformT | null = transform;
+  while (cur) {
+    ancestorChain.push(cur);
+    cur = getParentTransform(cur);
+  }
+
+  let px = 0;
+  let py = 0;
+  let pz = 0;
+  let sx = 1;
+  let sy = 1;
+  let sz = 1;
+  let rx = 0;
+  let ry = 0;
+  let rz = 0;
+
+  // Fold root → leaf. Position uses the parent's accumulated scale, so it must
+  // be applied before scale is multiplied in for this level.
+  for (let i = ancestorChain.length - 1; i >= 0; i--) {
+    const t = ancestorChain[i];
+    const p = t.position;
+    const s = t.scale;
+    const r = t.rotation;
+
+    px += p.x * sx;
+    py += p.y * sy;
+    pz += p.z * sz;
+
+    sx *= s.x;
+    sy *= s.y;
+    sz *= s.z;
+
+    rx += r.x;
+    ry += r.y;
+    rz += r.z;
+  }
+
+  if (outPosition) {
+    outPosition.x = px;
+    outPosition.y = py;
+    outPosition.z = pz;
+  }
+  if (outRotation) {
+    outRotation.x = rx;
+    outRotation.y = ry;
+    outRotation.z = rz;
+  }
+  if (outScale) {
+    outScale.x = sx;
+    outScale.y = sy;
+    outScale.z = sz;
+  }
 }
 
 export const Transform: TransformMethods = {
@@ -79,23 +170,9 @@ export const Transform: TransformMethods = {
    * Returns a new Vector3D to prevent mutation of internal state.
    */
   getPosition(transform: TransformT): Vector3D {
-    const parent = getParentTransform(transform);
-    if (!parent)
-      return new Vector3D(
-        transform.position.x,
-        transform.position.y,
-        transform.position.z,
-      );
-
-    const parentPos = Transform.getPosition(parent);
-    const parentScale = Transform.getScale(parent);
-
-    // Scale local position by parent's world scale, then add parent's world position
-    return new Vector3D(
-      parentPos.x + transform.position.x * parentScale.x,
-      parentPos.y + transform.position.y * parentScale.y,
-      parentPos.z + transform.position.z * parentScale.z,
-    );
+    const out = new Vector3D(0, 0, 0);
+    composeWorld(transform, out, null, null);
+    return out;
   },
 
   /**
@@ -121,20 +198,9 @@ export const Transform: TransformMethods = {
    * Returns a new Vector3D to prevent mutation of internal state.
    */
   getRotation(transform: TransformT): Vector3D {
-    const parent = getParentTransform(transform);
-    if (!parent)
-      return new Vector3D(
-        transform.rotation.x,
-        transform.rotation.y,
-        transform.rotation.z,
-      );
-
-    const parentRot = Transform.getRotation(parent);
-    return new Vector3D(
-      parentRot.x + transform.rotation.x,
-      parentRot.y + transform.rotation.y,
-      parentRot.z + transform.rotation.z,
-    );
+    const out = new Vector3D(0, 0, 0);
+    composeWorld(transform, null, out, null);
+    return out;
   },
 
   /**
@@ -160,20 +226,18 @@ export const Transform: TransformMethods = {
    * Returns a new Vector3D to prevent mutation of internal state.
    */
   getScale(transform: TransformT): Vector3D {
-    const parent = getParentTransform(transform);
-    if (!parent)
-      return new Vector3D(
-        transform.scale.x,
-        transform.scale.y,
-        transform.scale.z,
-      );
+    const out = new Vector3D(0, 0, 0);
+    composeWorld(transform, null, null, out);
+    return out;
+  },
 
-    const parentScale = Transform.getScale(parent);
-    return new Vector3D(
-      parentScale.x * transform.scale.x,
-      parentScale.y * transform.scale.y,
-      parentScale.z * transform.scale.z,
-    );
+  getWorldInto(
+    transform: TransformT,
+    outPosition: Vector3D | null,
+    outRotation: Vector3D | null,
+    outScale: Vector3D | null,
+  ): void {
+    composeWorld(transform, outPosition, outRotation, outScale);
   },
 
   dispose(c: ComponentData) {

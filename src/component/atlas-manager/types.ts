@@ -1,4 +1,5 @@
 import { Vector2D } from '../../math';
+import type { SpaceTree } from './space-tree';
 
 /**
  * UnpackedFrame: A frame that needs to be packed into an atlas.
@@ -6,24 +7,20 @@ import { Vector2D } from '../../math';
  */
 export interface UnpackedFrame {
   /**
-   * Unique key for the texture map this frame belongs to
-   */
-  textureMapKey: string;
-
-  /**
-   * Frame index within its texture map
-   */
-  frameIndex: number;
-
-  /**
    * Size of the frame (width, height)
    */
   size: Vector2D;
 
   /**
-   * Image data for this frame (extracted from source image)
+   * Source image this frame is cut from. The frame is blitted straight onto the
+   * atlas at build time via drawImage — no per-frame ImageData is extracted.
    */
-  imageData: ImageData;
+  sourceImage: HTMLImageElement;
+
+  /**
+   * Top-left position of the frame within `sourceImage`.
+   */
+  sourcePosition: Vector2D;
 
   /**
    * Position in the atlas (set during packing)
@@ -80,12 +77,78 @@ export interface AtlasSpace {
    * Root atlas index (0-15) if this is a root space, otherwise -1
    */
   rootIndex: number;
+
+  /**
+   * Monotonic unique id, assigned at creation. Used as the stable tiebreak in the
+   * free-space ordered sets (SpaceTree) so equal-size spaces keep insertion order
+   * — matching the previous sorted-array packing exactly — and so removal can
+   * locate a space by a unique key.
+   */
+  uid: number;
 }
 
 /**
  * Frame bucket types for sorting during packing
  */
 export type FrameBucket = 'w' | 'h' | 's';
+
+/**
+ * A packed atlas region: where a unique frame ended up. Stored in the atlas
+ * manager's `packedByKey` dedup map (retain mode) so re-referenced frames reuse
+ * the region and genuinely new frames are detected on a runtime add.
+ */
+export interface PackedRegion {
+  atlasIndex: number;
+  atlasPosition: Vector2D;
+  size: Vector2D;
+}
+
+/**
+ * A rectangle of an atlas that changed in a particular (incremental) compile,
+ * tagged with the atlasVersion that produced it. Retain mode logs these so a
+ * camera can upload just the delta since its last-uploaded version via
+ * texSubImage2D (reading the pixels from the retained canvas on demand) instead
+ * of re-uploading the whole atlas. Stores only the rect — the canvas is the
+ * source of truth, so a full re-upload is always a valid fallback.
+ */
+export interface AtlasDirtyRegion {
+  version: number;
+  atlasIndex: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Free-space ordered sets for finding best-fit space, keyed by different criteria
+ * (width / height / size). Held inside PackerState so the free-space trees persist
+ * across incremental adds (retain mode) instead of being rebuilt every compile.
+ */
+export interface SpaceBuckets {
+  w: SpaceTree; // ordered by width then height
+  h: SpaceTree; // ordered by height then width
+  s: SpaceTree; // ordered by width+height
+}
+
+/**
+ * Persistent guillotine-packer state. `packFrames` builds a throwaway one per
+ * call (release/full compile); retain mode keeps one on the atlas manager so
+ * `packFramesInto` can place new frames into the existing free space.
+ */
+export interface PackerState {
+  rootSpaces: AtlasSpace[];
+  spaceBuckets: SpaceBuckets;
+  currentAtlasIndex: number;
+  atlasSize: number;
+  maxAtlases: number;
+  padding: number;
+}
+
+// Monotonic source of AtlasSpace uids (unique tiebreak / removal key for the
+// free-space ordered sets). Module-global; the absolute values don't matter, only
+// that they're unique and increase with creation order (= stable insertion order).
+let nextSpaceUid = 0;
 
 /**
  * Helper function to create a root AtlasSpace
@@ -102,6 +165,7 @@ export function createRootAtlasSpace(
     '0': null,
     '1': null,
     rootIndex: index,
+    uid: nextSpaceUid++,
   };
 }
 
@@ -121,6 +185,7 @@ export function createChildAtlasSpace(
     '0': null,
     '1': null,
     rootIndex: -1,
+    uid: nextSpaceUid++,
   };
 }
 

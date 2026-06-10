@@ -13,6 +13,8 @@ import {
   FBO_OVERSCAN_PX,
   cacheLightUniformLocations,
 } from '../render/light-uniforms';
+import { initRenderWasm } from '../render/wasm';
+import { uploadAtlasTextures } from '../render/atlas-textures';
 
 /**
  * Initializes WebGL resources for the camera (shader programs, buffers).
@@ -49,6 +51,12 @@ export async function init(component: ComponentData): Promise<void> {
   }
 
   const gl = viewport.gl;
+
+  // Load the render-domain WASM compute backend before this camera can render.
+  // render() skips uninitialized cameras, and processInitQueue awaits this init,
+  // so the module is guaranteed ready before any solidity()/compute call. Hard
+  // requirement — no JS fallback. Idempotent across cameras.
+  await initRenderWasm();
 
   // Compile unified shader program
   const unifiedProgram = createShaderProgram(
@@ -149,35 +157,7 @@ export async function init(component: ComponentData): Promise<void> {
     );
     camera.glResources.atlasTextures = [];
   } else {
-    camera.glResources.atlasTextures = [];
-    for (let i = 0; i < atlasManager.atlases.length; i++) {
-      const atlas = atlasManager.atlases[i];
-      if (!atlas) continue;
-
-      const texture = gl.createTexture();
-      if (!texture) {
-        console.error(
-          `[camera] Camera '${camera.name}' failed to create texture for atlas ${i}`,
-        );
-        continue;
-      }
-
-      gl.bindTexture(gl.TEXTURE_2D, texture);
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        atlas,
-      );
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-      camera.glResources.atlasTextures[i] = texture;
-    }
+    uploadAtlasTextures(gl, camera, atlasManager);
   }
 
   // 4. Create framebuffer for pixel-perfect post-processing

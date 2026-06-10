@@ -29,6 +29,7 @@ export {
   clearInitQueue,
   getInitQueueSize,
   getInitQueueLength,
+  getInitializingComponent,
 } from './init';
 
 // ============================================================================

@@ -3,11 +3,13 @@ import { TextureMapT } from '../../texture-map';
 import { TransformT } from '../../transform';
 import { castTo } from '../../types';
 import { ViewportT } from '../../viewport';
+import { AtlasManagerT } from '../../atlas-manager';
 import { CameraT } from '../data';
 import { Camera } from '../methods';
 import { renderSprites } from './render-sprites';
 import { renderPostProcess } from './post-process';
 import { renderCellMaps, snapCameraPosition } from './render-cell-maps';
+import { uploadAtlasTextures, uploadAtlasDelta } from './atlas-textures';
 
 // TextureMap lookup cache — keyed by camera component ID
 const TEXTURE_MAP_CACHE = new Map<number, Map<string, TextureMapT>>();
@@ -158,6 +160,61 @@ export function render(camera: CameraT, _deltaTime: number): void {
     TEXTURE_MAP_CACHE_DIRTY.set(camera.id!, false);
   }
   const textureMapCache = TEXTURE_MAP_CACHE.get(camera.id!)!;
+
+  // Re-upload atlas GL textures if the atlas was (re)compiled since our last
+  // upload (e.g. a runtime atlasManager.processTextureMaps()). One int compare
+  // per frame; uploads only when the version actually changed. Also covers a
+  // camera that initialized before the atlas had compiled.
+  const atlasManager = sceneRoot.getComponentByType(
+    'atlas-manager',
+    true,
+  ) as AtlasManagerT | null;
+  if (
+    atlasManager &&
+    atlasManager.compiled &&
+    camera.glResources.atlasVersion !== atlasManager.atlasVersion
+  ) {
+    // Retain mode: if this camera already has textures and didn't miss a full
+    // rebuild, upload just the changed regions (texSubImage2D). Otherwise
+    // (release mode, first upload, or a missed full recompile) full-upload.
+    if (
+      atlasManager.config.retainAtlas &&
+      camera.glResources.atlasVersion >= atlasManager.fullVersion &&
+      camera.glResources.atlasTextures.length > 0
+    ) {
+      uploadAtlasDelta(gl, camera, atlasManager);
+    } else {
+      uploadAtlasTextures(gl, camera, atlasManager);
+    }
+  }
+
+  // Release mode (default): once this camera is caught up to the current atlas
+  // version, schedule a one-shot drop of the CPU-side atlas ImageData to free
+  // memory. Coalesced via _releaseScheduled + deferred with requestAnimationFrame
+  // so it runs ONCE after the current frame's renders (all cameras that rendered
+  // this frame have uploaded by then); late/new cameras and getAtlas fall back to
+  // rebuild-on-demand. Captures the version so a recompile mid-wait isn't dropped.
+  if (
+    atlasManager &&
+    !atlasManager.config.retainAtlas &&
+    atlasManager.compiled &&
+    atlasManager.atlases.length > 0 &&
+    camera.glResources.atlasVersion === atlasManager.atlasVersion &&
+    !atlasManager._releaseScheduled &&
+    typeof requestAnimationFrame === 'function'
+  ) {
+    atlasManager._releaseScheduled = true;
+    const releasedVersion = atlasManager.atlasVersion;
+    requestAnimationFrame(() => {
+      if (
+        !atlasManager.config.retainAtlas &&
+        atlasManager.atlasVersion === releasedVersion
+      ) {
+        atlasManager.atlases = [];
+      }
+      atlasManager._releaseScheduled = false;
+    });
+  }
 
   // Render cell-maps FIRST (before sprites) with depth writes enabled
   // This populates the depth buffer with solid geometry

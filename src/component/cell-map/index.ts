@@ -13,7 +13,6 @@ export {
   cmVisibilityMap,
   cmCellSize,
   cmMapSize,
-  cmPackedData,
   cmSmoothing,
   cmSmoothingWeights,
   cmNormalSmoothing,

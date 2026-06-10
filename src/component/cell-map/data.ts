@@ -6,7 +6,7 @@ import {
   DeserializationError,
   DeserializeResult,
 } from '../types';
-import { Array3D, Array3Dc, Array3Di, Vector3D } from '../../math';
+import { Array3D, Array3Di, Vector3D } from '../../math';
 import {
   Material,
   Mesh,
@@ -16,6 +16,25 @@ import {
   createDefaultCellData,
   CHUNK_SIZE,
 } from './types';
+import {
+  initRenderWasm,
+  loadCellStore,
+  cellStoreDump,
+  cellStoreGet,
+} from '../camera/render/wasm';
+
+/**
+ * Read-only view over the canonical cell store, exposed as `cellMap.packedData`
+ * for consumer code that needs to read cells (e.g. counting visible cells for
+ * stats). Read-only by design: mutation goes through `setCellData`, so the
+ * RLE-compressed store can't be corrupted from outside.
+ */
+export interface CellPackedReadView {
+  forEach(
+    cb: (value: number, x: number, y: number, z: number, index: number) => void,
+  ): void;
+  get(coord: Vector3D): number;
+}
 
 // ── Module-level singleton storage ──
 // Data lives here to avoid GC pressure and enable direct imports.
@@ -29,7 +48,6 @@ export let cmEmissionMap: Array3D<number>;
 export let cmVisibilityMap: Array3D<boolean>;
 export let cmCellSize: Vector3D;
 export let cmMapSize: Vector3D;
-export let cmPackedData: Array3Dc<number>;
 export let cmSmoothing: number = 0;
 export let cmSmoothingWeights: Array3Di;
 export let cmNormalSmoothing: number = 0;
@@ -41,6 +59,36 @@ export let cmChunkGridSize: { x: number; y: number; z: number } = {
   z: 0,
 };
 export let cmRevealExempt: boolean = false;
+
+/**
+ * Stable read-only view over the canonical WASM cell store, returned by the
+ * `cellMap.packedData` getter. Reused (no per-access allocation).
+ */
+const packedDataView: CellPackedReadView = {
+  forEach(cb): void {
+    const flat = cellStoreDump();
+    const mx = cmMapSize.x;
+    const my = cmMapSize.y;
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    for (let i = 0; i < flat.length; i++) {
+      cb(flat[i], x, y, z, i);
+      x++;
+      if (x >= mx) {
+        x = 0;
+        y++;
+        if (y >= my) {
+          y = 0;
+          z++;
+        }
+      }
+    }
+  },
+  get(coord: Vector3D): number {
+    return cellStoreGet(coord.x, coord.y, coord.z);
+  },
+};
 
 /**
  * Resets all module-level cell-map state to defaults.
@@ -55,7 +103,6 @@ export function resetCellMapState(): void {
   cmVisibilityMap = undefined!;
   cmCellSize = undefined!;
   cmMapSize = undefined!;
-  cmPackedData = undefined!;
   cmSmoothing = 0;
   cmSmoothingWeights = undefined!;
   cmNormalSmoothing = 0;
@@ -123,10 +170,7 @@ function makeCellMapInstance(name: string): CellMapT {
       cmMapSize = v;
     },
     get packedData() {
-      return cmPackedData;
-    },
-    set packedData(v) {
-      cmPackedData = v;
+      return packedDataView;
     },
     get smoothing() {
       return cmSmoothing;
@@ -261,8 +305,8 @@ export interface CellMapT extends ComponentData {
   cellSize: Vector3D;
   mapSize: Vector3D;
 
-  // Compressed storage
-  packedData: Array3Dc<number>;
+  /** Read-only view over the canonical cell store (see CellPackedReadView). */
+  packedData: CellPackedReadView;
 
   // Smoothing
   smoothing: number;
@@ -414,6 +458,10 @@ function initChunks(cgs: { x: number; y: number; z: number }): ChunkMesh[] {
  * Builder function for CellMap component
  */
 export async function builder(options: CellMapOptions): Promise<CellMapT> {
+  // The canonical cell store lives in the render WASM module; ensure it is
+  // instantiated before we load cells into it.
+  await initRenderWasm();
+
   // Validate required inputs
   if (!options.materials || options.materials.length === 0) {
     throw new Error('CellMap requires at least one material');
@@ -521,8 +569,14 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     packedArray.indexSet(i, packCell(cellData));
   });
 
-  // Create compressed Array3Dc
-  const optPackedData = new Array3Dc(packedArray, 0.05);
+  // Load the packed cells into the canonical WASM store (RLE-compressed there).
+  loadCellStore(
+    packedArray.value,
+    options.mapSize.x * options.mapSize.y * options.mapSize.z,
+    options.mapSize.x,
+    options.mapSize.y,
+    options.mapSize.z,
+  );
 
   // Smoothing configuration
   const optSmoothing = options.smoothing ?? 0;
@@ -564,7 +618,6 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   cmVisibilityMap = optVisibilityMap;
   cmCellSize = options.cellSize;
   cmMapSize = options.mapSize;
-  cmPackedData = optPackedData;
   cmSmoothing = optSmoothing;
   cmSmoothingWeights = optSmoothingWeights;
   cmNormalSmoothing = optNormalSmoothing;
@@ -584,12 +637,8 @@ function serialize(component: ComponentData): any {
   const cm = component as CellMapT;
   const size = cm.mapSize;
 
-  // Expand RLE-compressed packedData to flat array of 32-bit packed ints
-  const packedFlat: number[] = [];
-  const expanded = cm.packedData.expand();
-  expanded.forEach((val) => {
-    packedFlat.push(val);
-  });
+  // Dump the canonical WASM store to a flat array of 32-bit packed ints.
+  const packedFlat: number[] = Array.from(cellStoreDump());
 
   return {
     type: 'cell-map',
@@ -629,7 +678,7 @@ function serialize(component: ComponentData): any {
  * Constructs CellMapT directly (mirrors builder logic) since builder is async.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deserialize(data: any): DeserializeResult<CellMapT> {
+async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   const errors: DeserializationError[] = [];
 
   if (!data || typeof data !== 'object') {
@@ -733,7 +782,9 @@ function deserialize(data: any): DeserializeResult<CellMapT> {
 
     packedArray.indexSet(i, packCell(cellData));
   });
-  const compressedData = new Array3Dc(packedArray, 0.05);
+  // Load the packed cells into the canonical WASM store.
+  await initRenderWasm();
+  loadCellStore(packedArray.value, packedArray.value.length, ms.x, ms.y, ms.z);
 
   // Meshes: air at 0, default cube at 1
   const dMeshes: Mesh[] = [
@@ -777,7 +828,6 @@ function deserialize(data: any): DeserializeResult<CellMapT> {
   cmVisibilityMap = dVisibilityMap;
   cmCellSize = cs;
   cmMapSize = ms;
-  cmPackedData = compressedData;
   cmSmoothing = (dataSmoothing as number) ?? 0;
   cmSmoothingWeights = dSmoothingWeights;
   cmNormalSmoothing = Math.max(

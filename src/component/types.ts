@@ -158,6 +158,14 @@ export interface ComponentMethods {
   dispose?: (component: ComponentData) => void;
   update?: (component: ComponentData, deltaTime: number) => void;
   init?: (component: ComponentData) => Promise<void>;
+  /**
+   * Resumable initialization for components whose init is too heavy to run in a
+   * single frame (e.g. atlas compilation). The progressive-init scheduler
+   * advances the generator within the per-frame time budget and resumes it on
+   * the next frame, so the game loop keeps rendering (loading UI stays live).
+   * `yield` between work batches. Takes precedence over `init` when present.
+   */
+  initProgressive?: (component: ComponentData) => AsyncGenerator<void>;
 }
 
 /**
@@ -215,6 +223,10 @@ export function wrapInProxy(component: ComponentData): ComponentData {
   // Component-specific properties
   const componentAllowlist = PROPERTY_ALLOWLIST[component.type] || [];
 
+  // Per-proxy cache of method wrappers, so repeated `component.method()` calls
+  // reuse a single closure instead of allocating a new one on every access.
+  const methodWrappers = new Map<string, (...args: unknown[]) => unknown>();
+
   const handler = {
     get: function (c: ComponentData, prop: string) {
       // Handle Promise detection (JavaScript checks for .then when awaiting)
@@ -231,11 +243,19 @@ export function wrapInProxy(component: ComponentData): ComponentData {
 
       // Check if it's a method
       if (proxyKeys.indexOf(prop) !== -1) {
-        // Return method wrapper
-        return (...args: unknown[]) => {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
-          return MethodRegistry[c.type][prop](c, ...args);
-        };
+        // Return a cached wrapper so repeated calls to the same method don't
+        // allocate a fresh closure on every property access. The wrapper reads
+        // MethodRegistry at call time, so re-registered method bodies are still
+        // picked up.
+        let wrapper = methodWrappers.get(prop);
+        if (wrapper === undefined) {
+          wrapper = (...args: unknown[]) => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
+            return MethodRegistry[component.type][prop](component, ...args);
+          };
+          methodWrappers.set(prop, wrapper);
+        }
+        return wrapper;
       }
 
       // Nexus shorthand: resolve child components by type or name

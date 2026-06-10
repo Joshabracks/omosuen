@@ -1,5 +1,11 @@
 import { Vector2D } from '../../math';
-import type { UnpackedFrame, AtlasSpace, FrameBucket } from './types';
+import type {
+  UnpackedFrame,
+  AtlasSpace,
+  FrameBucket,
+  SpaceBuckets,
+  PackerState,
+} from './types';
 import {
   createRootAtlasSpace,
   createChildAtlasSpace,
@@ -11,6 +17,7 @@ import {
   compareSpacesByHeight,
   compareSpacesBySize,
 } from './types';
+import { SpaceTree } from './space-tree';
 
 /**
  * Frame buckets for bin packing.
@@ -22,18 +29,189 @@ interface FrameBuckets {
   s: UnpackedFrame[]; // Width === height (square)
 }
 
+// Free-space ordering for each bucket: the existing size comparators, made into a
+// strict total order with a uid tiebreak (so equal-size spaces keep insertion
+// order — identical to the old sorted-array packing).
+const cmpW = (a: AtlasSpace, b: AtlasSpace): number =>
+  compareSpacesByWidth(a, b) || a.uid - b.uid;
+const cmpH = (a: AtlasSpace, b: AtlasSpace): number =>
+  compareSpacesByHeight(a, b) || a.uid - b.uid;
+const cmpS = (a: AtlasSpace, b: AtlasSpace): number =>
+  compareSpacesBySize(a, b) || a.uid - b.uid;
+
 /**
- * Space buckets for finding best-fit spaces.
- * Spaces are sorted by different criteria for efficient lookup.
+ * Builds the three empty free-space ordered sets (width / height / size keyed).
  */
-interface SpaceBuckets {
-  w: AtlasSpace[]; // Sorted by width (ASC)
-  h: AtlasSpace[]; // Sorted by height (ASC)
-  s: AtlasSpace[]; // Sorted by size (ASC)
+function createSpaceBuckets(): SpaceBuckets {
+  return {
+    // width-keyed → residual fit dimension is height.
+    w: new SpaceTree({
+      cmp: cmpW,
+      primary: (s) => s.size.x,
+      primaryMin: (x) => x,
+      secondary: (s) => s.size.y,
+      secondaryMin: (_x, y) => y,
+    }),
+    // height-keyed → residual fit dimension is width.
+    h: new SpaceTree({
+      cmp: cmpH,
+      primary: (s) => s.size.y,
+      primaryMin: (_x, y) => y,
+      secondary: (s) => s.size.x,
+      secondaryMin: (x) => x,
+    }),
+    // size-keyed (square frames only: needX === needY, so x≥n && y≥n ⇔ min≥n).
+    s: new SpaceTree({
+      cmp: cmpS,
+      primary: (s) => s.size.x + s.size.y,
+      primaryMin: (x, y) => x + y,
+      secondary: (s) => Math.min(s.size.x, s.size.y),
+      secondaryMin: (x) => x,
+    }),
+  };
+}
+
+/** Inserts a free space into all three buckets. */
+function addSpaceToBuckets(
+  spaceBuckets: SpaceBuckets,
+  space: AtlasSpace,
+): void {
+  spaceBuckets.w.insert(space);
+  spaceBuckets.h.insert(space);
+  spaceBuckets.s.insert(space);
+}
+
+/** Removes a free space from all three buckets. */
+function removeSpaceFromBuckets(
+  spaceBuckets: SpaceBuckets,
+  space: AtlasSpace,
+): void {
+  spaceBuckets.w.remove(space);
+  spaceBuckets.h.remove(space);
+  spaceBuckets.s.remove(space);
+}
+
+/**
+ * Creates a fresh persistent packer state: `maxAtlases` empty root spaces, with
+ * only the first atlas's free space initially available (subsequent atlases are
+ * opened lazily as frames overflow). Retain mode keeps one of these on the atlas
+ * manager so incremental adds reuse the accumulated free space.
+ */
+export function createPackerState(
+  atlasSize: number,
+  maxAtlases: number,
+  padding: number,
+): PackerState {
+  const rootSpaces: AtlasSpace[] = [];
+  for (let i = 0; i < maxAtlases; i++) {
+    rootSpaces.push(
+      createRootAtlasSpace(i, new Vector2D(atlasSize, atlasSize)),
+    );
+  }
+  const spaceBuckets = createSpaceBuckets();
+  // Only the first atlas's free space is available initially; subsequent atlases
+  // are opened lazily as frames overflow.
+  addSpaceToBuckets(spaceBuckets, rootSpaces[0]);
+  return {
+    rootSpaces,
+    spaceBuckets,
+    currentAtlasIndex: 0,
+    atlasSize,
+    maxAtlases,
+    padding,
+  };
+}
+
+/**
+ * Packs `frames` into the (possibly already-partially-filled) packer `state`,
+ * mutating its free-space tree and assigning each frame's `atlasIndex` /
+ * `atlasPosition`. Used by both the full compile (via `packFrames`, a fresh
+ * state) and incremental runtime adds (a retained state). Returns the same
+ * frames, now positioned.
+ *
+ * @throws Error if a frame cannot fit in any available atlas
+ */
+export function packFramesInto(
+  state: PackerState,
+  frames: UnpackedFrame[],
+): UnpackedFrame[] {
+  if (frames.length === 0) {
+    return [];
+  }
+
+  const { rootSpaces, spaceBuckets, atlasSize, maxAtlases, padding } = state;
+
+  // Sort frames into buckets (DESC, largest first)
+  const frameBuckets = sortFramesIntoBuckets(frames);
+
+  const packedFrames: UnpackedFrame[] = [];
+
+  // Consume each bucket front-to-back via an index (not shift()/unshift(), which
+  // are O(n) and would make a large pack O(N²)). A frame that doesn't fit is
+  // retried against the next atlas by simply not advancing its index.
+  const idx: Record<FrameBucket, number> = { w: 0, h: 0, s: 0 };
+
+  // Pack frames by rotating through buckets (h -> w -> s)
+  while (
+    idx.h < frameBuckets.h.length ||
+    idx.w < frameBuckets.w.length ||
+    idx.s < frameBuckets.s.length
+  ) {
+    // Determine which bucket to pull from (peek, don't advance yet)
+    let bucketType: FrameBucket;
+    if (idx.h < frameBuckets.h.length) bucketType = 'h';
+    else if (idx.w < frameBuckets.w.length) bucketType = 'w';
+    else bucketType = 's';
+    const frame = frameBuckets[bucketType][idx[bucketType]];
+
+    // Find best-fit space for this frame (including padding)
+    const paddedSize = new Vector2D(
+      frame.size.x + padding,
+      frame.size.y + padding,
+    );
+    const space = spaceBuckets[bucketType].findBestFit(
+      paddedSize.x,
+      paddedSize.y,
+    );
+
+    if (!space) {
+      // No space found, try next atlas
+      state.currentAtlasIndex++;
+      if (state.currentAtlasIndex >= maxAtlases) {
+        throw new Error(
+          `Cannot fit frame (${frame.size.x}x${frame.size.y}) into any available atlas. ` +
+            `MaxAtlases: ${maxAtlases}, AtlasSize: ${atlasSize}x${atlasSize}`,
+        );
+      }
+
+      // Open the next atlas: add its root free space to the buckets, then retry
+      // the same frame (index not advanced).
+      addSpaceToBuckets(spaceBuckets, rootSpaces[state.currentAtlasIndex]);
+      continue;
+    }
+
+    // Allocate frame to space
+    allocateFrameToSpace(frame, space, padding);
+    packedFrames.push(frame);
+    idx[bucketType]++;
+
+    // Remove allocated space from available spaces
+    removeSpaceFromBuckets(spaceBuckets, space);
+
+    // Collect and add all new available spaces from subdivision tree
+    const newSpaces = collectAvailableSpaces(space);
+    for (const newSpace of newSpaces) {
+      addSpaceToBuckets(spaceBuckets, newSpace);
+    }
+  }
+
+  return packedFrames;
 }
 
 /**
  * Packs unpacked frames into atlases using the guillotine bin packing algorithm.
+ * Thin wrapper over a throwaway PackerState — preserves the original behaviour
+ * and layout for the full-compile path and tests.
  *
  * @param frames - Array of unpacked frames to pack
  * @param atlasSize - Size of each atlas (power of 2)
@@ -48,98 +226,8 @@ export function packFrames(
   maxAtlases: number,
   padding: number,
 ): UnpackedFrame[] {
-  if (frames.length === 0) {
-    return [];
-  }
-
-  // Sort frames into buckets
-  const frameBuckets = sortFramesIntoBuckets(frames);
-
-  // Create root atlas spaces
-  const rootSpaces: AtlasSpace[] = [];
-  for (let i = 0; i < maxAtlases; i++) {
-    rootSpaces.push(
-      createRootAtlasSpace(i, new Vector2D(atlasSize, atlasSize)),
-    );
-  }
-
-  // Initialize available spaces with the first root
-  const spaceBuckets: SpaceBuckets = {
-    w: [rootSpaces[0]],
-    h: [rootSpaces[0]],
-    s: [rootSpaces[0]],
-  };
-
-  let currentAtlasIndex = 0;
-  const packedFrames: UnpackedFrame[] = [];
-
-  // Pack frames by rotating through buckets
-  while (
-    frameBuckets.h.length > 0 ||
-    frameBuckets.w.length > 0 ||
-    frameBuckets.s.length > 0
-  ) {
-    // Determine which bucket to pull from (h -> w -> s rotation)
-    let frame: UnpackedFrame | undefined;
-    let bucketType: FrameBucket;
-
-    if (frameBuckets.h.length > 0) {
-      frame = frameBuckets.h.shift();
-      bucketType = 'h';
-    } else if (frameBuckets.w.length > 0) {
-      frame = frameBuckets.w.shift();
-      bucketType = 'w';
-    } else {
-      frame = frameBuckets.s.shift();
-      bucketType = 's';
-    }
-
-    if (!frame) break;
-
-    // Find best-fit space for this frame (including padding)
-    const paddedSize = new Vector2D(
-      frame.size.x + padding,
-      frame.size.y + padding,
-    );
-    const space = findBestFitSpace(spaceBuckets, paddedSize, bucketType);
-
-    if (!space) {
-      // No space found, try next atlas
-      currentAtlasIndex++;
-      if (currentAtlasIndex >= maxAtlases) {
-        throw new Error(
-          `Cannot fit frame (${frame.size.x}x${frame.size.y}) into any available atlas. ` +
-            `MaxAtlases: ${maxAtlases}, AtlasSize: ${atlasSize}x${atlasSize}`,
-        );
-      }
-
-      // Add next root atlas to available spaces
-      const nextRoot = rootSpaces[currentAtlasIndex];
-      spaceBuckets.w.push(nextRoot);
-      spaceBuckets.h.push(nextRoot);
-      spaceBuckets.s.push(nextRoot);
-      sortSpaceBuckets(spaceBuckets);
-
-      // Try again with the same frame
-      frameBuckets[bucketType].unshift(frame);
-      continue;
-    }
-
-    // Allocate frame to space
-    allocateFrameToSpace(frame, space, padding);
-    packedFrames.push(frame);
-
-    // Remove allocated space from available spaces
-    removeSpaceFromBuckets(spaceBuckets, space);
-
-    // Collect and add all new available spaces from subdivision tree
-    const newSpaces = collectAvailableSpaces(space);
-    for (const newSpace of newSpaces) {
-      addSpaceToBuckets(spaceBuckets, newSpace);
-    }
-  }
-
-  return packedFrames;
+  const state = createPackerState(atlasSize, maxAtlases, padding);
+  return packFramesInto(state, frames);
 }
 
 /**
@@ -159,45 +247,6 @@ function sortFramesIntoBuckets(frames: UnpackedFrame[]): FrameBuckets {
   buckets.s.sort(compareBySize);
 
   return buckets;
-}
-
-/**
- * Finds the best-fit space for a frame based on bucket type.
- */
-function findBestFitSpace(
-  spaceBuckets: SpaceBuckets,
-  size: Vector2D,
-  bucketType: FrameBucket,
-): AtlasSpace | null {
-  let candidates: AtlasSpace[];
-
-  // Select candidate spaces based on bucket type
-  if (bucketType === 'h') {
-    // For tall frames, prioritize spaces sorted by height
-    candidates = spaceBuckets.h;
-  } else if (bucketType === 'w') {
-    // For wide frames, prioritize spaces sorted by width
-    candidates = spaceBuckets.w;
-  } else {
-    // For square frames, use spaces sorted by total size
-    candidates = spaceBuckets.s;
-  }
-
-  // First pass: look for exact fit
-  for (const space of candidates) {
-    if (space.size.x === size.x && space.size.y === size.y) {
-      return space;
-    }
-  }
-
-  // Second pass: look for smallest space that fits
-  for (const space of candidates) {
-    if (space.size.x >= size.x && space.size.y >= size.y) {
-      return space;
-    }
-  }
-
-  return null;
 }
 
 /**
@@ -338,40 +387,6 @@ function getRootIndex(space: AtlasSpace): number {
     current = current.parent;
   }
   return current.rootIndex;
-}
-
-/**
- * Sorts all space buckets.
- */
-function sortSpaceBuckets(spaceBuckets: SpaceBuckets): void {
-  spaceBuckets.w.sort(compareSpacesByWidth);
-  spaceBuckets.h.sort(compareSpacesByHeight);
-  spaceBuckets.s.sort(compareSpacesBySize);
-}
-
-/**
- * Removes a space from all buckets.
- */
-function removeSpaceFromBuckets(
-  spaceBuckets: SpaceBuckets,
-  space: AtlasSpace,
-): void {
-  spaceBuckets.w = spaceBuckets.w.filter((s) => s !== space);
-  spaceBuckets.h = spaceBuckets.h.filter((s) => s !== space);
-  spaceBuckets.s = spaceBuckets.s.filter((s) => s !== space);
-}
-
-/**
- * Adds a space to all buckets and re-sorts.
- */
-function addSpaceToBuckets(
-  spaceBuckets: SpaceBuckets,
-  space: AtlasSpace,
-): void {
-  spaceBuckets.w.push(space);
-  spaceBuckets.h.push(space);
-  spaceBuckets.s.push(space);
-  sortSpaceBuckets(spaceBuckets);
 }
 
 /**

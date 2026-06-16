@@ -442,6 +442,12 @@ function playStretched(
       if (active) active.sourcePosition = msg.value!;
     } else if (msg.type === 'ended') {
       ap._activeSources.delete(sourceId);
+    } else if (msg.type === 'wasm-error') {
+      console.error(
+        '[audio-player] stretched playback unavailable — audio WASM failed to initialize',
+      );
+      ap._activeSources.delete(sourceId);
+      workletNode.disconnect();
     }
   };
 

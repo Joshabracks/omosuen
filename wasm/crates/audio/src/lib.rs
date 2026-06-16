@@ -621,6 +621,11 @@ unsafe fn inst(id: u32) -> &'static mut AudioStretcher {
     v[id as usize].as_mut().unwrap()
 }
 
+// The `core_*` exports below exist SOLELY for the `test/wasm-audio.test.ts`
+// golden-snapshot parity harness — they have no production callers (production
+// drives the `stretcher_*` ABI further down). Do not delete: they are live
+// regression coverage of the core DSP (SampleBuffer / RateTransposer / Stretch /
+// AudioStretcher).
 #[no_mangle]
 pub extern "C" fn core_create(sample_rate: u32) -> u32 {
     unsafe {

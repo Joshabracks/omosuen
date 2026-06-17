@@ -1,0 +1,39 @@
+{
+  "name": "omosuen-state-overlay",
+  "version": "0.0.2",
+  "description": "Official Omosuen plugin component: reactive DOM overlays powered by State Street, driven by the engine loop.",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "module": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./src": "./src/index.ts"
+  },
+  "files": [
+    "dist",
+    "src",
+    "vendor",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npx tsc -p tsconfig.json && npx webpack --config webpack.config.cjs",
+    "build:esm": "npx tsc -p tsconfig.json",
+    "build:browser": "npx webpack --config webpack.config.cjs",
+    "prepare": "npx tsc -p tsconfig.json"
+  },
+  "keywords": [
+    "omosuen",
+    "omosuen-plugin",
+    "state-street",
+    "ui",
+    "reactive"
+  ],
+  "license": "ISC",
+  "peerDependencies": {
+    "omosuen": "*"
+  }
+}

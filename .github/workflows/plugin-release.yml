@@ -12,7 +12,7 @@ name: Plugin Release
 # (e.g. state-overlay0.0.1). Engine releases keep using `v*` tags — no collision.
 
 on:
-  pull_request:
+  push:
     branches: [main]
     paths: ['plugins/**']
   workflow_dispatch: {}

@@ -1,6 +1,6 @@
 {
   "name": "omosuen-state-overlay",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Official Omosuen plugin component: reactive DOM overlays powered by State Street, driven by the engine loop.",
   "type": "module",
   "main": "dist/src/index.js",

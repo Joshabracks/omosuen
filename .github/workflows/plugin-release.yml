@@ -1,30 +1,73 @@
 name: Plugin Release
 
-# Releases a single official plugin (under plugins/<plugin>/) as an installable
-# git tag on this repo: `npm i github:joshabracks/omosuen#<plugin><version>`.
+# Auto-releases official plugins (under plugins/<name>/) as installable git tags:
+# `npm i github:joshabracks/omosuen#<plugin><version>`. On every merge to main it
+# scans each plugin's package.json version and releases ONLY those whose tag does
+# not already exist — so cutting a release = bumping a plugin's version. Re-merges
+# without a bump are a no-op.
 #
 # npm installs a `github:` ref from the REPO ROOT package.json. On normal branches
-# the root is the engine (`omosuen`), so this workflow synthesizes an orphan commit
+# the root is the engine (`omosuen`), so the release job synthesizes an orphan commit
 # whose tree IS the plugin package (plugin at root) and tags it `<plugin><version>`
 # (e.g. state-overlay0.0.1). Engine releases keep using `v*` tags — no collision.
 
 on:
-  workflow_dispatch:
-    inputs:
-      plugin:
-        description: 'Plugin short name (directory under plugins/), e.g. state-overlay'
-        required: true
-        type: string
-      version:
-        description: 'Version, e.g. 0.0.1'
-        required: true
-        type: string
+  push:
+    branches: [main]
+    paths: ['plugins/**']
+  workflow_dispatch: {}
+
+concurrency:
+  group: plugin-release
+  cancel-in-progress: false
 
 jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.scan.outputs.matrix }}
+      any: ${{ steps.scan.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --tags --force
+
+      - name: Scan plugins for unreleased versions
+        id: scan
+        run: |
+          set -euo pipefail
+          matrix='[]'
+          for d in plugins/*/; do
+            [ -f "${d}package.json" ] || continue
+            plugin="$(basename "$d")"
+            version="$(node -p "require('./${d}package.json').version")"
+            tag="${plugin}${version}"
+            if git ls-remote --tags origin "refs/tags/${tag}" | grep -q .; then
+              echo "skip (exists): ${tag}"
+            else
+              echo "release: ${tag}"
+              matrix="$(node -e "const m=JSON.parse(process.argv[1]); m.push({plugin:process.argv[2],version:process.argv[3],tag:process.argv[4]}); console.log(JSON.stringify(m))" "$matrix" "$plugin" "$version" "$tag")"
+            fi
+          done
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          if [ "$matrix" = "[]" ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          fi
+
   release:
+    needs: detect
+    if: needs.detect.outputs.any == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    strategy:
+      matrix:
+        include: ${{ fromJSON(needs.detect.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,25 +77,20 @@ jobs:
         with:
           node-version: 22.x
 
-      - name: Validate plugin directory
-        run: |
-          test -d "plugins/${{ inputs.plugin }}" || { echo "::error::plugins/${{ inputs.plugin }} not found"; exit 1; }
-          test -f "plugins/${{ inputs.plugin }}/package.json" || { echo "::error::plugin package.json missing"; exit 1; }
-
-      - name: Install toolchain (root devDeps: tsc/webpack/ts-loader)
+      - name: 'Install toolchain (root devDeps: tsc/webpack/ts-loader)'
         run: npm install
 
       - name: Build plugin (ESM dist + browser bundle)
-        working-directory: plugins/${{ inputs.plugin }}
+        working-directory: plugins/${{ matrix.plugin }}
         run: npm run build
 
       - name: Synthesize plugin-at-root tree and tag
         env:
-          PLUGIN: ${{ inputs.plugin }}
-          VERSION: ${{ inputs.version }}
+          PLUGIN: ${{ matrix.plugin }}
+          VERSION: ${{ matrix.version }}
+          TAG: ${{ matrix.tag }}
         run: |
           set -euo pipefail
-          TAG="${PLUGIN}${VERSION}"
           STAGE="$(mktemp -d)"
           cp -r "plugins/${PLUGIN}/." "$STAGE/"
           rm -rf "$STAGE/node_modules"
@@ -74,12 +112,12 @@ jobs:
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.plugin }}${{ inputs.version }}
-          name: ${{ inputs.plugin }} v${{ inputs.version }}
+          tag_name: ${{ matrix.tag }}
+          name: ${{ matrix.plugin }} v${{ matrix.version }}
           body: |
-            Official Omosuen plugin component **omosuen-${{ inputs.plugin }}** v${{ inputs.version }}.
+            Official Omosuen plugin component **omosuen-${{ matrix.plugin }}** v${{ matrix.version }}.
 
             Install:
             ```
-            npm i github:joshabracks/omosuen#${{ inputs.plugin }}${{ inputs.version }}
+            npm i github:joshabracks/omosuen#${{ matrix.tag }}
             ```

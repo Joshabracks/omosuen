@@ -38,7 +38,17 @@ function __b64ToBytes(s) {
 }
 let __wasm = null;
 let __wasmReady = false;
+let __wasmFailed = false;
 const __pending = [];
+// On a decode/instantiate failure, mark the realm failed and tell every queued
+// processor so the main thread can surface it — otherwise __pending never drains
+// and process() would emit silence forever with no signal.
+function __failWasm(stage, e) {
+  console.error('[omosuen-audio] WASM ' + stage + ' failed', e);
+  __wasmFailed = true;
+  for (const p of __pending) p.port.postMessage({ type: 'wasm-error' });
+  __pending.length = 0;
+}
 (function () {
   try {
     WebAssembly.instantiate(__b64ToBytes(__AUDIO_WASM_B64), {}).then((res) => {
@@ -46,8 +56,8 @@ const __pending = [];
       __wasmReady = true;
       for (const p of __pending) p._onWasmReady();
       __pending.length = 0;
-    }).catch((e) => { console.error('[omosuen-audio] WASM instantiate failed', e); });
-  } catch (e) { console.error('[omosuen-audio] WASM decode failed', e); }
+    }).catch((e) => { __failWasm('instantiate', e); });
+  } catch (e) { __failWasm('decode', e); }
 })();
 
 class StretcherProcessor extends AudioWorkletProcessor {
@@ -69,6 +79,7 @@ class StretcherProcessor extends AudioWorkletProcessor {
     if (msg.type === 'init') {
       this.initMsg = msg;
       if (__wasmReady) this._create();
+      else if (__wasmFailed) this.port.postMessage({ type: 'wasm-error' });
       else __pending.push(this);
       return;
     }

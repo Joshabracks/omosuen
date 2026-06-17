@@ -760,7 +760,8 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     dVisibilityMap.indexSet(i, cell.visible);
   }
 
-  // Re-pack into Array3D then compress to Array3Dc (mirrors builder)
+  // Pack each cell into an Array3D, then load it into the canonical WASM RLE
+  // store via loadCellStore below (mirrors builder).
   const packedArray = new Array3D<number>(ms);
   packedArray.forEach((_, x, y, z, i) => {
     const coords = new Vector3D(x, y, z);

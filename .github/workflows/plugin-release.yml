@@ -1,0 +1,85 @@
+name: Plugin Release
+
+# Releases a single official plugin (under plugins/<plugin>/) as an installable
+# git tag on this repo: `npm i github:joshabracks/omosuen#<plugin><version>`.
+#
+# npm installs a `github:` ref from the REPO ROOT package.json. On normal branches
+# the root is the engine (`omosuen`), so this workflow synthesizes an orphan commit
+# whose tree IS the plugin package (plugin at root) and tags it `<plugin><version>`
+# (e.g. state-overlay0.0.1). Engine releases keep using `v*` tags — no collision.
+
+on:
+  workflow_dispatch:
+    inputs:
+      plugin:
+        description: 'Plugin short name (directory under plugins/), e.g. state-overlay'
+        required: true
+        type: string
+      version:
+        description: 'Version, e.g. 0.0.1'
+        required: true
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Validate plugin directory
+        run: |
+          test -d "plugins/${{ inputs.plugin }}" || { echo "::error::plugins/${{ inputs.plugin }} not found"; exit 1; }
+          test -f "plugins/${{ inputs.plugin }}/package.json" || { echo "::error::plugin package.json missing"; exit 1; }
+
+      - name: Install toolchain (root devDeps: tsc/webpack/ts-loader)
+        run: npm install
+
+      - name: Build plugin (ESM dist + browser bundle)
+        working-directory: plugins/${{ inputs.plugin }}
+        run: npm run build
+
+      - name: Synthesize plugin-at-root tree and tag
+        env:
+          PLUGIN: ${{ inputs.plugin }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="${PLUGIN}${VERSION}"
+          STAGE="$(mktemp -d)"
+          cp -r "plugins/${PLUGIN}/." "$STAGE/"
+          rm -rf "$STAGE/node_modules"
+          test -f "$STAGE/package.json"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Orphan branch whose tree is exactly the plugin package.
+          git checkout --orphan "release-${TAG}"
+          git rm -rf . >/dev/null 2>&1 || true
+          cp -r "$STAGE/." .
+          rm -rf node_modules
+          git add -A
+          git commit -m "release: ${PLUGIN} v${VERSION}"
+          git tag "$TAG"
+          git push origin "refs/tags/${TAG}"
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.plugin }}${{ inputs.version }}
+          name: ${{ inputs.plugin }} v${{ inputs.version }}
+          body: |
+            Official Omosuen plugin component **omosuen-${{ inputs.plugin }}** v${{ inputs.version }}.
+
+            Install:
+            ```
+            npm i github:joshabracks/omosuen#${{ inputs.plugin }}${{ inputs.version }}
+            ```

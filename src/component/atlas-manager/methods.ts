@@ -280,6 +280,40 @@ function assignPackedFrames(
  * per-frame ImageData extraction). Driven to completion by `processTextureMaps`
  * or sliced across frames by `initProgressive`.
  */
+// Blit frames onto their atlas canvases, yielding every BUILD_BATCH draws so the
+// work spreads across frames. `getContext` resolves an atlas index to its 2D ctx
+// (prebuilt array in full compile, lazy accessor in incremental); `onBlit` runs
+// optional per-frame bookkeeping (incremental mode records the dedup map + dirty
+// regions).
+const BUILD_BATCH = 512;
+function* blitFramesYielding(
+  frames: UnpackedFrame[],
+  getContext: (atlasIndex: number) => CanvasRenderingContext2D,
+  onBlit?: (frame: UnpackedFrame, index: number) => void,
+): Generator<void> {
+  let drawn = 0;
+  for (let i = 0; i < frames.length; i++) {
+    const frame = frames[i];
+    if (frame.atlasIndex === undefined || frame.atlasPosition === undefined) {
+      console.error('[atlas-manager] Frame missing atlas info', frame);
+      continue;
+    }
+    getContext(frame.atlasIndex).drawImage(
+      frame.sourceImage,
+      frame.sourcePosition.x,
+      frame.sourcePosition.y,
+      frame.size.x,
+      frame.size.y,
+      frame.atlasPosition.x,
+      frame.atlasPosition.y,
+      frame.size.x,
+      frame.size.y,
+    );
+    onBlit?.(frame, i);
+    if (++drawn % BUILD_BATCH === 0) yield;
+  }
+}
+
 async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
   if (am.textureMapIds.size === 0) {
     console.warn('[atlas-manager] No texture maps to process');
@@ -391,26 +425,7 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
   }
 
   // Blit unique frames straight onto the atlas canvases (chunked + yielding).
-  const BUILD_BATCH = 512;
-  let drawn = 0;
-  for (const frame of uniqueFrames) {
-    if (frame.atlasIndex === undefined || frame.atlasPosition === undefined) {
-      console.error('[atlas-manager] Frame missing atlas info', frame);
-      continue;
-    }
-    contexts[frame.atlasIndex].drawImage(
-      frame.sourceImage,
-      frame.sourcePosition.x,
-      frame.sourcePosition.y,
-      frame.size.x,
-      frame.size.y,
-      frame.atlasPosition.x,
-      frame.atlasPosition.y,
-      frame.size.x,
-      frame.size.y,
-    );
-    if (++drawn % BUILD_BATCH === 0) yield;
-  }
+  yield* blitFramesYielding(uniqueFrames, (idx) => contexts[idx]);
 
   if (am.config.retainAtlas) {
     // Retain: keep the canvases + packer state + dedup map alive so a later
@@ -559,42 +574,23 @@ async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
       return ctx;
     };
 
-    const BUILD_BATCH = 512;
-    let drawn = 0;
-    for (let i = 0; i < newFrames.length; i++) {
-      const frame = newFrames[i];
-      if (frame.atlasIndex === undefined || frame.atlasPosition === undefined) {
-        console.error('[atlas-manager] New frame missing atlas info', frame);
-        continue;
-      }
-      getCtx(frame.atlasIndex).drawImage(
-        frame.sourceImage,
-        frame.sourcePosition.x,
-        frame.sourcePosition.y,
-        frame.size.x,
-        frame.size.y,
-        frame.atlasPosition.x,
-        frame.atlasPosition.y,
-        frame.size.x,
-        frame.size.y,
-      );
+    // Blit only the new frames, recording the dedup map + dirty regions per frame.
+    // (version is tagged after the bump below.)
+    yield* blitFramesYielding(newFrames, getCtx, (frame, i) => {
       am.packedByKey.set(newKeys[i], {
-        atlasIndex: frame.atlasIndex,
-        atlasPosition: frame.atlasPosition,
+        atlasIndex: frame.atlasIndex!,
+        atlasPosition: frame.atlasPosition!,
         size: frame.size,
       });
-      // Record the changed rect so cameras can texSubImage2D just this region
-      // (version is tagged after the bump below).
       newRegions.push({
         version: 0,
-        atlasIndex: frame.atlasIndex,
-        x: frame.atlasPosition.x,
-        y: frame.atlasPosition.y,
+        atlasIndex: frame.atlasIndex!,
+        x: frame.atlasPosition!.x,
+        y: frame.atlasPosition!.y,
         w: frame.size.x,
         h: frame.size.y,
       });
-      if (++drawn % BUILD_BATCH === 0) yield;
-    }
+    });
   }
 
   // Reassign every texture map from the (now-updated) dedup map (old + new).

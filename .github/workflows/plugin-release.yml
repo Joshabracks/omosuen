@@ -84,6 +84,26 @@ jobs:
         working-directory: plugins/${{ matrix.plugin }}
         run: npm run build
 
+      # Copy the standalone browser bundle to a stable path BEFORE the orphan
+      # checkout rewrites the working tree, so it can be attached as a Release
+      # asset (downloadable directly, like the engine's omosuen.min.js). Convention:
+      # each plugin's browser bundle is dist/<plugin>.plugin.js.
+      - name: Stage standalone browser bundle
+        id: asset
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+        run: |
+          set -euo pipefail
+          SRC="plugins/${PLUGIN}/dist/${PLUGIN}.plugin.js"
+          if [ -f "$SRC" ]; then
+            cp "$SRC" "${RUNNER_TEMP}/${PLUGIN}.plugin.js"
+            echo "path=${RUNNER_TEMP}/${PLUGIN}.plugin.js" >> "$GITHUB_OUTPUT"
+            echo "staged standalone bundle: $SRC"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+            echo "no standalone bundle at $SRC — Release will have no JS asset"
+          fi
+
       - name: Synthesize plugin-at-root tree and tag
         env:
           PLUGIN: ${{ matrix.plugin }}
@@ -114,10 +134,14 @@ jobs:
         with:
           tag_name: ${{ matrix.tag }}
           name: ${{ matrix.plugin }} v${{ matrix.version }}
+          files: ${{ steps.asset.outputs.path }}
           body: |
             Official Omosuen plugin component **omosuen-${{ matrix.plugin }}** v${{ matrix.version }}.
 
-            Install:
+            **Standalone bundle:** download `${{ matrix.plugin }}.plugin.js` from the assets below
+            (self-registering — load it after the Omosuen UMD bundle, no build step).
+
+            Install (npm, source + ESM):
             ```
             npm i github:joshabracks/omosuen#${{ matrix.tag }}
             ```

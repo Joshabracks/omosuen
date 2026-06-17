@@ -157,6 +157,9 @@ export default [
       'test/**',
       '**/*.min.js',
       'webpack.config.js',
+      // Plugin packages build/lint under their own toolchain (own tsconfig,
+      // vendored deps); keep them out of the engine's root lint pass.
+      'plugins/**',
     ],
   },
 ];

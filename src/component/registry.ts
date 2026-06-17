@@ -103,7 +103,13 @@ import {
   builder as audioPlayerBuilder,
   PROPERTY_ALLOWLIST as AudioPlayerPropertyAllowlist,
 } from './audio-player';
-import type { COMPONENT_TYPE } from './types';
+import type {
+  COMPONENT_TYPE,
+  ComponentData,
+  ComponentOptions,
+  ComponentMethods,
+  ComponentSerializer,
+} from './types';
 
 /**
  * Method type registry for non-component functions.
@@ -383,4 +389,110 @@ export function getHtmlConstructor(
  */
 export function hasHtmlConstructor(key: string): boolean {
   return hasMethod('html-constructor', key);
+}
+
+// ── Plugin component types ──────────────────────────────────────────────────
+//
+// Built-in component types are registered statically above (BUILDERS,
+// MethodRegistry, PROPERTY_ALLOWLIST) and via SERIALIZERS in scene/loader.ts.
+// Plugin component types are registered at runtime through the functions below.
+// COMPONENT_TYPE stays a strict closed union for built-ins; a plugin's string
+// `type` is cast to it once, here, at the registration boundary — the registries
+// are plain lookups so a runtime key that isn't in the union resolves fine.
+
+/**
+ * The full definition a plugin supplies to register a new component type.
+ */
+export interface ComponentTypeDefinition {
+  /** Unique component type string (e.g. 'state-overlay'). Free-form at runtime. */
+  type: string;
+  builder: (
+    options: ComponentOptions,
+  ) => ComponentData | Promise<ComponentData>;
+  /** MethodRegistry entry: carries `type` plus init/update/dispose/etc. */
+  methods: ComponentMethods;
+  propertyAllowlist?: string[];
+  serializer?: ComponentSerializer;
+}
+
+/**
+ * Serializers for plugin component types. Built-in serializers live in
+ * scene/loader.ts's SERIALIZERS map; the loader falls back to this for plugin
+ * types via getPluginSerializer(). Kept here (not imported into the loader the
+ * other way) so the scene→component import direction stays one-way.
+ */
+const pluginSerializers: Record<string, ComponentSerializer> = {};
+
+/**
+ * Returns the serializer registered for a plugin component type, if any.
+ * Consumed by scene/loader.ts as a fallback to the built-in SERIALIZERS map.
+ */
+export function getPluginSerializer(
+  type: string,
+): ComponentSerializer | undefined {
+  return pluginSerializers[type];
+}
+
+/**
+ * Internal: writes a component type into every registry. Performs the single
+ * `as COMPONENT_TYPE` cast that bridges a plugin's string type to the strict
+ * registries. Use {@link registerPluginComponent} from plugin code.
+ */
+export function registerComponentType(def: ComponentTypeDefinition): void {
+  const type = def.type as COMPONENT_TYPE;
+  if (BUILDERS[type]) {
+    console.error(
+      `[plugin] component type '${def.type}' is already registered`,
+    );
+    return;
+  }
+  BUILDERS[type] = def.builder;
+  MethodRegistry[type] = def.methods;
+  PROPERTY_ALLOWLIST[type] = def.propertyAllowlist ?? [];
+  if (def.serializer) pluginSerializers[type] = def.serializer;
+  invalidateMethodCache();
+}
+
+/**
+ * Public plugin entry point. Validates a ComponentTypeDefinition, then registers
+ * it. Called by the engine's `plugins` init option (TS defs) and by
+ * self-registering JS plugin files via the `Omosuen` global.
+ *
+ * Plugin types must be registered before a scene that uses them is loaded /
+ * deserialized (same ordering rule as registerBinding).
+ *
+ * @example
+ * ```typescript
+ * Omosuen.registerPluginComponent({
+ *   type: 'state-overlay',
+ *   builder, methods, propertyAllowlist, serializer,
+ * });
+ * ```
+ */
+export function registerPluginComponent(def: ComponentTypeDefinition): void {
+  if (
+    !def ||
+    typeof def !== 'object' ||
+    typeof def.type !== 'string' ||
+    typeof def.builder !== 'function' ||
+    !def.methods
+  ) {
+    console.warn(
+      '[plugin] registerPluginComponent: invalid ComponentTypeDefinition',
+      def,
+    );
+    return;
+  }
+  registerComponentType(def);
+}
+
+/**
+ * Removes a plugin component type from every registry. For teardown/tests.
+ */
+export function unregisterComponentType(type: string): void {
+  delete (BUILDERS as Record<string, unknown>)[type];
+  delete (MethodRegistry as Record<string, unknown>)[type];
+  delete (PROPERTY_ALLOWLIST as Record<string, unknown>)[type];
+  delete pluginSerializers[type];
+  invalidateMethodCache();
 }

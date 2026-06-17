@@ -35,7 +35,7 @@ import {
   wrapInProxy,
 } from '../component/types';
 import { queueInit } from '../loop/init';
-import { registerMethod } from '../component/registry';
+import { registerMethod, getPluginSerializer } from '../component/registry';
 
 /**
  * Registry of component serializers, keyed by component type.
@@ -227,7 +227,8 @@ export function serializeComponentRecursive(component: ComponentData): any {
       components: serializedChildren,
     };
   } else {
-    const serializer = SERIALIZERS[component.type];
+    const serializer =
+      SERIALIZERS[component.type] ?? getPluginSerializer(component.type);
     if (serializer) {
       componentData = serializer.serialize(component);
     } else {
@@ -431,7 +432,9 @@ export async function deserializeComponentRecursive(
     }
 
     // Non-nexus component
-    const serializer = SERIALIZERS[data.type as COMPONENT_TYPE];
+    const serializer =
+      SERIALIZERS[data.type as COMPONENT_TYPE] ??
+      getPluginSerializer(data.type as string);
     if (!serializer) {
       errors.push({
         code: 'UNKNOWN_COMPONENT_TYPE',

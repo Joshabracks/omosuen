@@ -1,3 +1,5 @@
+import type { ComponentTypeDefinition } from './component/registry';
+
 /**
  * Global configuration for Omosuen engine
  */
@@ -8,6 +10,15 @@ export interface OmosuenConfig {
    * @default 0 (no suppression)
    */
   logSuppression?: number;
+
+  /**
+   * Plugin components to register during `init`. Each entry is either:
+   * - a {@link ComponentTypeDefinition} — registered directly, or
+   * - a string filepath to a self-registering JS file — executed after the
+   *   `Omosuen` global is mounted; the file calls `registerPluginComponent`.
+   * Entries that are neither are skipped with a warning.
+   */
+  plugins?: (ComponentTypeDefinition | string)[];
 }
 
 /**

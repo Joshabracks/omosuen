@@ -1,4 +1,18 @@
 /**
+ * Per-side frame overrides keyed to the three visible faces of a cell.
+ * Any omitted side/channel falls back to the Material's base `*Frame`.
+ *
+ * Only albedo + normal are supported for now (the two channels cell mode
+ * samples). Emission/material are deferred until cell shading samples them.
+ */
+export interface MaterialSideFrames {
+  /** Frame index into the albedo TextureMap for this side. */
+  albedoFrame?: number;
+  /** Frame index into the normal TextureMap for this side. */
+  normalFrame?: number;
+}
+
+/**
  * Material definition: References to 4 TextureMap components
  * Each material bundles albedo, normal, emission, and material (PBR) textures
  */
@@ -46,6 +60,30 @@ export interface Material {
    * Frame index into material TextureMap (default 0)
    */
   materialFrame: number;
+
+  /**
+   * Optional per-visible-side frame overrides. The three visible faces are:
+   * - `up`        → +Y top face        (triplanar XZ plane)
+   * - `southEast` → +X camera-right    (triplanar YZ plane)
+   * - `southWest` → +Z camera-left     (triplanar XY plane)
+   * When omitted, every side uses the Material's base `*Frame` (unchanged
+   * rendering). Per-side frames of a channel are assumed to live in the same
+   * atlas page as the base frame.
+   */
+  sides?: {
+    up?: MaterialSideFrames;
+    southEast?: MaterialSideFrames;
+    southWest?: MaterialSideFrames;
+  };
+
+  /**
+   * Optional cell-type smoothing weight (0-15, same scale as the cell-map's
+   * `smoothingWeights`). When defined, cells of this material use this weight
+   * instead of the map/per-cell weight. When undefined, the per-cell/map weight
+   * applies. Shared vertices between cells of differing weights take the lowest
+   * (hardest) weight, so softer cells snap to harder cells' square corners.
+   */
+  smoothness?: number;
 }
 
 /**

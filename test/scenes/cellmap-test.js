@@ -279,7 +279,9 @@ setTimeout(() => {
  * Generates a flat grass ground with a hollow dirt structure in the center.
  * Structure: 10x10 footprint (x=5..14, z=5..14), 10 cells tall with roof.
  * Doorway: 4-cell-wide, 4-cell-tall opening on the +X face (x=14, z=8..11, y=1..4).
- * Returns both materialMap (0=grass, 1=dirt) and shapeMap (0=air, 1=solid).
+ * Returns both materialMap and shapeMap (0=air, 1=solid). Material indices:
+ *   0 = grass, 1 = dirt (smooth), 2 = stone-sides/grass-top hard cube,
+ *   3 = hard dirt (door frame). Materials 2 and 3 use a smoothness override of 0.
  */
 function generateStructureMap(width, depth, maxHeight) {
     const materialMap = new Omosuen.Array3D(
@@ -334,6 +336,28 @@ function generateStructureMap(width, depth, maxHeight) {
         for (let z = SZ0; z <= SZ1; z++) {
             shapeMap.set(new Omosuen.Vector3D(x, ROOF_Y, z), 1);
             materialMap.set(new Omosuen.Vector3D(x, ROOF_Y, z), 1); // dirt
+        }
+    }
+
+    // Special demo cell: inside the building, one level above the ground floor,
+    // just behind the doorway so it is visible through the opening. Material 2 =
+    // stone sides + grass top, with a smoothness override of 0 (renders as a crisp
+    // cube even though the map smooths everything else).
+    const special = new Omosuen.Vector3D(13, 1, 9);
+    shapeMap.set(special, 1);
+    materialMap.set(special, 2);
+
+    // Door frame: the wall cells ringing the +X doorway opening get material 3
+    // (hard dirt, smoothness override 0). The opening stays crisp and the smooth
+    // walls around it snap to these harder cells' square corners (no seams).
+    for (let y = 1; y <= DOOR_Y_TOP + 1; y++) {
+        for (let z = DOOR_Z0 - 1; z <= DOOR_Z1 + 1; z++) {
+            const isHole = z >= DOOR_Z0 && z <= DOOR_Z1 && y <= DOOR_Y_TOP;
+            if (isHole) continue;
+            const cell = new Omosuen.Vector3D(SX1, y, z);
+            if (shapeMap.get(cell) === 1) {
+                materialMap.set(cell, 3); // hard dirt around the opening
+            }
         }
     }
 
@@ -430,6 +454,20 @@ export async function createScene() {
             name: 'Objects Normal Map',
             filePath: './assets/objects_n.png',
             imageType: objectsFrameMap,
+            atlasManager,
+        }, scene),
+        // Isometric tile set (3x3 grid, 8 frames). Used by the per-side demo cell:
+        // frame 1 = green "grass" (top), frame 2 = gray "stone" (sides). Both frames
+        // live in this single texture map, which the per-side feature requires.
+        Omosuen.newComponent('texture-map', {
+            textureMapKey: 'iso-tiles',
+            name: 'Iso Tiles',
+            filePath: './assets/iso_tiles.png',
+            imageType: {
+                cellSize: new Omosuen.Vector2D(32, 24),
+                gridSize: new Omosuen.Vector2D(3, 3),
+                cellCount: 8,
+            },
             atlasManager,
         }, scene),
         // 3. Create Viewport (800x600, centered on screen for better 3D view)
@@ -631,9 +669,31 @@ export async function createScene() {
         materialTextureKey: '',
     }
 
+    // Per-side demo material: stone (gray) sides, grass (green) top, hard cube.
+    // Both frames come from the single 'iso-tiles' texture map — `sides.up`
+    // overrides only the top (+Y) face's frame; the base frame drives the sides.
+    const stoneGrassMaterial = {
+        albedoTextureKey: 'iso-tiles',
+        normalTextureKey: '',
+        emissionTextureKey: '',
+        materialTextureKey: '',
+        albedoFrame: 2,                     // gray "stone" tile → south-east/south-west faces
+        sides: { up: { albedoFrame: 1 } },  // green "grass" tile → top face
+        smoothness: 0,                      // crisp cube, ignores the map smoothing
+    }
+
+    // Dirt that does not smooth (smoothness override 0), used for the door frame.
+    const dirtHardMaterial = {
+        albedoTextureKey: 'dirt-albedo',
+        normalTextureKey: 'dirt-normal',
+        emissionTextureKey: '',
+        materialTextureKey: '',
+        smoothness: 0,
+    }
+
     const cellMap = await Omosuen.newComponent('cell-map', {
         name: 'Terrain Structure',
-        materials: [grassMaterial, dirtMaterial],
+        materials: [grassMaterial, dirtMaterial, stoneGrassMaterial, dirtHardMaterial],
         materialMap: materialMap,
         shapeMap: shapeMap, // Explicitly provide shapeMap (0 = air, 1 = solid cube)
         cellSize: new Omosuen.Vector3D(CELL_WIDTH, CELL_HEIGHT, CELL_DEPTH),

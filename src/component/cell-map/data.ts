@@ -653,6 +653,8 @@ function serialize(component: ComponentData): any {
       normalFrame: m.normalFrame ?? 0,
       emissionFrame: m.emissionFrame ?? 0,
       materialFrame: m.materialFrame ?? 0,
+      sides: m.sides,
+      smoothness: m.smoothness,
     })),
     cellSize: {
       _vectorType: 'Vector3D',
@@ -818,6 +820,8 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     normalFrame: m.normalFrame ?? 0,
     emissionFrame: m.emissionFrame ?? 0,
     materialFrame: m.materialFrame ?? 0,
+    sides: m.sides,
+    smoothness: m.smoothness,
   }));
 
   // Assign to module-level storage

@@ -13,7 +13,21 @@ uniform bool u_hasNormal;
 uniform highp vec3 u_cellSize;
 uniform highp vec3 u_mapSize;
 uniform vec4 u_normalUVBounds;
-uniform vec2 u_textureSize;
+
+    // Per-side (per-triplanar-plane) frames for cells (Mode 0).
+    // Plane <-> visible side:  YZ = +X (south-east),  XZ = +Y (up),  XY = +Z (south-west)
+uniform vec4 u_albedoBoundsYZ;
+uniform vec4 u_albedoBoundsXZ;
+uniform vec4 u_albedoBoundsXY;
+uniform vec2 u_albedoSizeYZ;
+uniform vec2 u_albedoSizeXZ;
+uniform vec2 u_albedoSizeXY;
+uniform vec4 u_normalBoundsYZ;
+uniform vec4 u_normalBoundsXZ;
+uniform vec4 u_normalBoundsXY;
+uniform vec2 u_normalSizeYZ;
+uniform vec2 u_normalSizeXZ;
+uniform vec2 u_normalSizeXY;
 
     // Sprite-specific uniforms (Mode 1)
 uniform sampler2D u_materialTexture;
@@ -248,15 +262,16 @@ void main() {
         vec3 blendWeights = abs(normalize(v_worldNormal));
         blendWeights = blendWeights / (blendWeights.x + blendWeights.y + blendWeights.z);
 
-        // Triplanar albedo sampling with bilinear interpolation to prevent shimmer
-        vec4 albedoYZ = sampleBilinear(u_albedoTexture, vec2(v_worldPos.z, v_worldPos.y), u_textureSize, u_uvBounds);
-        vec4 albedoXZ = sampleBilinear(u_albedoTexture, vec2(v_worldPos.x, v_worldPos.z), u_textureSize, u_uvBounds);
-        vec4 albedoXY = sampleBilinear(u_albedoTexture, vec2(v_worldPos.x, v_worldPos.y), u_textureSize, u_uvBounds);
+        // Triplanar albedo sampling with bilinear interpolation to prevent shimmer.
+        // Each plane uses its own per-side frame (bounds + size).
+        vec4 albedoYZ = sampleBilinear(u_albedoTexture, vec2(v_worldPos.z, v_worldPos.y), u_albedoSizeYZ, u_albedoBoundsYZ);
+        vec4 albedoXZ = sampleBilinear(u_albedoTexture, vec2(v_worldPos.x, v_worldPos.z), u_albedoSizeXZ, u_albedoBoundsXZ);
+        vec4 albedoXY = sampleBilinear(u_albedoTexture, vec2(v_worldPos.x, v_worldPos.y), u_albedoSizeXY, u_albedoBoundsXY);
 
         // Floor-based UVs for normal maps (shimmer-insensitive, saves texture lookups)
-        vec2 normalizedUV_YZ = (mod(floor(vec2(v_worldPos.z, v_worldPos.y)), u_textureSize) + 0.5) / u_textureSize;
-        vec2 normalizedUV_XZ = (mod(floor(vec2(v_worldPos.x, v_worldPos.z)), u_textureSize) + 0.5) / u_textureSize;
-        vec2 normalizedUV_XY = (mod(floor(vec2(v_worldPos.x, v_worldPos.y)), u_textureSize) + 0.5) / u_textureSize;
+        vec2 normalizedUV_YZ = (mod(floor(vec2(v_worldPos.z, v_worldPos.y)), u_normalSizeYZ) + 0.5) / u_normalSizeYZ;
+        vec2 normalizedUV_XZ = (mod(floor(vec2(v_worldPos.x, v_worldPos.z)), u_normalSizeXZ) + 0.5) / u_normalSizeXZ;
+        vec2 normalizedUV_XY = (mod(floor(vec2(v_worldPos.x, v_worldPos.y)), u_normalSizeXY) + 0.5) / u_normalSizeXY;
 
         // Blend the three albedo samples using normal weights
         vec4 albedo = albedoYZ * blendWeights.x + albedoXZ * blendWeights.y + albedoXY * blendWeights.z;
@@ -264,9 +279,9 @@ void main() {
         // Triplanar normal mapping (if available)
         vec3 finalNormal;
         if(u_hasNormal) {
-            vec2 normalAtlasUV_YZ = mix(u_normalUVBounds.xy, u_normalUVBounds.zw, normalizedUV_YZ);
-            vec2 normalAtlasUV_XZ = mix(u_normalUVBounds.xy, u_normalUVBounds.zw, normalizedUV_XZ);
-            vec2 normalAtlasUV_XY = mix(u_normalUVBounds.xy, u_normalUVBounds.zw, normalizedUV_XY);
+            vec2 normalAtlasUV_YZ = mix(u_normalBoundsYZ.xy, u_normalBoundsYZ.zw, normalizedUV_YZ);
+            vec2 normalAtlasUV_XZ = mix(u_normalBoundsXZ.xy, u_normalBoundsXZ.zw, normalizedUV_XZ);
+            vec2 normalAtlasUV_XY = mix(u_normalBoundsXY.xy, u_normalBoundsXY.zw, normalizedUV_XY);
 
             vec3 normalMapYZ = texture2D(u_normalTexture, normalAtlasUV_YZ).rgb;
             vec3 normalMapXZ = texture2D(u_normalTexture, normalAtlasUV_XZ).rgb;

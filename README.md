@@ -206,11 +206,14 @@ silhouette. *Unique: one per parent nexus.*
 
 **`cell-map`** — Voxel grid (material/shape/emission/visibility per cell); WASM-backed RLE
 store with greedy/smoothed meshing.
-- `materials: Material[]` (**required**), `cellSize: Vector3D` (**required**), `mapSize: Vector3D` (**required**)
+- `materials: Material[]` (**required**) — each `Material` bundles `{ albedoTextureKey, normalTextureKey, emissionTextureKey, materialTextureKey: string }` and a frame index per channel `{ albedoFrame, normalFrame, emissionFrame, materialFrame?: number (default 0) }`
+  - `sides?: { up?, southEast?, southWest?: { albedoFrame?, normalFrame?: number } }` — per-visible-side texture override (the only three faces the axonometric camera shows: `up` = +Y, `southEast` = +X, `southWest` = +Z). Omitted sides/channels fall back to the base frame, so a material with no `sides` renders unchanged. Per-side frames must be frames of the **same** texture-map as the base (single atlas page); albedo + normal only.
+  - `smoothness?: number` (0–15) — per-cell-type smoothing weight that overrides `smoothingWeights` for cells of this material; omit to use the map/per-cell weight.
+- `cellSize: Vector3D` (**required**), `mapSize: Vector3D` (**required**)
 - `materialMap: Array3D<number>` (**required**)
 - `shapeMap?: Array3D<number>` (default all `1` / cube), `meshes?: Mesh[]` (default air + cube)
 - `emissionMap?: Array3D<number>` (default `0`), `visibilityMap?: Array3D<boolean>` (default `true`)
-- `smoothing?: number` (default `0`), `smoothingWeights?: number | Array3D<number>` (default `8`), `normalSmoothing?: number` (default `0`)
+- `smoothing?: number` (default `0`) — surface-net smoothing iterations; `smoothingWeights?: number | Array3D<number>` (default `8`, range 0–15) base per-cell weight; `normalSmoothing?: number` (default `0`). At a vertex shared by cells of differing weight the lowest (hardest) weight wins, so softer cells snap to harder neighbors' square corners (no seams). A material's `smoothness` overrides these per cell-type.
 - `revealExempt?: boolean` (default `false`) — ignore the camera Y-slice reveal
 
 **`light`** — Ambient / point / spot / directional light.

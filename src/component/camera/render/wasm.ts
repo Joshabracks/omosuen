@@ -36,6 +36,7 @@ interface RenderExports {
   // Meshing
   mesh_set_cell_size: (cx: number, cy: number, cz: number) => void;
   mesh_reserve_weights: (count: number) => number;
+  mesh_reserve_material_weights: (count: number) => number;
   mesh_set_smoothing: (smoothing: number, normalSmoothing: number) => void;
   mesh_build_chunk: (cx: number, cy: number, cz: number) => void;
   mesh_build_chunk_smoothed: (cx: number, cy: number, cz: number) => void;
@@ -191,6 +192,21 @@ export function setMeshSmoothing(
     view[i] = weightsFlat[i];
   }
   e.mesh_set_smoothing(smoothing, normalSmoothing);
+}
+
+/**
+ * Uploads per-material smoothing overrides (0–15, or -1 for "no override → use
+ * the per-cell/map weight"). Indexed by material index. Call once per rebuild
+ * pass (after setMeshSmoothing, before any buildChunkMeshSmoothedWasm).
+ */
+export function setMeshMaterialWeights(weights: ArrayLike<number>): void {
+  const e = ex();
+  const count = weights.length;
+  const ptr = e.mesh_reserve_material_weights(count);
+  const view = new Int32Array(e.memory.buffer, ptr, count);
+  for (let i = 0; i < count; i++) {
+    view[i] = weights[i];
+  }
 }
 
 /** Copies the current MESH_* output buffers out into standalone arrays. */

@@ -8,6 +8,16 @@ import { CameraT } from '../data';
 import { setAngleUniform, setLightUniforms } from './light-uniforms';
 import { computeSolidityMap } from './visibility-mask';
 
+/** A resolved atlas frame: normalized UV bounds, pixel size, and atlas page. */
+interface ResolvedFrame {
+  bounds: [number, number, number, number];
+  size: [number, number];
+  atlasIndex: number;
+}
+
+/** Warn-once guard for per-side frames that resolve to a different atlas page. */
+let warnedCrossAtlasFrame = false;
+
 /**
  * Snaps camera position to FBO pixel boundaries so the pixel grid
  * is locked to world space instead of screen space during panning.
@@ -117,10 +127,22 @@ export function renderCellMaps(
   const uMapSize = gl.getUniformLocation(program, 'u_mapSize');
   const uAlbedoTexture = gl.getUniformLocation(program, 'u_albedoTexture');
   const uNormalTexture = gl.getUniformLocation(program, 'u_normalTexture');
-  const uUvBounds = gl.getUniformLocation(program, 'u_uvBounds');
-  const uNormalUVBounds = gl.getUniformLocation(program, 'u_normalUVBounds');
-  const uTextureSize = gl.getUniformLocation(program, 'u_textureSize');
   const uHasNormal = gl.getUniformLocation(program, 'u_hasNormal');
+
+  // Per-side (per-triplanar-plane) frame uniforms.
+  // Plane <-> visible side: YZ = +X (south-east), XZ = +Y (up), XY = +Z (south-west)
+  const uAlbedoBoundsYZ = gl.getUniformLocation(program, 'u_albedoBoundsYZ');
+  const uAlbedoBoundsXZ = gl.getUniformLocation(program, 'u_albedoBoundsXZ');
+  const uAlbedoBoundsXY = gl.getUniformLocation(program, 'u_albedoBoundsXY');
+  const uAlbedoSizeYZ = gl.getUniformLocation(program, 'u_albedoSizeYZ');
+  const uAlbedoSizeXZ = gl.getUniformLocation(program, 'u_albedoSizeXZ');
+  const uAlbedoSizeXY = gl.getUniformLocation(program, 'u_albedoSizeXY');
+  const uNormalBoundsYZ = gl.getUniformLocation(program, 'u_normalBoundsYZ');
+  const uNormalBoundsXZ = gl.getUniformLocation(program, 'u_normalBoundsXZ');
+  const uNormalBoundsXY = gl.getUniformLocation(program, 'u_normalBoundsXY');
+  const uNormalSizeYZ = gl.getUniformLocation(program, 'u_normalSizeYZ');
+  const uNormalSizeXZ = gl.getUniformLocation(program, 'u_normalSizeXZ');
+  const uNormalSizeXY = gl.getUniformLocation(program, 'u_normalSizeXY');
 
   // Per-fragment raycasting uniform locations
   const uHasVisibilityMask = gl.getUniformLocation(
@@ -176,6 +198,49 @@ export function renderCellMaps(
   const atlasSize = atlasManager?.config.atlasSize ?? 1024;
 
   const BYTES_PER_VERTEX = 9 * 4; // 9 floats × 4 bytes (pos3 + normal3 + origPos3)
+
+  // Resolve a frame's atlas bounds + pixel size from a TextureMap.
+  const frameBounds = (
+    textureMap: TextureMapT | undefined,
+    frameIndex: number,
+  ): ResolvedFrame | null => {
+    if (!textureMap) return null;
+    const frame = textureMap.frameIndexMap.get(frameIndex);
+    if (!frame) return null;
+    const minU = frame.atlasPosition.x / atlasSize;
+    const minV = frame.atlasPosition.y / atlasSize;
+    const maxU = (frame.atlasPosition.x + frame.size.x) / atlasSize;
+    const maxV = (frame.atlasPosition.y + frame.size.y) / atlasSize;
+    return {
+      bounds: [minU, minV, maxU, maxV],
+      size: [frame.size.x, frame.size.y],
+      atlasIndex: frame.atlasIndex,
+    };
+  };
+
+  // Resolve the frame for one triplanar plane: a side override when present,
+  // otherwise the material's base frame. Side frames must live in the same atlas
+  // page as the base (single texture bind); a cross-atlas frame falls back to base.
+  const resolvePlane = (
+    textureMap: TextureMapT,
+    sideFrameIndex: number | undefined,
+    base: ResolvedFrame,
+  ): ResolvedFrame => {
+    if (sideFrameIndex === undefined) return base;
+    const fb = frameBounds(textureMap, sideFrameIndex);
+    if (!fb) return base;
+    if (fb.atlasIndex !== base.atlasIndex) {
+      if (!warnedCrossAtlasFrame) {
+        warnedCrossAtlasFrame = true;
+        console.warn(
+          '[camera] per-side frame is in a different atlas page than the base ' +
+            'frame; falling back to the base frame for that side.',
+        );
+      }
+      return base;
+    }
+    return fb;
+  };
 
   // Render each cell-map
   for (const cellMap of cellMaps) {
@@ -280,18 +345,21 @@ export function renderCellMaps(
         const material = cellMap.materials[range.materialIndex];
         if (!material) continue;
 
-        // Get albedo texture
+        const sides = material.sides;
+
+        // Get albedo texture (base frame anchors the atlas page + fallback)
         const albedoTextureMap = textureMapCache.get(material.albedoTextureKey);
         if (!albedoTextureMap || albedoTextureMap.packedFrames.length === 0)
           continue;
 
-        const albedoFrame = albedoTextureMap.frameIndexMap.get(
+        const baseAlbedo = frameBounds(
+          albedoTextureMap,
           material.albedoFrame ?? 0,
         );
-        if (!albedoFrame) continue;
+        if (!baseAlbedo) continue;
 
         const atlasTexture =
-          camera.glResources.atlasTextures[albedoFrame.atlasIndex];
+          camera.glResources.atlasTextures[baseAlbedo.atlasIndex];
         if (!atlasTexture) continue;
 
         // Bind albedo texture
@@ -299,43 +367,64 @@ export function renderCellMaps(
         gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
         gl.uniform1i(uAlbedoTexture, 0);
 
-        // Set UV bounds and texture size
-        const minU = albedoFrame.atlasPosition.x / atlasSize;
-        const minV = albedoFrame.atlasPosition.y / atlasSize;
-        const maxU =
-          (albedoFrame.atlasPosition.x + albedoFrame.size.x) / atlasSize;
-        const maxV =
-          (albedoFrame.atlasPosition.y + albedoFrame.size.y) / atlasSize;
-        gl.uniform4f(uUvBounds, minU, minV, maxU, maxV);
-        gl.uniform2f(uTextureSize, albedoFrame.size.x, albedoFrame.size.y);
+        // Per-plane albedo frames — XZ = up, YZ = south-east, XY = south-west
+        const albedoUp = resolvePlane(
+          albedoTextureMap,
+          sides?.up?.albedoFrame,
+          baseAlbedo,
+        );
+        const albedoSE = resolvePlane(
+          albedoTextureMap,
+          sides?.southEast?.albedoFrame,
+          baseAlbedo,
+        );
+        const albedoSW = resolvePlane(
+          albedoTextureMap,
+          sides?.southWest?.albedoFrame,
+          baseAlbedo,
+        );
+        gl.uniform4f(uAlbedoBoundsXZ, ...albedoUp.bounds);
+        gl.uniform2f(uAlbedoSizeXZ, ...albedoUp.size);
+        gl.uniform4f(uAlbedoBoundsYZ, ...albedoSE.bounds);
+        gl.uniform2f(uAlbedoSizeYZ, ...albedoSE.size);
+        gl.uniform4f(uAlbedoBoundsXY, ...albedoSW.bounds);
+        gl.uniform2f(uAlbedoSizeXY, ...albedoSW.size);
 
         // Bind normal texture if available
         const normalTextureMap = textureMapCache.get(material.normalTextureKey);
-        const normalFrame = normalTextureMap
-          ? normalTextureMap.frameIndexMap.get(material.normalFrame ?? 0)
-          : undefined;
-        if (normalFrame) {
+        const baseNormal = normalTextureMap
+          ? frameBounds(normalTextureMap, material.normalFrame ?? 0)
+          : null;
+        if (normalTextureMap && baseNormal) {
           const normalAtlasTexture =
-            camera.glResources.atlasTextures[normalFrame.atlasIndex];
+            camera.glResources.atlasTextures[baseNormal.atlasIndex];
 
           if (normalAtlasTexture) {
             gl.activeTexture(gl.TEXTURE1);
             gl.bindTexture(gl.TEXTURE_2D, normalAtlasTexture);
             gl.uniform1i(uNormalTexture, 1);
 
-            const normalMinU = normalFrame.atlasPosition.x / atlasSize;
-            const normalMinV = normalFrame.atlasPosition.y / atlasSize;
-            const normalMaxU =
-              (normalFrame.atlasPosition.x + normalFrame.size.x) / atlasSize;
-            const normalMaxV =
-              (normalFrame.atlasPosition.y + normalFrame.size.y) / atlasSize;
-            gl.uniform4f(
-              uNormalUVBounds,
-              normalMinU,
-              normalMinV,
-              normalMaxU,
-              normalMaxV,
+            const normalUp = resolvePlane(
+              normalTextureMap,
+              sides?.up?.normalFrame,
+              baseNormal,
             );
+            const normalSE = resolvePlane(
+              normalTextureMap,
+              sides?.southEast?.normalFrame,
+              baseNormal,
+            );
+            const normalSW = resolvePlane(
+              normalTextureMap,
+              sides?.southWest?.normalFrame,
+              baseNormal,
+            );
+            gl.uniform4f(uNormalBoundsXZ, ...normalUp.bounds);
+            gl.uniform2f(uNormalSizeXZ, ...normalUp.size);
+            gl.uniform4f(uNormalBoundsYZ, ...normalSE.bounds);
+            gl.uniform2f(uNormalSizeYZ, ...normalSE.size);
+            gl.uniform4f(uNormalBoundsXY, ...normalSW.bounds);
+            gl.uniform2f(uNormalSizeXY, ...normalSW.size);
             gl.uniform1i(uHasNormal, 1);
           } else {
             gl.uniform1i(uHasNormal, 0);

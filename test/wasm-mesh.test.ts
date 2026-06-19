@@ -15,6 +15,7 @@ import {
   loadCellStore,
   setMeshCellSize,
   setMeshSmoothing,
+  setMeshMaterialWeights,
   buildChunkMeshWasm,
   buildChunkMeshSmoothedWasm,
   type ChunkMeshResult,
@@ -29,8 +30,11 @@ const GOLDENS: Record<string, number> = {
   'g4-greedy-allair': 520366341,
   's1-smooth-flat': 752222795,
   's2-smooth-fullnorm': 844660720,
-  's3-smooth-lerp-randw': 2092834447,
-  's4-smooth-multichunk': 22181084,
+  // Updated for the min-weight seam rule: shared vertices take the lowest
+  // (hardest) contributing cell weight instead of the average, so random-weight
+  // cases shift. Uniform-weight cases (s1/s2) are unaffected.
+  's3-smooth-lerp-randw': 3190637875,
+  's4-smooth-multichunk': 758565337,
 };
 
 function makeRng(seed: number): () => number {
@@ -150,6 +154,89 @@ function caseHash(c: Case): number {
   return h;
 }
 
+/**
+ * Explicit (non-golden) check of the min-weight seam rule and the per-material
+ * smoothing override. Two solid cells sit side by side along X with different
+ * materials: cell 0 (material 0) is made HARD via a material override (weight 0)
+ * while cell 1 (material 1) falls back to the soft map weight (15).
+ *
+ * The min rule means a vertex shared by a hard and a soft cell takes the hard
+ * (0) weight, so the seam stays pinned to the grid while the soft cell's
+ * far corners are free to move. Asserts:
+ *   - every vertex on the x=1 seam plane stays exactly at its original position
+ *   - at least one soft far-corner vertex (orig x=2) moves inward (x < 2)
+ * Returns the number of failed assertions.
+ */
+function seamRuleCheck(): number {
+  const size = new Vector3D(2, 1, 1);
+  const total = size.x * size.y * size.z;
+  const packed = new Array3D<number>(size);
+  // cell 0 → material 0 (hard), cell 1 → material 1 (soft); both solid + visible
+  packed.indexSet(
+    0,
+    packCell({ materialIndex: 0, shapeIndex: 1, emissionIntensity: 0, visible: true }),
+  );
+  packed.indexSet(
+    1,
+    packCell({ materialIndex: 1, shapeIndex: 1, emissionIntensity: 0, visible: true }),
+  );
+  loadCellStore(packed.value, total, size.x, size.y, size.z);
+  setMeshCellSize(1, 1, 1);
+
+  // Soft everywhere via the map weight; material 0 overrides to hard (0).
+  const mapWeights = new Array3D<number>(size);
+  mapWeights.forEach((_v, _x, _y, _z, i) => mapWeights.indexSet(i, 15));
+  setMeshSmoothing(mapWeights.value, total, 8, 0);
+  setMeshMaterialWeights(new Int32Array([0, -1])); // mat 0 → 0, mat 1 → use map (15)
+
+  const r = buildChunkMeshSmoothedWasm(0, 0, 0);
+  let fails = 0;
+  if (!r.vertices) {
+    console.error('  ✗ seam-rule: no vertices produced');
+    return 1;
+  }
+
+  const eps = 1e-4;
+  const v = r.vertices;
+  let seamCount = 0;
+  let movedFarCorner = false;
+  for (let i = 0; i < v.length; i += 9) {
+    const px = v[i],
+      py = v[i + 1],
+      pz = v[i + 2];
+    const ox = v[i + 6],
+      oy = v[i + 7],
+      oz = v[i + 8];
+    if (Math.abs(ox - 1) < eps) {
+      // Seam vertex (shared with the hard cell) must stay pinned to original.
+      seamCount++;
+      if (
+        Math.abs(px - ox) > eps ||
+        Math.abs(py - oy) > eps ||
+        Math.abs(pz - oz) > eps
+      ) {
+        console.error(
+          `  ✗ seam-rule: seam vertex moved (${px},${py},${pz}) from (${ox},${oy},${oz})`,
+        );
+        fails++;
+      }
+    }
+    if (Math.abs(ox - 2) < eps && px < 2 - eps) movedFarCorner = true;
+  }
+  if (seamCount === 0) {
+    console.error('  ✗ seam-rule: no seam-plane vertices found');
+    fails++;
+  }
+  if (!movedFarCorner) {
+    console.error('  ✗ seam-rule: soft far corner did not move (override/smoothing inactive)');
+    fails++;
+  }
+  if (fails === 0) {
+    console.log(`  ✓ seam-rule (min weight + material override): ${seamCount} seam verts pinned`);
+  }
+  return fails;
+}
+
 async function main(): Promise<void> {
   await initRenderWasm(buildRenderWasm());
 
@@ -187,6 +274,9 @@ async function main(): Promise<void> {
       failed++;
     }
   }
+
+  // Explicit seam-rule + material-override assertions (not golden-hashed).
+  failed += seamRuleCheck();
 
   if (missing > 0) {
     console.log(

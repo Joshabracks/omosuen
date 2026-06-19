@@ -3,6 +3,7 @@ import { CHUNK_SIZE } from './types';
 import {
   setMeshCellSize,
   setMeshSmoothing,
+  setMeshMaterialWeights,
   buildChunkMeshWasm,
   buildChunkMeshSmoothedWasm,
 } from '../camera/render/wasm';
@@ -32,6 +33,17 @@ export function rebuildDirtyChunks(cellMap: CellMapT): void {
       cellMap.smoothing,
       cellMap.normalSmoothing,
     );
+
+    // Per-material smoothing overrides: a material's `smoothness` (0-15) wins
+    // over the per-cell/map weight; -1 means "no override". Cells of a harder
+    // (lower-weight) type pin shared vertices so softer neighbors snap to them.
+    const materialWeights = new Int32Array(cellMap.materials.length);
+    for (let i = 0; i < cellMap.materials.length; i++) {
+      const s = cellMap.materials[i].smoothness;
+      materialWeights[i] =
+        s === undefined ? -1 : Math.max(0, Math.min(15, Math.round(s)));
+    }
+    setMeshMaterialWeights(materialWeights);
   }
 
   for (const chunk of cellMap.chunks) {

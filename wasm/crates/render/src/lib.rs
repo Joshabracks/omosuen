@@ -307,6 +307,8 @@ static mut MESH_VERTS: Vec<f32> = Vec::new();
 static mut MESH_INDICES: Vec<u32> = Vec::new();
 static mut MESH_RANGES: Vec<u32> = Vec::new(); // flat triples [materialIndex, indexOffset, indexCount]
 static mut MAP_WEIGHTS: Vec<u32> = Vec::new();
+/// Per-material smoothing override (0–15), sentinel -1 = no override (use map weight).
+static mut MATERIAL_WEIGHTS: Vec<i32> = Vec::new();
 static mut SMOOTHING: usize = 0;
 static mut NORMAL_SMOOTHING: f64 = 0.0;
 
@@ -332,6 +334,18 @@ pub extern "C" fn mesh_reserve_weights(count: usize) -> *mut u32 {
         if m.len() < count {
             m.resize(count, 0);
         }
+        m.as_mut_ptr()
+    }
+}
+
+/// Reserves the per-material smoothing-override buffer (i32, sentinel -1 =
+/// "no override → use map weight") and returns its pointer.
+#[no_mangle]
+pub extern "C" fn mesh_reserve_material_weights(count: usize) -> *mut i32 {
+    unsafe {
+        let m = &mut *core::ptr::addr_of_mut!(MATERIAL_WEIGHTS);
+        m.clear();
+        m.resize(count, -1);
         m.as_mut_ptr()
     }
 }
@@ -667,6 +681,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
         let map_dim = store.dims;
         let cell_size = *core::ptr::addr_of!(CELL_SIZE);
         let weights_map = &*core::ptr::addr_of!(MAP_WEIGHTS);
+        let material_weights = &*core::ptr::addr_of!(MATERIAL_WEIGHTS);
         let smoothing = *core::ptr::addr_of!(SMOOTHING);
         let normal_smoothing = *core::ptr::addr_of!(NORMAL_SMOOTHING);
         let verts_out = &mut *core::ptr::addr_of_mut!(MESH_VERTS);
@@ -704,8 +719,10 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
         let mut key_to_index: BTreeMap<(u64, u64, u64), u32> = BTreeMap::new();
         let mut positions: Vec<[f64; 3]> = Vec::new();
         let mut original: Vec<[f64; 3]> = Vec::new();
-        let mut weight_sums: Vec<f64> = Vec::new();
-        let mut weight_counts: Vec<i32> = Vec::new();
+        // Per-vertex minimum of contributing cell weights. The hardest (lowest-
+        // weight) cell touching a vertex pins it, so softer cells snap to harder
+        // neighbors' square corners and no seam appears. INFINITY = untouched.
+        let mut weight_min: Vec<f64> = Vec::new();
         let mut adjacency: Vec<Vec<u32>> = Vec::new();
         let mut faces: Vec<SmoothFace> = Vec::new();
 
@@ -717,14 +734,23 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                     if !unpack_visible_solid(p) {
                         continue;
                     }
-                    let cell_weight = weights_map[cell_index] as f64;
+                    let material = unpack_material(p);
+                    // Cell-type override wins over the map/per-cell weight when set.
+                    let mat_override = material_weights
+                        .get(material as usize)
+                        .copied()
+                        .unwrap_or(-1);
+                    let cell_weight = if mat_override >= 0 {
+                        mat_override as f64
+                    } else {
+                        weights_map[cell_index] as f64
+                    };
                     let interior = x >= chunk_start[0]
                         && x < chunk_end[0]
                         && y >= chunk_start[1]
                         && y < chunk_end[1]
                         && z >= chunk_start[2]
                         && z < chunk_end[2];
-                    let material = unpack_material(p);
 
                     for face_dir in 0..6usize {
                         let dir = FACE_DIRS[face_dir];
@@ -770,15 +796,16 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                     key_to_index.insert(key, i);
                                     positions.push(pos);
                                     original.push(pos);
-                                    weight_sums.push(0.0);
-                                    weight_counts.push(0);
+                                    weight_min.push(f64::INFINITY);
                                     adjacency.push(Vec::new());
                                     i
                                 }
                             };
                             vidx[qi] = idx;
-                            weight_sums[idx as usize] += cell_weight;
-                            weight_counts[idx as usize] += 1;
+                            let w = &mut weight_min[idx as usize];
+                            if cell_weight < *w {
+                                *w = cell_weight;
+                            }
                         }
 
                         for e in 0..4usize {
@@ -801,9 +828,8 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
         let n_verts = positions.len();
         let mut vertex_weights = vec![0.0f64; n_verts];
         for i in 0..n_verts {
-            let c = weight_counts[i];
-            let avg = if c > 0 { weight_sums[i] / c as f64 } else { 0.0 };
-            vertex_weights[i] = avg / 15.0;
+            let w = weight_min[i];
+            vertex_weights[i] = if w.is_finite() { w / 15.0 } else { 0.0 };
         }
 
         smooth_vertices(

@@ -4,6 +4,8 @@ import {
   setMeshCellSize,
   setMeshSmoothing,
   setMeshMaterialWeights,
+  setCustomShape,
+  clearCustomShapes,
   buildChunkMeshWasm,
   buildChunkMeshSmoothedWasm,
 } from '../camera/render/wasm';
@@ -44,6 +46,17 @@ export function rebuildDirtyChunks(cellMap: CellMapT): void {
         s === undefined ? -1 : Math.max(0, Math.min(15, Math.round(s)));
     }
     setMeshMaterialWeights(materialWeights);
+  }
+
+  // Upload custom cell meshes (shapeIndex >= 2) so the WASM mesher emits them
+  // into the same vertex pool as cubes (smoothed/deduped together — no seams).
+  // Indices 0 (air) and 1 (default cube) are built in; only 2+ are custom.
+  clearCustomShapes();
+  for (let i = 2; i < cellMap.meshes.length; i++) {
+    const mesh = cellMap.meshes[i];
+    if (mesh && mesh.indices.length > 0) {
+      setCustomShape(i, mesh.vertices, mesh.indices);
+    }
   }
 
   for (const chunk of cellMap.chunks) {

@@ -37,6 +37,10 @@ interface RenderExports {
   mesh_set_cell_size: (cx: number, cy: number, cz: number) => void;
   mesh_reserve_weights: (count: number) => number;
   mesh_reserve_material_weights: (count: number) => number;
+  mesh_custom_clear: () => void;
+  mesh_custom_stage_verts: (count: number) => number;
+  mesh_custom_stage_indices: (count: number) => number;
+  mesh_custom_commit: (shapeIndex: number) => void;
   mesh_set_smoothing: (smoothing: number, normalSmoothing: number) => void;
   mesh_build_chunk: (cx: number, cy: number, cz: number) => void;
   mesh_build_chunk_smoothed: (cx: number, cy: number, cz: number) => void;
@@ -207,6 +211,32 @@ export function setMeshMaterialWeights(weights: ArrayLike<number>): void {
   for (let i = 0; i < count; i++) {
     view[i] = weights[i];
   }
+}
+
+/** Clears the WASM custom-shape registry. Call before re-uploading shapes. */
+export function clearCustomShapes(): void {
+  ex().mesh_custom_clear();
+}
+
+/**
+ * Uploads a custom cell mesh (shapeIndex >= 2) to the WASM registry. Vertices are
+ * local -0.5..0.5; the mesher shifts them by +0.5 to fill the cell footprint and
+ * emits the triangles into the same vertex pool as cubes (so they smooth/dedup
+ * together — no seams). Must run after clearCustomShapes(), before building chunks.
+ */
+export function setCustomShape(
+  shapeIndex: number,
+  vertices: ArrayLike<number>,
+  indices: ArrayLike<number>,
+): void {
+  const e = ex();
+  const vptr = e.mesh_custom_stage_verts(vertices.length);
+  const vview = new Float32Array(e.memory.buffer, vptr, vertices.length);
+  for (let i = 0; i < vertices.length; i++) vview[i] = vertices[i];
+  const iptr = e.mesh_custom_stage_indices(indices.length);
+  const iview = new Uint32Array(e.memory.buffer, iptr, indices.length);
+  for (let i = 0; i < indices.length; i++) iview[i] = indices[i];
+  e.mesh_custom_commit(shapeIndex);
 }
 
 /** Copies the current MESH_* output buffers out into standalone arrays. */

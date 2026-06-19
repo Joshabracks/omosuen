@@ -38,6 +38,28 @@ fn unpack_shape(packed: u32) -> u32 {
     (packed >> 12) & 0xfff
 }
 
+/// Whether the cell `packed` fully covers its face `face_i` (a FACE_DIRS index).
+/// Cubes cover all faces; air covers none; custom shapes use their cover mask.
+#[inline]
+fn cell_covers(packed: u32, face_i: usize, custom_shapes: &[CustomShape]) -> bool {
+    match unpack_shape(packed) {
+        0 => false,
+        1 => true,
+        s => custom_shapes
+            .get(s as usize)
+            .map(|cs| (cs.cover_mask >> face_i) & 1 == 1)
+            .unwrap_or(true),
+    }
+}
+
+/// Whether `packed` occludes a neighbor across the shared face: it must be solid
+/// AND cover its own `face_i` (the face pointing back at the neighbor). Used so a
+/// custom cell that does not cover a side lets the neighbor render its face there.
+#[inline]
+fn neighbor_blocks(packed: u32, face_i: usize, custom_shapes: &[CustomShape]) -> bool {
+    unpack_visible_solid(packed) && cell_covers(packed, face_i, custom_shapes)
+}
+
 // ── Canonical RLE cell store ───────────────────────────────────────────────
 //
 // Single store (module-level), matching the engine's single-cell-map storage
@@ -324,15 +346,30 @@ static mut NORMAL_SMOOTHING: f64 = 0.0;
 struct CustomShape {
     verts: Vec<f32>,   // flat [x, y, z] per vertex, local -0.5..0.5
     indices: Vec<u32>, // triangle indices
+    uvs: Vec<f32>,     // flat [u, v] per vertex; empty = triplanar (no UV mode)
+    cover_mask: u32,   // 6 bits in FACE_DIRS order; set bit = covers that face
 }
 static mut CUSTOM_SHAPES: Vec<CustomShape> = Vec::new();
 static mut CUSTOM_STAGE_VERTS: Vec<f32> = Vec::new();
 static mut CUSTOM_STAGE_INDICES: Vec<u32> = Vec::new();
+static mut CUSTOM_STAGE_UVS: Vec<f32> = Vec::new();
+/// True when any committed custom shape carries per-vertex UVs, which widens the
+/// emitted vertex from 9 to 11 floats (adds uv2) so UV-mode shapes can be sampled.
+static mut CUSTOM_UV_ENABLED: bool = false;
 
 struct Quad {
     material: i32,
     verts: [[f64; 3]; 4],
     normal: [f32; 3],
+}
+
+/// A custom-shape triangle emitted by the greedy (unsmoothed) mesher.
+struct CGreedyTri {
+    material: i32,
+    v: [[f64; 3]; 3],
+    n: [f32; 3],
+    uv: [[f32; 2]; 3],
+    has_uv: bool,
 }
 
 /// Sets the cell size (world units per cell) used for vertex positions.
@@ -372,6 +409,7 @@ pub extern "C" fn mesh_reserve_material_weights(count: usize) -> *mut i32 {
 pub extern "C" fn mesh_custom_clear() {
     unsafe {
         (*core::ptr::addr_of_mut!(CUSTOM_SHAPES)).clear();
+        *core::ptr::addr_of_mut!(CUSTOM_UV_ENABLED) = false;
     }
 }
 
@@ -398,23 +436,59 @@ pub extern "C" fn mesh_custom_stage_indices(count: usize) -> *mut u32 {
     }
 }
 
-/// Commits the staged verts + indices as the custom shape at `shape_index`.
+/// Reserves the custom-shape UV staging buffer (flat f32 u,v). Pass count 0 for a
+/// triplanar (non-UV) shape.
 #[no_mangle]
-pub extern "C" fn mesh_custom_commit(shape_index: usize) {
+pub extern "C" fn mesh_custom_stage_uvs(count: usize) -> *mut f32 {
+    unsafe {
+        let v = &mut *core::ptr::addr_of_mut!(CUSTOM_STAGE_UVS);
+        v.clear();
+        v.resize(count, 0.0);
+        v.as_mut_ptr()
+    }
+}
+
+/// Commits the staged verts + indices + uvs (and a 6-bit face-cover mask) as the
+/// custom shape at `shape_index`.
+#[no_mangle]
+pub extern "C" fn mesh_custom_commit(shape_index: usize, cover_mask: u32) {
     unsafe {
         let shapes = &mut *core::ptr::addr_of_mut!(CUSTOM_SHAPES);
         if shapes.len() <= shape_index {
             shapes.resize_with(shape_index + 1, || CustomShape {
                 verts: Vec::new(),
                 indices: Vec::new(),
+                uvs: Vec::new(),
+                cover_mask: 0x3f,
             });
         }
         let sv = &*core::ptr::addr_of!(CUSTOM_STAGE_VERTS);
         let si = &*core::ptr::addr_of!(CUSTOM_STAGE_INDICES);
+        let su = &*core::ptr::addr_of!(CUSTOM_STAGE_UVS);
+        // UV mode requires one uv (2 floats) per vertex (3 floats).
+        let has_uv = !su.is_empty() && su.len() / 2 == sv.len() / 3;
+        if has_uv {
+            *core::ptr::addr_of_mut!(CUSTOM_UV_ENABLED) = true;
+        }
         shapes[shape_index] = CustomShape {
             verts: sv.clone(),
             indices: si.clone(),
+            uvs: if has_uv { su.clone() } else { Vec::new() },
+            cover_mask: cover_mask & 0x3f,
         };
+    }
+}
+
+/// Floats per emitted vertex: 9 (pos3+normal3+origPos3), or 11 (+uv2) when any
+/// committed custom shape carries UVs. JS reads this to set up vertex attributes.
+#[no_mangle]
+pub extern "C" fn mesh_vertex_stride() -> usize {
+    unsafe {
+        if *core::ptr::addr_of!(CUSTOM_UV_ENABLED) {
+            11
+        } else {
+            9
+        }
     }
 }
 
@@ -437,6 +511,8 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
         let map_dim = store.dims;
         let cell_size = *core::ptr::addr_of!(CELL_SIZE);
         let custom_shapes = &*core::ptr::addr_of!(CUSTOM_SHAPES);
+        let uv_enabled = *core::ptr::addr_of!(CUSTOM_UV_ENABLED);
+        let fpv = if uv_enabled { 11 } else { 9 };
         let verts_out = &mut *core::ptr::addr_of_mut!(MESH_VERTS);
         let idx_out = &mut *core::ptr::addr_of_mut!(MESH_INDICES);
         let ranges_out = &mut *core::ptr::addr_of_mut!(MESH_RANGES);
@@ -510,7 +586,10 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                             let nidx = nbz as usize * stride_z
                                 + nby as usize * stride_y
                                 + nbx as usize;
-                            neighbor_solid = unpack_visible_solid(packed[nidx]);
+                            // Neighbor occludes only if it also covers its face
+                            // pointing back at this cell (face_dir ^ 1).
+                            neighbor_solid =
+                                neighbor_blocks(packed[nidx], face_dir ^ 1, custom_shapes);
                         }
 
                         if !neighbor_solid {
@@ -601,19 +680,18 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                 ranges_out.push(idx_out.len() as u32);
                 ranges_out.push(0);
             }
-            let base = (verts_out.len() / 9) as u32;
+            let base = (verts_out.len() / fpv) as u32;
             let n = q.normal;
             for i in 0..4 {
                 let p = q.verts[i];
-                verts_out.push(p[0] as f32);
-                verts_out.push(p[1] as f32);
-                verts_out.push(p[2] as f32);
-                verts_out.push(n[0]);
-                verts_out.push(n[1]);
-                verts_out.push(n[2]);
-                verts_out.push(p[0] as f32);
-                verts_out.push(p[1] as f32);
-                verts_out.push(p[2] as f32);
+                push_vertex(
+                    verts_out,
+                    uv_enabled,
+                    [p[0] as f32, p[1] as f32, p[2] as f32],
+                    n,
+                    [p[0] as f32, p[1] as f32, p[2] as f32],
+                    [0.0, 0.0],
+                );
             }
             idx_out.push(base);
             idx_out.push(base + 1);
@@ -629,7 +707,7 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
         // smoothing in the greedy path). They are excluded from the cube mask
         // above (no cube faces) but stay solid for neighbor occlusion. Triangles
         // are grouped into appended per-material ranges.
-        let mut custom_tris: Vec<(i32, [[f64; 3]; 3], [f32; 3])> = Vec::new();
+        let mut custom_tris: Vec<CGreedyTri> = Vec::new();
         for z in start[2]..end[2] {
             for y in start[1]..end[1] {
                 for x in start[0]..end[0] {
@@ -645,16 +723,22 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                     if let Some(cs) = custom_shapes.get(shape as usize) {
                         let v = &cs.verts;
                         let ind = &cs.indices;
+                        let has_uv = !cs.uvs.is_empty();
                         let mut t = 0usize;
                         while t + 2 < ind.len() {
                             let mut tv = [[0.0f64; 3]; 3];
-                            for (c, slot) in tv.iter_mut().enumerate() {
-                                let vi = ind[t + c] as usize * 3;
-                                *slot = [
+                            let mut tuv = [[0.0f32; 2]; 3];
+                            for c in 0..3 {
+                                let corner = ind[t + c] as usize;
+                                let vi = corner * 3;
+                                tv[c] = [
                                     (x as f64 + v[vi] as f64 + 0.5) * cell_size[0],
                                     (y as f64 + v[vi + 1] as f64 + 0.5) * cell_size[1],
                                     (z as f64 + v[vi + 2] as f64 + 0.5) * cell_size[2],
                                 ];
+                                if has_uv {
+                                    tuv[c] = [cs.uvs[corner * 2], cs.uvs[corner * 2 + 1]];
+                                }
                             }
                             let e1 = [
                                 tv[1][0] - tv[0][0],
@@ -675,37 +759,44 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                                 fny /= flen;
                                 fnz /= flen;
                             }
-                            custom_tris.push((
+                            custom_tris.push(CGreedyTri {
                                 material,
-                                tv,
-                                [fnx as f32, fny as f32, fnz as f32],
-                            ));
+                                v: tv,
+                                n: [fnx as f32, fny as f32, fnz as f32],
+                                uv: tuv,
+                                has_uv,
+                            });
                             t += 3;
                         }
                     }
                 }
             }
         }
-        custom_tris.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut ctri_material: i32 = -1;
-        for (material, tv, n) in &custom_tris {
-            if *material != ctri_material {
-                ctri_material = *material;
-                ranges_out.push(ctri_material as u32);
+        custom_tris.sort_by(|a, b| (a.material, a.has_uv).cmp(&(b.material, b.has_uv)));
+        let mut ctri_key: (i32, bool) = (-1, false);
+        for ct in &custom_tris {
+            if (ct.material, ct.has_uv) != ctri_key {
+                ctri_key = (ct.material, ct.has_uv);
+                let mat = if ct.has_uv {
+                    ct.material as u32 | 0x8000_0000
+                } else {
+                    ct.material as u32
+                };
+                ranges_out.push(mat);
                 ranges_out.push(idx_out.len() as u32);
                 ranges_out.push(0);
             }
-            let base = (verts_out.len() / 9) as u32;
-            for p in tv.iter() {
-                verts_out.push(p[0] as f32);
-                verts_out.push(p[1] as f32);
-                verts_out.push(p[2] as f32);
-                verts_out.push(n[0]);
-                verts_out.push(n[1]);
-                verts_out.push(n[2]);
-                verts_out.push(p[0] as f32);
-                verts_out.push(p[1] as f32);
-                verts_out.push(p[2] as f32);
+            let base = (verts_out.len() / fpv) as u32;
+            for k in 0..3 {
+                let p = ct.v[k];
+                push_vertex(
+                    verts_out,
+                    uv_enabled,
+                    [p[0] as f32, p[1] as f32, p[2] as f32],
+                    ct.n,
+                    [p[0] as f32, p[1] as f32, p[2] as f32],
+                    ct.uv[k],
+                );
             }
             idx_out.push(base);
             idx_out.push(base + 1);
@@ -760,6 +851,34 @@ struct SmoothTri {
     idx: [u32; 3],
     material: i32,
     interior: bool,
+    uv: [[f32; 2]; 3],
+    has_uv: bool,
+}
+
+/// Pushes one interleaved output vertex: pos3 + normal3 + origPos3, plus uv2 when
+/// `uv_enabled` (the chunk's vertex stride is then 11 instead of 9).
+#[inline]
+fn push_vertex(
+    verts_out: &mut Vec<f32>,
+    uv_enabled: bool,
+    p: [f32; 3],
+    n: [f32; 3],
+    o: [f32; 3],
+    uv: [f32; 2],
+) {
+    verts_out.push(p[0]);
+    verts_out.push(p[1]);
+    verts_out.push(p[2]);
+    verts_out.push(n[0]);
+    verts_out.push(n[1]);
+    verts_out.push(n[2]);
+    verts_out.push(o[0]);
+    verts_out.push(o[1]);
+    verts_out.push(o[2]);
+    if uv_enabled {
+        verts_out.push(uv[0]);
+        verts_out.push(uv[1]);
+    }
 }
 
 /// Insert-or-reuse a vertex by position in the smoothing pool, updating the
@@ -897,6 +1016,8 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
         let weights_map = &*core::ptr::addr_of!(MAP_WEIGHTS);
         let material_weights = &*core::ptr::addr_of!(MATERIAL_WEIGHTS);
         let custom_shapes = &*core::ptr::addr_of!(CUSTOM_SHAPES);
+        let uv_enabled = *core::ptr::addr_of!(CUSTOM_UV_ENABLED);
+        let fpv = if uv_enabled { 11 } else { 9 };
         let smoothing = *core::ptr::addr_of!(SMOOTHING);
         let normal_smoothing = *core::ptr::addr_of!(NORMAL_SMOOTHING);
         let verts_out = &mut *core::ptr::addr_of_mut!(MESH_VERTS);
@@ -991,7 +1112,13 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                 let nidx = nbz as usize * stride_z
                                     + nby as usize * stride_y
                                     + nbx as usize;
-                                neighbor_solid = unpack_visible_solid(packed[nidx]);
+                                // The neighbor occludes only if it also covers its
+                                // face pointing back at this cell (face_dir ^ 1).
+                                neighbor_solid = neighbor_blocks(
+                                    packed[nidx],
+                                    face_dir ^ 1,
+                                    custom_shapes,
+                                );
                             }
                             if neighbor_solid {
                                 continue;
@@ -1033,17 +1160,23 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                         // Local -0.5..0.5 verts shift by +0.5 to fill [i, i+1].
                         let v = &cs.verts;
                         let ind = &cs.indices;
+                        let has_uv = !cs.uvs.is_empty();
                         let mut t = 0usize;
                         while t + 2 < ind.len() {
                             let mut tvidx = [0u32; 3];
-                            for (c, &corner) in tvidx.iter_mut().zip(&ind[t..t + 3]) {
-                                let vi = corner as usize * 3;
+                            let mut tuv = [[0.0f32; 2]; 3];
+                            for c in 0..3 {
+                                let corner = ind[t + c] as usize;
+                                let vi = corner * 3;
                                 let pos = [
                                     (x as f64 + v[vi] as f64 + 0.5) * cell_size[0],
                                     (y as f64 + v[vi + 1] as f64 + 0.5) * cell_size[1],
                                     (z as f64 + v[vi + 2] as f64 + 0.5) * cell_size[2],
                                 ];
-                                *c = intern_vertex(
+                                if has_uv {
+                                    tuv[c] = [cs.uvs[corner * 2], cs.uvs[corner * 2 + 1]];
+                                }
+                                tvidx[c] = intern_vertex(
                                     pos,
                                     cell_weight,
                                     &mut key_to_index,
@@ -1056,7 +1189,13 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                             for e in 0..3usize {
                                 add_edge(&mut adjacency, tvidx[e], tvidx[(e + 1) % 3]);
                             }
-                            tris.push(SmoothTri { idx: tvidx, material, interior });
+                            tris.push(SmoothTri {
+                                idx: tvidx,
+                                material,
+                                interior,
+                                uv: tuv,
+                                has_uv,
+                            });
                             t += 3;
                         }
                     }
@@ -1114,7 +1253,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                 fnz /= flen;
             }
 
-            let base = (verts_out.len() / 9) as u32;
+            let base = (verts_out.len() / fpv) as u32;
             for k in 0..4 {
                 let idx = f.idx[k] as usize;
                 let p = positions[idx];
@@ -1138,15 +1277,14 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                     }
                     [nx, ny, nz]
                 };
-                verts_out.push(p[0] as f32);
-                verts_out.push(p[1] as f32);
-                verts_out.push(p[2] as f32);
-                verts_out.push(n[0] as f32);
-                verts_out.push(n[1] as f32);
-                verts_out.push(n[2] as f32);
-                verts_out.push(o[0] as f32);
-                verts_out.push(o[1] as f32);
-                verts_out.push(o[2] as f32);
+                push_vertex(
+                    verts_out,
+                    uv_enabled,
+                    [p[0] as f32, p[1] as f32, p[2] as f32],
+                    [n[0] as f32, n[1] as f32, n[2] as f32],
+                    [o[0] as f32, o[1] as f32, o[2] as f32],
+                    [0.0, 0.0],
+                );
             }
             idx_out.push(base);
             idx_out.push(base + 1);
@@ -1160,16 +1298,22 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
 
         // Custom-shape triangles, appended as additional per-material ranges.
         // Their verts reference the same smoothed `positions`, so they meet the
-        // cubes seamlessly. Flat per-triangle normals.
+        // cubes seamlessly. Flat per-triangle normals. UV-mode shapes flag their
+        // range with the high bit so the shader samples by mesh UV.
         let mut interior_tris: Vec<&SmoothTri> =
             tris.iter().filter(|t| t.interior).collect();
-        interior_tris.sort_by(|a, b| a.material.cmp(&b.material));
+        interior_tris.sort_by(|a, b| (a.material, a.has_uv).cmp(&(b.material, b.has_uv)));
 
-        let mut tri_material: i32 = -1;
+        let mut tri_key: (i32, bool) = (-1, false);
         for t in interior_tris {
-            if t.material != tri_material {
-                tri_material = t.material;
-                ranges_out.push(tri_material as u32);
+            if (t.material, t.has_uv) != tri_key {
+                tri_key = (t.material, t.has_uv);
+                let mat = if t.has_uv {
+                    t.material as u32 | 0x8000_0000
+                } else {
+                    t.material as u32
+                };
+                ranges_out.push(mat);
                 ranges_out.push(idx_out.len() as u32);
                 ranges_out.push(0);
             }
@@ -1189,20 +1333,19 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                 fnz /= flen;
             }
 
-            let base = (verts_out.len() / 9) as u32;
+            let base = (verts_out.len() / fpv) as u32;
             for k in 0..3 {
                 let idx = t.idx[k] as usize;
                 let p = positions[idx];
                 let o = original[idx];
-                verts_out.push(p[0] as f32);
-                verts_out.push(p[1] as f32);
-                verts_out.push(p[2] as f32);
-                verts_out.push(fnx as f32);
-                verts_out.push(fny as f32);
-                verts_out.push(fnz as f32);
-                verts_out.push(o[0] as f32);
-                verts_out.push(o[1] as f32);
-                verts_out.push(o[2] as f32);
+                push_vertex(
+                    verts_out,
+                    uv_enabled,
+                    [p[0] as f32, p[1] as f32, p[2] as f32],
+                    [fnx as f32, fny as f32, fnz as f32],
+                    [o[0] as f32, o[1] as f32, o[2] as f32],
+                    t.uv[k],
+                );
             }
             idx_out.push(base);
             idx_out.push(base + 1);

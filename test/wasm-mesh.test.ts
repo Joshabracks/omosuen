@@ -350,6 +350,88 @@ function customSmoothingCheck(): number {
   return fails;
 }
 
+/**
+ * A custom shape with per-vertex UVs widens the emitted vertex to 11 floats and
+ * flags its draw range for UV sampling; without UVs it stays 9 floats / triplanar.
+ */
+function customUvCheck(): number {
+  const verts = new Float32Array([-0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5]);
+  const idx = new Uint16Array([0, 1, 2]);
+  const uvs = new Float32Array([0, 0, 1, 0, 1, 1]);
+  const size = new Vector3D(1, 1, 1);
+
+  const buildWith = (withUv: boolean): ChunkMeshResult => {
+    const packed = new Array3D<number>(size);
+    packed.indexSet(0, packCell({ materialIndex: 0, shapeIndex: 2, emissionIntensity: 0, visible: true }));
+    loadCellStore(packed.value, 1, 1, 1, 1);
+    setMeshCellSize(1, 1, 1);
+    clearCustomShapes();
+    setCustomShape(2, verts, idx, withUv ? uvs : undefined);
+    return buildChunkMeshWasm(0, 0, 0);
+  };
+
+  let fails = 0;
+  const withUv = buildWith(true);
+  if (withUv.stride !== 11) {
+    console.error(`  ✗ custom-uv: expected stride 11 with UVs, got ${withUv.stride}`);
+    fails++;
+  }
+  if (!withUv.ranges.some((r) => r.useMeshUV)) {
+    console.error('  ✗ custom-uv: no UV-mode range was flagged');
+    fails++;
+  }
+  const noUv = buildWith(false);
+  if (noUv.stride !== 9) {
+    console.error(`  ✗ custom-uv: expected stride 9 without UVs, got ${noUv.stride}`);
+    fails++;
+  }
+  if (noUv.ranges.some((r) => r.useMeshUV)) {
+    console.error('  ✗ custom-uv: UV bit set without UVs');
+    fails++;
+  }
+  clearCustomShapes();
+  if (fails === 0) {
+    console.log('  ✓ custom-uv: UVs widen stride to 11 + flag the range; none → stride 9');
+  }
+  return fails;
+}
+
+/**
+ * Per-side coverage: a cube next to a custom cell culls the shared face only when
+ * the custom shape covers its facing side. Uncovering it (negX bit clear) makes
+ * the cube emit that face — +6 indices vs the covered (default) case.
+ */
+function coverageCheck(): number {
+  const verts = new Float32Array([-0.5, -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5]);
+  const idx = new Uint16Array([0, 1, 2]);
+  const size = new Vector3D(2, 1, 1);
+
+  const build = (coverMask: number): number => {
+    const packed = new Array3D<number>(size);
+    packed.indexSet(0, packCell({ materialIndex: 0, shapeIndex: 1, emissionIntensity: 0, visible: true }));
+    packed.indexSet(1, packCell({ materialIndex: 0, shapeIndex: 2, emissionIntensity: 0, visible: true }));
+    loadCellStore(packed.value, 2, 2, 1, 1);
+    setMeshCellSize(1, 1, 1);
+    clearCustomShapes();
+    setCustomShape(2, verts, idx, undefined, coverMask);
+    const r = buildChunkMeshWasm(0, 0, 0);
+    return r.indices ? r.indices.length : 0;
+  };
+
+  let fails = 0;
+  const covered = build(0x3f); // negX (bit 5) covered → cube +X face culled
+  const uncovered = build(0x3f & ~(1 << 5)); // negX uncovered → cube +X face emitted
+  if (uncovered !== covered + 6) {
+    console.error(`  ✗ coverage: uncovering the custom side should add the neighbor face (${covered} vs ${uncovered})`);
+    fails++;
+  }
+  clearCustomShapes();
+  if (fails === 0) {
+    console.log('  ✓ coverage: uncovering a custom side lets the neighbor render its face (+6 indices)');
+  }
+  return fails;
+}
+
 async function main(): Promise<void> {
   await initRenderWasm(buildRenderWasm());
 
@@ -391,10 +473,12 @@ async function main(): Promise<void> {
   // Explicit seam-rule + material-override assertions (not golden-hashed).
   failed += seamRuleCheck();
 
-  // Custom-shape rendering: WASM gating (cube suppressed, occlusion preserved)
-  // and smoothed-pipeline coupling (wedge dedups/smooths with cubes).
+  // Custom-shape rendering: WASM gating (cube suppressed, occlusion preserved),
+  // smoothed-pipeline coupling, optional UVs, and per-side coverage.
   failed += shapeGatingCheck();
   failed += customSmoothingCheck();
+  failed += customUvCheck();
+  failed += coverageCheck();
 
   if (missing > 0) {
     console.log(

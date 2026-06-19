@@ -614,11 +614,13 @@ function getChunkTrianglesInBounds(
 
     const verts = chunk.vertices;
     const indices = chunk.indices;
-    // Chunk vertices are interleaved [pos3, normal3, origPos3] — stride 9.
+    // Chunk vertices are interleaved [pos3, normal3, origPos3] (stride 9), or
+    // [+uv2] (stride 11) when the cell-map has UV custom shapes.
+    const stride = chunk.stride;
     for (let i = 0; i < indices.length; i += 3) {
-      const i0 = indices[i] * 9;
-      const i1 = indices[i + 1] * 9;
-      const i2 = indices[i + 2] * 9;
+      const i0 = indices[i] * stride;
+      const i1 = indices[i + 1] * stride;
+      const i2 = indices[i + 2] * stride;
 
       // Quick per-triangle AABB cull against collider bounds
       const x0 = verts[i0],

@@ -99,7 +99,11 @@ export interface Mesh {
   vertices: Float32Array;
 
   /**
-   * Texture coordinates as flat array: [u,v, u,v, ...]
+   * Texture coordinates as flat array: [u,v, u,v, ...].
+   * For custom cell shapes (shapeIndex >= 2): if non-empty with one uv per vertex
+   * (length === vertices.length / 3 * 2), the shape is textured by these UVs
+   * (mapped into the material's base albedo/normal atlas frame). Empty = the cell
+   * falls back to triplanar world-space texturing (the default for cubes).
    */
   uvs: Float32Array;
 
@@ -107,6 +111,21 @@ export interface Mesh {
    * Triangle indices referencing vertices array
    */
   indices: Uint16Array;
+
+  /**
+   * Optional per-face coverage flags for custom shapes. Each defaults to `true`
+   * (the face is fully covered, so neighbors cull against it — current behavior).
+   * Set a side to `false` when the mesh does not fill that cell face, so the
+   * neighboring cell renders its adjacent face into the gap instead of culling.
+   */
+  faceCover?: {
+    posX?: boolean;
+    negX?: boolean;
+    posY?: boolean;
+    negY?: boolean;
+    posZ?: boolean;
+    negZ?: boolean;
+  };
 }
 
 /**
@@ -189,6 +208,8 @@ export const CHUNK_SIZE = 16;
 export interface DrawRange {
   /** Index into the cell map's materials array */
   materialIndex: number;
+  /** True when this range samples by mesh UV instead of triplanar. */
+  useMeshUV: boolean;
   /** Byte offset into the chunk's index buffer (in index count, not bytes) */
   indexOffset: number;
   /** Number of indices to draw */
@@ -208,8 +229,10 @@ export interface ChunkMesh {
   /** Whether this chunk needs its mesh rebuilt */
   dirty: boolean;
 
-  /** Interleaved vertex data: [posX, posY, posZ, normalX, normalY, normalZ] per vertex */
+  /** Interleaved vertex data: pos3+normal3+origPos3 (stride 9), or +uv2 (stride 11) */
   vertices: Float32Array | null;
+  /** Floats per vertex in `vertices`: 9, or 11 when UV custom shapes are present */
+  stride: number;
   /** Index data */
   indices: Uint32Array | null;
   /** Material-grouped draw ranges within the index buffer */

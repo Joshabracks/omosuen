@@ -40,7 +40,9 @@ interface RenderExports {
   mesh_custom_clear: () => void;
   mesh_custom_stage_verts: (count: number) => number;
   mesh_custom_stage_indices: (count: number) => number;
-  mesh_custom_commit: (shapeIndex: number) => void;
+  mesh_custom_stage_uvs: (count: number) => number;
+  mesh_custom_commit: (shapeIndex: number, coverMask: number) => void;
+  mesh_vertex_stride: () => number;
   mesh_set_smoothing: (smoothing: number, normalSmoothing: number) => void;
   mesh_build_chunk: (cx: number, cy: number, cz: number) => void;
   mesh_build_chunk_smoothed: (cx: number, cy: number, cz: number) => void;
@@ -55,6 +57,8 @@ interface RenderExports {
 /** A draw range within a chunk's index buffer for one material. */
 export interface MeshDrawRange {
   materialIndex: number;
+  /** True when this range's vertices carry mesh UVs (sample by UV, not triplanar). */
+  useMeshUV: boolean;
   indexOffset: number;
   indexCount: number;
 }
@@ -64,6 +68,8 @@ export interface ChunkMeshResult {
   vertices: Float32Array | null;
   indices: Uint32Array | null;
   ranges: MeshDrawRange[];
+  /** Floats per vertex: 9 (pos3+normal3+origPos3) or 11 (+uv2 when UV shapes present). */
+  stride: number;
 }
 
 let wasmExports: RenderExports | null = null;
@@ -228,6 +234,8 @@ export function setCustomShape(
   shapeIndex: number,
   vertices: ArrayLike<number>,
   indices: ArrayLike<number>,
+  uvs?: ArrayLike<number>,
+  coverMask = 0x3f,
 ): void {
   const e = ex();
   const vptr = e.mesh_custom_stage_verts(vertices.length);
@@ -236,7 +244,13 @@ export function setCustomShape(
   const iptr = e.mesh_custom_stage_indices(indices.length);
   const iview = new Uint32Array(e.memory.buffer, iptr, indices.length);
   for (let i = 0; i < indices.length; i++) iview[i] = indices[i];
-  e.mesh_custom_commit(shapeIndex);
+  const uvLen = uvs ? uvs.length : 0;
+  const uptr = e.mesh_custom_stage_uvs(uvLen);
+  if (uvs && uvLen > 0) {
+    const uview = new Float32Array(e.memory.buffer, uptr, uvLen);
+    for (let i = 0; i < uvLen; i++) uview[i] = uvs[i];
+  }
+  e.mesh_custom_commit(shapeIndex, coverMask & 0x3f);
 }
 
 /** Copies the current MESH_* output buffers out into standalone arrays. */
@@ -259,15 +273,18 @@ function readMeshOutput(e: RenderExports): ChunkMeshResult {
   if (rlen > 0) {
     const rview = new Uint32Array(buffer, e.mesh_ranges_ptr(), rlen);
     for (let i = 0; i < rlen; i += 3) {
+      // High bit of the material field flags a UV-mode (mesh-UV) range.
+      const rawMat = rview[i];
       ranges.push({
-        materialIndex: rview[i],
+        materialIndex: rawMat & 0x7fffffff,
+        useMeshUV: (rawMat & 0x80000000) !== 0,
         indexOffset: rview[i + 1],
         indexCount: rview[i + 2],
       });
     }
   }
 
-  return { vertices, indices, ranges };
+  return { vertices, indices, ranges, stride: e.mesh_vertex_stride() };
 }
 
 /** Builds one chunk's greedy mesh from the resident store. */

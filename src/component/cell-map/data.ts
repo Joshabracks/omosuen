@@ -442,6 +442,7 @@ function initChunks(cgs: { x: number; y: number; z: number }): ChunkMesh[] {
           cz,
           dirty: true,
           vertices: null,
+          stride: 9,
           indices: null,
           drawRanges: [],
           faceCount: 0,
@@ -681,6 +682,7 @@ function serialize(component: ComponentData): any {
             vertices: Array.from(m.vertices),
             uvs: Array.from(m.uvs),
             indices: Array.from(m.indices),
+            faceCover: m.faceCover,
           },
     ),
   };
@@ -816,6 +818,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
       vertices?: number[];
       uvs?: number[];
       indices?: number[];
+      faceCover?: Mesh['faceCover'];
     } | null;
     (dataMeshes as SerializedMesh[]).forEach((m, i) => {
       if (i <= 1 || !m) return;
@@ -823,6 +826,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
         vertices: new Float32Array(m.vertices ?? []),
         uvs: new Float32Array(m.uvs ?? []),
         indices: new Uint16Array(m.indices ?? []),
+        faceCover: m.faceCover,
       };
     });
   }

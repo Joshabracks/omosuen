@@ -1,9 +1,12 @@
 import type { CellMapT } from './data';
+import type { Mesh } from './types';
 import { CHUNK_SIZE } from './types';
 import {
   setMeshCellSize,
   setMeshSmoothing,
   setMeshMaterialWeights,
+  setCustomShape,
+  clearCustomShapes,
   buildChunkMeshWasm,
   buildChunkMeshSmoothedWasm,
 } from '../camera/render/wasm';
@@ -46,17 +49,56 @@ export function rebuildDirtyChunks(cellMap: CellMapT): void {
     setMeshMaterialWeights(materialWeights);
   }
 
+  // Upload custom cell meshes (shapeIndex >= 2) so the WASM mesher emits them
+  // into the same vertex pool as cubes (smoothed/deduped together — no seams).
+  // Indices 0 (air) and 1 (default cube) are built in; only 2+ are custom.
+  // A non-empty mesh.uvs (one uv per vertex) enables UV texturing for that shape;
+  // mesh.faceCover lets a side opt out of occluding its neighbor.
+  clearCustomShapes();
+  for (let i = 2; i < cellMap.meshes.length; i++) {
+    const mesh = cellMap.meshes[i];
+    if (mesh && mesh.indices.length > 0) {
+      setCustomShape(
+        i,
+        mesh.vertices,
+        mesh.indices,
+        mesh.uvs,
+        packFaceCover(mesh),
+      );
+    }
+  }
+
   for (const chunk of cellMap.chunks) {
     if (!chunk.dirty) continue;
     const result = smoothed
       ? buildChunkMeshSmoothedWasm(chunk.cx, chunk.cy, chunk.cz)
       : buildChunkMeshWasm(chunk.cx, chunk.cy, chunk.cz);
     chunk.vertices = result.vertices;
+    chunk.stride = result.stride;
     chunk.indices = result.indices;
     chunk.drawRanges = result.ranges;
     chunk.faceCount = result.indices ? result.indices.length / 6 : 0;
     chunk.dirty = false;
   }
+}
+
+/**
+ * Packs a mesh's optional `faceCover` into the 6-bit mask the WASM mesher expects,
+ * in FACE_DIRS order [+Z, -Z, +Y, -Y, +X, -X]. Each side defaults to covered (1).
+ */
+function packFaceCover(mesh: Mesh): number {
+  const fc = mesh.faceCover;
+  if (!fc) return 0x3f;
+  const bit = (v: boolean | undefined, shift: number): number =>
+    (v === false ? 0 : 1) << shift;
+  return (
+    bit(fc.posZ, 0) |
+    bit(fc.negZ, 1) |
+    bit(fc.posY, 2) |
+    bit(fc.negY, 3) |
+    bit(fc.posX, 4) |
+    bit(fc.negX, 5)
+  );
 }
 
 /**

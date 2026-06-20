@@ -144,6 +144,18 @@ export function renderCellMaps(
   const uNormalSizeXZ = gl.getUniformLocation(program, 'u_normalSizeXZ');
   const uNormalSizeXY = gl.getUniformLocation(program, 'u_normalSizeXY');
 
+  // UV-mode uniforms: when a draw range carries mesh UVs, sample the material's
+  // base frame by v_uv instead of triplanar.
+  const uUseMeshUV = gl.getUniformLocation(program, 'u_useMeshUV');
+  const uAlbedoBoundsBase = gl.getUniformLocation(
+    program,
+    'u_albedoBoundsBase',
+  );
+  const uNormalBoundsBase = gl.getUniformLocation(
+    program,
+    'u_normalBoundsBase',
+  );
+
   // Per-fragment raycasting uniform locations
   const uHasVisibilityMask = gl.getUniformLocation(
     program,
@@ -196,8 +208,6 @@ export function renderCellMaps(
     true,
   ) as AtlasManagerT | null;
   const atlasSize = atlasManager?.config.atlasSize ?? 1024;
-
-  const BYTES_PER_VERTEX = 9 * 4; // 9 floats × 4 bytes (pos3 + normal3 + origPos3)
 
   // Resolve a frame's atlas bounds + pixel size from a TextureMap.
   const frameBounds = (
@@ -305,27 +315,15 @@ export function renderCellMaps(
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, chunk.glIndexBuffer);
       gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, chunk.indices, gl.STATIC_DRAW);
 
-      // Set vertex attribute pointers for interleaved layout
+      // Interleaved layout: pos3+normal3+origPos3 (stride 9), or +uv2 (stride 11
+      // when the cell-map has UV custom shapes). Stride is per-chunk from WASM.
+      const strideBytes = chunk.stride * 4;
       gl.enableVertexAttribArray(aPosition);
-      gl.vertexAttribPointer(
-        aPosition,
-        3,
-        gl.FLOAT,
-        false,
-        BYTES_PER_VERTEX,
-        0,
-      );
+      gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, strideBytes, 0);
 
       if (aNormal >= 0) {
         gl.enableVertexAttribArray(aNormal);
-        gl.vertexAttribPointer(
-          aNormal,
-          3,
-          gl.FLOAT,
-          false,
-          BYTES_PER_VERTEX,
-          12,
-        );
+        gl.vertexAttribPointer(aNormal, 3, gl.FLOAT, false, strideBytes, 12);
       }
 
       if (aOrigPosition >= 0) {
@@ -335,9 +333,20 @@ export function renderCellMaps(
           3,
           gl.FLOAT,
           false,
-          BYTES_PER_VERTEX,
+          strideBytes,
           24,
         );
+      }
+
+      // UV channel: present only at stride 11. Otherwise keep it a constant (0,0).
+      if (aUv >= 0) {
+        if (chunk.stride >= 11) {
+          gl.enableVertexAttribArray(aUv);
+          gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, strideBytes, 36);
+        } else {
+          gl.disableVertexAttribArray(aUv);
+          gl.vertexAttrib2f(aUv, 0, 0);
+        }
       }
 
       // Draw each material range
@@ -390,6 +399,10 @@ export function renderCellMaps(
         gl.uniform4f(uAlbedoBoundsXY, ...albedoSW.bounds);
         gl.uniform2f(uAlbedoSizeXY, ...albedoSW.size);
 
+        // UV mode (custom shapes with mesh UVs): sample the base frame by v_uv.
+        gl.uniform1i(uUseMeshUV, range.useMeshUV ? 1 : 0);
+        gl.uniform4f(uAlbedoBoundsBase, ...baseAlbedo.bounds);
+
         // Bind normal texture if available
         const normalTextureMap = textureMapCache.get(material.normalTextureKey);
         const baseNormal = normalTextureMap
@@ -425,6 +438,7 @@ export function renderCellMaps(
             gl.uniform2f(uNormalSizeYZ, ...normalSE.size);
             gl.uniform4f(uNormalBoundsXY, ...normalSW.bounds);
             gl.uniform2f(uNormalSizeXY, ...normalSW.size);
+            gl.uniform4f(uNormalBoundsBase, ...baseNormal.bounds);
             gl.uniform1i(uHasNormal, 1);
           } else {
             gl.uniform1i(uHasNormal, 0);

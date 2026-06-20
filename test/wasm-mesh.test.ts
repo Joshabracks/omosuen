@@ -16,6 +16,8 @@ import {
   setMeshCellSize,
   setMeshSmoothing,
   setMeshMaterialWeights,
+  setCustomShape,
+  clearCustomShapes,
   buildChunkMeshWasm,
   buildChunkMeshSmoothedWasm,
   type ChunkMeshResult,
@@ -237,6 +239,199 @@ function seamRuleCheck(): number {
   return fails;
 }
 
+/**
+ * Custom shapes (shapeIndex >= 2) must emit NO cube faces from the WASM mesher
+ * while still occluding neighbors. Three cells in a row (cube, X, cube): when the
+ * middle is a custom shape the two end cubes lose their inner faces (10 faces);
+ * when the middle is air those inner faces are exposed (12 faces). Returns fails.
+ */
+function shapeGatingCheck(): number {
+  clearCustomShapes();
+  setMeshCellSize(1, 1, 1);
+  const build = (middleShape: number): number => {
+    const packed = new Array3D<number>(new Vector3D(3, 1, 1));
+    const cube = packCell({ materialIndex: 0, shapeIndex: 1, emissionIntensity: 0, visible: true });
+    packed.indexSet(0, cube);
+    packed.indexSet(1, packCell({ materialIndex: 0, shapeIndex: middleShape, emissionIntensity: 0, visible: true }));
+    packed.indexSet(2, cube);
+    loadCellStore(packed.value, 3, 3, 1, 1);
+    const r = buildChunkMeshWasm(0, 0, 0);
+    return r.indices ? r.indices.length / 6 : 0;
+  };
+  let fails = 0;
+  const facesCustom = build(2);
+  const facesAir = build(0);
+  if (facesCustom !== 10) {
+    console.error(`  ✗ shape-gating: custom middle should yield 10 faces (no cube, neighbors culled), got ${facesCustom}`);
+    fails++;
+  }
+  if (facesAir !== 12) {
+    console.error(`  ✗ shape-gating: air middle should yield 12 faces (inner faces exposed), got ${facesAir}`);
+    fails++;
+  }
+  if (fails === 0) {
+    console.log('  ✓ shape-gating: custom shape emits no cube but still occludes (10 vs air 12)');
+  }
+  return fails;
+}
+
+/**
+ * Custom shapes (shapeIndex >= 2) must be emitted by the SMOOTHED mesher and
+ * share vertices with neighboring cubes (deduped into the smoothing pool → no
+ * seam). A row of cubes (material 0) with a wedge cell (shape 2, material 1)
+ * between them: registering the wedge adds geometry, and at least one wedge
+ * vertex coincides exactly with a cube vertex (same smoothed position). Returns fails.
+ */
+function customSmoothingCheck(): number {
+  // One triangle on shared cell corners (local -0.5..0.5).
+  const wedgeVerts = new Float32Array([
+    -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5,
+  ]);
+  const wedgeIdx = new Uint16Array([0, 1, 2]);
+  const size = new Vector3D(3, 1, 1);
+  const total = 3;
+
+  const build = (): ChunkMeshResult => {
+    const packed = new Array3D<number>(size);
+    packed.indexSet(0, packCell({ materialIndex: 0, shapeIndex: 1, emissionIntensity: 0, visible: true }));
+    packed.indexSet(1, packCell({ materialIndex: 1, shapeIndex: 2, emissionIntensity: 0, visible: true }));
+    packed.indexSet(2, packCell({ materialIndex: 0, shapeIndex: 1, emissionIntensity: 0, visible: true }));
+    loadCellStore(packed.value, total, 3, 1, 1);
+    setMeshCellSize(1, 1, 1);
+    const weights = new Array3D<number>(size, 8);
+    setMeshSmoothing(weights.value, total, 4, 0);
+    setMeshMaterialWeights(new Int32Array([-1, -1]));
+    return buildChunkMeshSmoothedWasm(0, 0, 0);
+  };
+
+  let fails = 0;
+
+  clearCustomShapes();
+  const i0 = build().indices?.length ?? 0;
+
+  clearCustomShapes();
+  setCustomShape(2, wedgeVerts, wedgeIdx);
+  const withShape = build();
+  const i1 = withShape.indices?.length ?? 0;
+
+  if (i1 <= i0) {
+    console.error(`  ✗ custom-smoothing: smoothed mesher emitted no wedge geometry (i0=${i0}, i1=${i1})`);
+    fails++;
+  }
+
+  // Coupling: a wedge (material 1) vertex must exactly equal a cube (material 0)
+  // vertex — proving they deduped into a single smoothed vertex (no seam).
+  const v = withShape.vertices;
+  const idx = withShape.indices;
+  if (v && idx) {
+    const matPositions = (mat: number): Set<string> => {
+      const s = new Set<string>();
+      for (const r of withShape.ranges) {
+        if (r.materialIndex !== mat) continue;
+        for (let k = 0; k < r.indexCount; k++) {
+          const vi = idx[r.indexOffset + k] * 9;
+          s.add(`${v[vi]},${v[vi + 1]},${v[vi + 2]}`);
+        }
+      }
+      return s;
+    };
+    const cubePos = matPositions(0);
+    let shared = 0;
+    for (const p of matPositions(1)) if (cubePos.has(p)) shared++;
+    if (shared === 0) {
+      console.error('  ✗ custom-smoothing: no wedge vertex coincides with a cube vertex (not coupled)');
+      fails++;
+    } else if (fails === 0) {
+      console.log(`  ✓ custom-smoothing: wedge smoothed with cubes, ${shared} shared vertices (seamless)`);
+    }
+  }
+
+  clearCustomShapes();
+  return fails;
+}
+
+/**
+ * A custom shape with per-vertex UVs widens the emitted vertex to 11 floats and
+ * flags its draw range for UV sampling; without UVs it stays 9 floats / triplanar.
+ */
+function customUvCheck(): number {
+  const verts = new Float32Array([-0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5]);
+  const idx = new Uint16Array([0, 1, 2]);
+  const uvs = new Float32Array([0, 0, 1, 0, 1, 1]);
+  const size = new Vector3D(1, 1, 1);
+
+  const buildWith = (withUv: boolean): ChunkMeshResult => {
+    const packed = new Array3D<number>(size);
+    packed.indexSet(0, packCell({ materialIndex: 0, shapeIndex: 2, emissionIntensity: 0, visible: true }));
+    loadCellStore(packed.value, 1, 1, 1, 1);
+    setMeshCellSize(1, 1, 1);
+    clearCustomShapes();
+    setCustomShape(2, verts, idx, withUv ? uvs : undefined);
+    return buildChunkMeshWasm(0, 0, 0);
+  };
+
+  let fails = 0;
+  const withUv = buildWith(true);
+  if (withUv.stride !== 11) {
+    console.error(`  ✗ custom-uv: expected stride 11 with UVs, got ${withUv.stride}`);
+    fails++;
+  }
+  if (!withUv.ranges.some((r) => r.useMeshUV)) {
+    console.error('  ✗ custom-uv: no UV-mode range was flagged');
+    fails++;
+  }
+  const noUv = buildWith(false);
+  if (noUv.stride !== 9) {
+    console.error(`  ✗ custom-uv: expected stride 9 without UVs, got ${noUv.stride}`);
+    fails++;
+  }
+  if (noUv.ranges.some((r) => r.useMeshUV)) {
+    console.error('  ✗ custom-uv: UV bit set without UVs');
+    fails++;
+  }
+  clearCustomShapes();
+  if (fails === 0) {
+    console.log('  ✓ custom-uv: UVs widen stride to 11 + flag the range; none → stride 9');
+  }
+  return fails;
+}
+
+/**
+ * Per-side coverage: a cube next to a custom cell culls the shared face only when
+ * the custom shape covers its facing side. Uncovering it (negX bit clear) makes
+ * the cube emit that face — +6 indices vs the covered (default) case.
+ */
+function coverageCheck(): number {
+  const verts = new Float32Array([-0.5, -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5]);
+  const idx = new Uint16Array([0, 1, 2]);
+  const size = new Vector3D(2, 1, 1);
+
+  const build = (coverMask: number): number => {
+    const packed = new Array3D<number>(size);
+    packed.indexSet(0, packCell({ materialIndex: 0, shapeIndex: 1, emissionIntensity: 0, visible: true }));
+    packed.indexSet(1, packCell({ materialIndex: 0, shapeIndex: 2, emissionIntensity: 0, visible: true }));
+    loadCellStore(packed.value, 2, 2, 1, 1);
+    setMeshCellSize(1, 1, 1);
+    clearCustomShapes();
+    setCustomShape(2, verts, idx, undefined, coverMask);
+    const r = buildChunkMeshWasm(0, 0, 0);
+    return r.indices ? r.indices.length : 0;
+  };
+
+  let fails = 0;
+  const covered = build(0x3f); // negX (bit 5) covered → cube +X face culled
+  const uncovered = build(0x3f & ~(1 << 5)); // negX uncovered → cube +X face emitted
+  if (uncovered !== covered + 6) {
+    console.error(`  ✗ coverage: uncovering the custom side should add the neighbor face (${covered} vs ${uncovered})`);
+    fails++;
+  }
+  clearCustomShapes();
+  if (fails === 0) {
+    console.log('  ✓ coverage: uncovering a custom side lets the neighbor render its face (+6 indices)');
+  }
+  return fails;
+}
+
 async function main(): Promise<void> {
   await initRenderWasm(buildRenderWasm());
 
@@ -277,6 +472,13 @@ async function main(): Promise<void> {
 
   // Explicit seam-rule + material-override assertions (not golden-hashed).
   failed += seamRuleCheck();
+
+  // Custom-shape rendering: WASM gating (cube suppressed, occlusion preserved),
+  // smoothed-pipeline coupling, optional UVs, and per-side coverage.
+  failed += shapeGatingCheck();
+  failed += customSmoothingCheck();
+  failed += customUvCheck();
+  failed += coverageCheck();
 
   if (missing > 0) {
     console.log(

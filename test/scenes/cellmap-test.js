@@ -277,11 +277,13 @@ setTimeout(() => {
 
 /**
  * Generates a flat grass ground with a hollow dirt structure in the center.
- * Structure: 10x10 footprint (x=5..14, z=5..14), 10 cells tall with roof.
+ * Structure: 10x10 footprint (x=5..14, z=5..14), walls y=1..9, topped with a
+ * stepped gable roof (ridge along X) built from custom ramp meshes.
  * Doorway: 4-cell-wide, 4-cell-tall opening on the +X face (x=14, z=8..11, y=1..4).
- * Returns both materialMap and shapeMap (0=air, 1=solid). Material indices:
- *   0 = grass, 1 = dirt (smooth), 2 = stone-sides/grass-top hard cube,
- *   3 = hard dirt (door frame). Materials 2 and 3 use a smoothness override of 0.
+ * Returns both materialMap and shapeMap. Shape indices: 0=air, 1=cube,
+ *   2=rampSW, 3=rampNE, 4=halfCube (NE side non-covering). Material indices:
+ *   0=grass, 1=dirt (smooth), 2=stone-sides/grass-top hard cube, 3=hard dirt
+ *   (door frame). Materials 2 and 3 use a smoothness override of 0.
  */
 function generateStructureMap(width, depth, maxHeight) {
     const materialMap = new Omosuen.Array3D(
@@ -331,11 +333,26 @@ function generateStructureMap(width, depth, maxHeight) {
         }
     }
 
-    // Build roof at ROOF_Y (all cells in footprint)
+    // Stepped gable roof: the ridge runs along X, centered between z=9 and z=10.
+    // Each Z-row steps up one level toward the ridge and is capped by a custom
+    // ramp cell (shapeIndex 2 = rampSW on the +Z/south-west half, 3 = rampNE on
+    // the -Z/north-east half). Solid dirt cubes fill beneath each ramp so the
+    // gable reads as a solid mass and the two slopes meet at the ridge.
+    const RIDGE_Y = 14;
     for (let x = SX0; x <= SX1; x++) {
         for (let z = SZ0; z <= SZ1; z++) {
-            shapeMap.set(new Omosuen.Vector3D(x, ROOF_Y, z), 1);
-            materialMap.set(new Omosuen.Vector3D(x, ROOF_Y, z), 1); // dirt
+            const distFromRidge = z >= 10 ? z - 10 : 9 - z; // 0 at ridge, 4 at eaves
+            const baseY = RIDGE_Y - distFromRidge;
+            const rampShape = z >= 10 ? 2 : 3; // 2 = rampSW (+Z), 3 = rampNE (-Z)
+
+            // Supporting cubes from the roof base up to just below the ramp.
+            for (let y = ROOF_Y; y < baseY; y++) {
+                shapeMap.set(new Omosuen.Vector3D(x, y, z), 1);
+                materialMap.set(new Omosuen.Vector3D(x, y, z), 1); // dirt
+            }
+            // Ramp cell on top (custom shape, dirt material).
+            shapeMap.set(new Omosuen.Vector3D(x, baseY, z), rampShape);
+            materialMap.set(new Omosuen.Vector3D(x, baseY, z), 1); // dirt
         }
     }
 
@@ -359,6 +376,16 @@ function generateStructureMap(width, depth, maxHeight) {
                 materialMap.set(cell, 3); // hard dirt around the opening
             }
         }
+    }
+
+    // A line of half-height grass cells (shapeIndex 4) on the ground directly to
+    // the south-west (+Z) of the SW building wall (z = SZ1). Their north-east (-Z)
+    // face is non-covering, so the wall directly behind them stays fully visible
+    // (not culled by these half cells).
+    const HALF_Z = SZ1 + 1; // z = 15, just outside the SW wall
+    for (let x = SX0; x <= SX1; x++) {
+        shapeMap.set(new Omosuen.Vector3D(x, 1, HALF_Z), 4); // half-height cube
+        materialMap.set(new Omosuen.Vector3D(x, 1, HALF_Z), 0); // grass
     }
 
     return { materialMap, shapeMap };
@@ -691,11 +718,84 @@ export async function createScene() {
         smoothness: 0,
     }
 
+    // Custom roof meshes (triangular-prism wedges in -0.5..0.5 local space, scaled
+    // by cellSize and offset to fill the cell footprint at render time). UVs are
+    // unused (cells are triplanar-textured); winding is CCW so the outward face
+    // normals survive back-face culling.
+    //
+    // rampSW: high ridge edge at z=-0.5, sloping down toward +Z (south-west).
+    const rampSW = {
+        vertices: new Float32Array([
+            -0.5, -0.5, -0.5,  // 0 A bottom
+             0.5, -0.5, -0.5,  // 1 B
+             0.5, -0.5,  0.5,  // 2 C
+            -0.5, -0.5,  0.5,  // 3 D
+            -0.5,  0.5, -0.5,  // 4 E ridge edge (z=-0.5)
+             0.5,  0.5, -0.5,  // 5 F
+        ]),
+        uvs: new Float32Array(0),
+        indices: new Uint16Array([
+            0, 1, 2, 0, 2, 3,   // bottom (-Y)
+            0, 4, 5, 0, 5, 1,   // back (-Z, tall face)
+            4, 3, 2, 4, 2, 5,   // slope (faces +Y/+Z)
+            1, 5, 2,            // right (+X)
+            0, 3, 4,            // left (-X)
+        ]),
+    };
+    // rampNE: high ridge edge at z=+0.5, sloping down toward -Z (north-east).
+    const rampNE = {
+        vertices: new Float32Array([
+            -0.5, -0.5, -0.5,  // 0 A bottom
+             0.5, -0.5, -0.5,  // 1 B
+             0.5, -0.5,  0.5,  // 2 C
+            -0.5, -0.5,  0.5,  // 3 D
+            -0.5,  0.5,  0.5,  // 4 G ridge edge (z=+0.5)
+             0.5,  0.5,  0.5,  // 5 H
+        ]),
+        uvs: new Float32Array(0),
+        indices: new Uint16Array([
+            0, 1, 2, 0, 2, 3,   // bottom (-Y)
+            3, 2, 5, 3, 5, 4,   // front (+Z, tall face)
+            4, 5, 1, 4, 1, 0,   // slope (faces +Y/-Z)
+            1, 5, 2,            // right (+X)
+            0, 3, 4,            // left (-X)
+        ]),
+    };
+
+    // halfCube: a box filling the lower half of the cell (y = -0.5 .. 0.0). Its
+    // north-east (-Z) face is marked non-covering via faceCover.negZ = false, so a
+    // wall cell directly to its NE still renders its full face (the half cell does
+    // not occlude it). Triplanar-textured (grass), so no UVs.
+    const halfCube = {
+        vertices: new Float32Array([
+            -0.5, -0.5, -0.5,  // 0 A bottom
+             0.5, -0.5, -0.5,  // 1 B
+             0.5, -0.5,  0.5,  // 2 C
+            -0.5, -0.5,  0.5,  // 3 D
+            -0.5,  0.0, -0.5,  // 4 E top (mid-height)
+             0.5,  0.0, -0.5,  // 5 F
+             0.5,  0.0,  0.5,  // 6 G
+            -0.5,  0.0,  0.5,  // 7 H
+        ]),
+        uvs: new Float32Array(0),
+        indices: new Uint16Array([
+            4, 7, 6, 4, 6, 5,   // top (+Y)
+            0, 1, 2, 0, 2, 3,   // bottom (-Y)
+            3, 2, 6, 3, 6, 7,   // +Z (south-west)
+            1, 0, 4, 1, 4, 5,   // -Z (north-east)
+            1, 5, 6, 1, 6, 2,   // +X (south-east)
+            0, 3, 7, 0, 7, 4,   // -X (north-west)
+        ]),
+        faceCover: { negZ: false }, // NE side does not occlude the neighbor wall
+    };
+
     const cellMap = await Omosuen.newComponent('cell-map', {
         name: 'Terrain Structure',
         materials: [grassMaterial, dirtMaterial, stoneGrassMaterial, dirtHardMaterial],
         materialMap: materialMap,
-        shapeMap: shapeMap, // Explicitly provide shapeMap (0 = air, 1 = solid cube)
+        shapeMap: shapeMap, // 0 = air, 1 = cube, 2 = rampSW, 3 = rampNE, 4 = halfCube
+        // Index 0 (air) and 1 (default cube) are null so the builder auto-fills them.
+        meshes: [null, null, rampSW, rampNE, halfCube],
         cellSize: new Omosuen.Vector3D(CELL_WIDTH, CELL_HEIGHT, CELL_DEPTH),
         mapSize: new Omosuen.Vector3D(MAP_WIDTH, MAP_HEIGHT, MAP_DEPTH),
         smoothing: 4,

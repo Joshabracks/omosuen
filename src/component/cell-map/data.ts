@@ -442,6 +442,7 @@ function initChunks(cgs: { x: number; y: number; z: number }): ChunkMesh[] {
           cz,
           dirty: true,
           vertices: null,
+          stride: 9,
           indices: null,
           drawRanges: [],
           faceCount: 0,
@@ -672,6 +673,18 @@ function serialize(component: ComponentData): any {
     smoothing: cm.smoothing,
     normalSmoothing: cm.normalSmoothing,
     revealExempt: cm.revealExempt,
+    // Custom shape meshes (index 0 = air, 1 = default cube are auto-filled on
+    // load, so serialize them as null). Indices 2+ are persisted as plain arrays.
+    meshes: cm.meshes.map((m, i) =>
+      i <= 1
+        ? null
+        : {
+            vertices: Array.from(m.vertices),
+            uvs: Array.from(m.uvs),
+            indices: Array.from(m.indices),
+            faceCover: m.faceCover,
+          },
+    ),
   };
 }
 
@@ -706,6 +719,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     smoothing: dataSmoothing,
     normalSmoothing: dataNormalSmoothing,
     revealExempt: dataRevealExempt,
+    meshes: dataMeshes,
   } = data;
 
   if (type !== 'cell-map') {
@@ -789,7 +803,8 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   await initRenderWasm();
   loadCellStore(packedArray.value, packedArray.value.length, ms.x, ms.y, ms.z);
 
-  // Meshes: air at 0, default cube at 1
+  // Meshes: air at 0, default cube at 1 (auto-filled); custom shapes at 2+ are
+  // reconstructed from the serialized plain arrays.
   const dMeshes: Mesh[] = [
     {
       vertices: new Float32Array(0),
@@ -798,6 +813,23 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     },
     generateDefaultCubeMesh(),
   ];
+  if (Array.isArray(dataMeshes)) {
+    type SerializedMesh = {
+      vertices?: number[];
+      uvs?: number[];
+      indices?: number[];
+      faceCover?: Mesh['faceCover'];
+    } | null;
+    (dataMeshes as SerializedMesh[]).forEach((m, i) => {
+      if (i <= 1 || !m) return;
+      dMeshes[i] = {
+        vertices: new Float32Array(m.vertices ?? []),
+        uvs: new Float32Array(m.uvs ?? []),
+        indices: new Uint16Array(m.indices ?? []),
+        faceCover: m.faceCover,
+      };
+    });
+  }
 
   // Smoothing weights (uniform default)
   const weightsArray3D = new Array3D<number>(ms, 8);

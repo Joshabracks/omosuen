@@ -20,12 +20,14 @@ renders with WebGL2, runs hot paths (voxel meshing, visibility, audio time-stret
   through a Proxy from a central method registry (data-oriented, not class instances).
 - **Extensible.** Register methods, UI bindings, and whole new component types at runtime —
   including external **plugin components** (see [Official plugins](#official-plugins)).
+- **Customizable voxel cells.** Per-side textures, per-cell-type smoothing, and custom per-cell
+  meshes — with optional UVs and per-face coverage — all meshed (and smoothed) in WASM.
 
 ## Install
 
 ```bash
 # npm / bundler — install a tagged engine release straight from GitHub
-npm i github:joshabracks/omosuen#v0.3.1
+npm i github:joshabracks/omosuen#v0.6.0
 ```
 
 ```html
@@ -211,7 +213,12 @@ store with greedy/smoothed meshing.
   - `smoothness?: number` (0–15) — per-cell-type smoothing weight that overrides `smoothingWeights` for cells of this material; omit to use the map/per-cell weight.
 - `cellSize: Vector3D` (**required**), `mapSize: Vector3D` (**required**)
 - `materialMap: Array3D<number>` (**required**)
-- `shapeMap?: Array3D<number>` (default all `1` / cube), `meshes?: Mesh[]` (default air + cube)
+- `shapeMap?: Array3D<number>` (default all `1`) — per-cell shape index: `0` = air, `1` = default cube, `2+` = a custom mesh from `meshes`
+- `meshes?: Mesh[]` — custom cell shapes (indices `0` air / `1` cube are auto-filled — pass `null`/omit to keep the defaults). Each `Mesh`:
+  - `vertices: Float32Array` — local `-0.5..0.5`, scaled to fill the cell footprint; `indices: Uint16Array` — CCW-wound triangles
+  - `uvs?: Float32Array` — one uv per vertex enables **UV texturing** (sampled from the material's base albedo/normal frame); empty/omitted falls back to **triplanar** (the cube default)
+  - `faceCover?: { posX?, negX?, posY?, negY?, posZ?, negZ?: boolean }` (each default `true`) — set a side `false` when the mesh doesn't fill that cell face, so the neighbor still renders its adjacent face instead of being culled
+  - Custom shapes are meshed in WASM alongside cubes (greedy **and** smoothed), so they dedup/smooth seamlessly with neighbors and round-trip through serialization
 - `emissionMap?: Array3D<number>` (default `0`), `visibilityMap?: Array3D<boolean>` (default `true`)
 - `smoothing?: number` (default `0`) — surface-net smoothing iterations; `smoothingWeights?: number | Array3D<number>` (default `8`, range 0–15) base per-cell weight; `normalSmoothing?: number` (default `0`). At a vertex shared by cells of differing weight the lowest (hardest) weight wins, so softer cells snap to harder neighbors' square corners (no seams). A material's `smoothness` overrides these per cell-type.
 - `revealExempt?: boolean` (default `false`) — ignore the camera Y-slice reveal

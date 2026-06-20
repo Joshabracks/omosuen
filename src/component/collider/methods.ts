@@ -515,8 +515,9 @@ function getCellShapeIndex(cellMap: CellMapT, coords: Vector3D): number {
 }
 
 /**
- * Transform a mesh triangle's unit-space vertex to world space.
- * worldV = (gridCoord + unitV) * cellSize
+ * Transform a mesh vertex (local -0.5..0.5) to world space, matching the
+ * renderer's corner-based cell footprint `[i, i+1] * cellSize`:
+ *   worldV = (gridCoord + unitV + 0.5) * cellSize
  */
 function meshVertexToWorld(
   unitV: Vector3D,
@@ -524,9 +525,9 @@ function meshVertexToWorld(
   cellSize: Vector3D,
 ): Vector3D {
   return new Vector3D(
-    (gridCoord.x + unitV.x) * cellSize.x,
-    (gridCoord.y + unitV.y) * cellSize.y,
-    (gridCoord.z + unitV.z) * cellSize.z,
+    (gridCoord.x + unitV.x + 0.5) * cellSize.x,
+    (gridCoord.y + unitV.y + 0.5) * cellSize.y,
+    (gridCoord.z + unitV.z + 0.5) * cellSize.z,
   );
 }
 
@@ -580,7 +581,7 @@ function getMeshTrianglesWorld(
 /**
  * Extract world-space triangles from smoothed chunk vertex/index buffers
  * within a given AABB. Chunk vertices are already world-space, interleaved
- * [x, y, z, nx, ny, nz] with stride 6.
+ * [pos3, normal3, origPos3] with stride 9.
  */
 function getChunkTrianglesInBounds(
   cellMap: CellMapT,
@@ -613,10 +614,13 @@ function getChunkTrianglesInBounds(
 
     const verts = chunk.vertices;
     const indices = chunk.indices;
+    // Chunk vertices are interleaved [pos3, normal3, origPos3] (stride 9), or
+    // [+uv2] (stride 11) when the cell-map has UV custom shapes.
+    const stride = chunk.stride;
     for (let i = 0; i < indices.length; i += 3) {
-      const i0 = indices[i] * 6;
-      const i1 = indices[i + 1] * 6;
-      const i2 = indices[i + 2] * 6;
+      const i0 = indices[i] * stride;
+      const i1 = indices[i + 1] * stride;
+      const i2 = indices[i + 2] * stride;
 
       // Quick per-triangle AABB cull against collider bounds
       const x0 = verts[i0],

@@ -27,7 +27,12 @@ renders with WebGL2, runs hot paths (voxel meshing, visibility, audio time-stret
 
 ```bash
 # npm / bundler — install a tagged engine release straight from GitHub
-npm i github:joshabracks/omosuen#v0.6.0
+npm i github:joshabracks/omosuen#v0.7.0
+```
+
+```ts
+// then import it in a bundler project — types + the wasm-embedded UMD runtime
+import Omosuen, { start } from 'omosuen';
 ```
 
 ```html
@@ -36,7 +41,9 @@ npm i github:joshabracks/omosuen#v0.6.0
 ```
 
 The production bundle (`omosuen.min.js`) is attached as an asset to each `v*` GitHub
-Release.
+Release. The same bundle (plus type declarations) ships inside the installable tag,
+so `<script>` / `file://` users keep using the global `window.Omosuen` while bundler
+users `import` it. Tags `v0.7.0`+ are npm-importable; older tags shipped source only.
 
 ## Quick start
 

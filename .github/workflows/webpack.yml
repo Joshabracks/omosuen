@@ -30,31 +30,3 @@ jobs:
       run: |
         npm install
         npx webpack --config webpack.config.js --env mode=production
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Use Node.js 22.x
-      uses: actions/setup-node@v4
-      with:
-        node-version: 22.x
-
-    - name: Add wasm32 Rust target
-      run: rustup target add wasm32-unknown-unknown
-
-    - name: Build production bundle
-      run: |
-        npm install
-        npx webpack --config webpack.config.js --env mode=production
-
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: test/dev/omosuen.min.js

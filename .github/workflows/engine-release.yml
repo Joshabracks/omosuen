@@ -1,0 +1,123 @@
+name: Engine Release
+
+# Auto-releases the engine as an installable git tag:
+# `npm i github:joshabracks/omosuen#v<version>`. On every merge to main it reads
+# the root package.json version and releases ONLY if the tag `v<version>` does not
+# already exist — so cutting a release = bumping the version. Re-merges without a
+# bump are a no-op.
+#
+# A `github:` install ships the tag's tree verbatim (no consumer build — webpack
+# needs the Rust/wasm toolchain that consumers won't have). So this job builds the
+# artifacts in CI (Rust available) and commits them into the tag: the wasm-embedded
+# UMD bundle (dist/omosuen.min.js, the runtime `main`) and the tsc declarations
+# (dist/src/**/*.d.ts, the `types`). The production bundle is also attached to the
+# GitHub Release for `<script>` / file:// users.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'wasm/**'
+      - 'build-tools/**'
+      - 'webpack.config.js'
+      - 'tsconfig.json'
+      - 'custom.d.ts'
+      - 'package.json'
+  workflow_dispatch: {}
+
+concurrency:
+  group: engine-release
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.scan.outputs.version }}
+      tag: ${{ steps.scan.outputs.tag }}
+      any: ${{ steps.scan.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --tags --force
+
+      - name: Detect unreleased version
+        id: scan
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag="v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if git ls-remote --tags origin "refs/tags/${tag}" | grep -q .; then
+            echo "skip (exists): ${tag}"
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release: ${tag}"
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: detect
+    if: needs.detect.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Add wasm32 Rust target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install toolchain
+        run: npm install
+
+      - name: Build UMD bundles (wasm-embedded) + type declarations
+        run: |
+          set -euo pipefail
+          npm run build
+          npx tsc -p tsconfig.json --emitDeclarationOnly
+          mkdir -p dist
+          cp test/dev/omosuen.min.js dist/omosuen.min.js
+          test -f dist/omosuen.min.js
+          test -f dist/src/index.d.ts
+
+      - name: Commit built artifacts and tag
+        env:
+          TAG: ${{ needs.detect.outputs.tag }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # dist/ is gitignored on normal branches; force-add the built artifacts so
+          # the tagged tree carries them for `github:` installs.
+          git add -f dist
+          git commit -m "release: omosuen v${VERSION}"
+          git tag "$TAG"
+          git push origin "refs/tags/${TAG}"
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.detect.outputs.tag }}
+          name: omosuen ${{ needs.detect.outputs.tag }}
+          files: test/dev/omosuen.min.js
+          body: |
+            Omosuen engine ${{ needs.detect.outputs.tag }}.
+
+            **Bundler / npm:** `npm i github:joshabracks/omosuen#${{ needs.detect.outputs.tag }}`
+            then `import Omosuen from 'omosuen'` (types + wasm-embedded UMD runtime).
+
+            **Standalone bundle:** download `omosuen.min.js` below and load it via
+            `<script>` — defines the global `Omosuen` (self-contained, runs off file://).

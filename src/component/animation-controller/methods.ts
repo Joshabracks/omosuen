@@ -1,6 +1,6 @@
 import { ComponentData, ComponentMethods, castTo } from '../types';
 import { AnimationControllerT } from './data';
-import type { Animation, AnimationState } from './types';
+import type { Animation, AnimationLayer, AnimationState } from './types';
 import type { ChannelType } from '../sprite/types';
 import type { NexusT } from '../nexus/data';
 import type { SpriteT } from '../sprite/data';
@@ -38,14 +38,28 @@ export interface AnimationControllerMethods extends ComponentMethods {
     channels: ChannelType[],
   ) => void;
   getChannels: (controller: AnimationControllerT) => ChannelType[];
+  setLayerVisible: (
+    controller: AnimationControllerT,
+    layerName: string,
+    visible: boolean,
+  ) => void;
+  addLayer: (controller: AnimationControllerT, layer: AnimationLayer) => void;
+  getLayer: (
+    controller: AnimationControllerT,
+    layerName: string,
+  ) => AnimationLayer | null;
+  getLayers: (controller: AnimationControllerT) => AnimationLayer[];
 }
 
 export const AnimationController: AnimationControllerMethods = {
   type: 'animation-controller',
 
   /**
-   * Initializes the animation controller.
-   * Validates that a sibling sprite exists in the parent nexus.
+   * Initializes the animation controller. Binds its layers to the sibling
+   * sprites in the parent nexus and applies their initial visibility.
+   *
+   * If `layers` is empty, auto-binds one layer per sibling sprite (keyed by
+   * sprite name) — preserving the classic single-sprite behavior.
    */
   async init(component: ComponentData): Promise<void> {
     const ac = component as AnimationControllerT;
@@ -58,12 +72,28 @@ export const AnimationController: AnimationControllerMethods = {
     // parent is stored raw; wrap it to reach the nexus's proxy methods.
     const parent = castTo<NexusT>(ac.parent);
 
-    // Validate sibling sprite exists
-    const sprite = parent.getComponentByType('sprite') as SpriteT | null;
-    if (!sprite) {
+    // Only sprites in THIS nexus (non-recursive) are layers of this entity.
+    const sprites = parent.getComponentsByType('sprite') as SpriteT[];
+    if (sprites.length === 0) {
       console.warn(
         `[animation-controller] No sibling sprite found for '${ac.name}'`,
       );
+      return;
+    }
+
+    // Auto-bind one layer per sibling sprite when none were configured.
+    if (ac.layers.length === 0) {
+      ac.layers = sprites.map((s) => ({
+        name: s.name,
+        spriteName: s.name,
+        visible: s.visible !== false,
+      }));
+    }
+
+    // Apply each layer's visibility intent onto its bound sprite.
+    for (const layer of ac.layers) {
+      const sprite = sprites.find((s) => s.name === layer.spriteName);
+      if (sprite) sprite.visible = layer.visible;
     }
   },
 
@@ -105,12 +135,12 @@ export const AnimationController: AnimationControllerMethods = {
     // Accumulate frame time
     ac.frameTime += deltaTime * ac.speed;
 
-    // Calculate frame duration in milliseconds
-    const frameDuration = 1000 / animation.frameRate;
-
-    // Advance frames
-    while (ac.frameTime >= frameDuration) {
-      ac.frameTime -= frameDuration;
+    // Advance frames. The threshold is the duration of the frame currently
+    // being shown (the one we're leaving), which may vary per frame. `guard`
+    // backstops a pathological near-zero duration that could spin the loop.
+    let guard = 0;
+    while (ac.frameTime >= frameDurationFor(animation, ac.currentFrameIndex)) {
+      ac.frameTime -= frameDurationFor(animation, ac.currentFrameIndex);
       ac.currentFrameIndex++;
 
       // Check if reached end of animation
@@ -137,15 +167,20 @@ export const AnimationController: AnimationControllerMethods = {
             }
           }
 
-          // Update sprite to final frame before exiting
-          updateSpriteFrame(ac, animation.frames[ac.currentFrameIndex]);
+          // Update sprites to final frame before exiting
+          updateSpriteFrames(ac, animation.frames[ac.currentFrameIndex]);
           return;
         }
       }
 
       // Update sprite frame
       const frameNumber = animation.frames[ac.currentFrameIndex];
-      updateSpriteFrame(ac, frameNumber);
+      updateSpriteFrames(ac, frameNumber);
+
+      if (++guard > 1024) {
+        ac.frameTime = 0;
+        break;
+      }
     }
   },
 
@@ -165,6 +200,7 @@ export const AnimationController: AnimationControllerMethods = {
       name: animation.name,
       frames: animation.frames,
       frameRate: animation.frameRate ?? 12,
+      frameDurations: animation.frameDurations,
       loop: animation.loop ?? true,
       onComplete: animation.onComplete,
     };
@@ -219,10 +255,10 @@ export const AnimationController: AnimationControllerMethods = {
       controller.currentFrameIndex = 0;
       controller.frameTime = 0;
 
-      // Update sprite to first frame immediately
+      // Update sprites to first frame immediately
       const animation = controller.animations.get(name);
       if (animation && animation.frames.length > 0) {
-        updateSpriteFrame(controller, animation.frames[0]);
+        updateSpriteFrames(controller, animation.frames[0]);
       }
     }
 
@@ -256,11 +292,11 @@ export const AnimationController: AnimationControllerMethods = {
     controller.currentFrameIndex = 0;
     controller.frameTime = 0;
 
-    // Set sprite to first frame of current animation
+    // Set sprites to first frame of current animation
     if (controller.currentAnimation) {
       const animation = controller.animations.get(controller.currentAnimation);
       if (animation && animation.frames.length > 0) {
-        updateSpriteFrame(controller, animation.frames[0]);
+        updateSpriteFrames(controller, animation.frames[0]);
       }
     }
   },
@@ -322,18 +358,99 @@ export const AnimationController: AnimationControllerMethods = {
   },
 
   /**
+   * Toggles a layer's visibility, mirroring it onto the bound sibling sprite.
+   * If the layer has a `slot`, showing it hides the other layers in that slot
+   * (mutually-exclusive swap, e.g. hair A/B/C).
+   */
+  setLayerVisible(
+    controller: AnimationControllerT,
+    layerName: string,
+    visible: boolean,
+  ) {
+    const layer = controller.layers.find((l) => l.name === layerName);
+    if (!layer) {
+      console.warn(
+        `[animation-controller] setLayerVisible: no layer '${layerName}' in '${controller.name}'`,
+      );
+      return;
+    }
+
+    // Mutually-exclusive slot: hide other layers sharing the slot.
+    if (visible && layer.slot) {
+      for (const other of controller.layers) {
+        if (other.slot === layer.slot && other.name !== layerName) {
+          other.visible = false;
+        }
+      }
+    }
+    layer.visible = visible;
+
+    // Sync all layers' visibility onto their sprites (so a slot-hide applies).
+    if (!controller.parent) return;
+    const parent = castTo<NexusT>(controller.parent);
+    const sprites = parent.getComponentsByType('sprite') as SpriteT[];
+    for (const l of controller.layers) {
+      const sprite = sprites.find((s) => s.name === l.spriteName);
+      if (sprite) sprite.visible = l.visible;
+    }
+  },
+
+  /**
+   * Adds (or replaces, by name) a layer binding.
+   */
+  addLayer(controller: AnimationControllerT, layer: AnimationLayer) {
+    const existing = controller.layers.findIndex((l) => l.name === layer.name);
+    if (existing !== -1) {
+      controller.layers[existing] = layer;
+    } else {
+      controller.layers.push(layer);
+    }
+  },
+
+  /**
+   * Gets a layer by name, or null if not found.
+   */
+  getLayer(
+    controller: AnimationControllerT,
+    layerName: string,
+  ): AnimationLayer | null {
+    return controller.layers.find((l) => l.name === layerName) ?? null;
+  },
+
+  /**
+   * Gets all layer bindings.
+   */
+  getLayers(controller: AnimationControllerT): AnimationLayer[] {
+    return controller.layers;
+  },
+
+  /**
    * Disposes the animation controller and cleans up resources.
    */
   dispose(c: ComponentData) {
     const ac = c as AnimationControllerT;
+    ac.layers = [];
     ac._disposed = true;
   },
 };
 
 /**
- * Helper function to update the sibling sprite's frame.
+ * Returns the duration (ms) of the frame at `frameIndex` (position within the
+ * animation's `frames` array): the per-frame override when present and > 0,
+ * else the uniform 1000/frameRate fallback.
  */
-function updateSpriteFrame(
+function frameDurationFor(animation: Animation, frameIndex: number): number {
+  const d = animation.frameDurations?.[frameIndex];
+  return d !== undefined && d > 0 ? d : 1000 / animation.frameRate;
+}
+
+/**
+ * Sets the given frame on EVERY layer sprite driven by this controller, in
+ * lockstep. With no configured layers, drives all sibling sprites (covers the
+ * auto-bound single-sprite case). All layers share one frame timeline, so a
+ * single frame index applies to every layer's texture-map.
+ */
+function updateSpriteFrames(
   controller: AnimationControllerT,
   frameNumber: number,
 ): void {
@@ -343,11 +460,20 @@ function updateSpriteFrame(
   // parent is stored raw; wrap it to reach the nexus's proxy methods.
   const parent = castTo<NexusT>(controller.parent);
 
-  const sprite = parent.getComponentByType('sprite') as SpriteT | null;
-  if (!sprite) {
+  const sprites = parent.getComponentsByType('sprite') as SpriteT[];
+  if (sprites.length === 0) {
     return;
   }
 
-  // Update sprite frame for specified channels
-  sprite.setFrame(frameNumber, controller.channels);
+  if (controller.layers.length === 0) {
+    for (const sprite of sprites) {
+      sprite.setFrame(frameNumber, controller.channels);
+    }
+    return;
+  }
+
+  for (const layer of controller.layers) {
+    const sprite = sprites.find((s) => s.name === layer.spriteName);
+    if (sprite) sprite.setFrame(frameNumber, controller.channels);
+  }
 }

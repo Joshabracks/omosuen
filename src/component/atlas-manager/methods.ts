@@ -106,7 +106,7 @@ export interface AtlasManagerMethods extends ComponentMethods {
    * @param filePath - Path to the image file
    * @returns The cached HTMLImageElement, or null if not found
    */
-  getImage: (am: AtlasManagerT, filePath: string) => HTMLImageElement | null;
+  getImage: (am: AtlasManagerT, filePath: string) => CanvasImageSource | null;
 
   /**
    * Checks if an image is loaded in the cache.
@@ -228,15 +228,47 @@ function createAtlasCanvas(
 }
 
 /**
+ * Reads the pixel dimensions of a source image. Canvas / ImageBitmap /
+ * HTMLImageElement all expose numeric width/height; anything else yields 0.
+ */
+function sourceDims(src: CanvasImageSource): { width: number; height: number } {
+  const w = (src as { width?: unknown }).width;
+  const h = (src as { height?: unknown }).height;
+  return {
+    width: typeof w === 'number' ? w : 0,
+    height: typeof h === 'number' ? h : 0,
+  };
+}
+
+/**
+ * Resolves a texture-map's source image: an in-memory `sourceImage` (canvas /
+ * ImageBitmap from a procedural producer like the Aseprite importer) takes
+ * precedence over loading `filePath`. The in-memory source is cached under the
+ * texture-map's (synthetic, unique) filePath so release-mode rebuild can re-blit
+ * it without a network/Image load.
+ */
+async function resolveSource(
+  am: AtlasManagerT,
+  tm: TextureMapT,
+): Promise<CanvasImageSource> {
+  if (tm.sourceImage) {
+    am.imageCache.set(tm.filePath, tm.sourceImage);
+    return tm.sourceImage;
+  }
+  return AtlasManager.loadImage(am, tm.filePath);
+}
+
+/**
  * Fills in a default whole-image frame for a texture map that declared none.
  */
-function ensureOriginalFrames(tm: TextureMapT, image: HTMLImageElement): void {
+function ensureOriginalFrames(tm: TextureMapT, image: CanvasImageSource): void {
   if (tm.originalFrames.length === 0) {
+    const { width, height } = sourceDims(image);
     tm.originalFrames = [
       {
         frameIndex: 0,
         position: new Vector2D(0, 0),
-        size: new Vector2D(image.width, image.height),
+        size: new Vector2D(width, height),
       },
     ];
   }
@@ -334,11 +366,9 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
     return;
   }
 
-  // Load source images (internal cache).
-  const imageLoadPromises = textureMaps.map((tm) =>
-    AtlasManager.loadImage(am, tm.filePath),
-  );
-  let images: HTMLImageElement[];
+  // Resolve source images (in-memory sourceImage, else load filePath).
+  const imageLoadPromises = textureMaps.map((tm) => resolveSource(am, tm));
+  let images: CanvasImageSource[];
   try {
     images = await Promise.all(imageLoadPromises);
   } catch (error) {
@@ -503,12 +533,10 @@ async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
     return;
   }
 
-  // Load any not-yet-cached source images.
-  let images: HTMLImageElement[];
+  // Resolve any not-yet-cached source images (in-memory sourceImage, else load).
+  let images: CanvasImageSource[];
   try {
-    images = await Promise.all(
-      textureMaps.map((tm) => AtlasManager.loadImage(am, tm.filePath)),
-    );
+    images = await Promise.all(textureMaps.map((tm) => resolveSource(am, tm)));
   } catch (error) {
     console.error('[atlas-manager] Failed to load images', error);
     throw error;
@@ -780,9 +808,11 @@ export const AtlasManager: AtlasManagerMethods = {
     am: AtlasManagerT,
     filePath: string,
   ): Promise<HTMLImageElement> => {
-    // Check if already loaded
+    // Check if already loaded. loadImage is only ever called for real file
+    // paths (in-memory sources go through resolveSource), so any cached entry
+    // here is the HTMLImageElement this function stored.
     if (am.imageCache.has(filePath)) {
-      return am.imageCache.get(filePath)!;
+      return am.imageCache.get(filePath)! as HTMLImageElement;
     }
 
     // Check if currently loading
@@ -821,7 +851,7 @@ export const AtlasManager: AtlasManagerMethods = {
     return loadPromise;
   },
 
-  getImage: (am: AtlasManagerT, filePath: string): HTMLImageElement | null => {
+  getImage: (am: AtlasManagerT, filePath: string): CanvasImageSource | null => {
     return am.imageCache.get(filePath) || null;
   },
 

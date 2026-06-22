@@ -8,7 +8,7 @@ import {
   DeserializeResult,
 } from '../types';
 import type { AnimationControllerMethods } from './methods';
-import type { Animation, AnimationState } from './types';
+import type { Animation, AnimationLayer, AnimationState } from './types';
 import type { ChannelType } from '../sprite/types';
 
 /**
@@ -56,12 +56,21 @@ export interface AnimationControllerT
    * Default: ['albedo']
    */
   channels: ChannelType[];
+
+  /**
+   * Logical layers driven by this controller. Each binds a sibling sprite by
+   * name; the controller sets the current frame on all of them in lockstep.
+   * When empty, `init` auto-binds one layer per sibling sprite (which keeps the
+   * classic single-sprite behavior working unchanged).
+   */
+  layers: AnimationLayer[];
 }
 
 export interface AnimationControllerOptions extends ComponentOptions {
   animations?: Animation[];
   channels?: ChannelType[];
   speed?: number;
+  layers?: AnimationLayer[];
 }
 
 /**
@@ -79,6 +88,7 @@ export function builder(
         name: anim.name,
         frames: anim.frames,
         frameRate: anim.frameRate ?? 12,
+        frameDurations: anim.frameDurations,
         loop: anim.loop ?? true,
         onComplete: anim.onComplete,
       };
@@ -100,6 +110,7 @@ export function builder(
     frameTime: 0,
     speed: options.speed ?? 1.0,
     channels: options.channels ?? ['albedo'],
+    layers: options.layers ?? [],
   };
 
   return controller as unknown as AnimationControllerT;
@@ -126,6 +137,7 @@ function serialize(component: ComponentData): any {
     frameTime: ac.frameTime,
     speed: ac.speed,
     channels: ac.channels,
+    layers: ac.layers,
   };
 }
 
@@ -159,6 +171,7 @@ function deserialize(data: any): DeserializeResult<AnimationControllerT> {
     frameTime,
     speed,
     channels,
+    layers,
   } = data;
 
   if (type !== 'animation-controller') {
@@ -209,6 +222,45 @@ function deserialize(data: any): DeserializeResult<AnimationControllerT> {
     }
   }
 
+  // Reconstruct layers (each: name, spriteName, optional slot, visible).
+  const layersArray: AnimationLayer[] = [];
+  if (layers !== undefined) {
+    if (!Array.isArray(layers)) {
+      errors.push({
+        code: 'INVALID_LAYERS',
+        message: `animation-controller "${componentName}" layers field is not an array; ignored`,
+      });
+    } else {
+      for (let i = 0; i < layers.length; i += 1) {
+        const l = layers[i] as Partial<AnimationLayer> | unknown;
+        if (!l || typeof l !== 'object') {
+          errors.push({
+            code: 'INVALID_LAYER_ENTRY',
+            message: `animation-controller "${componentName}" layers[${i}] is not an object; skipped`,
+          });
+          continue;
+        }
+        const layer = l as Partial<AnimationLayer>;
+        if (
+          typeof layer.name !== 'string' ||
+          typeof layer.spriteName !== 'string'
+        ) {
+          errors.push({
+            code: 'INVALID_LAYER',
+            message: `animation-controller "${componentName}" layers[${i}] missing name/spriteName; skipped`,
+          });
+          continue;
+        }
+        layersArray.push({
+          name: layer.name,
+          spriteName: layer.spriteName,
+          slot: typeof layer.slot === 'string' ? layer.slot : undefined,
+          visible: layer.visible !== false,
+        });
+      }
+    }
+  }
+
   const controller = {
     type: 'animation-controller' as const,
     name: componentName,
@@ -223,6 +275,7 @@ function deserialize(data: any): DeserializeResult<AnimationControllerT> {
     frameTime: (frameTime as number) ?? 0,
     speed: (speed as number) ?? 1.0,
     channels: (channels as ChannelType[]) ?? ['albedo'],
+    layers: layersArray,
   };
 
   return {
@@ -247,4 +300,5 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'frameTime',
   'speed',
   'channels',
+  'layers',
 ];

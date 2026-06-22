@@ -297,6 +297,10 @@ export function renderSprites(
 
   // Render each sprite
   for (const sprite of sprites) {
+    // Skip hidden sprites entirely (no draw call). Use `=== false` so any legacy
+    // sprite lacking the field still renders.
+    if (sprite.visible === false) continue;
+
     // Get sprite's parent nexus
     if (!sprite.parent || sprite.parent.type !== 'nexus') continue;
     const spriteNexus = castTo<NexusT>(sprite.parent);

@@ -17,7 +17,10 @@ import type { SpriteMethods } from './methods';
 export interface SpriteT
   extends ComponentData, ComponentInstanceMethods<SpriteMethods> {
   type: 'sprite';
-  unique: ComponentUnique.LOCAL;
+  // FALSE (not LOCAL): a single nexus may hold multiple sprites — e.g. the
+  // stacked layers (body/outline/hair/armor/weapon) of one composited entity,
+  // all sharing the nexus's single transform/position.
+  unique: ComponentUnique.FALSE;
 
   /**
    * Texture map keys for different rendering channels.
@@ -70,6 +73,21 @@ export interface SpriteT
    * Only used when showSilhouette is true.
    */
   silhouetteColor: Vector4D;
+
+  /**
+   * Whether the sprite is rendered. When false, the renderer skips it entirely
+   * (no draw call) — distinct from opacity 0, which still submits a transparent
+   * quad. Used to toggle composited layers on/off at runtime.
+   */
+  visible: boolean;
+
+  /**
+   * Draw order among sprites that share the same parent nexus (a composited
+   * entity's layers). Lower draws first (underneath); higher draws on top.
+   * Sprites in different nexuses are unaffected (see collect-renderables'
+   * segmented sort). Default 0.
+   */
+  renderOrder: number;
 }
 
 export interface SpriteOptions extends ComponentOptions {
@@ -90,6 +108,8 @@ export interface SpriteOptions extends ComponentOptions {
   opacity?: number;
   showSilhouette?: boolean;
   silhouetteColor?: Vector4D;
+  visible?: boolean;
+  renderOrder?: number;
 }
 
 /**
@@ -99,7 +119,7 @@ export function builder(options: SpriteOptions): SpriteT {
   const sprite = {
     type: 'sprite' as const,
     name: options.name,
-    unique: ComponentUnique.LOCAL,
+    unique: ComponentUnique.FALSE,
     parent: null,
     _disposed: false,
 
@@ -123,6 +143,8 @@ export function builder(options: SpriteOptions): SpriteT {
     showSilhouette: options.showSilhouette ?? false,
     silhouetteColor:
       options.silhouetteColor ?? new Vector4D(0.2, 0.4, 0.8, 0.5),
+    visible: options.visible ?? true,
+    renderOrder: options.renderOrder ?? 0,
   };
 
   return sprite as unknown as SpriteT;
@@ -138,7 +160,7 @@ function serialize(component: ComponentData): any {
   return {
     type: 'sprite',
     name: s.name,
-    unique: ComponentUnique.LOCAL,
+    unique: ComponentUnique.FALSE,
     textureMapKeys: {
       albedo: s.textureMapKeys.albedo,
       normal: s.textureMapKeys.normal,
@@ -172,6 +194,8 @@ function serialize(component: ComponentData): any {
       z: s.silhouetteColor.z,
       w: s.silhouetteColor.w,
     },
+    visible: s.visible,
+    renderOrder: s.renderOrder,
   };
 }
 
@@ -205,6 +229,8 @@ function deserialize(data: any): DeserializeResult<SpriteT> {
     opacity,
     showSilhouette,
     silhouetteColor,
+    visible,
+    renderOrder,
   } = data;
 
   if (type !== 'sprite') {
@@ -297,6 +323,8 @@ function deserialize(data: any): DeserializeResult<SpriteT> {
       opacity: opacity as number,
       showSilhouette: showSilhouette as boolean | undefined,
       silhouetteColor: silhouetteColorVec,
+      visible: visible as boolean | undefined,
+      renderOrder: renderOrder as number | undefined,
     }),
     errors,
   };
@@ -318,4 +346,6 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'opacity',
   'showSilhouette',
   'silhouetteColor',
+  'visible',
+  'renderOrder',
 ];

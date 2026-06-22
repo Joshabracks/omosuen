@@ -21,6 +21,8 @@ export interface SpriteMethods extends ComponentMethods {
     a: number,
   ) => void;
   setOpacity: (sprite: SpriteT, alpha: number) => void;
+  setVisible: (sprite: SpriteT, visible: boolean) => void;
+  setRenderOrder: (sprite: SpriteT, order: number) => void;
 }
 
 export const Sprite: SpriteMethods = {
@@ -127,6 +129,28 @@ export const Sprite: SpriteMethods = {
    */
   setOpacity(sprite: SpriteT, alpha: number) {
     sprite.opacity = Math.max(0, Math.min(1, alpha)); // Clamp to 0-1
+  },
+
+  /**
+   * Toggles whether the sprite is rendered. When false, the renderer skips it
+   * entirely (no draw call) — cheaper and more decisive than opacity 0.
+   *
+   * @param sprite - The sprite component
+   * @param visible - true to render, false to skip
+   */
+  setVisible(sprite: SpriteT, visible: boolean) {
+    sprite.visible = visible;
+  },
+
+  /**
+   * Sets the sprite's draw order relative to sibling sprites in the same nexus
+   * (a composited entity's layers). Lower draws first (underneath).
+   *
+   * @param sprite - The sprite component
+   * @param order - Draw-order key (default 0)
+   */
+  setRenderOrder(sprite: SpriteT, order: number) {
+    sprite.renderOrder = order;
   },
 
   /**

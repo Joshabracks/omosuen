@@ -89,10 +89,12 @@ export interface AtlasManagerT
   config: Required<AtlasManagerConfig>;
 
   /**
-   * Cache of loaded images, indexed by file path.
-   * Merged from image-registry component.
+   * Cache of source images, indexed by file path (or, for procedural producers
+   * like the Aseprite importer, a synthetic unique key). Usually a loaded
+   * HTMLImageElement, but may be an in-memory canvas / ImageBitmap — drawImage
+   * accepts all of these, and caching it lets release-mode rebuild re-blit it.
    */
-  imageCache: Map<string, HTMLImageElement>;
+  imageCache: Map<string, CanvasImageSource>;
 
   /**
    * Map of in-flight image load promises, indexed by file path.
@@ -208,7 +210,7 @@ export function builder(options: AtlasManagerOptions): AtlasManagerT {
     compiled: false,
     atlasVersion: 0,
     config,
-    imageCache: new Map<string, HTMLImageElement>(),
+    imageCache: new Map<string, CanvasImageSource>(),
     imageLoading: new Map<string, Promise<HTMLImageElement>>(),
     atlasCanvases: [],
     packState: null,

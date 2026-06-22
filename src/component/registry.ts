@@ -103,6 +103,11 @@ import {
   builder as audioPlayerBuilder,
   PROPERTY_ALLOWLIST as AudioPlayerPropertyAllowlist,
 } from './audio-player';
+import {
+  Aseprite,
+  builder as asepriteBuilder,
+  PROPERTY_ALLOWLIST as AsepritePropertyAllowlist,
+} from './aseprite';
 import type {
   COMPONENT_TYPE,
   ComponentData,
@@ -143,6 +148,7 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   'audio-track': audioTrackBuilder,
   'audio-effect': audioEffectBuilder,
   'audio-player': audioPlayerBuilder,
+  aseprite: asepriteBuilder,
 };
 
 /**
@@ -176,6 +182,7 @@ export const MethodRegistry: Record<
   'audio-track': AudioTrack,
   'audio-effect': AudioEffect,
   'audio-player': AudioPlayer,
+  aseprite: Aseprite,
   'ui-binding': {},
   'html-constructor': {},
   'message-listener': {},
@@ -207,6 +214,7 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   'audio-track': AudioTrackPropertyAllowlist,
   'audio-effect': AudioEffectPropertyAllowlist,
   'audio-player': AudioPlayerPropertyAllowlist,
+  aseprite: AsepritePropertyAllowlist,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

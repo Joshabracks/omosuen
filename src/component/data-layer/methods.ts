@@ -1,20 +1,13 @@
 import { ComponentData, ComponentMethods } from '../types';
-import { DataLayerT, DataLayerType } from './data';
-import { Vector2D, Vector3D, Vector4D } from '../../math';
-
-/**
- * Helper function to get the type name of a value.
- * Returns null if the value is not an allowed DataLayerType.
- */
-function getTypeName(value: unknown): string | null {
-  if (typeof value === 'string') return 'string';
-  if (typeof value === 'number') return 'number';
-  if (typeof value === 'boolean') return 'boolean';
-  if (value instanceof Vector2D) return 'Vector2D';
-  if (value instanceof Vector3D) return 'Vector3D';
-  if (value instanceof Vector4D) return 'Vector4D';
-  return null;
-}
+import {
+  DataLayerT,
+  DataLayerType,
+  DataLayerScalar,
+  getTypeName,
+  getScalarTypeName,
+  elementTypeOf,
+  setDataLayerValue,
+} from './data';
 
 /**
  * Methods interface for data-layer component.
@@ -27,6 +20,16 @@ export interface DataLayerMethods extends ComponentMethods {
   delete: (d: DataLayerT, key: string) => boolean;
   setAll: (d: DataLayerT, data: Record<string, unknown>) => void;
   getAll: (d: DataLayerT, keys: string[]) => Record<string, DataLayerType>;
+  push: (d: DataLayerT, key: string, value: DataLayerScalar) => boolean;
+  setAt: (
+    d: DataLayerT,
+    key: string,
+    index: number,
+    value: DataLayerScalar,
+  ) => boolean;
+  getAt: (d: DataLayerT, key: string, index: number) => DataLayerScalar | null;
+  removeAt: (d: DataLayerT, key: string, index: number) => boolean;
+  arrayLength: (d: DataLayerT, key: string) => number | null;
   dispose: (component: ComponentData) => void;
 }
 
@@ -51,6 +54,19 @@ export interface DataLayerMethods extends ComponentMethods {
  * // Batch operations
  * DataLayer.setAll(dataLayer, { health: 100, speed: 5.5 });
  * const stats = DataLayer.getAll(dataLayer, ["health", "speed"]);
+ *
+ * // Homogeneous arrays (one level deep, single element type):
+ * DataLayer.set(dataLayer, "tags", ["fire", "ice"]); // locked to string[]
+ * DataLayer.push(dataLayer, "tags", "lightning");     // validated append
+ * DataLayer.setAt(dataLayer, "tags", 0, "water");     // validated element set
+ * DataLayer.getAt(dataLayer, "tags", 1);              // "ice"
+ * DataLayer.removeAt(dataLayer, "tags", 0);
+ * DataLayer.arrayLength(dataLayer, "tags");           // 2
+ *
+ * // Note: an empty array can only be assigned once an element type is known.
+ * // The first set of a fresh key must be a non-empty array.
+ * // Use push/setAt/removeAt rather than mutating arrays in place via $data,
+ * // which bypasses type validation.
  *
  * // Delete
  * DataLayer.delete(dataLayer, "health");
@@ -78,33 +94,7 @@ export const DataLayer: DataLayerMethods = {
    * ```
    */
   set: (d: DataLayerT, key: string, value: DataLayerType): boolean => {
-    // Validate type
-    const typeName = getTypeName(value);
-    if (typeName === null) {
-      console.error(
-        `[data-layer] Cannot set '${key}': value type is not allowed. ` +
-          `Allowed types: string, number, boolean, Vector2D, Vector3D, Vector4D`,
-      );
-      return false;
-    }
-
-    // Check type enforcement
-    const existingType = d.typeMap.get(key);
-    if (existingType && existingType !== typeName) {
-      console.error(
-        `[data-layer] Type mismatch for key '${key}': ` +
-          `expected ${existingType}, got ${typeName}`,
-      );
-      return false;
-    }
-
-    // Store value and type
-    d.storage.set(key, value);
-    if (!existingType) {
-      d.typeMap.set(key, typeName);
-    }
-
-    return true;
+    return setDataLayerValue(d, key, value);
   },
 
   /**
@@ -223,6 +213,156 @@ export const DataLayer: DataLayerMethods = {
     }
 
     return result;
+  },
+
+  /**
+   * Appends an element to an array-valued key (the validated mutation path).
+   * If the key is new, it is created as an array locked to the element's type.
+   * Rejects elements whose type does not match the key's locked element type.
+   *
+   * @param d - The data-layer component
+   * @param key - The array key to append to
+   * @param value - The scalar/vector element to append
+   * @returns true if appended, false on a type mismatch or non-array key
+   *
+   * @example
+   * ```typescript
+   * DataLayer.push(dataLayer, "tags", "fire");   // creates string[]
+   * DataLayer.push(dataLayer, "tags", "ice");    // ["fire", "ice"]
+   * DataLayer.push(dataLayer, "tags", 42);       // ✗ rejected (expects string)
+   * ```
+   */
+  push: (d: DataLayerT, key: string, value: DataLayerScalar): boolean => {
+    const elementType = getScalarTypeName(value);
+    if (elementType === null) {
+      console.error(
+        `[data-layer] Cannot push to '${key}': value is not a valid ` +
+          `scalar/vector element.`,
+      );
+      return false;
+    }
+
+    const existingType = d.typeMap.get(key);
+    if (existingType) {
+      if (!existingType.endsWith('[]')) {
+        console.error(
+          `[data-layer] Cannot push to '${key}': key is not an array ` +
+            `(type ${existingType}).`,
+        );
+        return false;
+      }
+      if (elementTypeOf(existingType) !== elementType) {
+        console.error(
+          `[data-layer] Type mismatch pushing to '${key}': ` +
+            `expected ${elementTypeOf(existingType)}, got ${elementType}`,
+        );
+        return false;
+      }
+      (d.storage.get(key) as DataLayerScalar[]).push(value);
+      return true;
+    }
+
+    // New key: create the array and lock it to this element type.
+    d.storage.set(key, [value] as DataLayerType);
+    d.typeMap.set(key, `${elementType}[]`);
+    return true;
+  },
+
+  /**
+   * Sets the element at `index` of an array-valued key, validating the element
+   * type and bounds. Does not grow the array (use push to append).
+   *
+   * @param d - The data-layer component
+   * @param key - The array key
+   * @param index - The index to set (must be within bounds)
+   * @param value - The scalar/vector element to store
+   * @returns true if set, false on type mismatch, non-array key, or bad index
+   */
+  setAt: (
+    d: DataLayerT,
+    key: string,
+    index: number,
+    value: DataLayerScalar,
+  ): boolean => {
+    const existingType = d.typeMap.get(key);
+    if (!existingType || !existingType.endsWith('[]')) {
+      console.error(
+        `[data-layer] Cannot setAt on '${key}': key is not an array.`,
+      );
+      return false;
+    }
+
+    const arr = d.storage.get(key) as DataLayerScalar[] | undefined;
+    if (!arr || index < 0 || index >= arr.length) {
+      console.error(
+        `[data-layer] setAt index ${index} out of bounds for '${key}'.`,
+      );
+      return false;
+    }
+
+    const elementType = getScalarTypeName(value);
+    if (elementType !== elementTypeOf(existingType)) {
+      console.error(
+        `[data-layer] Type mismatch in setAt '${key}': ` +
+          `expected ${elementTypeOf(existingType)}, got ${elementType}`,
+      );
+      return false;
+    }
+
+    arr[index] = value;
+    return true;
+  },
+
+  /**
+   * Reads the element at `index` of an array-valued key.
+   *
+   * @param d - The data-layer component
+   * @param key - The array key
+   * @param index - The index to read
+   * @returns The element, or null if the key is not an array or index is out of bounds
+   */
+  getAt: (
+    d: DataLayerT,
+    key: string,
+    index: number,
+  ): DataLayerScalar | null => {
+    const arr = d.storage.get(key);
+    if (!Array.isArray(arr) || index < 0 || index >= arr.length) {
+      return null;
+    }
+    return arr[index] as DataLayerScalar;
+  },
+
+  /**
+   * Removes the element at `index` of an array-valued key, shifting the rest down.
+   *
+   * @param d - The data-layer component
+   * @param key - The array key
+   * @param index - The index to remove
+   * @returns true if removed, false on non-array key or bad index
+   */
+  removeAt: (d: DataLayerT, key: string, index: number): boolean => {
+    const arr = d.storage.get(key);
+    if (!Array.isArray(arr) || index < 0 || index >= arr.length) {
+      console.error(
+        `[data-layer] removeAt index ${index} out of bounds for '${key}'.`,
+      );
+      return false;
+    }
+    arr.splice(index, 1);
+    return true;
+  },
+
+  /**
+   * Returns the length of an array-valued key, or null if the key is not an array.
+   *
+   * @param d - The data-layer component
+   * @param key - The array key
+   * @returns The array length, or null
+   */
+  arrayLength: (d: DataLayerT, key: string): number | null => {
+    const arr = d.storage.get(key);
+    return Array.isArray(arr) ? arr.length : null;
   },
 
   /**

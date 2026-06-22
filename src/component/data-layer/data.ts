@@ -11,17 +11,34 @@ import { Vector2D, Vector3D, Vector4D } from '../../math';
 import type { DataLayerMethods } from './methods';
 
 /**
- * Allowed types for data-layer storage.
- * These types are strictly enforced - once a key is set with a type,
- * all future sets to that key must use the same type.
+ * Allowed scalar/vector element types for data-layer storage.
+ * Arrays (see DataLayerType) hold homogeneous lists of these.
  */
-export type DataLayerType =
+export type DataLayerScalar =
   | string
   | number
   | boolean
   | Vector2D
   | Vector3D
   | Vector4D;
+
+/**
+ * Allowed types for data-layer storage.
+ * These types are strictly enforced - once a key is set with a type,
+ * all future sets to that key must use the same type.
+ *
+ * Arrays are homogeneous and one level deep: every element shares the same
+ * scalar/vector type (e.g. number[], Vector3D[]). Arrays of arrays and arrays
+ * of arbitrary objects are not allowed, preserving the flat-data philosophy.
+ */
+export type DataLayerType =
+  | DataLayerScalar
+  | string[]
+  | number[]
+  | boolean[]
+  | Vector2D[]
+  | Vector3D[]
+  | Vector4D[];
 
 /**
  * Data-layer component for storing typed key-value pairs.
@@ -38,10 +55,10 @@ export interface DataLayerT
 }
 
 /**
- * Helper function to get the type name of a value.
- * Returns null if the value is not an allowed DataLayerType.
+ * Returns the type name of a single scalar/vector value, or null if it is not
+ * an allowed element type. Arrays are intentionally rejected here (no nesting).
  */
-function getTypeName(value: unknown): string | null {
+export function getScalarTypeName(value: unknown): string | null {
   if (typeof value === 'string') return 'string';
   if (typeof value === 'number') return 'number';
   if (typeof value === 'boolean') return 'boolean';
@@ -49,6 +66,85 @@ function getTypeName(value: unknown): string | null {
   if (value instanceof Vector3D) return 'Vector3D';
   if (value instanceof Vector4D) return 'Vector4D';
   return null;
+}
+
+/**
+ * Returns the type name of a value, including homogeneous array tags such as
+ * "number[]". Returns null if the value is not an allowed DataLayerType:
+ * an invalid scalar, an empty array (element type cannot be inferred), a
+ * non-homogeneous array, or a nested array.
+ */
+export function getTypeName(value: unknown): string | null {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return null;
+    const elementType = getScalarTypeName(value[0]);
+    if (elementType === null) return null;
+    for (let i = 1; i < value.length; i += 1) {
+      if (getScalarTypeName(value[i]) !== elementType) return null;
+    }
+    return `${elementType}[]`;
+  }
+  return getScalarTypeName(value);
+}
+
+/**
+ * Strips the trailing "[]" from an array type tag ("number[]" -> "number").
+ * Returns null if the tag is not an array tag.
+ */
+export function elementTypeOf(tag: string): string | null {
+  return tag.endsWith('[]') ? tag.slice(0, -2) : null;
+}
+
+/**
+ * Validates `value` against the type lock for `key` and stores it.
+ * Shared by the Proxy set handler and DataLayer.set so validation lives in one
+ * place. Logs and returns false on an invalid type, a type mismatch, or an
+ * empty array assigned to a key whose array element type is not yet established.
+ */
+export function setDataLayerValue(
+  d: DataLayerT,
+  key: string,
+  value: unknown,
+): boolean {
+  const existingType = d.typeMap.get(key);
+
+  // Empty array: element type cannot be inferred, so it may only be assigned to
+  // a key already locked to an array type (i.e. clearing an existing list).
+  if (Array.isArray(value) && value.length === 0) {
+    if (existingType && existingType.endsWith('[]')) {
+      d.storage.set(key, [] as unknown as DataLayerType);
+      return true;
+    }
+    console.error(
+      `[data-layer] Cannot set '${key}' to an empty array: element type ` +
+        `cannot be inferred. Set a non-empty array first to establish the type.`,
+    );
+    return false;
+  }
+
+  const typeName = getTypeName(value);
+  if (typeName === null) {
+    console.error(
+      `[data-layer] Cannot set '${key}': value type is not allowed. ` +
+        `Allowed types: string, number, boolean, Vector2D, Vector3D, Vector4D, ` +
+        `or homogeneous arrays of those (e.g. number[]).`,
+    );
+    return false;
+  }
+
+  if (existingType && existingType !== typeName) {
+    console.error(
+      `[data-layer] Type mismatch for key '${key}': ` +
+        `expected ${existingType}, got ${typeName}`,
+    );
+    return false;
+  }
+
+  d.storage.set(key, value as DataLayerType);
+  if (!existingType) {
+    d.typeMap.set(key, typeName);
+  }
+  return true;
 }
 
 /**
@@ -64,34 +160,7 @@ function createProxyHandler(dataLayer: DataLayerT): ProxyHandler<object> {
 
     set(_target: object, key: string, value: unknown): boolean {
       if (typeof key === 'symbol') return false;
-
-      // Validate type
-      const typeName = getTypeName(value);
-      if (typeName === null) {
-        console.error(
-          `[data-layer] Cannot set '${key}': value type is not allowed. ` +
-            `Allowed types: string, number, boolean, Vector2D, Vector3D, Vector4D`,
-        );
-        return false;
-      }
-
-      // Check type enforcement
-      const existingType = dataLayer.typeMap.get(key);
-      if (existingType && existingType !== typeName) {
-        console.error(
-          `[data-layer] Type mismatch for key '${key}': ` +
-            `expected ${existingType}, got ${typeName}`,
-        );
-        return false;
-      }
-
-      // Store value and type
-      dataLayer.storage.set(key, value as DataLayerType);
-      if (!existingType) {
-        dataLayer.typeMap.set(key, typeName);
-      }
-
-      return true;
+      return setDataLayerValue(dataLayer, key, value);
     },
 
     has(_target: object, key: string): boolean {
@@ -124,9 +193,19 @@ function createProxyHandler(dataLayer: DataLayerT): ProxyHandler<object> {
  * dataLayer.$data.position = new Vector3D(10, 20, 30);
  * dataLayer.$data.position.x = 15;  // Direct mutation works!
  *
+ * // Homogeneous arrays are supported (one level deep, single element type):
+ * dataLayer.$data.tags = ["fire", "ice"];   // locked to string[]
+ * dataLayer.$data.waypoints = [new Vector3D(0, 0, 0)];
+ * dataLayer.$data.childIds = [childA.id, childB.id]; // one-to-many via ids
+ *
  * // Or use explicit methods
  * DataLayer.set(dataLayer, "health", 100);
  * const health = DataLayer.get(dataLayer, "health");
+ *
+ * // CAVEAT: assignment is type-validated, but raw in-place mutation through
+ * // $data is NOT — e.g. `dataLayer.$data.tags.push(42)` bypasses validation
+ * // and can corrupt the array's element type. Use the validated helpers
+ * // (DataLayer.push / setAt / removeAt) to mutate stored arrays safely.
  * ```
  */
 export function builder(options: ComponentOptions): DataLayerT {
@@ -152,6 +231,32 @@ export function builder(options: ComponentOptions): DataLayerT {
 }
 
 /**
+ * Serializes a single stored value. Vectors become tagged _vectorType objects;
+ * arrays are serialized element-by-element; scalars pass through unchanged.
+ */
+function serializeValue(value: DataLayerType): unknown {
+  if (value instanceof Vector2D) {
+    return { _vectorType: 'Vector2D', x: value.x, y: value.y };
+  }
+  if (value instanceof Vector3D) {
+    return { _vectorType: 'Vector3D', x: value.x, y: value.y, z: value.z };
+  }
+  if (value instanceof Vector4D) {
+    return {
+      _vectorType: 'Vector4D',
+      x: value.x,
+      y: value.y,
+      z: value.z,
+      w: value.w,
+    };
+  }
+  if (Array.isArray(value)) {
+    return value.map((element) => serializeValue(element as DataLayerType));
+  }
+  return value;
+}
+
+/**
  * Serializes a data-layer component to a plain object.
  * Vectors are serialized with a special _vectorType field for reconstruction.
  */
@@ -162,26 +267,7 @@ function serialize(component: ComponentData): any {
   // Convert storage Map to plain object
   const storageObj: Record<string, unknown> = {};
   for (const [key, value] of dl.storage) {
-    if (value instanceof Vector2D) {
-      storageObj[key] = { _vectorType: 'Vector2D', x: value.x, y: value.y };
-    } else if (value instanceof Vector3D) {
-      storageObj[key] = {
-        _vectorType: 'Vector3D',
-        x: value.x,
-        y: value.y,
-        z: value.z,
-      };
-    } else if (value instanceof Vector4D) {
-      storageObj[key] = {
-        _vectorType: 'Vector4D',
-        x: value.x,
-        y: value.y,
-        z: value.z,
-        w: value.w,
-      };
-    } else {
-      storageObj[key] = value;
-    }
+    storageObj[key] = serializeValue(value);
   }
 
   // Convert typeMap to plain object
@@ -249,8 +335,23 @@ function deserialize(data: any): DeserializeResult<DataLayerT> {
         message: `data-layer "${componentName}" storage field is not an object; ignored`,
       });
     } else {
-      for (const key in storage) {
-        const value = storage[key];
+      // Reconstructs a serialized value: tagged vectors become Vector
+      // instances, arrays are reconstructed element-by-element, scalars pass
+      // through. Returns { ok: false } when a value must be skipped (an
+      // UNKNOWN_VECTOR_TYPE error is pushed for the offending key).
+      const reconstruct = (
+        value: unknown,
+        key: string,
+      ): { ok: true; value: DataLayerType } | { ok: false } => {
+        if (Array.isArray(value)) {
+          const out: DataLayerType[] = [];
+          for (const element of value) {
+            const result = reconstruct(element, key);
+            if (!result.ok) return { ok: false };
+            out.push(result.value);
+          }
+          return { ok: true, value: out as DataLayerType };
+        }
 
         if (value && typeof value === 'object' && '_vectorType' in value) {
           const vectorData = value as {
@@ -261,33 +362,44 @@ function deserialize(data: any): DeserializeResult<DataLayerT> {
             w?: number;
           };
 
-          let vectorInstance: Vector2D | Vector3D | Vector4D;
           if (vectorData._vectorType === 'Vector2D') {
-            vectorInstance = new Vector2D(vectorData.x, vectorData.y);
-          } else if (vectorData._vectorType === 'Vector3D') {
-            vectorInstance = new Vector3D(
-              vectorData.x,
-              vectorData.y,
-              vectorData.z!,
-            );
-          } else if (vectorData._vectorType === 'Vector4D') {
-            vectorInstance = new Vector4D(
-              vectorData.x,
-              vectorData.y,
-              vectorData.z!,
-              vectorData.w!,
-            );
-          } else {
-            errors.push({
-              code: 'UNKNOWN_VECTOR_TYPE',
-              message: `data-layer "${componentName}" key "${key}" has unknown vector type "${vectorData._vectorType}"; skipped`,
-            });
-            continue;
+            return {
+              ok: true,
+              value: new Vector2D(vectorData.x, vectorData.y),
+            };
+          }
+          if (vectorData._vectorType === 'Vector3D') {
+            return {
+              ok: true,
+              value: new Vector3D(vectorData.x, vectorData.y, vectorData.z!),
+            };
+          }
+          if (vectorData._vectorType === 'Vector4D') {
+            return {
+              ok: true,
+              value: new Vector4D(
+                vectorData.x,
+                vectorData.y,
+                vectorData.z!,
+                vectorData.w!,
+              ),
+            };
           }
 
-          dataLayer.storage.set(key, vectorInstance);
-        } else {
-          dataLayer.storage.set(key, value as DataLayerType);
+          errors.push({
+            code: 'UNKNOWN_VECTOR_TYPE',
+            message: `data-layer "${componentName}" key "${key}" has unknown vector type "${vectorData._vectorType}"; skipped`,
+          });
+          return { ok: false };
+        }
+
+        return { ok: true, value: value as DataLayerType };
+      };
+
+      for (const key in storage) {
+        const result = reconstruct(storage[key], key);
+        if (result.ok) {
+          dataLayer.storage.set(key, result.value);
         }
       }
     }

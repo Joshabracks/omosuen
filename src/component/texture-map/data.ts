@@ -34,6 +34,14 @@ export interface TextureMapT
   filePath: string;
 
   /**
+   * Optional in-memory source image (canvas / ImageBitmap), used instead of
+   * loading `filePath`. Set by procedural producers such as the Aseprite
+   * importer, which composite frames into a canvas at runtime. NOT serialized
+   * (a live canvas can't round-trip) — producers regenerate it on load.
+   */
+  sourceImage?: CanvasImageSource;
+
+  /**
    * Configuration for how to extract frames from the source image.
    * - FrameMap: Explicit frame rectangles
    * - GridConfig: Uniform grid extraction
@@ -64,6 +72,7 @@ export interface TextureMapT
 export const PROPERTY_ALLOWLIST = [
   'textureMapKey',
   'filePath',
+  'sourceImage',
   'imageType',
   'originalFrames',
   'packedFrames',
@@ -83,6 +92,12 @@ export interface TextureMapOptions extends ComponentOptions {
    * File path to the source image.
    */
   filePath: string;
+
+  /**
+   * Optional in-memory source image (canvas / ImageBitmap) used instead of
+   * loading `filePath`. When set, the atlas-manager blits from it directly.
+   */
+  sourceImage?: CanvasImageSource;
 
   /**
    * Configuration for frame extraction.
@@ -162,7 +177,14 @@ function extractOriginalFrames(
  * Builder function for creating TextureMap components.
  */
 export function builder(options: TextureMapOptions): TextureMapT {
-  const { textureMapKey, filePath, imageType, name, atlasManager } = options;
+  const {
+    textureMapKey,
+    filePath,
+    sourceImage,
+    imageType,
+    name,
+    atlasManager,
+  } = options;
 
   // Extract original frames if imageType is provided
   // If imageType is undefined, frames will be set when image loads
@@ -176,6 +198,7 @@ export function builder(options: TextureMapOptions): TextureMapT {
     _disposed: false,
     textureMapKey,
     filePath,
+    sourceImage,
     imageType,
     originalFrames,
     packedFrames: [],

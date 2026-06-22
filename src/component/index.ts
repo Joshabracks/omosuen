@@ -77,6 +77,11 @@ export type {
   ActiveSource,
 } from './audio-player';
 export { TrackController } from './audio-player';
+export type {
+  AsepriteT as aseprite,
+  AsepriteMethods,
+  AsepriteOptions,
+} from './aseprite';
 
 // Export ComponentUnique enum for developers to use
 export { ComponentUnique } from './types';
@@ -105,3 +110,4 @@ export { LightSerializer } from './light/data';
 export { AudioTrackSerializer } from './audio-track/data';
 export { AudioEffectSerializer } from './audio-effect/data';
 export { AudioPlayerSerializer } from './audio-player/data';
+export { AsepriteSerializer } from './aseprite/data';

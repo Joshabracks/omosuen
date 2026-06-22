@@ -18,6 +18,7 @@ Omosuen.registerHtmlConstructor('mainMenu', (overlay) => {
                 <button id="btn-viewport-test" class="menu-button">Viewport Test Scene</button>
                 <button id="btn-atlas-test" class="menu-button">Atlas Manager Test</button>
                 <button id="btn-sprite-test" class="menu-button">Sprite Rendering Test</button>
+                <button id="btn-aseprite-test" class="menu-button">Aseprite Import Test</button>
                 <button id="btn-cellmap-test" class="menu-button">Cell-Map Rendering Test</button>
                 <button id="btn-audio-test" class="menu-button">Audio Test Scene</button>
             </div>
@@ -49,6 +50,11 @@ Omosuen.registerBinding('loadAtlasTest', async (event) => {
 Omosuen.registerBinding('loadSpriteTest', async (event) => {
     console.log('Loading Sprite Test scene...');
     await Omosuen.switchScene('sprite-test');
+});
+
+Omosuen.registerBinding('loadAsepriteTest', async (event) => {
+    console.log('Loading Aseprite Import Test scene...');
+    await Omosuen.switchScene('aseprite-test');
 });
 
 Omosuen.registerBinding('loadCellmapTest', async (event) => {
@@ -94,6 +100,11 @@ export async function createScene() {
                 selector: '#btn-sprite-test',
                 onActions: ['click'],
                 methodKey: 'loadSpriteTest'
+            },
+            {
+                selector: '#btn-aseprite-test',
+                onActions: ['click'],
+                methodKey: 'loadAsepriteTest'
             },
             {
                 selector: '#btn-cellmap-test',

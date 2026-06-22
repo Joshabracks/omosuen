@@ -27,7 +27,9 @@ export function collectRenderables(camera: CameraT): {
   const sceneRoot = castTo<NexusT>(parentNexus.parent!);
 
   // Recursively collect all sprites from the scene root
-  const sprites = sceneRoot.getComponentsByType('sprite', true) as SpriteT[];
+  const sprites = segmentedRenderOrderSort(
+    sceneRoot.getComponentsByType('sprite', true) as SpriteT[],
+  );
 
   // Recursively collect all cell maps from the scene root
   const cellMaps = sceneRoot.getComponentsByType(
@@ -39,4 +41,56 @@ export function collectRenderables(camera: CameraT): {
   const lights = sceneRoot.getComponentsByType('light', true) as LightT[];
 
   return { sprites, cellMaps, lights };
+}
+
+/**
+ * Orders sprites for painter's-algorithm drawing (the sprite pass runs with the
+ * depth test disabled, so sprite-on-sprite order is draw order).
+ *
+ * `getComponentsByType` returns a nexus's own sprites contiguously before
+ * recursing into child nexuses, so all sprites of one composited entity form a
+ * contiguous run. We stable-sort by `renderOrder` ONLY within each such run, so:
+ *  - a multi-sprite entity's layers stack by renderOrder (low = underneath), and
+ *  - the relative order of different entities is preserved exactly (existing
+ *    scenes are unaffected; entities never interweave and "pass through" each
+ *    other).
+ */
+function segmentedRenderOrderSort(sprites: SpriteT[]): SpriteT[] {
+  const n = sprites.length;
+  if (n < 2) return sprites;
+
+  // Fast path: if no two adjacent sprites share a parent nexus, every entity is
+  // single-sprite and there is nothing to reorder — return the array untouched
+  // (no allocation). This is the common case, run every frame.
+  let hasMultiSpriteRun = false;
+  for (let i = 1; i < n; i++) {
+    // Compare raw `parent` identity (all sprites of a nexus share the same raw
+    // parent reference) — do NOT wrap in castTo here.
+    if (sprites[i].parent === sprites[i - 1].parent) {
+      hasMultiSpriteRun = true;
+      break;
+    }
+  }
+  if (!hasMultiSpriteRun) return sprites;
+
+  const out: SpriteT[] = [];
+  let runStart = 0;
+  for (let i = 1; i <= n; i++) {
+    const endOfRun = i === n || sprites[i].parent !== sprites[runStart].parent;
+    if (!endOfRun) continue;
+
+    if (i - runStart === 1) {
+      // Single-sprite run — nothing to sort.
+      out.push(sprites[runStart]);
+    } else {
+      // Stable-sort the run by renderOrder ascending. Array.sort is stable
+      // (ES2019+), so equal renderOrder preserves original collection order.
+      const run = sprites
+        .slice(runStart, i)
+        .sort((a, b) => a.renderOrder - b.renderOrder);
+      for (let j = 0; j < run.length; j++) out.push(run[j]);
+    }
+    runStart = i;
+  }
+  return out;
 }

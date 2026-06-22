@@ -38,6 +38,23 @@ export * from './component';
 export * from './math';
 
 // ============================================================================
+// Asset Exports (Aseprite parser + importer)
+// ============================================================================
+export { parseAseprite } from './asset/aseprite';
+export type {
+  AseFile,
+  AseLayer,
+  AseCel,
+  AseFrame,
+  AseTag,
+} from './asset/aseprite';
+export { importAseprite } from './asset/aseprite/import';
+export type {
+  AsepriteImportConfig,
+  AsepriteImportResult,
+} from './asset/aseprite/import';
+
+// ============================================================================
 // Scene Exports
 // ============================================================================
 export * from './scene';

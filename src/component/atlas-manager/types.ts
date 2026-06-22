@@ -14,8 +14,10 @@ export interface UnpackedFrame {
   /**
    * Source image this frame is cut from. The frame is blitted straight onto the
    * atlas at build time via drawImage — no per-frame ImageData is extracted.
+   * May be a loaded HTMLImageElement (file path) or an in-memory canvas /
+   * ImageBitmap (e.g. Aseprite-composited frames); drawImage accepts all of these.
    */
-  sourceImage: HTMLImageElement;
+  sourceImage: CanvasImageSource;
 
   /**
    * Top-left position of the frame within `sourceImage`.

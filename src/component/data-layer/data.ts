@@ -430,4 +430,4 @@ export const DataLayerSerializer: ComponentSerializer = {
  * Allowlist of data-layer-specific properties accessible via component Proxy.
  * These properties can be accessed directly without triggering method lookup.
  */
-export const PROPERTY_ALLOWLIST: string[] = ['storage', 'typeMap', '$'];
+export const PROPERTY_ALLOWLIST: string[] = ['storage', 'typeMap', '$data'];

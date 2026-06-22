@@ -56,29 +56,40 @@ export function collectRenderables(camera: CameraT): {
  *    other).
  */
 function segmentedRenderOrderSort(sprites: SpriteT[]): SpriteT[] {
-  if (sprites.length < 2) return sprites;
+  const n = sprites.length;
+  if (n < 2) return sprites;
+
+  // Fast path: if no two adjacent sprites share a parent nexus, every entity is
+  // single-sprite and there is nothing to reorder — return the array untouched
+  // (no allocation). This is the common case, run every frame.
+  let hasMultiSpriteRun = false;
+  for (let i = 1; i < n; i++) {
+    // Compare raw `parent` identity (all sprites of a nexus share the same raw
+    // parent reference) — do NOT wrap in castTo here.
+    if (sprites[i].parent === sprites[i - 1].parent) {
+      hasMultiSpriteRun = true;
+      break;
+    }
+  }
+  if (!hasMultiSpriteRun) return sprites;
 
   const out: SpriteT[] = [];
   let runStart = 0;
-  for (let i = 1; i <= sprites.length; i++) {
-    // A run ends at the array end or when the parent nexus changes.
-    // Compare raw `parent` identity (all sprites of a nexus share the same
-    // raw parent reference) — do NOT wrap in castTo here.
-    const endOfRun =
-      i === sprites.length || sprites[i].parent !== sprites[runStart].parent;
+  for (let i = 1; i <= n; i++) {
+    const endOfRun = i === n || sprites[i].parent !== sprites[runStart].parent;
     if (!endOfRun) continue;
 
-    // Stable-sort [runStart, i) by renderOrder ascending. Decorate with the
-    // original index for a guaranteed-stable tiebreak across all engines.
-    const run = sprites
-      .slice(runStart, i)
-      .map((s, idx) => ({ s, idx }))
-      .sort((a, b) =>
-        a.s.renderOrder !== b.s.renderOrder
-          ? a.s.renderOrder - b.s.renderOrder
-          : a.idx - b.idx,
-      );
-    for (const e of run) out.push(e.s);
+    if (i - runStart === 1) {
+      // Single-sprite run — nothing to sort.
+      out.push(sprites[runStart]);
+    } else {
+      // Stable-sort the run by renderOrder ascending. Array.sort is stable
+      // (ES2019+), so equal renderOrder preserves original collection order.
+      const run = sprites
+        .slice(runStart, i)
+        .sort((a, b) => a.renderOrder - b.renderOrder);
+      for (let j = 0; j < run.length; j++) out.push(run[j]);
+    }
     runStart = i;
   }
   return out;

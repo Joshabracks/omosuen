@@ -90,10 +90,12 @@ export const AnimationController: AnimationControllerMethods = {
       }));
     }
 
-    // Apply each layer's visibility intent onto its bound sprite.
-    for (const layer of ac.layers) {
-      const sprite = sprites.find((s) => s.name === layer.spriteName);
-      if (sprite) sprite.visible = layer.visible;
+    // Resolve + cache each layer's sprite once, then apply visibility from it
+    // (cache parallels `layers`).
+    const layerSprites = resolveLayerSprites(ac);
+    for (let i = 0; i < ac.layers.length; i++) {
+      const sprite = layerSprites[i];
+      if (sprite) sprite.visible = ac.layers[i].visible;
     }
   },
 
@@ -385,13 +387,12 @@ export const AnimationController: AnimationControllerMethods = {
     }
     layer.visible = visible;
 
-    // Sync all layers' visibility onto their sprites (so a slot-hide applies).
-    if (!controller.parent) return;
-    const parent = castTo<NexusT>(controller.parent);
-    const sprites = parent.getComponentsByType('sprite') as SpriteT[];
-    for (const l of controller.layers) {
-      const sprite = sprites.find((s) => s.name === l.spriteName);
-      if (sprite) sprite.visible = l.visible;
+    // Sync all layers' visibility onto their sprites (so a slot-hide applies),
+    // using the resolved-sprite cache (parallel to `layers`).
+    const layerSprites = layerSpritesFor(controller);
+    for (let i = 0; i < controller.layers.length; i++) {
+      const sprite = layerSprites[i];
+      if (sprite) sprite.visible = controller.layers[i].visible;
     }
   },
 
@@ -405,6 +406,8 @@ export const AnimationController: AnimationControllerMethods = {
     } else {
       controller.layers.push(layer);
     }
+    // Invalidate the resolved-sprite cache; rebuilt on next use.
+    controller._layerSprites = undefined;
   },
 
   /**
@@ -430,6 +433,7 @@ export const AnimationController: AnimationControllerMethods = {
   dispose(c: ComponentData) {
     const ac = c as AnimationControllerT;
     ac.layers = [];
+    ac._layerSprites = undefined;
     ac._disposed = true;
   },
 };
@@ -445,35 +449,52 @@ function frameDurationFor(animation: Animation, frameIndex: number): number {
 }
 
 /**
+ * Resolves the sprite bound to each layer ONCE and caches it on the controller
+ * (parallel to `layers`; null where a layer's sprite isn't found). With no
+ * configured layers, caches all sibling sprites (auto-bound single-sprite case).
+ * Walking the nexus + searching by name happens here, not per frame.
+ */
+function resolveLayerSprites(
+  controller: AnimationControllerT,
+): (SpriteT | null)[] {
+  if (!controller.parent) {
+    controller._layerSprites = [];
+    return controller._layerSprites;
+  }
+  // parent is stored raw; wrap it to reach the nexus's proxy methods.
+  const parent = castTo<NexusT>(controller.parent);
+  const sprites = parent.getComponentsByType('sprite') as SpriteT[];
+
+  const resolved: (SpriteT | null)[] =
+    controller.layers.length === 0
+      ? sprites
+      : controller.layers.map(
+          (layer) => sprites.find((s) => s.name === layer.spriteName) ?? null,
+        );
+
+  controller._layerSprites = resolved;
+  return resolved;
+}
+
+/** Returns the cached layer sprites, building the cache on first use. */
+function layerSpritesFor(controller: AnimationControllerT): (SpriteT | null)[] {
+  return controller._layerSprites ?? resolveLayerSprites(controller);
+}
+
+/**
  * Sets the given frame on EVERY layer sprite driven by this controller, in
- * lockstep. With no configured layers, drives all sibling sprites (covers the
- * auto-bound single-sprite case). All layers share one frame timeline, so a
- * single frame index applies to every layer's texture-map.
+ * lockstep, using the resolved-sprite cache (no per-tick nexus walk or name
+ * search). All layers share one frame timeline, so a single frame index applies
+ * to every layer's texture-map.
  */
 function updateSpriteFrames(
   controller: AnimationControllerT,
   frameNumber: number,
 ): void {
-  if (!controller.parent) {
-    return;
-  }
-  // parent is stored raw; wrap it to reach the nexus's proxy methods.
-  const parent = castTo<NexusT>(controller.parent);
-
-  const sprites = parent.getComponentsByType('sprite') as SpriteT[];
-  if (sprites.length === 0) {
-    return;
-  }
-
-  if (controller.layers.length === 0) {
-    for (const sprite of sprites) {
+  const sprites = layerSpritesFor(controller);
+  for (const sprite of sprites) {
+    if (sprite && !sprite._disposed) {
       sprite.setFrame(frameNumber, controller.channels);
     }
-    return;
-  }
-
-  for (const layer of controller.layers) {
-    const sprite = sprites.find((s) => s.name === layer.spriteName);
-    if (sprite) sprite.setFrame(frameNumber, controller.channels);
   }
 }

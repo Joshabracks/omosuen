@@ -10,6 +10,7 @@ import {
 import type { AnimationControllerMethods } from './methods';
 import type { Animation, AnimationLayer, AnimationState } from './types';
 import type { ChannelType } from '../sprite/types';
+import type { SpriteT } from '../sprite/data';
 
 /**
  * AnimationController component for managing sprite frame animations.
@@ -64,6 +65,14 @@ export interface AnimationControllerT
    * classic single-sprite behavior working unchanged).
    */
   layers: AnimationLayer[];
+
+  /**
+   * Transient cache of the resolved sprite for each layer (parallel to
+   * `layers`; null where a layer's sprite isn't currently found). Built once at
+   * init and on layer changes so the per-frame update path neither re-walks the
+   * nexus nor searches by name. Rebuilt on demand; never serialized.
+   */
+  _layerSprites?: (SpriteT | null)[];
 }
 
 export interface AnimationControllerOptions extends ComponentOptions {
@@ -301,4 +310,5 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'speed',
   'channels',
   'layers',
+  '_layerSprites',
 ];

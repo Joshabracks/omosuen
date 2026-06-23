@@ -6,7 +6,7 @@
 // Usage: Omosuen.init({ plugins: ['./aseprite-loader.plugin.js'] }) — or load it
 // via a <script> tag after omosuen.js.
 
-import { asepriteLoaderDefinition } from './component';
+import { asepriteLoaderDefinition } from './component.js';
 
 declare global {
   interface Window {

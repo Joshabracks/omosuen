@@ -6,23 +6,23 @@
 // exported for direct/procedural use.
 
 import { registerPluginComponent } from 'omosuen';
-import { asepriteLoaderDefinition } from './component';
+import { asepriteLoaderDefinition } from './component.js';
 
-export { asepriteLoaderDefinition } from './component';
-export type { AsepriteLoaderT, AsepriteLoaderOptions } from './component';
-export { importAseprite } from './import';
+export { asepriteLoaderDefinition } from './component.js';
+export type { AsepriteLoaderT, AsepriteLoaderOptions } from './component.js';
+export { importAseprite } from './import.js';
 export type {
   AsepriteImportConfig,
   AsepriteImportResult,
-} from './import';
-export { parseAseprite } from './parser/parser';
+} from './import.js';
+export { parseAseprite } from './parser/parser.js';
 export type {
   AseFile,
   AseLayer,
   AseCel,
   AseFrame,
   AseTag,
-} from './parser/types';
+} from './parser/types.js';
 
 /**
  * Convenience: register the `aseprite-loader` component type with the engine.

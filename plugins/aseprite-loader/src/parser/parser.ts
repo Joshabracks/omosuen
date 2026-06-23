@@ -1,5 +1,5 @@
-import { ByteReader } from './byte-reader';
-import type { AseCel, AseFile, AseFrame, AseLayer, AseTag } from './types';
+import { ByteReader } from './byte-reader.js';
+import type { AseCel, AseFile, AseFrame, AseLayer, AseTag } from './types.js';
 
 /**
  * Dependency-free .aseprite/.ase parser. Returns a fully-materialized model:

@@ -17,7 +17,7 @@ import type {
   ComponentSerializer,
   ComponentTypeDefinition,
 } from 'omosuen';
-import { importAseprite } from './import';
+import { importAseprite } from './import.js';
 
 const TYPE = 'aseprite-loader';
 

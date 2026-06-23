@@ -129,8 +129,7 @@ export type COMPONENT_TYPE =
   | 'light'
   | 'audio-track'
   | 'audio-effect'
-  | 'audio-player'
-  | 'aseprite';
+  | 'audio-player';
 
 export interface ComponentOptions {
   name: string;
@@ -221,6 +220,7 @@ export function wrapInProxy(component: ComponentData): ComponentData {
     'parent',
     '_disposed',
     'loader',
+    '_generated',
     'unique',
     'overrideKey',
     'updateOverride',

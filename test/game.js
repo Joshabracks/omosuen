@@ -17,9 +17,11 @@ const Omosuen = window.Omosuen;
 async function initGame() {
     console.log('Initializing Omosuen Test Game...');
 
-    // Initialize Omosuen with log suppression
-    Omosuen.init({
-        logSuppression: 5  // Suppress logs after 5 occurrences
+    // Initialize Omosuen with log suppression + the official Aseprite loader
+    // plugin (self-registers the `aseprite-loader` component before scenes load).
+    await Omosuen.init({
+        logSuppression: 5,  // Suppress logs after 5 occurrences
+        plugins: ['./dev/aseprite-loader.plugin.js']
     });
 
     // Create root-level messenger to log all messages

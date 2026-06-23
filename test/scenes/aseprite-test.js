@@ -128,8 +128,8 @@ async function loadEntity(scene, file, flatten) {
   });
   nexus.addComponent(transform);
 
-  // Declarative source component — fetches + builds on init.
-  const aseprite = await Omosuen.newComponent('aseprite', {
+  // Declarative source component (aseprite-loader plugin) — fetches + builds on init.
+  const aseprite = await Omosuen.newComponent('aseprite-loader', {
     name: file.replace(/\.aseprite$/i, ''),
     filePath: ASE_BASE + file,
     flatten,

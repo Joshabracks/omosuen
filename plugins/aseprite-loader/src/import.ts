@@ -1,33 +1,23 @@
-import { newComponent } from '../../component/types';
-import type { ComponentData } from '../../component/types';
-import { MethodRegistry } from '../../component/registry';
-import type { NexusT } from '../../component/nexus/data';
-import { AtlasManager } from '../../component/atlas-manager/methods';
-import type { AtlasManagerT } from '../../component/atlas-manager/data';
-import type { SpriteT, SpriteOptions } from '../../component/sprite/data';
-import type { TextureMapOptions } from '../../component/texture-map/data';
-import type { TransformOptions } from '../../component/transform/data';
-import type { AnimationControllerT } from '../../component/animation-controller/data';
-import type { AnimationControllerOptions } from '../../component/animation-controller/data';
-import type {
-  Animation,
-  AnimationLayer,
-} from '../../component/animation-controller/types';
-import { Vector2D, Vector3D, Vector4D } from '../../math';
-import { parseAseprite } from './parser';
-import type { AseCel, AseFile, AseLayer } from './types';
+// The Aseprite → entity importer. Parses an .aseprite buffer, composites frames
+// into in-memory canvases, and builds the entity's texture-maps + sprites +
+// animation-controller into a nexus. Engine runtime (newComponent, Vector*) is
+// imported from 'omosuen' and externalized to the engine global at bundle time —
+// these are the engine's own singletons, never re-bundled.
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { newComponent, Vector2D, Vector3D, Vector4D } from 'omosuen';
+import { parseAseprite } from './parser/parser';
+import type { AseCel, AseFile, AseLayer } from './parser/types';
 
 /**
- * Configuration for ingesting an Aseprite file into an entity nexus. The
- * importer composites frames into in-memory canvases, registers them with the
- * atlas, and builds the sprites + animation-controller (all flagged
- * `_generated` so they're regenerated on load, never serialized).
+ * Configuration for ingesting an Aseprite file into an entity nexus. `parent`
+ * and `atlasManager` are live engine component proxies.
  */
 export interface AsepriteImportConfig {
   /** Nexus to populate (the `aseprite` component's own parent). */
-  parent: NexusT;
+  parent: any;
   /** Atlas manager the composited frames are packed into. */
-  atlasManager: AtlasManagerT;
+  atlasManager: any;
   /** Unique namespace for texture keys / synthetic source paths. */
   packageId: string;
   /** Composite all layers into one sprite (default true) vs one per layer. */
@@ -46,15 +36,15 @@ export interface AsepriteImportConfig {
 
 /** What the import produced. */
 export interface AsepriteImportResult {
-  controller: AnimationControllerT | null;
-  sprites: SpriteT[];
+  controller: any | null;
+  sprites: any[];
 }
 
 /**
  * Parses an Aseprite buffer and builds a fully-animated, optionally-layered
  * entity into `config.parent`: composited texture-maps + sprites + an
  * animation-controller (tags → animations with per-frame durations). Browser-only
- * (uses canvas); the parser core it calls is environment-agnostic.
+ * (uses canvas); the parser it calls is environment-agnostic.
  */
 export async function importAseprite(
   buffer: ArrayBuffer,
@@ -72,12 +62,15 @@ export async function importAseprite(
   // Ensure a transform exists. It is NOT flagged generated, so it persists
   // (keeping any runtime position) and is reused on the next init.
   if (!parent.getComponentByType('transform', false)) {
-    const transformOptions: TransformOptions = {
-      name: `${config.packageId} Transform`,
-      position: config.position ?? new Vector3D(0, 0, 0),
-      scale: config.scale ?? new Vector3D(1, 1, 1),
-    };
-    await newComponent('transform', transformOptions, parent);
+    await newComponent(
+      'transform',
+      {
+        name: `${config.packageId} Transform`,
+        position: config.position ?? new Vector3D(0, 0, 0),
+        scale: config.scale ?? new Vector3D(1, 1, 1),
+      },
+      parent,
+    );
   }
 
   // Image layers only, filtered by visibility; composited ascending by index.
@@ -105,70 +98,71 @@ export async function importAseprite(
   }
 
   // Create a texture-map + sprite per build.
-  const sprites: SpriteT[] = [];
+  const sprites: any[] = [];
   let renderOrder = 0;
   for (const build of builds) {
     const texKey = `aseprite:${config.packageId}:${build.name}`;
-    const textureMapOptions: TextureMapOptions = {
-      name: texKey,
-      textureMapKey: texKey,
-      // Synthetic, unique source path keeps the atlas dedup key correct.
-      filePath: `aseprite://${config.packageId}/${build.name}`,
-      sourceImage: build.canvas,
-      imageType: frameRects,
-      atlasManager: config.atlasManager,
-    };
-    const tm = await newComponent('texture-map', textureMapOptions, parent);
+    const tm = await newComponent(
+      'texture-map',
+      {
+        name: texKey,
+        textureMapKey: texKey,
+        // Synthetic, unique source path keeps the atlas dedup key correct.
+        filePath: `aseprite://${config.packageId}/${build.name}`,
+        sourceImage: build.canvas,
+        imageType: frameRects,
+        atlasManager: config.atlasManager,
+      },
+      parent,
+    );
     if (tm) tm._generated = true;
 
-    const spriteOptions: SpriteOptions = {
-      name: build.name,
-      textureMapKeys: {
-        albedo: texKey,
-        normal: '',
-        material: '',
-        emission: '',
+    const sprite = await newComponent(
+      'sprite',
+      {
+        name: build.name,
+        textureMapKeys: {
+          albedo: texKey,
+          normal: '',
+          material: '',
+          emission: '',
+        },
+        frame: { albedo: 0, normal: 0, material: 0, emission: 0 },
+        anchor,
+        renderOrder: renderOrder++,
+        visible: true,
       },
-      frame: { albedo: 0, normal: 0, material: 0, emission: 0 },
-      anchor,
-      renderOrder: renderOrder++,
-      visible: true,
-    };
-    const sprite = await newComponent('sprite', spriteOptions, parent);
+      parent,
+    );
     if (sprite) {
       sprite._generated = true;
-      sprites.push(sprite as unknown as SpriteT);
+      sprites.push(sprite);
     }
   }
 
   // Animation-controller: tags → animations, sprites → layers.
-  const layers: AnimationLayer[] = sprites.map((s) => ({
+  const layers = sprites.map((s) => ({
     name: s.name,
     spriteName: s.name,
     visible: true,
     slot: config.layerSlots?.[s.name],
   }));
-  const controllerOptions: AnimationControllerOptions = {
-    name: `${config.packageId} Anim`,
-    animations: buildAnimations(ase),
-    layers,
-    channels: ['albedo'],
-  };
-  const controllerComp = await newComponent(
+  const controller = await newComponent(
     'animation-controller',
-    controllerOptions,
+    {
+      name: `${config.packageId} Anim`,
+      animations: buildAnimations(ase),
+      layers,
+      channels: ['albedo'],
+    },
     parent,
   );
-  let controller: AnimationControllerT | null = null;
-  if (controllerComp) {
-    controllerComp._generated = true;
-    controller = controllerComp as unknown as AnimationControllerT;
-  }
+  if (controller) controller._generated = true;
 
-  // Pack the newly-registered in-memory frames into the atlas.
-  await AtlasManager.processTextureMaps(config.atlasManager);
+  // Pack the newly-registered in-memory frames into the atlas (proxy method).
+  await config.atlasManager.processTextureMaps();
 
-  return { controller, sprites };
+  return { controller: controller ?? null, sprites };
 }
 
 /**
@@ -220,7 +214,7 @@ function blitCel(
  * expanding reverse / ping-pong loop directions. With no tags, produces a single
  * `default` animation over every frame.
  */
-function buildAnimations(ase: AseFile): Animation[] {
+function buildAnimations(ase: AseFile): any[] {
   if (ase.tags.length === 0) {
     const frames = frameRange(0, ase.frameCount - 1);
     return [
@@ -271,20 +265,20 @@ function frameRange(from: number, to: number): number[] {
   return out;
 }
 
-/** Disposes and removes this nexus's loader-generated children. */
-function removeGeneratedChildren(parent: NexusT): void {
-  const generated = parent.components.filter((c) => c._generated);
+/**
+ * Disposes and removes this nexus's loader-generated children. Children are
+ * engine component proxies, so `child.dispose()` dispatches the right teardown.
+ */
+function removeGeneratedChildren(parent: any): void {
+  const generated = (parent.components as any[]).filter((c) => c._generated);
   for (const child of generated) {
-    const dispose = MethodRegistry[child.type]?.dispose as
-      | ((c: ComponentData) => void)
-      | undefined;
-    if (typeof dispose === 'function') {
-      dispose(child);
+    if (typeof child.dispose === 'function') {
+      child.dispose();
     } else {
       child._disposed = true;
     }
   }
-  parent.components = parent.components.filter((c) => !c._generated);
+  parent.components = (parent.components as any[]).filter((c) => !c._generated);
 }
 
 function createCanvas(w: number, h: number): HTMLCanvasElement {

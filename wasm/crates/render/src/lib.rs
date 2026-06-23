@@ -60,6 +60,30 @@ fn neighbor_blocks(packed: u32, face_i: usize, custom_shapes: &[CustomShape]) ->
     unpack_visible_solid(packed) && cell_covers(packed, face_i, custom_shapes)
 }
 
+/// If all three local corners (range -0.5..0.5) lie on one ±0.5 cell-face plane,
+/// return that face's FACE_DIRS index; else None (a slanted/interior triangle, which
+/// is never culled). Lets a custom cube's per-face triangles be culled against solid
+/// neighbors exactly like the default cube's faces.
+#[inline]
+fn tri_cell_face(a: &[f32], b: &[f32], c: &[f32]) -> Option<usize> {
+    const E: f32 = 1e-4;
+    // (axis, plane value, FACE_DIRS index) — FACE_DIRS order is [+Z,-Z,+Y,-Y,+X,-X].
+    const PLANES: [(usize, f32, usize); 6] = [
+        (2, 0.5, 0),
+        (2, -0.5, 1),
+        (1, 0.5, 2),
+        (1, -0.5, 3),
+        (0, 0.5, 4),
+        (0, -0.5, 5),
+    ];
+    for (ax, val, face) in PLANES {
+        if (a[ax] - val).abs() < E && (b[ax] - val).abs() < E && (c[ax] - val).abs() < E {
+            return Some(face);
+        }
+    }
+    None
+}
+
 // ── Canonical RLE cell store ───────────────────────────────────────────────
 //
 // Single store (module-level), matching the engine's single-cell-map storage
@@ -363,7 +387,7 @@ struct Quad {
     normal: [f32; 3],
 }
 
-/// A custom-shape triangle emitted by the greedy (unsmoothed) mesher.
+/// A custom-shape triangle emitted directly (unsmoothed) by the greedy mesher.
 struct CGreedyTri {
     material: i32,
     v: [[f64; 3]; 3],
@@ -728,9 +752,11 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                         while t + 2 < ind.len() {
                             let mut tv = [[0.0f64; 3]; 3];
                             let mut tuv = [[0.0f32; 2]; 3];
+                            let mut local = [[0.0f32; 3]; 3];
                             for c in 0..3 {
                                 let corner = ind[t + c] as usize;
                                 let vi = corner * 3;
+                                local[c] = [v[vi], v[vi + 1], v[vi + 2]];
                                 tv[c] = [
                                     (x as f64 + v[vi] as f64 + 0.5) * cell_size[0],
                                     (y as f64 + v[vi + 1] as f64 + 0.5) * cell_size[1],
@@ -738,6 +764,31 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                                 ];
                                 if has_uv {
                                     tuv[c] = [cs.uvs[corner * 2], cs.uvs[corner * 2 + 1]];
+                                }
+                            }
+                            // Cull a per-face-UV cube triangle when its cell face is
+                            // hidden by a solid neighbor (interior faces of a solid mass).
+                            if has_uv {
+                                if let Some(face) = tri_cell_face(&local[0], &local[1], &local[2]) {
+                                    let d = FACE_DIRS[face];
+                                    let nbx = x as i64 + d.dx as i64;
+                                    let nby = y as i64 + d.dy as i64;
+                                    let nbz = z as i64 + d.dz as i64;
+                                    if nbx >= 0
+                                        && nbx < map_x as i64
+                                        && nby >= 0
+                                        && nby < map_y as i64
+                                        && nbz >= 0
+                                        && nbz < map_z as i64
+                                    {
+                                        let nidx = nbz as usize * stride_z
+                                            + nby as usize * stride_y
+                                            + nbx as usize;
+                                        if neighbor_blocks(packed[nidx], face ^ 1, custom_shapes) {
+                                            t += 3;
+                                            continue;
+                                        }
+                                    }
                                 }
                             }
                             let e1 = [
@@ -972,6 +1023,7 @@ fn smooth_vertices(
 
 fn compute_smooth_normals(
     faces: &[SmoothFace],
+    tris: &[SmoothTri],
     positions: &[[f64; 3]],
     vertex_count: usize,
 ) -> Vec<[f64; 3]> {
@@ -987,6 +1039,28 @@ fn compute_smooth_normals(
         let fnz = e1[0] * e2[1] - e1[1] * e2[0];
         for k in 0..4 {
             let idx = f.idx[k] as usize;
+            vn[idx][0] += fnx;
+            vn[idx][1] += fny;
+            vn[idx][2] += fnz;
+        }
+    }
+    // Per-vertex-UV custom triangles (e.g. UV cubes) also contribute, so their cells
+    // get smooth normals even when there are no cube faces. Non-UV custom shapes
+    // (ramps) keep flat normals and are excluded here.
+    for t in tris {
+        if !t.has_uv {
+            continue;
+        }
+        let p0 = positions[t.idx[0] as usize];
+        let p1 = positions[t.idx[1] as usize];
+        let p2 = positions[t.idx[2] as usize];
+        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let fnx = e1[1] * e2[2] - e1[2] * e2[1];
+        let fny = e1[2] * e2[0] - e1[0] * e2[2];
+        let fnz = e1[0] * e2[1] - e1[1] * e2[0];
+        for k in 0..3 {
+            let idx = t.idx[k] as usize;
             vn[idx][0] += fnx;
             vn[idx][1] += fny;
             vn[idx][2] += fnz;
@@ -1155,14 +1229,45 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                             faces.push(SmoothFace { idx: vidx, material, interior });
                         }
                     } else if let Some(cs) = custom_shapes.get(shape as usize) {
-                        // Custom shape: emit its triangles into the same pool so
-                        // coincident corners dedup with cubes and smooth together.
+                        // Custom shape: intern its triangles into the smoothing pool so
+                        // coincident corners dedup (a continuous surface that rounds) and
+                        // smooth with the cubes. Per-face UVs ride on each SmoothTri and
+                        // are re-emitted per corner, so they survive the smoothing pass.
                         // Local -0.5..0.5 verts shift by +0.5 to fill [i, i+1].
                         let v = &cs.verts;
                         let ind = &cs.indices;
                         let has_uv = !cs.uvs.is_empty();
                         let mut t = 0usize;
                         while t + 2 < ind.len() {
+                            // Cull a per-face-UV cube triangle whose cell face is hidden by
+                            // a solid neighbor (interior faces of a solid UV-cube mass).
+                            if has_uv {
+                                let lc = |c: usize| {
+                                    let vi = ind[t + c] as usize * 3;
+                                    [v[vi], v[vi + 1], v[vi + 2]]
+                                };
+                                if let Some(face) = tri_cell_face(&lc(0), &lc(1), &lc(2)) {
+                                    let d = FACE_DIRS[face];
+                                    let nbx = x as i64 + d.dx as i64;
+                                    let nby = y as i64 + d.dy as i64;
+                                    let nbz = z as i64 + d.dz as i64;
+                                    if nbx >= 0
+                                        && nbx < map_x as i64
+                                        && nby >= 0
+                                        && nby < map_y as i64
+                                        && nbz >= 0
+                                        && nbz < map_z as i64
+                                    {
+                                        let nidx = nbz as usize * stride_z
+                                            + nby as usize * stride_y
+                                            + nbx as usize;
+                                        if neighbor_blocks(packed[nidx], face ^ 1, custom_shapes) {
+                                            t += 3;
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
                             let mut tvidx = [0u32; 3];
                             let mut tuv = [[0.0f32; 2]; 3];
                             for c in 0..3 {
@@ -1220,7 +1325,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
         );
 
         let vertex_normals = if normal_smoothing > 0.0 {
-            Some(compute_smooth_normals(&faces, &positions, n_verts))
+            Some(compute_smooth_normals(&faces, &tris, &positions, n_verts))
         } else {
             None
         };
@@ -1296,10 +1401,11 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
             ranges_out[rl - 1] += 6;
         }
 
-        // Custom-shape triangles, appended as additional per-material ranges.
-        // Their verts reference the same smoothed `positions`, so they meet the
-        // cubes seamlessly. Flat per-triangle normals. UV-mode shapes flag their
-        // range with the high bit so the shader samples by mesh UV.
+        // Custom-shape triangles, appended as additional per-material ranges. Their
+        // verts reference the same smoothed `positions`, so they meet the cubes
+        // seamlessly. Non-UV shapes (ramps) use flat per-triangle normals; per-vertex-UV
+        // shapes (UV cubes) use smooth per-vertex normals (blended by normal_smoothing,
+        // like cube faces) and flag their range with the high bit for mesh-UV sampling.
         let mut interior_tris: Vec<&SmoothTri> =
             tris.iter().filter(|t| t.interior).collect();
         interior_tris.sort_by(|a, b| (a.material, a.has_uv).cmp(&(b.material, b.has_uv)));
@@ -1333,16 +1439,38 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                 fnz /= flen;
             }
 
+            // UV shapes get smooth (blended) normals; non-UV shapes stay flat-shaded.
+            // For the hard-normal fallback, force `smooth = false`.
+            let smooth = t.has_uv && vertex_normals.is_some() && normal_smoothing > 0.0;
+
             let base = (verts_out.len() / fpv) as u32;
             for k in 0..3 {
                 let idx = t.idx[k] as usize;
                 let p = positions[idx];
                 let o = original[idx];
+                let n: [f64; 3] = if !smooth {
+                    [fnx, fny, fnz]
+                } else if normal_smoothing == 1.0 {
+                    vertex_normals.as_ref().unwrap()[idx]
+                } else {
+                    let sn = vertex_normals.as_ref().unwrap()[idx];
+                    let f = normal_smoothing;
+                    let mut nx = fnx + (sn[0] - fnx) * f;
+                    let mut ny = fny + (sn[1] - fny) * f;
+                    let mut nz = fnz + (sn[2] - fnz) * f;
+                    let nl = (nx * nx + ny * ny + nz * nz).sqrt();
+                    if nl > 0.0 {
+                        nx /= nl;
+                        ny /= nl;
+                        nz /= nl;
+                    }
+                    [nx, ny, nz]
+                };
                 push_vertex(
                     verts_out,
                     uv_enabled,
                     [p[0] as f32, p[1] as f32, p[2] as f32],
-                    [fnx as f32, fny as f32, fnz as f32],
+                    [n[0] as f32, n[1] as f32, n[2] as f32],
                     [o[0] as f32, o[1] as f32, o[2] as f32],
                     t.uv[k],
                 );

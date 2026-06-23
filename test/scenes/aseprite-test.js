@@ -129,11 +129,13 @@ async function loadEntity(scene, file, flatten) {
   nexus.addComponent(transform);
 
   // Declarative source component (aseprite-loader plugin) — fetches + builds on init.
+  // anchorMode 'bottom-center' foot-anchors the billboard (stands on the ground).
   const aseprite = await Omosuen.newComponent('aseprite-loader', {
     name: file.replace(/\.aseprite$/i, ''),
     filePath: ASE_BASE + file,
     flatten,
     visibleOnly: true,
+    anchorMode: 'bottom-center',
   });
   nexus.addComponent(aseprite);
   currentEntity = nexus;

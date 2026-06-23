@@ -285,14 +285,20 @@ void main() {
 
             // Triplanar albedo sampling with bilinear interpolation to prevent shimmer.
             // Each plane uses its own per-side frame (bounds + size).
-            vec4 albedoYZ = sampleBilinear(u_albedoTexture, vec2(v_worldPos.z, v_worldPos.y), u_albedoSizeYZ, u_albedoBoundsYZ);
+            // The two vertical planes (YZ, XY) use world-Y as their V coordinate.
+            // World-Y runs bottom->up but the atlas V runs top->down (frame top =
+            // smaller texture-v), so V is negated here to align image-up with
+            // world-up (negation is exactly periodic in texSize.y, so tiling stays
+            // seamless). The XZ top plane has no vertical axis and is left as-is.
+            vec4 albedoYZ = sampleBilinear(u_albedoTexture, vec2(v_worldPos.z, -v_worldPos.y), u_albedoSizeYZ, u_albedoBoundsYZ);
             vec4 albedoXZ = sampleBilinear(u_albedoTexture, vec2(v_worldPos.x, v_worldPos.z), u_albedoSizeXZ, u_albedoBoundsXZ);
-            vec4 albedoXY = sampleBilinear(u_albedoTexture, vec2(v_worldPos.x, v_worldPos.y), u_albedoSizeXY, u_albedoBoundsXY);
+            vec4 albedoXY = sampleBilinear(u_albedoTexture, vec2(v_worldPos.x, -v_worldPos.y), u_albedoSizeXY, u_albedoBoundsXY);
 
-            // Floor-based UVs for normal maps (shimmer-insensitive, saves texture lookups)
-            vec2 normalizedUV_YZ = (mod(floor(vec2(v_worldPos.z, v_worldPos.y)), u_normalSizeYZ) + 0.5) / u_normalSizeYZ;
+            // Floor-based UVs for normal maps (shimmer-insensitive, saves texture lookups).
+            // Same world-Y V negation as the albedo planes, so normals stay aligned.
+            vec2 normalizedUV_YZ = (mod(floor(vec2(v_worldPos.z, -v_worldPos.y)), u_normalSizeYZ) + 0.5) / u_normalSizeYZ;
             vec2 normalizedUV_XZ = (mod(floor(vec2(v_worldPos.x, v_worldPos.z)), u_normalSizeXZ) + 0.5) / u_normalSizeXZ;
-            vec2 normalizedUV_XY = (mod(floor(vec2(v_worldPos.x, v_worldPos.y)), u_normalSizeXY) + 0.5) / u_normalSizeXY;
+            vec2 normalizedUV_XY = (mod(floor(vec2(v_worldPos.x, -v_worldPos.y)), u_normalSizeXY) + 0.5) / u_normalSizeXY;
 
             // Blend the three albedo samples using normal weights
             albedo = albedoYZ * blendWeights.x + albedoXZ * blendWeights.y + albedoXY * blendWeights.z;

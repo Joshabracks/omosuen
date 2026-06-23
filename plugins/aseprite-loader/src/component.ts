@@ -21,12 +21,20 @@ import { importAseprite } from './import.js';
 
 const TYPE = 'aseprite-loader';
 
+export type AnchorMode = 'center' | 'bottom-center';
+
 export interface AsepriteLoaderOptions extends ComponentOptions {
   filePath: string;
   flatten?: boolean;
   visibleOnly?: boolean;
   packageId?: string;
   layerSlots?: Record<string, string>;
+  /**
+   * Sprite anchor, resolved against the .ase canvas size at load (no dimension
+   * math needed). 'center' (default) centers the sprite on the transform;
+   * 'bottom-center' foot-anchors it so billboards stand on the ground.
+   */
+  anchorMode?: AnchorMode;
 }
 
 export interface AsepriteLoaderT extends ComponentData {
@@ -36,6 +44,7 @@ export interface AsepriteLoaderT extends ComponentData {
   visibleOnly: boolean;
   packageId: string;
   layerSlots?: Record<string, string>;
+  anchorMode: AnchorMode;
 }
 
 const PROPERTY_ALLOWLIST: string[] = [
@@ -44,6 +53,7 @@ const PROPERTY_ALLOWLIST: string[] = [
   'visibleOnly',
   'packageId',
   'layerSlots',
+  'anchorMode',
 ];
 
 function builder(options: AsepriteLoaderOptions): AsepriteLoaderT {
@@ -58,6 +68,7 @@ function builder(options: AsepriteLoaderOptions): AsepriteLoaderT {
     visibleOnly: options.visibleOnly ?? true,
     packageId: options.packageId ?? options.name,
     layerSlots: options.layerSlots,
+    anchorMode: options.anchorMode ?? 'center',
   } as unknown as AsepriteLoaderT;
 }
 
@@ -105,6 +116,7 @@ const methods: ComponentMethods = {
         flatten: a.flatten,
         visibleOnly: a.visibleOnly,
         layerSlots: a.layerSlots,
+        anchorMode: a.anchorMode,
       });
     } catch (error) {
       console.error(`[aseprite-loader] Failed to import '${a.filePath}'`, error);
@@ -127,6 +139,7 @@ function serialize(component: ComponentData): any {
     visibleOnly: a.visibleOnly,
     packageId: a.packageId,
     layerSlots: a.layerSlots,
+    anchorMode: a.anchorMode,
   };
 }
 
@@ -184,6 +197,7 @@ function deserialize(data: unknown): {
       visibleOnly: d.visibleOnly,
       packageId: d.packageId,
       layerSlots: d.layerSlots,
+      anchorMode: d.anchorMode,
     }),
     errors: [],
   };

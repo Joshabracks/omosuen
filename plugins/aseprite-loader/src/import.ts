@@ -24,8 +24,14 @@ export interface AsepriteImportConfig {
   flatten?: boolean;
   /** Only include layers whose Aseprite visible flag is set (default true). */
   visibleOnly?: boolean;
-  /** Sprite anchor in pixels (default: canvas center). */
+  /** Sprite anchor in pixels (default: canvas center). Wins over `anchorMode`. */
   anchor?: Vector2D;
+  /**
+   * Named anchor, resolved to pixels against the parsed canvas size — so callers
+   * needn't know the .ase dimensions. 'center' (default) = (w/2, h/2);
+   * 'bottom-center' = (w/2, h) for ground-standing billboards.
+   */
+  anchorMode?: 'center' | 'bottom-center';
   /** Transform position, if a transform must be created (default 0,0,0). */
   position?: Vector3D;
   /** Transform scale, if a transform must be created (default 1,1,1). */
@@ -53,7 +59,13 @@ export async function importAseprite(
   const ase = await parseAseprite(buffer);
   const flatten = config.flatten ?? true;
   const visibleOnly = config.visibleOnly ?? true;
-  const anchor = config.anchor ?? new Vector2D(ase.width / 2, ase.height / 2);
+  // Explicit pixel anchor wins; else resolve the named mode against the parsed
+  // canvas size; else default to center.
+  const anchor =
+    config.anchor ??
+    (config.anchorMode === 'bottom-center'
+      ? new Vector2D(ase.width / 2, ase.height)
+      : new Vector2D(ase.width / 2, ase.height / 2));
   const parent = config.parent;
 
   // Idempotent: drop any previously-generated children before rebuilding.

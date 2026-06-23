@@ -268,11 +268,19 @@ void main() {
         vec3 finalNormal;
 
         if(u_useMeshUV) {
-            // Per-vertex UV mode (custom shapes): sample the material's base frame.
-            vec2 albedoUV = mix(u_albedoBoundsBase.xy, u_albedoBoundsBase.zw, v_uv);
-            albedo = texture2D(u_albedoTexture, albedoUV);
+            // Per-vertex UV mode (custom shapes): sample by the mesh's own UVs, but
+            // pick the per-side frame by the dominant axis of the world normal so an
+            // asymmetric tile (e.g. grass-cap: grass top / dirt sides) maps crisply
+            // per face. Per-side bounds default to the base frame when a material has
+            // no `sides`, so back-compat is preserved (all faces show the base frame).
+            vec3 an = abs(v_worldNormal);
+            vec4 ab, nb;
+            if(an.x >= an.y && an.x >= an.z) { ab = u_albedoBoundsYZ; nb = u_normalBoundsYZ; } // +X side
+            else if(an.y >= an.z)            { ab = u_albedoBoundsXZ; nb = u_normalBoundsXZ; } // +Y up
+            else                             { ab = u_albedoBoundsXY; nb = u_normalBoundsXY; } // +Z side
+            albedo = texture2D(u_albedoTexture, mix(ab.xy, ab.zw, v_uv));
             if(u_hasNormal) {
-                vec2 nUV = mix(u_normalBoundsBase.xy, u_normalBoundsBase.zw, v_uv);
+                vec2 nUV = mix(nb.xy, nb.zw, v_uv);
                 vec3 normalMap = texture2D(u_normalTexture, nUV).rgb * 2.0 - 1.0;
                 finalNormal = normalize(v_normal + normalMap * 0.5);
             } else {

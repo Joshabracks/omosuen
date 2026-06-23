@@ -345,20 +345,23 @@ export function generateDefaultCubeMesh(): Mesh {
     -0.5, -0.5, -0.5, -0.5, -0.5, 0.5, -0.5, 0.5, 0.5, -0.5, 0.5, -0.5,
   ]);
 
-  // UVs: Standard 0-1 mapping for each face
+  // UVs: per-face 0-1, V flipped to atlas convention. The atlas samples v=0 at the
+  // frame's image-top (UNPACK_FLIP_Y is off), so v=0 must sit at each face's TOP
+  // vertex — otherwise a vertically-asymmetric tile (e.g. grass-cap) renders upside
+  // down. Vertex order per face is bottom, bottom, top, top → UVs (0,1),(1,1),(1,0),(0,0).
   const uvs = new Float32Array([
     // Front
-    0, 0, 1, 0, 1, 1, 0, 1,
+    0, 1, 1, 1, 1, 0, 0, 0,
     // Back
-    0, 0, 1, 0, 1, 1, 0, 1,
+    0, 1, 1, 1, 1, 0, 0, 0,
     // Top
-    0, 0, 1, 0, 1, 1, 0, 1,
+    0, 1, 1, 1, 1, 0, 0, 0,
     // Bottom
-    0, 0, 1, 0, 1, 1, 0, 1,
+    0, 1, 1, 1, 1, 0, 0, 0,
     // Right
-    0, 0, 1, 0, 1, 1, 0, 1,
+    0, 1, 1, 1, 1, 0, 0, 0,
     // Left
-    0, 0, 1, 0, 1, 1, 0, 1,
+    0, 1, 1, 1, 1, 0, 0, 0,
   ]);
 
   // Indices: 6 faces × 2 triangles × 3 vertices = 36 indices

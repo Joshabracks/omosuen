@@ -276,19 +276,27 @@ setTimeout(() => {
 }, 500); // Wait 500ms for UI to be ready
 
 /**
- * Generates a flat grass ground with a hollow dirt structure in the center.
- * Structure: 10x10 footprint (x=5..14, z=5..14), walls y=1..9, topped with a
- * stepped gable roof (ridge along X) built from custom ramp meshes.
- * Doorway: 4-cell-wide, 4-cell-tall opening on the +X face (x=14, z=8..11, y=1..4).
+ * Generates a 2-cell-deep ground (pure dirt at y=0, grass-cap surface at y=1) with
+ * a hollow dirt structure in the center sitting on the surface.
+ * Ground: 2 cells deep (pure dirt material 1 at y=0, grass-cap material 0 at y=1).
+ *   Split by x for an A/B of the same cap material: x < width/2 uses the UV cube
+ *   (shape 5, crisp per-face) and x >= width/2 uses the default cube (shape 1,
+ *   triplanar + smoothing, as Colony Forever does — the "smear" path). The map edge
+ *   exposes the cap side faces (grass band on top, dirt below) over a pure-dirt
+ *   bottom row, with a checkable dirt→dirt seam between the two layers.
+ * Structure: 10x10 footprint (x=5..14, z=5..14), walls y=2..10, topped with a
+ * stepped gable roof (ridge along X) built from custom ramp meshes. Everything is
+ * raised one cell vs. the old 1-deep ground.
+ * Doorway: 4-cell-wide, 4-cell-tall opening on the +X face (x=14, z=8..11, y=2..5).
  * Returns both materialMap and shapeMap. Shape indices: 0=air, 1=cube,
- *   2=rampSW, 3=rampNE, 4=halfCube (NE side non-covering). Material indices:
- *   0=grass, 1=dirt (smooth), 2=stone-sides/grass-top hard cube, 3=hard dirt
- *   (door frame). Materials 2 and 3 use a smoothness override of 0.
+ *   2=rampSW, 3=rampNE, 4=halfCube (NE side non-covering), 5=UV cube. Material
+ *   indices: 0=grass-cap (UV), 1=dirt, 2=grass-cap crisp cube (per-side demo),
+ *   3=hard dirt (door frame). Materials 2 and 3 use a smoothness override of 0.
  */
 function generateStructureMap(width, depth, maxHeight) {
     const materialMap = new Omosuen.Array3D(
         new Omosuen.Vector3D(width, maxHeight, depth),
-        0 // Default to material 0 (grass)
+        0 // Default to material 0 (grass-cap)
     );
 
     const shapeMap = new Omosuen.Array3D(
@@ -296,26 +304,34 @@ function generateStructureMap(width, depth, maxHeight) {
         0 // Default to 0 (air/empty)
     );
 
-    // Flat grass ground at y=0
+    // 2-deep ground: pure dirt at y=0, grass-cap surface at y=1. The ground is split
+    // so the map edge compares the two texturing paths for the SAME cap material:
+    //   x <  width/2 → UV cube (shape 5): crisp per-face frames (the fix).
+    //   x >= width/2 → default cube (shape 1): triplanar + smoothing — exactly how
+    //                  Colony Forever builds terrain, and where the cap "smears".
+    const half = Math.floor(width / 2);
     for (let x = 0; x < width; x++) {
+        const groundShape = x < half ? 5 : 1;
         for (let z = 0; z < depth; z++) {
-            shapeMap.set(new Omosuen.Vector3D(x, 0, z), 1);
-            // materialMap defaults to 0 (grass)
+            shapeMap.set(new Omosuen.Vector3D(x, 0, z), groundShape);
+            materialMap.set(new Omosuen.Vector3D(x, 0, z), 1); // pure dirt (bottom row)
+            shapeMap.set(new Omosuen.Vector3D(x, 1, z), groundShape);
+            // materialMap defaults to 0 (grass-cap surface)
         }
     }
 
-    // Structure bounds
+    // Structure bounds (raised 1 cell so it sits on the y=1 grass-cap surface)
     const SX0 = 5, SX1 = 14; // x range (inclusive)
     const SZ0 = 5, SZ1 = 14; // z range (inclusive)
-    const WALL_TOP = 9;      // walls from y=1 to y=9
-    const ROOF_Y = 10;       // roof at y=10
+    const WALL_TOP = 10;     // walls from y=2 to y=10
+    const ROOF_Y = 11;       // roof at y=11
 
-    // Doorway on +X face (x=14): z=8..11, y=1..4
+    // Doorway on +X face (x=14): z=8..11, y=2..5
     const DOOR_Z0 = 8, DOOR_Z1 = 11;
-    const DOOR_Y_TOP = 4;
+    const DOOR_Y_TOP = 5;
 
-    // Build walls (perimeter cells from y=1 to WALL_TOP)
-    for (let y = 1; y <= WALL_TOP; y++) {
+    // Build walls (perimeter cells from y=2 to WALL_TOP)
+    for (let y = 2; y <= WALL_TOP; y++) {
         for (let x = SX0; x <= SX1; x++) {
             for (let z = SZ0; z <= SZ1; z++) {
                 // Only perimeter cells are walls
@@ -338,7 +354,7 @@ function generateStructureMap(width, depth, maxHeight) {
     // ramp cell (shapeIndex 2 = rampSW on the +Z/south-west half, 3 = rampNE on
     // the -Z/north-east half). Solid dirt cubes fill beneath each ramp so the
     // gable reads as a solid mass and the two slopes meet at the ridge.
-    const RIDGE_Y = 14;
+    const RIDGE_Y = 15;
     for (let x = SX0; x <= SX1; x++) {
         for (let z = SZ0; z <= SZ1; z++) {
             const distFromRidge = z >= 10 ? z - 10 : 9 - z; // 0 at ridge, 4 at eaves
@@ -356,18 +372,18 @@ function generateStructureMap(width, depth, maxHeight) {
         }
     }
 
-    // Special demo cell: inside the building, one level above the ground floor,
+    // Special demo cell: inside the building, one level above the ground surface,
     // just behind the doorway so it is visible through the opening. Material 2 =
-    // stone sides + grass top, with a smoothness override of 0 (renders as a crisp
-    // cube even though the map smooths everything else).
-    const special = new Omosuen.Vector3D(13, 1, 9);
+    // grass-cap sides + grass top, with a smoothness override of 0 (renders as a
+    // crisp cube even though the map smooths everything else).
+    const special = new Omosuen.Vector3D(13, 2, 9);
     shapeMap.set(special, 1);
     materialMap.set(special, 2);
 
     // Door frame: the wall cells ringing the +X doorway opening get material 3
     // (hard dirt, smoothness override 0). The opening stays crisp and the smooth
     // walls around it snap to these harder cells' square corners (no seams).
-    for (let y = 1; y <= DOOR_Y_TOP + 1; y++) {
+    for (let y = 2; y <= DOOR_Y_TOP + 1; y++) {
         for (let z = DOOR_Z0 - 1; z <= DOOR_Z1 + 1; z++) {
             const isHole = z >= DOOR_Z0 && z <= DOOR_Z1 && y <= DOOR_Y_TOP;
             if (isHole) continue;
@@ -384,8 +400,8 @@ function generateStructureMap(width, depth, maxHeight) {
     // (not culled by these half cells).
     const HALF_Z = SZ1 + 1; // z = 15, just outside the SW wall
     for (let x = SX0; x <= SX1; x++) {
-        shapeMap.set(new Omosuen.Vector3D(x, 1, HALF_Z), 4); // half-height cube
-        materialMap.set(new Omosuen.Vector3D(x, 1, HALF_Z), 0); // grass
+        shapeMap.set(new Omosuen.Vector3D(x, 2, HALF_Z), 4); // half-height cube (on the surface)
+        materialMap.set(new Omosuen.Vector3D(x, 2, HALF_Z), 0); // grass-cap
     }
 
     return { materialMap, shapeMap };
@@ -437,37 +453,20 @@ export async function createScene() {
         new Omosuen.Vector4D(48, 48, 16, 16),  // Frame 20
         new Omosuen.Vector4D(64, 48, 16, 16),  // Frame 21
     ];
-    // 2. Create TextureMaps for grass textures and sprite textures
+    // 2. Create TextureMaps for terrain tiles and sprite textures
     // Auto-registers with atlas manager and auto-loads images
-    // Grass Albedo - treat entire image as single tile (no frames)
+    // 16x16 tile sheet (25x25 grid, 625 frames) — same file Colony Forever uses.
+    // Terrain swatches (row 21, matching Colony Forever): DIRT=533, GRASS=534, CAP=535.
     await Promise.all([
         Omosuen.newComponent('texture-map', {
-            textureMapKey: 'grass-albedo',
-            name: 'Grass Albedo Texture',
-            filePath: './assets/seamless-textured-grass-natural-grass-pattern_172107-1308.jpg',
-            imageType: undefined, // Undefined = entire image is single frame
+            textureMapKey: 'tiles',
+            name: '16x16 Tiles',
+            filePath: './assets/16x16_tiles.png',
+            imageType: {
+                cellSize: new Omosuen.Vector2D(16, 16),
+                gridSize: new Omosuen.Vector2D(25, 25),
+            },
             atlasManager, // Auto-registers with atlas manager
-        }, scene),
-        Omosuen.newComponent('texture-map', {
-            textureMapKey: 'grass-normal',
-            name: 'Grass Normal Texture',
-            filePath: './assets/seamless-textured-grass-natural-grass-pattern_172107-1308_n.png',
-            imageType: undefined, // Undefined = entire image is single frame
-            atlasManager,
-        }, scene),
-        Omosuen.newComponent('texture-map', {
-            textureMapKey: 'dirt-albedo',
-            name: 'Dirt Albedo Texture',
-            filePath: './assets/dirt.jpg',
-            imageType: undefined,
-            atlasManager,
-        }, scene),
-        Omosuen.newComponent('texture-map', {
-            textureMapKey: 'dirt-normal',
-            name: 'Dirt Normal Texture',
-            filePath: './assets/dirt_n.png',
-            imageType: undefined,
-            atlasManager,
         }, scene),
         Omosuen.newComponent('texture-map', {
             textureMapKey: 'objects',
@@ -481,20 +480,6 @@ export async function createScene() {
             name: 'Objects Normal Map',
             filePath: './assets/objects_n.png',
             imageType: objectsFrameMap,
-            atlasManager,
-        }, scene),
-        // Isometric tile set (3x3 grid, 8 frames). Used by the per-side demo cell:
-        // frame 1 = green "grass" (top), frame 2 = gray "stone" (sides). Both frames
-        // live in this single texture map, which the per-side feature requires.
-        Omosuen.newComponent('texture-map', {
-            textureMapKey: 'iso-tiles',
-            name: 'Iso Tiles',
-            filePath: './assets/iso_tiles.png',
-            imageType: {
-                cellSize: new Omosuen.Vector2D(32, 24),
-                gridSize: new Omosuen.Vector2D(3, 3),
-                cellCount: 8,
-            },
             atlasManager,
         }, scene),
         // 3. Create Viewport (800x600, centered on screen for better 3D view)
@@ -681,40 +666,55 @@ export async function createScene() {
     const { materialMap, shapeMap } = generateStructureMap(MAP_WIDTH, MAP_DEPTH, MAP_HEIGHT);
     console.log('[CellMap Test] Structure map generated: flat grass ground + 10x10 hollow dirt structure');
 
-    // Create material definition for grass
-    const grassMaterial = {
-        albedoTextureKey: 'grass-albedo',
-        normalTextureKey: 'grass-normal',
+    // Tile frames into the 25x25 grid (frame = row*25 + col) — the SAME swatches
+    // Colony Forever uses (src/sim/terrain/materials.ts), row 21: col 8 = dirt,
+    // col 9 = grass, col 10 = grass-cap (dirt with a grass cap, for cliff sides).
+    const DIRT_FRAME = 21 * 25 + 8;  // 533
+    const GRASS_FRAME = 21 * 25 + 9; // 534
+    const CAP_FRAME = 21 * 25 + 10;  // 535
+
+    // Ground surface material (grass-cap): the asymmetric cap tile (grass on top,
+    // dirt below) on the side faces, pure grass on the top face — exactly Colony
+    // Forever's `grassTopDirt`: base = CAP on the sides, `sides.up` = GRASS on top.
+    const groundTopMaterial = {
+        albedoTextureKey: 'tiles',
+        normalTextureKey: '',
         emissionTextureKey: '', // No emission
         materialTextureKey: '', // No material/PBR texture
+        albedoFrame: CAP_FRAME,                       // grass-cap → side faces
+        sides: { up: { albedoFrame: GRASS_FRAME } },  // pure grass → top face
     };
 
+    // Pure dirt material (CF's DIRT). Used on the ground sub-layer and the building
+    // walls; the dirt→dirt seam between the cap surface and this sub-layer is continuous.
     const dirtMaterial = {
-        albedoTextureKey: 'dirt-albedo',
-        normalTextureKey: 'dirt-normal',
-        emissionTextureKey: '',
-        materialTextureKey: '',
-    }
-
-    // Per-side demo material: stone (gray) sides, grass (green) top, hard cube.
-    // Both frames come from the single 'iso-tiles' texture map — `sides.up`
-    // overrides only the top (+Y) face's frame; the base frame drives the sides.
-    const stoneGrassMaterial = {
-        albedoTextureKey: 'iso-tiles',
+        albedoTextureKey: 'tiles',
         normalTextureKey: '',
         emissionTextureKey: '',
         materialTextureKey: '',
-        albedoFrame: 2,                     // gray "stone" tile → south-east/south-west faces
-        sides: { up: { albedoFrame: 1 } },  // green "grass" tile → top face
-        smoothness: 0,                      // crisp cube, ignores the map smoothing
+        albedoFrame: DIRT_FRAME,
+    }
+
+    // Per-side demo material on a crisp default cube (smoothness 0): grass-cap sides,
+    // grass top — the triplanar per-side path, alongside the UV-cube ground for
+    // comparison. Same frames as groundTop, different shape/texturing path.
+    const stoneGrassMaterial = {
+        albedoTextureKey: 'tiles',
+        normalTextureKey: '',
+        emissionTextureKey: '',
+        materialTextureKey: '',
+        albedoFrame: CAP_FRAME,                       // grass-cap → south-east/south-west faces
+        sides: { up: { albedoFrame: GRASS_FRAME } },  // grass → top face
+        smoothness: 0,                                // crisp cube, ignores the map smoothing
     }
 
     // Dirt that does not smooth (smoothness override 0), used for the door frame.
     const dirtHardMaterial = {
-        albedoTextureKey: 'dirt-albedo',
-        normalTextureKey: 'dirt-normal',
+        albedoTextureKey: 'tiles',
+        normalTextureKey: '',
         emissionTextureKey: '',
         materialTextureKey: '',
+        albedoFrame: DIRT_FRAME,
         smoothness: 0,
     }
 
@@ -791,11 +791,12 @@ export async function createScene() {
 
     const cellMap = await Omosuen.newComponent('cell-map', {
         name: 'Terrain Structure',
-        materials: [grassMaterial, dirtMaterial, stoneGrassMaterial, dirtHardMaterial],
+        materials: [groundTopMaterial, dirtMaterial, stoneGrassMaterial, dirtHardMaterial],
         materialMap: materialMap,
-        shapeMap: shapeMap, // 0 = air, 1 = cube, 2 = rampSW, 3 = rampNE, 4 = halfCube
+        shapeMap: shapeMap, // 0 = air, 1 = cube, 2 = rampSW, 3 = rampNE, 4 = halfCube, 5 = UV cube
         // Index 0 (air) and 1 (default cube) are null so the builder auto-fills them.
-        meshes: [null, null, rampSW, rampNE, halfCube],
+        // Index 5 = uvCube(): a cube with per-face 0-1 UVs for crisp per-face frames.
+        meshes: [null, null, rampSW, rampNE, halfCube, Omosuen.uvCube()],
         cellSize: new Omosuen.Vector3D(CELL_WIDTH, CELL_HEIGHT, CELL_DEPTH),
         mapSize: new Omosuen.Vector3D(MAP_WIDTH, MAP_HEIGHT, MAP_DEPTH),
         smoothing: 4,
@@ -944,11 +945,12 @@ export async function createScene() {
 
     // Patrol path: rectangular loop around the structure
     // Structure is x=5..14, z=5..14 — path runs 2 cells outside at x=3,16 z=3,16
+    // Y = 2 * CELL_HEIGHT: stand on the raised 2-deep ground surface (top of cell y=1).
     const PATROL_WAYPOINTS = [
-        new Omosuen.Vector3D(3 * CELL_WIDTH + CELL_WIDTH / 2, CELL_HEIGHT, 3 * CELL_DEPTH + CELL_DEPTH / 2),   // 0: north (112, 16, 112)
-        new Omosuen.Vector3D(3 * CELL_WIDTH + CELL_WIDTH / 2, CELL_HEIGHT, 16 * CELL_DEPTH + CELL_DEPTH / 2),  // 1: west  (112, 16, 528)
-        new Omosuen.Vector3D(16 * CELL_WIDTH + CELL_WIDTH / 2, CELL_HEIGHT, 16 * CELL_DEPTH + CELL_DEPTH / 2), // 2: south (528, 16, 528)
-        new Omosuen.Vector3D(16 * CELL_WIDTH + CELL_WIDTH / 2, CELL_HEIGHT, 3 * CELL_DEPTH + CELL_DEPTH / 2),  // 3: east  (528, 16, 112)
+        new Omosuen.Vector3D(3 * CELL_WIDTH + CELL_WIDTH / 2, 2 * CELL_HEIGHT, 3 * CELL_DEPTH + CELL_DEPTH / 2),   // 0: north (112, 32, 112)
+        new Omosuen.Vector3D(3 * CELL_WIDTH + CELL_WIDTH / 2, 2 * CELL_HEIGHT, 16 * CELL_DEPTH + CELL_DEPTH / 2),  // 1: west  (112, 32, 528)
+        new Omosuen.Vector3D(16 * CELL_WIDTH + CELL_WIDTH / 2, 2 * CELL_HEIGHT, 16 * CELL_DEPTH + CELL_DEPTH / 2), // 2: south (528, 32, 528)
+        new Omosuen.Vector3D(16 * CELL_WIDTH + CELL_WIDTH / 2, 2 * CELL_HEIGHT, 3 * CELL_DEPTH + CELL_DEPTH / 2),  // 3: east  (528, 32, 112)
     ];
     const PATROL_SPEED = 48; // units per second
     const ARRIVAL_THRESHOLD = 2; // snap to waypoint within this distance
@@ -1036,7 +1038,7 @@ export async function createScene() {
     // Sprite A: indoor, center of structure (player-controlled)
     const indoorChar = await createCharacter(
         'Indoor Character',
-        new Omosuen.Vector3D(10 * CELL_WIDTH + CELL_WIDTH / 2, CELL_HEIGHT, 10 * CELL_DEPTH + CELL_DEPTH / 2),
+        new Omosuen.Vector3D(10 * CELL_WIDTH + CELL_WIDTH / 2, 2 * CELL_HEIGHT, 10 * CELL_DEPTH + CELL_DEPTH / 2),
         true,             // showSilhouette
         'playerControl',  // WASD movement
     );
@@ -1055,7 +1057,7 @@ export async function createScene() {
         true,      // showSilhouette
         'patrolA',
     );
-    console.log('[CellMap Test] Created Walker A at north (112, 16, 112)');
+    console.log('[CellMap Test] Created Walker A at north (112, 32, 112)');
 
     // Sprite C: outdoor walker, starts at south corner (opposite side)
     const walkerB = await createCharacter(
@@ -1064,7 +1066,7 @@ export async function createScene() {
         true,      // showSilhouette
         'patrolB',
     );
-    console.log('[CellMap Test] Created Walker B at south (528, 16, 528)');
+    console.log('[CellMap Test] Created Walker B at south (528, 32, 528)');
 
     console.log('[CellMap Test] All character sprites created (1 indoor + 2 patrolling around structure)');
 
@@ -1074,7 +1076,7 @@ export async function createScene() {
     }, scene);
     await Omosuen.newComponent('transform', {
         name: 'Interior Trigger Transform',
-        position: new Omosuen.Vector3D(320, 88, 320),
+        position: new Omosuen.Vector3D(320, 88 + CELL_HEIGHT, 320), // raised 1 cell with the structure
     }, triggerNexus);
     const interiorTrigger = await Omosuen.newComponent('event-collider', {
         name: 'Interior Trigger',

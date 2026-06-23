@@ -10,6 +10,32 @@
  */
 import { Vector3D, Array3D } from '../src/math';
 import { packCell, CHUNK_SIZE } from '../src/component/cell-map/types';
+
+/**
+ * Local copy of generateDefaultCubeMesh (a 24-vertex cube with per-face 0..1 UVs,
+ * local -0.5..0.5). Inlined to avoid importing the cell-map barrel, which pulls in
+ * .vert/.frag shader modules that tsx can't load.
+ */
+function uvCubeMesh(): {
+  vertices: Float32Array;
+  uvs: Float32Array;
+  indices: Uint16Array;
+} {
+  const vertices = new Float32Array([
+    -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5, // Front (+Z)
+    0.5, -0.5, -0.5, -0.5, -0.5, -0.5, -0.5, 0.5, -0.5, 0.5, 0.5, -0.5, // Back (-Z)
+    -0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5, // Top (+Y)
+    -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, -0.5, 0.5, -0.5, -0.5, 0.5, // Bottom (-Y)
+    0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, // Right (+X)
+    -0.5, -0.5, -0.5, -0.5, -0.5, 0.5, -0.5, 0.5, 0.5, -0.5, 0.5, -0.5, // Left (-X)
+  ]);
+  const faceUv = [0, 1, 1, 1, 1, 0, 0, 0]; // V flipped to atlas convention (v=0 at top)
+  const uvs = new Float32Array([...faceUv, ...faceUv, ...faceUv, ...faceUv, ...faceUv, ...faceUv]);
+  const indices = new Uint16Array(
+    [0, 4, 8, 12, 16, 20].flatMap((b) => [b, b + 1, b + 2, b, b + 2, b + 3]),
+  );
+  return { vertices, uvs, indices };
+}
 import {
   initRenderWasm,
   loadCellStore,
@@ -432,6 +458,113 @@ function coverageCheck(): number {
   return fails;
 }
 
+/**
+ * A per-vertex-UV custom CUBE is SMOOTHED under smoothing > 0 (geometry rounds) while
+ * keeping per-face UVs intact and the UV-mode range flagged. (We deliberately smooth UV
+ * cubes so they blend with surrounding terrain; the per-face UVs must survive the
+ * position-dedup smoothing — the original bug collapsed them into a gradient.)
+ */
+function customUvSmoothedCheck(): number {
+  const cube = uvCubeMesh();
+  const size = new Vector3D(1, 1, 1);
+  const packed = new Array3D<number>(size);
+  packed.indexSet(0, packCell({ materialIndex: 0, shapeIndex: 2, emissionIntensity: 0, visible: true }));
+  loadCellStore(packed.value, 1, 1, 1, 1);
+  setMeshCellSize(1, 1, 1);
+  const weights = new Array3D<number>(size, 8);
+  setMeshSmoothing(weights.value, 1, 4, 0.75);
+  setMeshMaterialWeights(new Int32Array([-1]));
+  clearCustomShapes();
+  setCustomShape(2, cube.vertices, cube.indices, cube.uvs);
+  const r = buildChunkMeshSmoothedWasm(0, 0, 0);
+
+  let fails = 0;
+  if (r.stride !== 11) {
+    console.error(`  ✗ custom-uv-smoothed: expected stride 11, got ${r.stride}`);
+    fails++;
+  }
+  const uvRanges = r.ranges.filter((rr) => rr.useMeshUV);
+  if (uvRanges.length === 0) {
+    console.error('  ✗ custom-uv-smoothed: no UV-mode range under smoothing');
+    fails++;
+  }
+  const v = r.vertices;
+  const idx = r.indices;
+  let tris = 0;
+  const uvSet = new Set<string>();
+  if (v && idx) {
+    for (const rr of uvRanges) {
+      tris += rr.indexCount / 3;
+      for (let k = 0; k < rr.indexCount; k++) {
+        const vi = idx[rr.indexOffset + k] * 11;
+        // Per-face UVs must survive the smoothing pass (4 distinct corner UVs), even
+        // though the geometry positions are now intentionally rounded.
+        uvSet.add(`${v[vi + 9].toFixed(3)},${v[vi + 10].toFixed(3)}`);
+      }
+    }
+  }
+  if (uvSet.size < 4) {
+    console.error(`  ✗ custom-uv-smoothed: per-face UVs collapsed (distinct UVs ${uvSet.size} < 4)`);
+    fails++;
+  }
+  if (tris !== 12) {
+    console.error(`  ✗ custom-uv-smoothed: lone uvCube should emit 12 tris (6 faces), got ${tris}`);
+    fails++;
+  }
+  clearCustomShapes();
+  if (fails === 0) {
+    console.log('  ✓ custom-uv-smoothed: uvCube smooths while keeping per-face UVs under smoothing:4');
+  }
+  return fails;
+}
+
+/**
+ * A per-vertex-UV custom cube must cull the faces hidden by solid neighbors. A lone
+ * uvCube emits all 6 faces (12 tris); one wedged between two solid cubes loses its
+ * ±X faces (8 tris). Counts only UV-mode (useMeshUV) triangles, in the greedy path.
+ */
+function customUvCullingCheck(): number {
+  const cube = uvCubeMesh();
+  const uvTris = (r: ChunkMeshResult): number => {
+    let n = 0;
+    for (const rr of r.ranges) if (rr.useMeshUV) n += rr.indexCount / 3;
+    return n;
+  };
+
+  const lonePacked = new Array3D<number>(new Vector3D(1, 1, 1));
+  lonePacked.indexSet(0, packCell({ materialIndex: 0, shapeIndex: 2, emissionIntensity: 0, visible: true }));
+  loadCellStore(lonePacked.value, 1, 1, 1, 1);
+  setMeshCellSize(1, 1, 1);
+  clearCustomShapes();
+  setCustomShape(2, cube.vertices, cube.indices, cube.uvs);
+  const lone = uvTris(buildChunkMeshWasm(0, 0, 0));
+
+  const rowPacked = new Array3D<number>(new Vector3D(3, 1, 1));
+  rowPacked.indexSet(0, packCell({ materialIndex: 0, shapeIndex: 1, emissionIntensity: 0, visible: true }));
+  rowPacked.indexSet(1, packCell({ materialIndex: 0, shapeIndex: 2, emissionIntensity: 0, visible: true }));
+  rowPacked.indexSet(2, packCell({ materialIndex: 0, shapeIndex: 1, emissionIntensity: 0, visible: true }));
+  loadCellStore(rowPacked.value, 3, 3, 1, 1);
+  setMeshCellSize(1, 1, 1);
+  clearCustomShapes();
+  setCustomShape(2, cube.vertices, cube.indices, cube.uvs);
+  const wedged = uvTris(buildChunkMeshWasm(0, 0, 0));
+
+  let fails = 0;
+  if (lone !== 12) {
+    console.error(`  ✗ custom-uv-culling: lone uvCube should be 12 tris, got ${lone}`);
+    fails++;
+  }
+  if (wedged !== 8) {
+    console.error(`  ✗ custom-uv-culling: uvCube between two cubes should cull ±X → 8 tris, got ${wedged}`);
+    fails++;
+  }
+  clearCustomShapes();
+  if (fails === 0) {
+    console.log('  ✓ custom-uv-culling: uvCube culls faces hidden by solid neighbors (12 → 8 tris)');
+  }
+  return fails;
+}
+
 async function main(): Promise<void> {
   await initRenderWasm(buildRenderWasm());
 
@@ -478,6 +611,8 @@ async function main(): Promise<void> {
   failed += shapeGatingCheck();
   failed += customSmoothingCheck();
   failed += customUvCheck();
+  failed += customUvSmoothedCheck();
+  failed += customUvCullingCheck();
   failed += coverageCheck();
 
   if (missing > 0) {

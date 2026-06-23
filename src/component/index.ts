@@ -86,6 +86,12 @@ export { ALL_MESSAGES, ANY_MESSAGES } from './messenger/types';
 
 // Export cell-map utility functions
 export { createDefaultCellData, packCell, unpackCell } from './cell-map';
+// Ready-made cube mesh with per-face 0-1 UVs (drop into a cell-map `meshes` slot
+// for crisp per-face texturing). Exposed as both names; `uvCube` is the short alias.
+export {
+  generateDefaultCubeMesh,
+  generateDefaultCubeMesh as uvCube,
+} from './cell-map';
 
 // Export serializers for scene management
 export { NexusSerializer } from './nexus/data';

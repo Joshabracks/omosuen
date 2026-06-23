@@ -6,8 +6,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { newComponent, Vector2D, Vector3D, Vector4D } from 'omosuen';
-import { parseAseprite } from './parser/parser';
-import type { AseCel, AseFile, AseLayer } from './parser/types';
+import { parseAseprite } from './parser/parser.js';
+import type { AseCel, AseFile, AseLayer } from './parser/types.js';
 
 /**
  * Configuration for ingesting an Aseprite file into an entity nexus. `parent`

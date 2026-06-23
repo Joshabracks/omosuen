@@ -30,8 +30,9 @@ await Omosuen.init({ plugins: ['./aseprite-loader.plugin.js'] });
 await Omosuen.newComponent('aseprite-loader', {
   name: 'hero',
   filePath: './assets/hero.aseprite',
-  flatten: false,      // one sprite per layer (false) vs one composited sprite (true)
-  visibleOnly: true,   // skip layers hidden in Aseprite
+  flatten: false,             // one sprite per layer (false) vs one composited sprite (true)
+  visibleOnly: true,          // skip layers hidden in Aseprite
+  anchorMode: 'bottom-center', // foot-anchor for ground-standing billboards ('center' = default)
   // layerSlots: { 'hair-a': 'hair', 'hair-b': 'hair' }, // mutually-exclusive slots
 });
 ```

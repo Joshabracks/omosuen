@@ -66,6 +66,7 @@ const SLIDERS = [
     { id: 'outline-width',     label: 'Outline Width',     min: 0,  max: 2,    step: 0.1,   value: 1,     apply: (v) => setDC((d) => d.outline.width = v),     fmt: (v) => v.toFixed(1) },
     { id: 'ao-weight',         label: 'AO Weight',         min: 0,  max: 1,    step: 0.05,  value: 0.5,   apply: (v) => setDC((d) => d.ao.weight = v),         fmt: (v) => v.toFixed(2) },
     { id: 'ao-radius',         label: 'AO Radius (rings)', min: 1,  max: 2,    step: 1,     value: 2,     apply: (v) => setDC((d) => d.ao.radius = v),         fmt: (v) => v.toFixed(0) },
+    { id: 'ao-scatter',        label: 'AO Scatter',        min: 0,  max: 1,    step: 0.05,  value: 0,     apply: (v) => setDC((d) => d.ao.scatter = v),        fmt: (v) => v.toFixed(2) },
     { id: 'shadow-weight',     label: 'Shadow Weight',     min: 0,  max: 1,    step: 0.05,  value: 0.45,  apply: (v) => setDC((d) => d.shadow.weight = v),     fmt: (v) => v.toFixed(2) },
     { id: 'shadow-distance',   label: 'Shadow Distance',   min: 1,  max: 48,   step: 1,     value: 24,    apply: (v) => setDC((d) => d.shadow.distance = v),   fmt: (v) => v.toFixed(0) },
     { id: 'light-azimuth',     label: 'Light Azimuth',     min: 0,  max: 360,  step: 5,     value: 45,    apply: (v) => { lightAzimuth = v; updateLight(); },  fmt: (v) => v.toFixed(0) + '°' },
@@ -78,7 +79,7 @@ const SLIDERS = [
 // Initial camera.depthCues, kept in sync with the slider defaults above.
 const INITIAL_DEPTH_CUES = {
     outline: { weight: 0.85, threshold: 0.006, width: 1, color: { x: 0, y: 0, z: 0 } },
-    ao: { weight: 0.5, radius: 2 },
+    ao: { weight: 0.5, radius: 2, scatter: 0 },
     shadow: { weight: 0.45, distance: 24 },
     heightRamp: { weight: 0.18, minY: 0, maxY: 160, lowColor: { x: 0.55, y: 0.62, z: 0.85 }, highColor: { x: 1, y: 1, z: 1 } },
 };

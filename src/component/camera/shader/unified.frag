@@ -61,6 +61,7 @@ uniform highp vec3 u_revealTarget;  // World-space reveal target position
     // Depth cues (cell mode; each weight 0 = off, early-out → free)
 uniform float u_aoWeight;
 uniform float u_aoRadius;
+uniform float u_aoScatter;
 uniform float u_shadowWeight;
 uniform float u_shadowDistance;
 uniform float u_heightRampWeight;
@@ -255,12 +256,27 @@ vec4 sampleBilinear(sampler2D tex, vec2 worldCoord, vec2 texSize, vec4 bounds) {
     return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
 }
 
+// Cheap mediump-friendly per-fragment hash in [0,1) (no sin / large constants).
+float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 345.45));
+    p += dot(p, p + 34.345);
+    return fract(p.x * p.y);
+}
+
 // Ambient occlusion from the solidity grid: darken a fragment only by neighbors that
 // rise ABOVE its surface (cliff bases / inner corners). Same-level neighbors are the
 // coplanar surface itself, so flat open tops stay unoccluded. Returns 0 (open) .. 1.
 // worldPos is pre-smoothing (v_origWorldPos) so floor() lands in the right cell.
 float computeAO(vec3 worldPos) {
-    vec3 cell = floor(worldPos / u_cellSize);
+    vec3 cellPos = worldPos / u_cellSize;
+    // Scatter: jitter which cell each fragment samples (world-stable seed → no shimmer
+    // on pan), dithering the hard cell-aligned AO edges into a softer stipple.
+    if(u_aoScatter > 0.0) {
+        vec2 seed = worldPos.xz / u_cellSize.xz;
+        vec2 j = (vec2(hash21(seed), hash21(seed + 7.31)) - 0.5) * u_aoScatter;
+        cellPos += vec3(j.x, 0.0, j.y);
+    }
+    vec3 cell = floor(cellPos);
     int rings = u_aoRadius >= 1.5 ? 2 : 1;
     float occ = 0.0;
     float total = 0.0;

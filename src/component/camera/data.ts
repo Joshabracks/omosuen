@@ -19,7 +19,7 @@ export interface DepthCues {
   /** Cliff-edge contour lines (post-process depth-discontinuity). */
   outline: { weight: number; threshold: number; width: number; color: RGB };
   /** Ambient occlusion in recesses/cliff bases (solidity-grid sampling). */
-  ao: { weight: number; radius: number };
+  ao: { weight: number; radius: number; scatter: number };
   /** Directional cast shadows (raymarch toward the first directional light). */
   shadow: { weight: number; distance: number };
   /** Value/hue shift by world-Y so equal textures read as different elevations. */
@@ -35,7 +35,7 @@ export interface DepthCues {
 /** Partial form accepted in CameraOptions; missing fields fall back to defaults. */
 export interface DepthCuesOptions {
   outline?: { weight?: number; threshold?: number; width?: number; color?: Partial<RGB> };
-  ao?: { weight?: number; radius?: number };
+  ao?: { weight?: number; radius?: number; scatter?: number };
   shadow?: { weight?: number; distance?: number };
   heightRamp?: {
     weight?: number;
@@ -65,7 +65,11 @@ function resolveDepthCues(o: DepthCuesOptions | undefined): DepthCues | null {
       width: o.outline?.width ?? 1,
       color: rgb(o.outline?.color, 0, 0, 0),
     },
-    ao: { weight: o.ao?.weight ?? 0, radius: o.ao?.radius ?? 2 },
+    ao: {
+      weight: o.ao?.weight ?? 0,
+      radius: o.ao?.radius ?? 2,
+      scatter: o.ao?.scatter ?? 0,
+    },
     shadow: { weight: o.shadow?.weight ?? 0, distance: o.shadow?.distance ?? 24 },
     heightRamp: {
       weight: o.heightRamp?.weight ?? 0,

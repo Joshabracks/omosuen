@@ -171,6 +171,7 @@ export function renderCellMaps(
   // Depth-cue uniform locations (AO / cast shadow / height ramp; outline is post-process)
   const uAoWeight = gl.getUniformLocation(program, 'u_aoWeight');
   const uAoRadius = gl.getUniformLocation(program, 'u_aoRadius');
+  const uAoScatter = gl.getUniformLocation(program, 'u_aoScatter');
   const uShadowWeight = gl.getUniformLocation(program, 'u_shadowWeight');
   const uShadowDistance = gl.getUniformLocation(program, 'u_shadowDistance');
   const uHeightRampWeight = gl.getUniformLocation(program, 'u_heightRampWeight');
@@ -215,6 +216,7 @@ export function renderCellMaps(
   const dc = camera.depthCues;
   gl.uniform1f(uAoWeight, dc ? dc.ao.weight : 0);
   gl.uniform1f(uAoRadius, dc ? dc.ao.radius : 1);
+  gl.uniform1f(uAoScatter, dc ? dc.ao.scatter : 0);
   gl.uniform1f(uShadowWeight, dc ? dc.shadow.weight : 0);
   gl.uniform1f(uShadowDistance, dc ? dc.shadow.distance : 24);
   gl.uniform1f(uHeightRampWeight, dc ? dc.heightRamp.weight : 0);

@@ -46,6 +46,11 @@ export function renderPostProcess(
   const uRenderTexture = gl.getUniformLocation(postProgram, 'u_renderTexture');
   gl.uniform1i(uRenderTexture, 0);
 
+  // Bind cell-FBO depth texture (linear) for the cliff-edge outline pass
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.depthTexture);
+  gl.uniform1i(gl.getUniformLocation(postProgram, 'u_depthTexture'), 1);
+
   // Set UV scale and offset for world-locked pixelation with FBO overscan.
   // The FBO is 2 pixels larger per dimension. The padding is ASYMMETRIC:
   // - X: camera is at left edge (UV=0), +2 padding on RIGHT
@@ -79,6 +84,32 @@ export function renderPostProcess(
     // No offset; X starts at 0 (camera edge), Y skips 2-pixel bottom border
     gl.uniform2f(uUvOffset, 0, FBO_OVERSCAN_PX / fboHeight);
   }
+
+  // Cliff-edge outline uniforms (post-process). null/weight 0 = plain blit.
+  const outline = camera.depthCues?.outline;
+  gl.uniform2f(
+    gl.getUniformLocation(postProgram, 'u_texelSize'),
+    1 / fboWidth,
+    1 / fboHeight,
+  );
+  gl.uniform1f(
+    gl.getUniformLocation(postProgram, 'u_outlineWeight'),
+    outline ? outline.weight : 0,
+  );
+  gl.uniform1f(
+    gl.getUniformLocation(postProgram, 'u_outlineThreshold'),
+    outline ? outline.threshold : 1,
+  );
+  gl.uniform1f(
+    gl.getUniformLocation(postProgram, 'u_outlineWidth'),
+    outline ? outline.width : 1,
+  );
+  gl.uniform3f(
+    gl.getUniformLocation(postProgram, 'u_outlineColor'),
+    outline ? outline.color.x : 0,
+    outline ? outline.color.y : 0,
+    outline ? outline.color.z : 0,
+  );
 
   // Bind fullscreen quad buffer
   gl.bindBuffer(gl.ARRAY_BUFFER, camera.glResources.fullscreenQuadBuffer);

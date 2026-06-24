@@ -50,6 +50,7 @@ async function initGame() {
     Omosuen.registerSceneModule('sprite-test', '/scenes/sprite-test.js');
     Omosuen.registerSceneModule('aseprite-test', '/scenes/aseprite-test.js');
     Omosuen.registerSceneModule('cellmap-test', '/scenes/cellmap-test.js');
+    Omosuen.registerSceneModule('depth-cues-test', '/scenes/depth-cues-test.js');
     Omosuen.registerSceneModule('audio-test', '/scenes/audio-test.js');
 
     // Switch to main menu

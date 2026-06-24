@@ -22,6 +22,13 @@ const DEFAULT_CELL_SIZE_Z = 32;
 /** Default map dimension when no cell-maps provide actual dimensions. */
 const DEFAULT_MAP_DIMENSION = 20;
 
+// Reused scratch buffers for the per-frame back-to-front depth sort. Parallel arrays
+// (not an array of objects) grown only to the high-water sprite count, so steady-state
+// rendering allocates nothing — no GC churn.
+const _drawSprites: SpriteT[] = [];
+const _drawTransforms: TransformT[] = [];
+const _drawDepths: number[] = [];
+
 /**
  * Attempts to bind a sprite's normal texture to TEXTURE1.
  * Sets u_hasNormal to 1 on success, 0 on any failure (early return).
@@ -295,22 +302,53 @@ export function renderSprites(
   ) as AtlasManagerT | null;
   const atlasSize = atlasManager?.config.atlasSize ?? 1024;
 
-  // Render each sprite
+  // Build the draw list into reused scratch arrays: apply the per-sprite skip checks
+  // (hidden / no nexus parent / no transform), carry the transform, and compute each
+  // sprite's axonometric depth (matches the vertex shader: x + heightScale*y + z).
+  let drawCount = 0;
   for (const sprite of sprites) {
-    // Skip hidden sprites entirely (no draw call). Use `=== false` so any legacy
-    // sprite lacking the field still renders.
+    // Use `=== false` so any legacy sprite lacking the field still renders.
     if (sprite.visible === false) continue;
-
-    // Get sprite's parent nexus
     if (!sprite.parent || sprite.parent.type !== 'nexus') continue;
-    const spriteNexus = castTo<NexusT>(sprite.parent);
-
-    // Get sprite transform (sibling component)
-    const spriteTransform = spriteNexus.getComponentByType(
+    const t = castTo<NexusT>(sprite.parent).getComponentByType(
       'transform',
       false,
     ) as TransformT | null;
-    if (!spriteTransform) continue;
+    if (!t) continue;
+    const p = t.position;
+    _drawSprites[drawCount] = sprite;
+    _drawTransforms[drawCount] = t;
+    _drawDepths[drawCount] = p.x + heightScale * p.y + p.z;
+    drawCount++;
+  }
+
+  // Sprite-vs-sprite order is pure draw order (the sprite pass has the depth test
+  // disabled). Stable-sort back-to-front by depth (larger depth = nearer the camera =
+  // drawn last/on top). In-place insertion sort over the parallel arrays: no temp
+  // array / closures (zero GC), and ~O(n) frame-to-frame since the fixed-angle camera
+  // never rotates (static sprites keep their order). Strict `>` keeps it stable, so a
+  // composited entity's layers (equal depth) preserve their segmentedRenderOrderSort
+  // renderOrder.
+  for (let i = 1; i < drawCount; i++) {
+    const s = _drawSprites[i];
+    const st = _drawTransforms[i];
+    const sd = _drawDepths[i];
+    let j = i - 1;
+    while (j >= 0 && _drawDepths[j] > sd) {
+      _drawSprites[j + 1] = _drawSprites[j];
+      _drawTransforms[j + 1] = _drawTransforms[j];
+      _drawDepths[j + 1] = _drawDepths[j];
+      j--;
+    }
+    _drawSprites[j + 1] = s;
+    _drawTransforms[j + 1] = st;
+    _drawDepths[j + 1] = sd;
+  }
+
+  // Render each sprite (back-to-front)
+  for (let di = 0; di < drawCount; di++) {
+    const sprite = _drawSprites[di];
+    const spriteTransform = _drawTransforms[di];
 
     // Get albedo texture map (required)
     if (!sprite.textureMapKeys.albedo) {

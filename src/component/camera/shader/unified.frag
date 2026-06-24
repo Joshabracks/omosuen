@@ -161,8 +161,15 @@ vec3 computeLighting(vec3 normal, vec3 worldPos) {
     return lighting;
 }
 
-// Check if a cell at integer coordinates is solid by sampling the solidity texture
+// Check if a cell at integer coordinates is solid by sampling the solidity texture.
+// Out-of-bounds cells are empty — without this, CLAMP_TO_EDGE would fold the lookup
+// back onto a real edge cell and report false occlusion (e.g. AO at the map border).
 bool isCellSolid(vec3 cell) {
+    if(cell.x < 0.0 || cell.x >= u_mapSize.x ||
+       cell.y < 0.0 || cell.y >= u_mapSize.y ||
+       cell.z < 0.0 || cell.z >= u_mapSize.z) {
+        return false;
+    }
     float u = (cell.x + 0.5) / u_mapSize.x;
     float v = (cell.y + cell.z * u_mapSize.y + 0.5)
               / (u_mapSize.y * u_mapSize.z);

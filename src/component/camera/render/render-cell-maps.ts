@@ -58,6 +58,10 @@ function uploadVisibilityTexture(
 
   gl.activeTexture(gl.TEXTURE3);
   gl.bindTexture(gl.TEXTURE_2D, camera.glResources.visibilityTexture);
+  // The R8 mask is tightly packed; default UNPACK_ALIGNMENT (4) would expect each
+  // row padded to a multiple of 4 bytes and reject maps whose width isn't a multiple
+  // of 4 ("ArrayBufferView not big enough"). Force tight row packing.
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   gl.texImage2D(
     gl.TEXTURE_2D,
     0,
@@ -164,6 +168,17 @@ export function renderCellMaps(
   const uCellSolidity = gl.getUniformLocation(program, 'u_cellSolidity');
   const uRevealTarget = gl.getUniformLocation(program, 'u_revealTarget');
 
+  // Depth-cue uniform locations (AO / cast shadow / height ramp; outline is post-process)
+  const uAoWeight = gl.getUniformLocation(program, 'u_aoWeight');
+  const uAoRadius = gl.getUniformLocation(program, 'u_aoRadius');
+  const uShadowWeight = gl.getUniformLocation(program, 'u_shadowWeight');
+  const uShadowDistance = gl.getUniformLocation(program, 'u_shadowDistance');
+  const uHeightRampWeight = gl.getUniformLocation(program, 'u_heightRampWeight');
+  const uHeightRampMinY = gl.getUniformLocation(program, 'u_heightRampMinY');
+  const uHeightRampMaxY = gl.getUniformLocation(program, 'u_heightRampMaxY');
+  const uHeightRampLow = gl.getUniformLocation(program, 'u_heightRampLow');
+  const uHeightRampHigh = gl.getUniformLocation(program, 'u_heightRampHigh');
+
   // Set constant uniforms
   const logicalWidth =
     camera.glResources.baseResolution.width * camera.pixelScale;
@@ -195,6 +210,33 @@ export function renderCellMaps(
 
   // Set axonometric angle uniform (GPU computes cos/sin)
   setAngleUniform(gl, camera.id!, camera.axonometricAngle);
+
+  // Depth-cue uniforms (AO / cast shadow / height ramp). null = all weights 0 (off).
+  const dc = camera.depthCues;
+  gl.uniform1f(uAoWeight, dc ? dc.ao.weight : 0);
+  gl.uniform1f(uAoRadius, dc ? dc.ao.radius : 1);
+  gl.uniform1f(uShadowWeight, dc ? dc.shadow.weight : 0);
+  gl.uniform1f(uShadowDistance, dc ? dc.shadow.distance : 24);
+  gl.uniform1f(uHeightRampWeight, dc ? dc.heightRamp.weight : 0);
+  gl.uniform1f(uHeightRampMinY, dc ? dc.heightRamp.minY : 0);
+  gl.uniform1f(uHeightRampMaxY, dc ? dc.heightRamp.maxY : 1);
+  if (dc) {
+    gl.uniform3f(
+      uHeightRampLow,
+      dc.heightRamp.lowColor.x,
+      dc.heightRamp.lowColor.y,
+      dc.heightRamp.lowColor.z,
+    );
+    gl.uniform3f(
+      uHeightRampHigh,
+      dc.heightRamp.highColor.x,
+      dc.heightRamp.highColor.y,
+      dc.heightRamp.highColor.z,
+    );
+  } else {
+    gl.uniform3f(uHeightRampLow, 1, 1, 1);
+    gl.uniform3f(uHeightRampHigh, 1, 1, 1);
+  }
 
   // Disable the UV attribute for chunk rendering (triplanar mapping doesn't use it)
   if (aUv >= 0) {
@@ -271,16 +313,24 @@ export function renderCellMaps(
       cellMap.mapSize.z,
     );
 
-    // Per-fragment raycasting (per cell-map — respects revealExempt)
-    if (camera.revealTarget && !cellMap.revealExempt) {
-      // Upload solidity map (recompute every frame — cheap for small maps)
+    // Solidity texture (u_cellSolidity) is read by BOTH the reveal raycast and the
+    // AO/cast-shadow depth cues — so upload/bind it whenever either needs it.
+    const reveal = !!camera.revealTarget && !cellMap.revealExempt;
+    const cues = camera.depthCues;
+    const needSolidity =
+      reveal || (!!cues && (cues.ao.weight > 0 || cues.shadow.weight > 0));
+
+    if (needSolidity) {
+      // Recompute every frame — cheap for small maps.
       const solidityMap = computeSolidityMap();
       uploadVisibilityTexture(gl, camera, solidityMap, cellMap.mapSize);
-
-      // Bind solidity texture and set reveal target
       gl.activeTexture(gl.TEXTURE3);
       gl.bindTexture(gl.TEXTURE_2D, camera.glResources.visibilityTexture);
       gl.uniform1i(uCellSolidity, 3);
+    }
+
+    // The reveal raycast (Y-slice clip) is separate from the cues.
+    if (reveal && camera.revealTarget) {
       gl.uniform3f(
         uRevealTarget,
         camera.revealTarget.x,

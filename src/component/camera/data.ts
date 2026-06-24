@@ -9,6 +9,74 @@ import {
 } from '../types';
 import type { CameraMethods } from './methods';
 
+type RGB = { x: number; y: number; z: number };
+
+/**
+ * Resolved developer-configurable depth-readability cues for cell rendering. Each
+ * effect is weighted (0 = off, zero cost); see DepthCuesOptions for what each does.
+ */
+export interface DepthCues {
+  /** Cliff-edge contour lines (post-process depth-discontinuity). */
+  outline: { weight: number; threshold: number; width: number; color: RGB };
+  /** Ambient occlusion in recesses/cliff bases (solidity-grid sampling). */
+  ao: { weight: number; radius: number };
+  /** Directional cast shadows (raymarch toward the first directional light). */
+  shadow: { weight: number; distance: number };
+  /** Value/hue shift by world-Y so equal textures read as different elevations. */
+  heightRamp: {
+    weight: number;
+    minY: number;
+    maxY: number;
+    lowColor: RGB;
+    highColor: RGB;
+  };
+}
+
+/** Partial form accepted in CameraOptions; missing fields fall back to defaults. */
+export interface DepthCuesOptions {
+  outline?: { weight?: number; threshold?: number; width?: number; color?: Partial<RGB> };
+  ao?: { weight?: number; radius?: number };
+  shadow?: { weight?: number; distance?: number };
+  heightRamp?: {
+    weight?: number;
+    minY?: number;
+    maxY?: number;
+    lowColor?: Partial<RGB>;
+    highColor?: Partial<RGB>;
+  };
+}
+
+const rgb = (v: Partial<RGB> | undefined, dx: number, dy: number, dz: number): RGB => ({
+  x: v?.x ?? dx,
+  y: v?.y ?? dy,
+  z: v?.z ?? dz,
+});
+
+/**
+ * Resolve the partial option into a full DepthCues (filling defaults), or null when
+ * the option is absent — null keeps every effect off and is the default for cameras.
+ */
+function resolveDepthCues(o: DepthCuesOptions | undefined): DepthCues | null {
+  if (!o) return null;
+  return {
+    outline: {
+      weight: o.outline?.weight ?? 0,
+      threshold: o.outline?.threshold ?? 0.02,
+      width: o.outline?.width ?? 1,
+      color: rgb(o.outline?.color, 0, 0, 0),
+    },
+    ao: { weight: o.ao?.weight ?? 0, radius: o.ao?.radius ?? 2 },
+    shadow: { weight: o.shadow?.weight ?? 0, distance: o.shadow?.distance ?? 24 },
+    heightRamp: {
+      weight: o.heightRamp?.weight ?? 0,
+      minY: o.heightRamp?.minY ?? 0,
+      maxY: o.heightRamp?.maxY ?? 256,
+      lowColor: rgb(o.heightRamp?.lowColor, 0.55, 0.6, 0.72),
+      highColor: rgb(o.heightRamp?.highColor, 1, 1, 1),
+    },
+  };
+}
+
 /**
  * Camera component for axonometric 3D rendering that appears 2D.
  * Renders cell maps and billboard sprites within the render tree.
@@ -80,6 +148,12 @@ export interface CameraT
   } | null;
 
   /**
+   * Developer-configurable depth-readability cues (outline, AO, cast shadows,
+   * height ramp). null = all off (default). See DepthCues.
+   */
+  depthCues: DepthCues | null;
+
+  /**
    * WebGL rendering resources (shader programs, buffers, etc.)
    */
   glResources: {
@@ -135,6 +209,13 @@ export interface CameraOptions extends ComponentOptions {
 
   /** Cylindrical reveal radius in world units (default: 256.0) */
   revealRadius?: number;
+
+  /**
+   * Depth-readability cues for cell rendering. Omit to disable all (default).
+   * Provide any subset; per-effect `weight` defaults to 0 (off), so set the
+   * weights you want. See DepthCues for each effect.
+   */
+  depthCues?: DepthCuesOptions;
 }
 
 /**
@@ -164,6 +245,7 @@ export function builder(options: CameraOptions): CameraT {
     revealFadeHeight: options.revealFadeHeight ?? 8.0,
     revealRadius: options.revealRadius ?? 256.0,
     revealVolume: null,
+    depthCues: resolveDepthCues(options.depthCues),
 
     glResources: {
       unifiedProgram: null,
@@ -205,6 +287,7 @@ function serialize(component: ComponentData): any {
     revealYOffset: c.revealYOffset,
     revealFadeHeight: c.revealFadeHeight,
     revealRadius: c.revealRadius,
+    depthCues: c.depthCues,
   };
 }
 
@@ -239,6 +322,7 @@ function deserialize(data: any): DeserializeResult<CameraT> {
     revealYOffset,
     revealFadeHeight,
     revealRadius,
+    depthCues,
   } = data;
 
   if (type !== 'camera') {
@@ -274,6 +358,7 @@ function deserialize(data: any): DeserializeResult<CameraT> {
       revealYOffset: revealYOffset as number | undefined,
       revealFadeHeight: revealFadeHeight as number | undefined,
       revealRadius: revealRadius as number | undefined,
+      depthCues: depthCues as DepthCuesOptions | undefined,
     }),
     errors,
   };
@@ -299,4 +384,5 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'revealFadeHeight',
   'revealRadius',
   'revealVolume',
+  'depthCues',
 ];

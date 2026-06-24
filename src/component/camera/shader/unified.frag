@@ -58,6 +58,17 @@ uniform bool u_hasVisibilityMask;
 uniform sampler2D u_cellSolidity;   // R8: 0=empty, 255=solid
 uniform highp vec3 u_revealTarget;  // World-space reveal target position
 
+    // Depth cues (cell mode; each weight 0 = off, early-out → free)
+uniform float u_aoWeight;
+uniform float u_aoRadius;
+uniform float u_shadowWeight;
+uniform float u_shadowDistance;
+uniform float u_heightRampWeight;
+uniform float u_heightRampMinY;
+uniform float u_heightRampMaxY;
+uniform vec3 u_heightRampLow;
+uniform vec3 u_heightRampHigh;
+
     // Dynamic lighting uniforms
 uniform vec3 u_ambientColor;
 uniform float u_ambientBrightness;
@@ -150,8 +161,15 @@ vec3 computeLighting(vec3 normal, vec3 worldPos) {
     return lighting;
 }
 
-// Check if a cell at integer coordinates is solid by sampling the solidity texture
+// Check if a cell at integer coordinates is solid by sampling the solidity texture.
+// Out-of-bounds cells are empty — without this, CLAMP_TO_EDGE would fold the lookup
+// back onto a real edge cell and report false occlusion (e.g. AO at the map border).
 bool isCellSolid(vec3 cell) {
+    if(cell.x < 0.0 || cell.x >= u_mapSize.x ||
+       cell.y < 0.0 || cell.y >= u_mapSize.y ||
+       cell.z < 0.0 || cell.z >= u_mapSize.z) {
+        return false;
+    }
     float u = (cell.x + 0.5) / u_mapSize.x;
     float v = (cell.y + cell.z * u_mapSize.y + 0.5)
               / (u_mapSize.y * u_mapSize.z);
@@ -235,6 +253,43 @@ vec4 sampleBilinear(sampler2D tex, vec2 worldCoord, vec2 texSize, vec4 bounds) {
 
     // Bilinear blend
     return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
+}
+
+// Ambient occlusion from the solidity grid: darken a fragment only by neighbors that
+// rise ABOVE its surface (cliff bases / inner corners). Same-level neighbors are the
+// coplanar surface itself, so flat open tops stay unoccluded. Returns 0 (open) .. 1.
+// worldPos is pre-smoothing (v_origWorldPos) so floor() lands in the right cell.
+float computeAO(vec3 worldPos) {
+    vec3 cell = floor(worldPos / u_cellSize);
+    int rings = u_aoRadius >= 1.5 ? 2 : 1;
+    float occ = 0.0;
+    float total = 0.0;
+    for(int ring = 1; ring <= 2; ring++) {
+        if(ring > rings) break;
+        float rw = 1.0 / float(ring); // nearer rings weigh more
+        for(int dx = -1; dx <= 1; dx++) {
+            for(int dz = -1; dz <= 1; dz++) {
+                if(dx == 0 && dz == 0) continue;
+                vec3 off = vec3(float(dx * ring), 0.0, float(dz * ring));
+                total += rw * 1.5;
+                // Taller neighbor one cell up (strong) and two up (soft falloff).
+                if(isCellSolid(cell + off + vec3(0.0, 1.0, 0.0))) occ += rw * 1.0;
+                if(isCellSolid(cell + off + vec3(0.0, 2.0, 0.0))) occ += rw * 0.5;
+            }
+        }
+    }
+    return total > 0.0 ? occ / total : 0.0;
+}
+
+// Directional cast shadow: march the solidity grid from the fragment toward the first
+// directional light (reusing the DDA). Returns 1 when blocked (in shadow), else 0.
+float computeCastShadow(vec3 worldPos, vec3 worldNormal) {
+    if(u_numDirLights == 0) return 0.0;
+    // Cell space; nudge along the surface normal to avoid self-shadowing.
+    vec3 origin = worldPos / u_cellSize + worldNormal * 0.05;
+    vec3 toLight = normalize((-u_dirLightDir[0]) / u_cellSize);
+    vec3 dest = origin + toLight * u_shadowDistance;
+    return isRayBlocked(origin, dest) ? 1.0 : 0.0;
 }
 
 void main() {
@@ -331,6 +386,20 @@ void main() {
 
         // Dynamic lighting
         vec3 lighting = computeLighting(finalNormal, v_worldPos);
+
+        // Depth cues (cell mode): AO + cast shadow darken lighting; the height ramp
+        // tints albedo. Each is weight-gated, so disabled cues cost nothing.
+        if(u_aoWeight > 0.0) {
+            lighting *= 1.0 - u_aoWeight * computeAO(v_origWorldPos);
+        }
+        if(u_shadowWeight > 0.0) {
+            lighting *= 1.0 - u_shadowWeight * computeCastShadow(v_origWorldPos, v_worldNormal);
+        }
+        if(u_heightRampWeight > 0.0) {
+            float t = clamp((v_worldPos.y - u_heightRampMinY)
+                / max(0.0001, u_heightRampMaxY - u_heightRampMinY), 0.0, 1.0);
+            albedo.rgb *= mix(vec3(1.0), mix(u_heightRampLow, u_heightRampHigh, t), u_heightRampWeight);
+        }
 
         gl_FragColor = vec4(albedo.rgb * lighting, albedo.a);
 

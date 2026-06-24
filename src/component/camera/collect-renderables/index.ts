@@ -44,16 +44,16 @@ export function collectRenderables(camera: CameraT): {
 }
 
 /**
- * Orders sprites for painter's-algorithm drawing (the sprite pass runs with the
- * depth test disabled, so sprite-on-sprite order is draw order).
+ * Orders the sprites of each composited entity by `renderOrder` (within-entity
+ * layering). Cross-entity ordering is handled later, in `renderSprites`, which
+ * stable-sorts the whole list back-to-front by depth — so this pass only needs to
+ * establish each entity's internal layer order, which that stable depth sort then
+ * preserves (a composited entity's layers share one transform → equal depth).
  *
- * `getComponentsByType` returns a nexus's own sprites contiguously before
- * recursing into child nexuses, so all sprites of one composited entity form a
- * contiguous run. We stable-sort by `renderOrder` ONLY within each such run, so:
- *  - a multi-sprite entity's layers stack by renderOrder (low = underneath), and
- *  - the relative order of different entities is preserved exactly (existing
- *    scenes are unaffected; entities never interweave and "pass through" each
- *    other).
+ * `getComponentsByType` returns a nexus's own sprites contiguously before recursing
+ * into child nexuses, so all sprites of one composited entity form a contiguous run.
+ * We stable-sort by `renderOrder` ONLY within each such run (low = underneath); the
+ * fast path returns the array untouched when every entity is single-sprite.
  */
 function segmentedRenderOrderSort(sprites: SpriteT[]): SpriteT[] {
   const n = sprites.length;

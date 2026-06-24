@@ -392,7 +392,13 @@ export function renderSprites(
       albedoFrame.size.x * spriteTransform.scale.x,
       albedoFrame.size.y * spriteTransform.scale.y,
     );
-    gl.uniform2f(u_anchor, sprite.anchor.x, sprite.anchor.y);
+    // Normalize the pixel anchor (from the frame's top-left) to [0,1] for the shader,
+    // which re-bases the centered quad around it (anchor pixel lands on the transform).
+    gl.uniform2f(
+      u_anchor,
+      albedoFrame.size.x !== 0 ? sprite.anchor.x / albedoFrame.size.x : 0.5,
+      albedoFrame.size.y !== 0 ? sprite.anchor.y / albedoFrame.size.y : 0.5,
+    );
     gl.uniform1f(u_rotation, spriteTransform.rotation.y);
 
     // Set sprite appearance uniforms

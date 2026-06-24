@@ -88,6 +88,17 @@ export interface CellMapMethods extends ComponentMethods {
   markGPUClean: (component: CellMapT) => void;
 
   /**
+   * World-space position of the center of a cell's TOP face for the given cell
+   * coordinates: horizontally centered (x, z) and at the cell's top edge (y). Handy
+   * for seating an entity — e.g. a bottom-center-anchored sprite — on top of a cell
+   * without computing cellSize offsets by hand. (Coordinates are not bounds-checked.)
+   */
+  cellToWorldCoordinates: (
+    component: CellMapT,
+    coordinates: Vector3D,
+  ) => Vector3D;
+
+  /**
    * Get world-space bounding box
    */
   getBounds: (component: CellMapT) => { min: Vector3D; max: Vector3D };
@@ -212,6 +223,18 @@ export const CellMap: CellMapMethods = {
 
   markGPUClean: (component: CellMapT): void => {
     component.needsGPUUpdate = false;
+  },
+
+  cellToWorldCoordinates: (
+    component: CellMapT,
+    coordinates: Vector3D,
+  ): Vector3D => {
+    const { cellSize } = component;
+    return new Vector3D(
+      (coordinates.x + 0.5) * cellSize.x, // horizontal center
+      (coordinates.y + 1) * cellSize.y, // top face of the cell
+      (coordinates.z + 0.5) * cellSize.z, // depth center
+    );
   },
 
   getBounds: (component: CellMapT): { min: Vector3D; max: Vector3D } => {

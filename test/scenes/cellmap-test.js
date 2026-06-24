@@ -928,7 +928,9 @@ export async function createScene() {
                 emission: '',
             },
             frame: { albedo: 11, normal: 11, emission: 0, material: 0 },
-            anchor: new Omosuen.Vector2D(0, 8),
+            // Bottom-center anchor (16x16 frame): the feet land on the transform
+            // position, so seating the transform on a cell's top face = standing on it.
+            anchor: new Omosuen.Vector2D(8, 16),
             tint: new Omosuen.Vector4D(1, 1, 1, 1),
             opacity: 1.0,
             showSilhouette,
@@ -943,14 +945,16 @@ export async function createScene() {
         return { nexus, sprite, animator };
     }
 
-    // Patrol path: rectangular loop around the structure
-    // Structure is x=5..14, z=5..14 — path runs 2 cells outside at x=3,16 z=3,16
-    // Y = 2 * CELL_HEIGHT: stand on the raised 2-deep ground surface (top of cell y=1).
+    // Patrol path: rectangular loop around the structure (2 cells outside it, at
+    // x=3,16 / z=3,16) on the grass-cap surface (cell y=1). cellToWorldCoordinates
+    // returns each cell's top-face center; with the bottom-center anchor the walkers'
+    // feet sit on the surface — no manual cellSize math.
+    const SURFACE_Y = 1;
     const PATROL_WAYPOINTS = [
-        new Omosuen.Vector3D(3 * CELL_WIDTH + CELL_WIDTH / 2, 2 * CELL_HEIGHT, 3 * CELL_DEPTH + CELL_DEPTH / 2),   // 0: north (112, 32, 112)
-        new Omosuen.Vector3D(3 * CELL_WIDTH + CELL_WIDTH / 2, 2 * CELL_HEIGHT, 16 * CELL_DEPTH + CELL_DEPTH / 2),  // 1: west  (112, 32, 528)
-        new Omosuen.Vector3D(16 * CELL_WIDTH + CELL_WIDTH / 2, 2 * CELL_HEIGHT, 16 * CELL_DEPTH + CELL_DEPTH / 2), // 2: south (528, 32, 528)
-        new Omosuen.Vector3D(16 * CELL_WIDTH + CELL_WIDTH / 2, 2 * CELL_HEIGHT, 3 * CELL_DEPTH + CELL_DEPTH / 2),  // 3: east  (528, 32, 112)
+        cellMap.cellToWorldCoordinates(new Omosuen.Vector3D(3, SURFACE_Y, 3)),   // 0: north
+        cellMap.cellToWorldCoordinates(new Omosuen.Vector3D(3, SURFACE_Y, 16)),  // 1: west
+        cellMap.cellToWorldCoordinates(new Omosuen.Vector3D(16, SURFACE_Y, 16)), // 2: south
+        cellMap.cellToWorldCoordinates(new Omosuen.Vector3D(16, SURFACE_Y, 3)),  // 3: east
     ];
     const PATROL_SPEED = 48; // units per second
     const ARRIVAL_THRESHOLD = 2; // snap to waypoint within this distance
@@ -1035,10 +1039,10 @@ export async function createScene() {
         }
     });
 
-    // Sprite A: indoor, center of structure (player-controlled)
+    // Sprite A: indoor, center of structure (player-controlled), standing on the floor cell.
     const indoorChar = await createCharacter(
         'Indoor Character',
-        new Omosuen.Vector3D(10 * CELL_WIDTH + CELL_WIDTH / 2, 2 * CELL_HEIGHT, 10 * CELL_DEPTH + CELL_DEPTH / 2),
+        cellMap.cellToWorldCoordinates(new Omosuen.Vector3D(10, SURFACE_Y, 10)),
         true,             // showSilhouette
         'playerControl',  // WASD movement
     );

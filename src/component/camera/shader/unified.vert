@@ -17,7 +17,7 @@ uniform vec3 u_mapSize;    // Used by both for depth calculations
     // Sprite-specific uniforms (Mode 1)
 uniform vec3 u_spritePosition;  // 3D world position (x, y=height, z)
 uniform vec2 u_spriteSize;
-uniform vec2 u_anchor;
+uniform vec2 u_anchor;   // normalized [0,1] from the sprite's top-left
 uniform float u_rotation;
 
     // Outputs
@@ -87,21 +87,24 @@ void main() {
         vec2 isoZ = u_spritePosition.z * vec2(-ISO_H, sinA);
         vec2 isoProjected = isoX + isoY + isoZ;
 
-        // Apply anchor offset in screen space
-        // Anchor values are already in pixels, no additional scaling needed
-        vec2 scaledAnchor = u_anchor;
-        vec2 anchoredPosition = isoProjected - scaledAnchor;
+        // Anchor (u_anchor) is normalized [0,1] from the sprite's TOP-LEFT. The quad
+        // is centered (-0.5..0.5), so re-base it around the anchor: the anchor pixel
+        // becomes the origin, so it lands exactly on the transform position and
+        // rotation pivots around it. (a_position.y +0.5 = image-bottom, -0.5 = top;
+        // u_anchor.y matches image space, top = 0, so no extra Y flip is needed.)
+        vec2 anchorPos = u_anchor - 0.5;               // anchor in centered-quad space
+        vec2 localVertex = a_position.xy - anchorPos;  // vertex relative to the anchor
 
-        // Apply rotation to sprite quad vertices
+        // Apply rotation around the anchor
         float c = cos(u_rotation);
         float s = sin(u_rotation);
-        vec2 rotated = vec2(a_position.x * c - a_position.y * s, a_position.x * s + a_position.y * c);
+        vec2 rotated = vec2(localVertex.x * c - localVertex.y * s, localVertex.x * s + localVertex.y * c);
 
-        // Scale sprite vertices by size and zoom
+        // Scale by size and zoom
         vec2 scaledVertex = rotated * u_spriteSize * u_zoom;
 
-        // Convert to view space and add scaled vertex offset
-        vec2 viewPos = (anchoredPosition - u_cameraPosition) * u_zoom + scaledVertex;
+        // Convert to view space; the anchor pixel sits at the sprite's transform position
+        vec2 viewPos = (isoProjected - u_cameraPosition) * u_zoom + scaledVertex;
 
         // Convert to clip space
         vec2 clipSpace = (viewPos / u_viewportSize) * 2.0;

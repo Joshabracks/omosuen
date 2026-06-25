@@ -285,6 +285,11 @@ export function renderSprites(
     gl.disableVertexAttribArray(a_origPosition);
     gl.vertexAttrib3f(a_origPosition, 0, 0, 0);
   }
+  const a_emission = gl.getAttribLocation(program, 'a_emission');
+  if (a_emission >= 0) {
+    gl.disableVertexAttribArray(a_emission);
+    gl.vertexAttrib1f(a_emission, 0);
+  }
 
   // Bind vertex buffers (shared for all sprites)
   gl.bindBuffer(gl.ARRAY_BUFFER, camera.glResources.quadVertexBuffer);

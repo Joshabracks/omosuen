@@ -229,9 +229,9 @@ export interface ChunkMesh {
   /** Whether this chunk needs its mesh rebuilt */
   dirty: boolean;
 
-  /** Interleaved vertex data: pos3+normal3+origPos3 (stride 9), or +uv2 (stride 11) */
+  /** Interleaved vertex data: pos3+normal3+origPos3+emission1 (stride 10), or +uv2 (stride 12) */
   vertices: Float32Array | null;
-  /** Floats per vertex in `vertices`: 9, or 11 when UV custom shapes are present */
+  /** Floats per vertex in `vertices`: 10, or 12 when UV custom shapes are present */
   stride: number;
   /** Index data */
   indices: Uint32Array | null;

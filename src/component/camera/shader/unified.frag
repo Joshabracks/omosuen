@@ -111,6 +111,7 @@ varying vec3 v_worldPos;
 varying vec2 v_screenPos;
 varying vec3 v_worldNormal;
 varying vec3 v_origWorldPos;
+varying float v_emission;
 
 // Transform world direction to isometric screen space
 // Same projection matrix as the vertex shader
@@ -505,7 +506,10 @@ void main() {
             albedo.rgb *= mix(vec3(1.0), mix(u_heightRampLow, u_heightRampHigh, t), u_heightRampWeight);
         }
 
-        gl_FragColor = vec4(albedo.rgb * lighting, albedo.a);
+        // Self-illumination: emissive cells add their (lit-independent) albedo on
+        // top of lighting so a highlighted cell glows. v_emission is 0 for normal cells.
+        vec3 cellColor = albedo.rgb * lighting + albedo.rgb * v_emission;
+        gl_FragColor = vec4(cellColor, albedo.a);
 
     } else {
         // ============================================================

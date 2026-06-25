@@ -64,6 +64,11 @@ uniform float u_aoRadius;
 uniform float u_aoScatter;
 uniform float u_shadowWeight;
 uniform float u_shadowDistance;
+uniform float u_shadowScatter;
+    // Edge-softening style shared by AO + shadow scatter.
+    // 0 = dither (white noise), 1 = soft-grain (value noise), 2 = smooth-fade (blur),
+    // 3 = retro-dither (ordered Bayer).
+uniform int u_scatterType;
 uniform float u_heightRampWeight;
 uniform float u_heightRampMinY;
 uniform float u_heightRampMaxY;
@@ -256,6 +261,7 @@ vec4 sampleBilinear(sampler2D tex, vec2 worldCoord, vec2 texSize, vec4 bounds) {
     return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
 }
 
+// ── Scatter helpers (shared by AO + cast shadow so they match) ──────────────────────
 // Cheap mediump-friendly per-fragment hash in [0,1) (no sin / large constants).
 float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 345.45));
@@ -263,20 +269,48 @@ float hash21(vec2 p) {
     return fract(p.x * p.y);
 }
 
-// Ambient occlusion from the solidity grid: darken a fragment only by neighbors that
-// rise ABOVE its surface (cliff bases / inner corners). Same-level neighbors are the
-// coplanar surface itself, so flat open tops stay unoccluded. Returns 0 (open) .. 1.
-// worldPos is pre-smoothing (v_origWorldPos) so floor() lands in the right cell.
-float computeAO(vec3 worldPos) {
-    vec3 cellPos = worldPos / u_cellSize;
-    // Scatter: jitter which cell each fragment samples (world-stable seed → no shimmer
-    // on pan), dithering the hard cell-aligned AO edges into a softer stipple.
-    if(u_aoScatter > 0.0) {
-        vec2 seed = worldPos.xz / u_cellSize.xz;
-        vec2 j = (vec2(hash21(seed), hash21(seed + 7.31)) - 0.5) * u_aoScatter;
-        cellPos += vec3(j.x, 0.0, j.y);
+// 2D value noise in [0,1): smoothstep-interpolated hash on the integer grid → smooth,
+// low-frequency grain (vs the high-frequency white noise of hash21).
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// Ordered 4x4 Bayer threshold in [0,1) (recursive 2x2 build; no arrays/bitops).
+float bayer2(vec2 c) { return 2.0 * c.x + 3.0 * c.y - 4.0 * c.x * c.y; } // c in {0,1}^2 → 0..3
+float bayer4(vec2 frag) {
+    vec2 p = floor(frag);
+    vec2 hi = mod(floor(p * 0.5), 2.0);
+    vec2 lo = mod(p, 2.0);
+    return (4.0 * bayer2(hi) + bayer2(lo) + 0.5) / 16.0;
+}
+
+// Per-fragment sample offset in [-0.5,0.5]^2 for the noisy scatter modes (NOT
+// smooth-fade, which blurs a fixed kernel instead). 1 = soft-grain (smooth, world-
+// stable), 3 = retro-dither (ordered, screen-space), else 0 = dither (white noise).
+vec2 scatterOffset(vec2 worldSeed) {
+    if(u_scatterType == 1) {
+        vec2 s = worldSeed * 0.6;
+        return vec2(vnoise(s), vnoise(s + 19.7)) - 0.5;
+    } else if(u_scatterType == 3) {
+        return vec2(bayer4(gl_FragCoord.xy), bayer4(gl_FragCoord.xy + vec2(2.0, 1.0))) - 0.5;
     }
-    vec3 cell = floor(cellPos);
+    return vec2(hash21(worldSeed), hash21(worldSeed + 7.31)) - 0.5;
+}
+
+// ── Ambient occlusion ───────────────────────────────────────────────────────────────
+// Darken a fragment only by neighbors that rise ABOVE its surface (cliff bases / inner
+// corners). Same-level neighbors are the coplanar surface itself, so flat open tops
+// stay unoccluded. `off` jitters which cell is sampled (cell-space, horizontal).
+// worldPos is pre-smoothing (v_origWorldPos) so floor() lands in the right cell.
+float aoSample(vec3 worldPos, vec2 off) {
+    vec3 cell = floor(worldPos / u_cellSize + vec3(off.x, 0.0, off.y));
     int rings = u_aoRadius >= 1.5 ? 2 : 1;
     float occ = 0.0;
     float total = 0.0;
@@ -286,26 +320,80 @@ float computeAO(vec3 worldPos) {
         for(int dx = -1; dx <= 1; dx++) {
             for(int dz = -1; dz <= 1; dz++) {
                 if(dx == 0 && dz == 0) continue;
-                vec3 off = vec3(float(dx * ring), 0.0, float(dz * ring));
+                vec3 o = vec3(float(dx * ring), 0.0, float(dz * ring));
                 total += rw * 1.5;
-                // Taller neighbor one cell up (strong) and two up (soft falloff).
-                if(isCellSolid(cell + off + vec3(0.0, 1.0, 0.0))) occ += rw * 1.0;
-                if(isCellSolid(cell + off + vec3(0.0, 2.0, 0.0))) occ += rw * 0.5;
+                if(isCellSolid(cell + o + vec3(0.0, 1.0, 0.0))) occ += rw * 1.0;
+                if(isCellSolid(cell + o + vec3(0.0, 2.0, 0.0))) occ += rw * 0.5;
             }
         }
     }
     return total > 0.0 ? occ / total : 0.0;
 }
 
-// Directional cast shadow: march the solidity grid from the fragment toward the first
-// directional light (reusing the DDA). Returns 1 when blocked (in shadow), else 0.
-float computeCastShadow(vec3 worldPos, vec3 worldNormal) {
-    if(u_numDirLights == 0) return 0.0;
-    // Cell space; nudge along the surface normal to avoid self-shadowing.
-    vec3 origin = worldPos / u_cellSize + worldNormal * 0.05;
+// smooth-fade AO: a genuine continuous gradient (not per-cell). Occlusion fades with
+// the fragment's real horizontal DISTANCE to each taller neighbor, so the halo is a
+// smooth radial falloff with no cell blockiness and no grain. `scatter` widens the
+// falloff radius (broader, softer halo).
+float aoSmooth(vec3 worldPos) {
+    vec3 cp = worldPos / u_cellSize;
+    vec3 base = floor(cp);
+    vec2 fragXZ = cp.xz;
+    float radius = 1.4 + u_aoScatter * 2.0; // cells
+    float occ = 0.0;
+    for(int dx = -3; dx <= 3; dx++) {
+        for(int dz = -3; dz <= 3; dz++) {
+            if(dx == 0 && dz == 0) continue;
+            float dist = distance(fragXZ, vec2(base.x + float(dx) + 0.5, base.z + float(dz) + 0.5));
+            if(dist >= radius) continue;
+            // Taller neighbor one (strong) or two (soft) cells above this fragment.
+            float solid = 0.0;
+            if(isCellSolid(base + vec3(float(dx), 1.0, float(dz)))) solid = 1.0;
+            else if(isCellSolid(base + vec3(float(dx), 2.0, float(dz)))) solid = 0.5;
+            if(solid <= 0.0) continue;
+            float w = 1.0 - dist / radius;
+            occ += solid * w * w; // quadratic distance falloff
+        }
+    }
+    return clamp(occ * 0.7, 0.0, 1.0);
+}
+
+float computeAO(vec3 worldPos) {
+    if(u_aoScatter <= 0.0) return aoSample(worldPos, vec2(0.0));
+    if(u_scatterType == 2) return aoSmooth(worldPos); // continuous distance gradient
+    vec2 seed = worldPos.xz / u_cellSize.xz;
+    return aoSample(worldPos, scatterOffset(seed) * u_aoScatter);
+}
+
+// ── Directional cast shadow ─────────────────────────────────────────────────────────
+// March the solidity grid from the fragment toward the first directional light (reuses
+// the DDA). `off` jitters the ray origin (cell-space, horizontal). 1 = blocked, 0 = lit.
+float shadowSample(vec3 worldPos, vec3 worldNormal, vec2 off) {
+    vec3 origin = worldPos / u_cellSize + worldNormal * 0.05 + vec3(off.x, 0.0, off.y);
     vec3 toLight = normalize((-u_dirLightDir[0]) / u_cellSize);
     vec3 dest = origin + toLight * u_shadowDistance;
     return isRayBlocked(origin, dest) ? 1.0 : 0.0;
+}
+
+float computeCastShadow(vec3 worldPos, vec3 worldNormal) {
+    if(u_numDirLights == 0) return 0.0;
+    if(u_shadowScatter <= 0.0) return shadowSample(worldPos, worldNormal, vec2(0.0));
+    if(u_scatterType == 2) {
+        // smooth-fade: average a FILLED disk of rays (golden-angle sunflower). Filling
+        // the disk (not just its rim) makes coverage change gradually across the
+        // penumbra → a smooth, continuous soft edge (matching the AO gradient) instead
+        // of banding. Heavier (N marches) — this is the quality mode.
+        float s = u_shadowScatter * 1.5; // penumbra half-width in cells
+        float sum = 0.0;
+        for(int i = 0; i < 16; i++) {
+            float fi = float(i) + 0.5;
+            float a = fi * 2.39996323;                 // golden angle
+            vec2 off = vec2(cos(a), sin(a)) * sqrt(fi / 16.0) * s;
+            sum += shadowSample(worldPos, worldNormal, off);
+        }
+        return sum / 16.0;
+    }
+    vec2 seed = worldPos.xz / u_cellSize.xz;
+    return shadowSample(worldPos, worldNormal, scatterOffset(seed) * u_shadowScatter);
 }
 
 void main() {

@@ -87,18 +87,26 @@ function matchesFilters(
   // Broadcast mode: Always match
   if (mode === 'broadcast') return true;
 
-  // Check each filter type
-  const nameMatch = !names?.length || names.includes(component.name);
-  const typeMatch = !types?.length || types.includes(component.type);
-  const idMatch = !ids?.length || ids.includes(component.id!);
+  const hasNames = !!names?.length;
+  const hasTypes = !!types?.length;
+  const hasIds = !!ids?.length;
 
   if (mode === 'match-all') {
-    // ALL criteria must match (ignore ids)
+    // AND: an omitted dimension is neutral (true) and does not constrain.
+    // ids are intentionally ignored in match-all (see validateReceiverOptions).
+    const nameMatch = !hasNames || names!.includes(component.name);
+    const typeMatch = !hasTypes || types!.includes(component.type);
     return nameMatch && typeMatch;
-  } else {
-    // match-any: ANY criteria must match (OR logic)
-    return nameMatch || typeMatch || idMatch;
   }
+
+  // match-any (OR): only the dimensions the caller actually provided can
+  // produce a match. An omitted dimension is neutral (false) for OR, so it
+  // can't force a match against every component. (No filters → matches nothing;
+  // use broadcast/null to target all.)
+  const nameMatch = hasNames && names!.includes(component.name);
+  const typeMatch = hasTypes && types!.includes(component.type);
+  const idMatch = hasIds && ids!.includes(component.id!);
+  return nameMatch || typeMatch || idMatch;
 }
 
 /**

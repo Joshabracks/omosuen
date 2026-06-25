@@ -12,6 +12,14 @@ import type { CameraMethods } from './methods';
 type RGB = { x: number; y: number; z: number };
 
 /**
+ * How the AO + cast-shadow cues break up their hard cell-aligned edges (shared so the
+ * two cues match). `dither` = white-noise stipple (crisp at high res, coarse under
+ * pixelation); `soft-grain` = smooth low-frequency noise; `smooth-fade` = a noiseless
+ * gradient/penumbra (best under pixelation); `retro-dither` = ordered Bayer crosshatch.
+ */
+export type ScatterType = 'dither' | 'soft-grain' | 'smooth-fade' | 'retro-dither';
+
+/**
  * Resolved developer-configurable depth-readability cues for cell rendering. Each
  * effect is weighted (0 = off, zero cost); see DepthCuesOptions for what each does.
  */
@@ -21,7 +29,7 @@ export interface DepthCues {
   /** Ambient occlusion in recesses/cliff bases (solidity-grid sampling). */
   ao: { weight: number; radius: number; scatter: number };
   /** Directional cast shadows (raymarch toward the first directional light). */
-  shadow: { weight: number; distance: number };
+  shadow: { weight: number; distance: number; scatter: number };
   /** Value/hue shift by world-Y so equal textures read as different elevations. */
   heightRamp: {
     weight: number;
@@ -30,13 +38,15 @@ export interface DepthCues {
     lowColor: RGB;
     highColor: RGB;
   };
+  /** Edge-softening style shared by the AO and shadow `scatter` amounts. */
+  scatterType: ScatterType;
 }
 
 /** Partial form accepted in CameraOptions; missing fields fall back to defaults. */
 export interface DepthCuesOptions {
   outline?: { weight?: number; threshold?: number; width?: number; color?: Partial<RGB> };
   ao?: { weight?: number; radius?: number; scatter?: number };
-  shadow?: { weight?: number; distance?: number };
+  shadow?: { weight?: number; distance?: number; scatter?: number };
   heightRamp?: {
     weight?: number;
     minY?: number;
@@ -44,6 +54,7 @@ export interface DepthCuesOptions {
     lowColor?: Partial<RGB>;
     highColor?: Partial<RGB>;
   };
+  scatterType?: ScatterType;
 }
 
 const rgb = (v: Partial<RGB> | undefined, dx: number, dy: number, dz: number): RGB => ({
@@ -70,7 +81,11 @@ function resolveDepthCues(o: DepthCuesOptions | undefined): DepthCues | null {
       radius: o.ao?.radius ?? 2,
       scatter: o.ao?.scatter ?? 0,
     },
-    shadow: { weight: o.shadow?.weight ?? 0, distance: o.shadow?.distance ?? 24 },
+    shadow: {
+      weight: o.shadow?.weight ?? 0,
+      distance: o.shadow?.distance ?? 24,
+      scatter: o.shadow?.scatter ?? 0,
+    },
     heightRamp: {
       weight: o.heightRamp?.weight ?? 0,
       minY: o.heightRamp?.minY ?? 0,
@@ -78,6 +93,7 @@ function resolveDepthCues(o: DepthCuesOptions | undefined): DepthCues | null {
       lowColor: rgb(o.heightRamp?.lowColor, 0.55, 0.6, 0.72),
       highColor: rgb(o.heightRamp?.highColor, 1, 1, 1),
     },
+    scatterType: o.scatterType ?? 'dither',
   };
 }
 

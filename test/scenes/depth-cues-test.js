@@ -22,6 +22,9 @@ const CAP_FRAME = 21 * 25 + 10; // 535
 const CELL_W = 32, CELL_H = 16, CELL_D = 32;
 const MAP_W = 22, MAP_DEPTH = 22, MAP_HEIGHT = 16;
 
+// Scatter styles (shared by AO + shadow), indexed by the Scatter Type slider.
+const SCATTER_TYPES = ['dither', 'soft-grain', 'smooth-fade', 'retro-dither'];
+
 // Directional light driven by azimuth/elevation sliders (so shadows can be swept
 // independently of AO). Kept here so either light slider recomputes the direction.
 let lightAzimuth = 45;   // degrees
@@ -67,8 +70,10 @@ const SLIDERS = [
     { id: 'ao-weight',         label: 'AO Weight',         min: 0,  max: 1,    step: 0.05,  value: 0.5,   apply: (v) => setDC((d) => d.ao.weight = v),         fmt: (v) => v.toFixed(2) },
     { id: 'ao-radius',         label: 'AO Radius (rings)', min: 1,  max: 2,    step: 1,     value: 2,     apply: (v) => setDC((d) => d.ao.radius = v),         fmt: (v) => v.toFixed(0) },
     { id: 'ao-scatter',        label: 'AO Scatter',        min: 0,  max: 1,    step: 0.05,  value: 0,     apply: (v) => setDC((d) => d.ao.scatter = v),        fmt: (v) => v.toFixed(2) },
+    { id: 'scatter-type',      label: 'Scatter Type',      min: 0,  max: 3,    step: 1,     value: 0,     apply: (v) => setDC((d) => d.scatterType = SCATTER_TYPES[v]), fmt: (v) => SCATTER_TYPES[v] },
     { id: 'shadow-weight',     label: 'Shadow Weight',     min: 0,  max: 1,    step: 0.05,  value: 0.45,  apply: (v) => setDC((d) => d.shadow.weight = v),     fmt: (v) => v.toFixed(2) },
     { id: 'shadow-distance',   label: 'Shadow Distance',   min: 1,  max: 48,   step: 1,     value: 24,    apply: (v) => setDC((d) => d.shadow.distance = v),   fmt: (v) => v.toFixed(0) },
+    { id: 'shadow-scatter',    label: 'Shadow Scatter',    min: 0,  max: 1,    step: 0.05,  value: 0,     apply: (v) => setDC((d) => d.shadow.scatter = v),    fmt: (v) => v.toFixed(2) },
     { id: 'light-azimuth',     label: 'Light Azimuth',     min: 0,  max: 360,  step: 5,     value: 45,    apply: (v) => { lightAzimuth = v; updateLight(); },  fmt: (v) => v.toFixed(0) + '°' },
     { id: 'light-elevation',   label: 'Light Elevation',   min: 5,  max: 85,   step: 5,     value: 18,    apply: (v) => { lightElevation = v; updateLight(); }, fmt: (v) => v.toFixed(0) + '°' },
     { id: 'height-weight',     label: 'Height Ramp Weight',min: 0,  max: 1,    step: 0.02,  value: 0.18,  apply: (v) => setDC((d) => d.heightRamp.weight = v), fmt: (v) => v.toFixed(2) },
@@ -80,8 +85,9 @@ const SLIDERS = [
 const INITIAL_DEPTH_CUES = {
     outline: { weight: 0.85, threshold: 0.006, width: 1, color: { x: 0, y: 0, z: 0 } },
     ao: { weight: 0.5, radius: 2, scatter: 0 },
-    shadow: { weight: 0.45, distance: 24 },
+    shadow: { weight: 0.45, distance: 24, scatter: 0 },
     heightRamp: { weight: 0.18, minY: 0, maxY: 160, lowColor: { x: 0.55, y: 0.62, z: 0.85 }, highColor: { x: 1, y: 1, z: 1 } },
+    scatterType: 'dither',
 };
 
 // ── UI ──────────────────────────────────────────────────────────────────────────

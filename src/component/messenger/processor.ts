@@ -126,18 +126,21 @@ function findMatchingComponents(
     return [];
   }
 
-  // Build candidate list: parent, messenger, and all siblings (reused buffer)
+  // Build candidate list: parent Nexus + all siblings (reused buffer).
+  // The messenger lives in `nexus.components`, so iterating that already
+  // includes it — pushing it explicitly too would double-count it (a targeted
+  // send matching the messenger would otherwise fire its listener twice).
   const candidates = candidateBuffer;
   candidates.length = 0;
-  candidates.push(parent); // Parent Nexus
-  candidates.push(messenger); // Messenger itself
+  candidates.push(parent); // Parent Nexus (not in its own components array)
 
-  // Add siblings (all components in parent, including messenger)
   if (parent.type === 'nexus') {
     const nexus = parent as NexusT;
     for (let i = 0; i < nexus.components.length; i++) {
-      candidates.push(nexus.components[i]);
+      candidates.push(nexus.components[i]); // siblings — already includes the messenger itself
     }
+  } else {
+    candidates.push(messenger); // fallback: messenger not reachable via parent
   }
 
   const options = envelope.receiverOptions;
@@ -159,6 +162,36 @@ function findMatchingComponents(
   }
 
   return matches;
+}
+
+/**
+ * Invokes a single listener callback with the envelope, setting the receiver and
+ * owning messenger. Wraps the call so one throwing listener can't abort delivery
+ * to the rest.
+ *
+ * @param callback - The resolved message-listener callback
+ * @param envelope - The message envelope being delivered
+ * @param receiver - The component to expose as `envelope.receiver`
+ * @param listener - The listener entry (for error context)
+ */
+function invokeListener(
+  callback: MessageCallback,
+  envelope: MessageEnvelope,
+  receiver: ComponentData,
+  listener: ListenerEntry,
+): void {
+  try {
+    callback({
+      ...envelope,
+      receiver,
+      messenger: listener.messenger,
+    });
+  } catch (error) {
+    console.error(
+      `[messenger] Error in callback "${listener.callbackKey}":`,
+      error,
+    );
+  }
 }
 
 /**
@@ -200,35 +233,29 @@ export function processMessageQueue(): void {
 
     // For each matching listener
     for (const listener of listeners) {
-      // Find components in messenger's scope that match receiver filters
-      const matchedComponents = findMatchingComponents(listener, envelope);
+      // Look up callback in registry once per listener
+      const callback = MethodRegistry['message-listener'][
+        listener.callbackKey
+      ] as MessageCallback | undefined;
 
-      // Invoke callback once per matched component
-      for (const matchedComponent of matchedComponents) {
-        // Look up callback in registry
-        const callback = MethodRegistry['message-listener'][
-          listener.callbackKey
-        ] as MessageCallback | undefined;
+      if (!callback) {
+        console.warn(
+          `[messenger] Callback "${listener.callbackKey}" not found in MethodRegistry['message-listener']. Skipping listener (id: ${listener.id}).`,
+        );
+        continue;
+      }
 
-        if (!callback) {
-          console.warn(
-            `[messenger] Callback "${listener.callbackKey}" not found in MethodRegistry['message-listener']. Skipping listener (id: ${listener.id}).`,
-          );
-          continue;
-        }
-
-        // Invoke callback with envelope (set receiver and messenger)
-        try {
-          callback({
-            ...envelope,
-            receiver: matchedComponent,
-            messenger: listener.messenger,
-          });
-        } catch (error) {
-          console.error(
-            `[messenger] Error in callback "${listener.callbackKey}":`,
-            error,
-          );
+      if (envelope.receiverOptions?.mode === 'broadcast') {
+        // Broadcast (and null-receiver sends) are a single logical event:
+        // deliver to each listener exactly ONCE — not once per scene component.
+        // The per-component fan-out below is reserved for targeted (filtered)
+        // sends where addressing multiple receivers is the intent.
+        invokeListener(callback, envelope, listener.messenger, listener);
+      } else {
+        // Targeted send: deliver once per component matching the receiver filters.
+        const matchedComponents = findMatchingComponents(listener, envelope);
+        for (const matchedComponent of matchedComponents) {
+          invokeListener(callback, envelope, matchedComponent, listener);
         }
       }
     }

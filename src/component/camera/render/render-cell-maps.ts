@@ -172,8 +172,10 @@ export function renderCellMaps(
   const uAoWeight = gl.getUniformLocation(program, 'u_aoWeight');
   const uAoRadius = gl.getUniformLocation(program, 'u_aoRadius');
   const uAoScatter = gl.getUniformLocation(program, 'u_aoScatter');
+  const uScatterType = gl.getUniformLocation(program, 'u_scatterType');
   const uShadowWeight = gl.getUniformLocation(program, 'u_shadowWeight');
   const uShadowDistance = gl.getUniformLocation(program, 'u_shadowDistance');
+  const uShadowScatter = gl.getUniformLocation(program, 'u_shadowScatter');
   const uHeightRampWeight = gl.getUniformLocation(program, 'u_heightRampWeight');
   const uHeightRampMinY = gl.getUniformLocation(program, 'u_heightRampMinY');
   const uHeightRampMaxY = gl.getUniformLocation(program, 'u_heightRampMaxY');
@@ -214,11 +216,17 @@ export function renderCellMaps(
 
   // Depth-cue uniforms (AO / cast shadow / height ramp). null = all weights 0 (off).
   const dc = camera.depthCues;
+  // Scatter style shared by AO + shadow: dither=0, soft-grain=1, smooth-fade=2, retro-dither=3.
+  const scatterTypeIndex = dc
+    ? { dither: 0, 'soft-grain': 1, 'smooth-fade': 2, 'retro-dither': 3 }[dc.scatterType]
+    : 0;
+  gl.uniform1i(uScatterType, scatterTypeIndex);
   gl.uniform1f(uAoWeight, dc ? dc.ao.weight : 0);
   gl.uniform1f(uAoRadius, dc ? dc.ao.radius : 1);
   gl.uniform1f(uAoScatter, dc ? dc.ao.scatter : 0);
   gl.uniform1f(uShadowWeight, dc ? dc.shadow.weight : 0);
   gl.uniform1f(uShadowDistance, dc ? dc.shadow.distance : 24);
+  gl.uniform1f(uShadowScatter, dc ? dc.shadow.scatter : 0);
   gl.uniform1f(uHeightRampWeight, dc ? dc.heightRamp.weight : 0);
   gl.uniform1f(uHeightRampMinY, dc ? dc.heightRamp.minY : 0);
   gl.uniform1f(uHeightRampMaxY, dc ? dc.heightRamp.maxY : 1);

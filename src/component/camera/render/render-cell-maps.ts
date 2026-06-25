@@ -122,6 +122,7 @@ export function renderCellMaps(
   const aNormal = gl.getAttribLocation(program, 'a_normal');
   const aUv = gl.getAttribLocation(program, 'a_uv');
   const aOrigPosition = gl.getAttribLocation(program, 'a_origPosition');
+  const aEmission = gl.getAttribLocation(program, 'a_emission');
 
   // Get uniform locations
   const uViewportSize = gl.getUniformLocation(program, 'u_viewportSize');
@@ -375,8 +376,10 @@ export function renderCellMaps(
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, chunk.glIndexBuffer);
       gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, chunk.indices, gl.STATIC_DRAW);
 
-      // Interleaved layout: pos3+normal3+origPos3 (stride 9), or +uv2 (stride 11
-      // when the cell-map has UV custom shapes). Stride is per-chunk from WASM.
+      // Interleaved layout: pos3+normal3+origPos3+emission1 (stride 10), or +uv2
+      // (stride 12 when the cell-map has UV custom shapes). emission is always
+      // present at float 9 (byte 36); uv, when present, follows at byte 40.
+      // Stride is per-chunk from WASM.
       const strideBytes = chunk.stride * 4;
       gl.enableVertexAttribArray(aPosition);
       gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, strideBytes, 0);
@@ -398,11 +401,17 @@ export function renderCellMaps(
         );
       }
 
-      // UV channel: present only at stride 11. Otherwise keep it a constant (0,0).
+      // Emission glow: always present at byte 36 (1 float).
+      if (aEmission >= 0) {
+        gl.enableVertexAttribArray(aEmission);
+        gl.vertexAttribPointer(aEmission, 1, gl.FLOAT, false, strideBytes, 36);
+      }
+
+      // UV channel: present only at stride 12 (after emission). Else constant (0,0).
       if (aUv >= 0) {
-        if (chunk.stride >= 11) {
+        if (chunk.stride >= 12) {
           gl.enableVertexAttribArray(aUv);
-          gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, strideBytes, 36);
+          gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, strideBytes, 40);
         } else {
           gl.disableVertexAttribArray(aUv);
           gl.vertexAttrib2f(aUv, 0, 0);

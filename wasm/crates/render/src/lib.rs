@@ -38,6 +38,17 @@ fn unpack_shape(packed: u32) -> u32 {
     (packed >> 12) & 0xfff
 }
 
+#[inline]
+fn unpack_emission_intensity(packed: u32) -> u32 {
+    (packed >> 24) & 0x1f
+}
+
+/// Per-cell emission as a normalized 0..1 glow factor (5-bit intensity / 31).
+#[inline]
+fn unpack_emission(packed: u32) -> f32 {
+    (unpack_emission_intensity(packed) as f32) / 31.0
+}
+
 /// Whether the cell `packed` fully covers its face `face_i` (a FACE_DIRS index).
 /// Cubes cover all faces; air covers none; custom shapes use their cover mask.
 #[inline]
@@ -385,6 +396,7 @@ struct Quad {
     material: i32,
     verts: [[f64; 3]; 4],
     normal: [f32; 3],
+    emission: f32,
 }
 
 /// A custom-shape triangle emitted directly (unsmoothed) by the greedy mesher.
@@ -394,6 +406,7 @@ struct CGreedyTri {
     n: [f32; 3],
     uv: [[f32; 2]; 3],
     has_uv: bool,
+    emission: f32,
 }
 
 /// Sets the cell size (world units per cell) used for vertex positions.
@@ -503,15 +516,16 @@ pub extern "C" fn mesh_custom_commit(shape_index: usize, cover_mask: u32) {
     }
 }
 
-/// Floats per emitted vertex: 9 (pos3+normal3+origPos3), or 11 (+uv2) when any
-/// committed custom shape carries UVs. JS reads this to set up vertex attributes.
+/// Floats per emitted vertex: 10 (pos3+normal3+origPos3+emission1), or 12 (+uv2)
+/// when any committed custom shape carries UVs. JS reads this to set up vertex
+/// attributes (emission is always present, at float 9; uv, when present, at 10..12).
 #[no_mangle]
 pub extern "C" fn mesh_vertex_stride() -> usize {
     unsafe {
         if *core::ptr::addr_of!(CUSTOM_UV_ENABLED) {
-            11
+            12
         } else {
-            9
+            10
         }
     }
 }
@@ -536,7 +550,7 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
         let cell_size = *core::ptr::addr_of!(CELL_SIZE);
         let custom_shapes = &*core::ptr::addr_of!(CUSTOM_SHAPES);
         let uv_enabled = *core::ptr::addr_of!(CUSTOM_UV_ENABLED);
-        let fpv = if uv_enabled { 11 } else { 9 };
+        let fpv = if uv_enabled { 12 } else { 10 };
         let verts_out = &mut *core::ptr::addr_of_mut!(MESH_VERTS);
         let idx_out = &mut *core::ptr::addr_of_mut!(MESH_INDICES);
         let ranges_out = &mut *core::ptr::addr_of_mut!(MESH_RANGES);
@@ -617,7 +631,11 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                         }
 
                         if !neighbor_solid {
-                            mask[v * u_size + u] = unpack_material(p);
+                            // Combined key (material | emission<<12) so greedy runs
+                            // break on emission differences — a single glowing cell
+                            // becomes its own quad instead of merging with neighbors.
+                            mask[v * u_size + u] = unpack_material(p)
+                                | ((unpack_emission_intensity(p) as i32) << 12);
                         }
                     }
                 }
@@ -629,6 +647,8 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                         if visited[mask_idx] != 0 || mask[mask_idx] == -1 {
                             continue;
                         }
+                        // `mat` is the combined material|emission key (used for run
+                        // matching); split into pure material + glow when emitting.
                         let mat = mask[mask_idx];
 
                         let mut width = 1usize;
@@ -685,9 +705,10 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                         }
 
                         quads.push(Quad {
-                            material: mat,
+                            material: mat & 0xfff,
                             verts,
                             normal: [dir.nx as f32, dir.ny as f32, dir.nz as f32],
+                            emission: (((mat >> 12) & 0x1f) as f32) / 31.0,
                         });
                     }
                 }
@@ -715,6 +736,7 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                     n,
                     [p[0] as f32, p[1] as f32, p[2] as f32],
                     [0.0, 0.0],
+                    q.emission,
                 );
             }
             idx_out.push(base);
@@ -744,6 +766,7 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                         continue;
                     }
                     let material = unpack_material(p);
+                    let emission = unpack_emission(p);
                     if let Some(cs) = custom_shapes.get(shape as usize) {
                         let v = &cs.verts;
                         let ind = &cs.indices;
@@ -816,6 +839,7 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                                 n: [fnx as f32, fny as f32, fnz as f32],
                                 uv: tuv,
                                 has_uv,
+                                emission,
                             });
                             t += 3;
                         }
@@ -847,6 +871,7 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                     ct.n,
                     [p[0] as f32, p[1] as f32, p[2] as f32],
                     ct.uv[k],
+                    ct.emission,
                 );
             }
             idx_out.push(base);
@@ -906,8 +931,9 @@ struct SmoothTri {
     has_uv: bool,
 }
 
-/// Pushes one interleaved output vertex: pos3 + normal3 + origPos3, plus uv2 when
-/// `uv_enabled` (the chunk's vertex stride is then 11 instead of 9).
+/// Pushes one interleaved output vertex: pos3 + normal3 + origPos3 + emission1,
+/// plus uv2 when `uv_enabled` (stride 12 instead of 10). Emission is always present
+/// (float 9) so default cubes can glow without any custom-UV shapes.
 #[inline]
 fn push_vertex(
     verts_out: &mut Vec<f32>,
@@ -916,6 +942,7 @@ fn push_vertex(
     n: [f32; 3],
     o: [f32; 3],
     uv: [f32; 2],
+    emission: f32,
 ) {
     verts_out.push(p[0]);
     verts_out.push(p[1]);
@@ -926,6 +953,7 @@ fn push_vertex(
     verts_out.push(o[0]);
     verts_out.push(o[1]);
     verts_out.push(o[2]);
+    verts_out.push(emission);
     if uv_enabled {
         verts_out.push(uv[0]);
         verts_out.push(uv[1]);
@@ -939,10 +967,12 @@ fn push_vertex(
 fn intern_vertex(
     pos: [f64; 3],
     cell_weight: f64,
+    cell_emission: f32,
     key_to_index: &mut BTreeMap<(u64, u64, u64), u32>,
     positions: &mut Vec<[f64; 3]>,
     original: &mut Vec<[f64; 3]>,
     weight_min: &mut Vec<f64>,
+    emission_max: &mut Vec<f32>,
     adjacency: &mut Vec<Vec<u32>>,
 ) -> u32 {
     let key = pos_key(pos);
@@ -954,6 +984,7 @@ fn intern_vertex(
             positions.push(pos);
             original.push(pos);
             weight_min.push(f64::INFINITY);
+            emission_max.push(cell_emission);
             adjacency.push(Vec::new());
             i
         }
@@ -961,6 +992,11 @@ fn intern_vertex(
     let w = &mut weight_min[idx as usize];
     if cell_weight < *w {
         *w = cell_weight;
+    }
+    // A shared vertex glows at the brightest touching cell's emission.
+    let e = &mut emission_max[idx as usize];
+    if cell_emission > *e {
+        *e = cell_emission;
     }
     idx
 }
@@ -1091,7 +1127,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
         let material_weights = &*core::ptr::addr_of!(MATERIAL_WEIGHTS);
         let custom_shapes = &*core::ptr::addr_of!(CUSTOM_SHAPES);
         let uv_enabled = *core::ptr::addr_of!(CUSTOM_UV_ENABLED);
-        let fpv = if uv_enabled { 11 } else { 9 };
+        let fpv = if uv_enabled { 12 } else { 10 };
         let smoothing = *core::ptr::addr_of!(SMOOTHING);
         let normal_smoothing = *core::ptr::addr_of!(NORMAL_SMOOTHING);
         let verts_out = &mut *core::ptr::addr_of_mut!(MESH_VERTS);
@@ -1133,6 +1169,8 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
         // weight) cell touching a vertex pins it, so softer cells snap to harder
         // neighbors' square corners and no seam appears. INFINITY = untouched.
         let mut weight_min: Vec<f64> = Vec::new();
+        // Per-vertex max emission (brightest touching cell); parallels weight_min.
+        let mut emission_max: Vec<f32> = Vec::new();
         let mut adjacency: Vec<Vec<u32>> = Vec::new();
         let mut faces: Vec<SmoothFace> = Vec::new();
         let mut tris: Vec<SmoothTri> = Vec::new();
@@ -1214,10 +1252,12 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                 vidx[qi] = intern_vertex(
                                     pos,
                                     cell_weight,
+                                    unpack_emission(p),
                                     &mut key_to_index,
                                     &mut positions,
                                     &mut original,
                                     &mut weight_min,
+                                    &mut emission_max,
                                     &mut adjacency,
                                 );
                             }
@@ -1284,10 +1324,12 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                 tvidx[c] = intern_vertex(
                                     pos,
                                     cell_weight,
+                                    unpack_emission(p),
                                     &mut key_to_index,
                                     &mut positions,
                                     &mut original,
                                     &mut weight_min,
+                                    &mut emission_max,
                                     &mut adjacency,
                                 );
                             }
@@ -1389,6 +1431,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                     [n[0] as f32, n[1] as f32, n[2] as f32],
                     [o[0] as f32, o[1] as f32, o[2] as f32],
                     [0.0, 0.0],
+                    emission_max[idx],
                 );
             }
             idx_out.push(base);
@@ -1473,6 +1516,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                     [n[0] as f32, n[1] as f32, n[2] as f32],
                     [o[0] as f32, o[1] as f32, o[2] as f32],
                     t.uv[k],
+                    emission_max[idx],
                 );
             }
             idx_out.push(base);

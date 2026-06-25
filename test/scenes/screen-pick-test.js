@@ -250,6 +250,26 @@ export async function createScene() {
     let dragStart = null; // left-button drag
     let panLast = null;   // right-button drag
 
+    // Glow the hovered cell via per-cell emission (max intensity), restoring the
+    // previously highlighted cell when the hover moves. setEmission re-meshes the
+    // affected chunk; only mutate when the cell actually changes.
+    const cellMap = scene.getComponentByName('Terrain', true);
+    const emCoord = new Omosuen.Vector3D(0, 0, 0);
+    let hiX = -1, hiY = -1, hiZ = -1;
+    const setEmissionAt = (x, y, z, val) => {
+      emCoord.x = x; emCoord.y = y; emCoord.z = z;
+      cellMap.setEmission(emCoord, val);
+    };
+    const highlightCell = (x, y, z) => {
+      if (x === hiX && y === hiY && z === hiZ) return;
+      if (hiX >= 0) setEmissionAt(hiX, hiY, hiZ, 0);
+      setEmissionAt(x, y, z, 31);
+      hiX = x; hiY = y; hiZ = z;
+    };
+    const clearHighlight = () => {
+      if (hiX >= 0) { setEmissionAt(hiX, hiY, hiZ, 0); hiX = hiY = hiZ = -1; }
+    };
+
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
     // Wheel = zoom toward the cursor. The pick reads the live camera each call,
@@ -286,7 +306,8 @@ export async function createScene() {
       });
       if (n > 0) {
         const h = hoverBuffer.hits[0];
-        // Stand the tree on the TOP face of the hovered cell.
+        // Glow the hovered cell + stand the tree on its TOP face.
+        highlightCell(h.cellX, h.cellY, h.cellZ);
         treeTransform.position.x = (h.cellX + 0.5) * CELL_W;
         treeTransform.position.y = (h.cellY + 1) * CELL_H;
         treeTransform.position.z = (h.cellZ + 0.5) * CELL_D;
@@ -298,6 +319,7 @@ export async function createScene() {
           `zoom ${cam.zoom.toFixed(2)}`,
         );
       } else {
+        clearHighlight();
         setStatus('(off map)');
       }
     });

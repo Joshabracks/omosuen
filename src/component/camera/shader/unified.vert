@@ -2,6 +2,7 @@ attribute vec3 a_position;      // Used by cells
 attribute vec2 a_uv;
 attribute vec3 a_normal;        // Used by cells
 attribute vec3 a_origPosition;  // Pre-smoothing position (cells only)
+attribute float a_emission;     // Per-vertex emission glow 0..1 (cells only)
 
     // Render mode selector
 uniform lowp int u_renderMode;  // 0 = cells, 1 = sprites
@@ -27,6 +28,7 @@ varying vec3 v_worldPos;
 varying vec2 v_screenPos;
 varying vec3 v_worldNormal;
 varying vec3 v_origWorldPos;
+varying float v_emission;
 
 void main() {
     const float ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
@@ -75,6 +77,7 @@ void main() {
         v_worldPos = worldPos;
         v_worldNormal = a_normal;
         v_origWorldPos = a_origPosition;
+        v_emission = a_emission;
 
     } else {
         // ============================================================
@@ -126,5 +129,6 @@ void main() {
         v_worldNormal = vec3(0.0, 0.0, 1.0);  // Screen-space normal
         v_origWorldPos = u_spritePosition;
         v_screenPos = viewPos;
+        v_emission = 0.0;  // Sprites have no per-vertex cell emission
     }
 }

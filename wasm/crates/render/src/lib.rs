@@ -921,6 +921,7 @@ struct SmoothFace {
     idx: [u32; 4],
     material: i32,
     interior: bool,
+    emission: f32,
 }
 
 struct SmoothTri {
@@ -929,6 +930,7 @@ struct SmoothTri {
     interior: bool,
     uv: [[f32; 2]; 3],
     has_uv: bool,
+    emission: f32,
 }
 
 /// Pushes one interleaved output vertex: pos3 + normal3 + origPos3 + emission1,
@@ -967,12 +969,10 @@ fn push_vertex(
 fn intern_vertex(
     pos: [f64; 3],
     cell_weight: f64,
-    cell_emission: f32,
     key_to_index: &mut BTreeMap<(u64, u64, u64), u32>,
     positions: &mut Vec<[f64; 3]>,
     original: &mut Vec<[f64; 3]>,
     weight_min: &mut Vec<f64>,
-    emission_max: &mut Vec<f32>,
     adjacency: &mut Vec<Vec<u32>>,
 ) -> u32 {
     let key = pos_key(pos);
@@ -984,7 +984,6 @@ fn intern_vertex(
             positions.push(pos);
             original.push(pos);
             weight_min.push(f64::INFINITY);
-            emission_max.push(cell_emission);
             adjacency.push(Vec::new());
             i
         }
@@ -992,11 +991,6 @@ fn intern_vertex(
     let w = &mut weight_min[idx as usize];
     if cell_weight < *w {
         *w = cell_weight;
-    }
-    // A shared vertex glows at the brightest touching cell's emission.
-    let e = &mut emission_max[idx as usize];
-    if cell_emission > *e {
-        *e = cell_emission;
     }
     idx
 }
@@ -1169,8 +1163,6 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
         // weight) cell touching a vertex pins it, so softer cells snap to harder
         // neighbors' square corners and no seam appears. INFINITY = untouched.
         let mut weight_min: Vec<f64> = Vec::new();
-        // Per-vertex max emission (brightest touching cell); parallels weight_min.
-        let mut emission_max: Vec<f32> = Vec::new();
         let mut adjacency: Vec<Vec<u32>> = Vec::new();
         let mut faces: Vec<SmoothFace> = Vec::new();
         let mut tris: Vec<SmoothTri> = Vec::new();
@@ -1252,12 +1244,10 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                 vidx[qi] = intern_vertex(
                                     pos,
                                     cell_weight,
-                                    unpack_emission(p),
                                     &mut key_to_index,
                                     &mut positions,
                                     &mut original,
                                     &mut weight_min,
-                                    &mut emission_max,
                                     &mut adjacency,
                                 );
                             }
@@ -1266,7 +1256,12 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                 add_edge(&mut adjacency, vidx[e], vidx[(e + 1) % 4]);
                             }
 
-                            faces.push(SmoothFace { idx: vidx, material, interior });
+                            faces.push(SmoothFace {
+                                idx: vidx,
+                                material,
+                                interior,
+                                emission: unpack_emission(p),
+                            });
                         }
                     } else if let Some(cs) = custom_shapes.get(shape as usize) {
                         // Custom shape: intern its triangles into the smoothing pool so
@@ -1324,12 +1319,10 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                 tvidx[c] = intern_vertex(
                                     pos,
                                     cell_weight,
-                                    unpack_emission(p),
                                     &mut key_to_index,
                                     &mut positions,
                                     &mut original,
                                     &mut weight_min,
-                                    &mut emission_max,
                                     &mut adjacency,
                                 );
                             }
@@ -1342,6 +1335,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                 interior,
                                 uv: tuv,
                                 has_uv,
+                                emission: unpack_emission(p),
                             });
                             t += 3;
                         }
@@ -1431,7 +1425,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                     [n[0] as f32, n[1] as f32, n[2] as f32],
                     [o[0] as f32, o[1] as f32, o[2] as f32],
                     [0.0, 0.0],
-                    emission_max[idx],
+                    f.emission,
                 );
             }
             idx_out.push(base);
@@ -1516,7 +1510,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                     [n[0] as f32, n[1] as f32, n[2] as f32],
                     [o[0] as f32, o[1] as f32, o[2] as f32],
                     t.uv[k],
-                    emission_max[idx],
+                    t.emission,
                 );
             }
             idx_out.push(base);

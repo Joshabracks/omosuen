@@ -192,7 +192,7 @@ export async function createScene() {
     shapeMap,
     cellSize: new Omosuen.Vector3D(CELL_W, CELL_H, CELL_D),
     mapSize: new Omosuen.Vector3D(MAP_W, MAP_HEIGHT, MAP_DEPTH),
-    smoothing: 0,
+    smoothing: 4,
     normalSmoothing: 0,
   }, scene);
 

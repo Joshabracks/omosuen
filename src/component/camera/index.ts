@@ -14,3 +14,18 @@ export {
   PROPERTY_ALLOWLIST,
 } from './data';
 export type { CameraMethods } from './methods';
+
+// Screen-to-world picking
+export {
+  screenPick,
+  screenToWorldRay,
+  PickBuffer,
+  PickKind,
+  createPickBuffer,
+} from './screen-pick';
+export type {
+  PickHit,
+  PickKindValue,
+  PickOptions,
+  PickTargets,
+} from './screen-pick';

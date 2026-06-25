@@ -21,6 +21,7 @@ Omosuen.registerHtmlConstructor('mainMenu', (overlay) => {
                 <button id="btn-aseprite-test" class="menu-button">Aseprite Import Test</button>
                 <button id="btn-cellmap-test" class="menu-button">Cell-Map Rendering Test</button>
                 <button id="btn-depth-cues-test" class="menu-button">Depth Cues Test</button>
+                <button id="btn-screen-pick-test" class="menu-button">Screen Pick Test</button>
                 <button id="btn-audio-test" class="menu-button">Audio Test Scene</button>
             </div>
             <p class="text center margin-top">
@@ -66,6 +67,11 @@ Omosuen.registerBinding('loadCellmapTest', async (event) => {
 Omosuen.registerBinding('loadDepthCuesTest', async (event) => {
     console.log('Loading Depth Cues Test scene...');
     await Omosuen.switchScene('depth-cues-test');
+});
+
+Omosuen.registerBinding('loadScreenPickTest', async (event) => {
+    console.log('Loading Screen Pick Test scene...');
+    await Omosuen.switchScene('screen-pick-test');
 });
 
 Omosuen.registerBinding('loadAudioTest', async (event) => {
@@ -121,6 +127,11 @@ export async function createScene() {
                 selector: '#btn-depth-cues-test',
                 onActions: ['click'],
                 methodKey: 'loadDepthCuesTest'
+            },
+            {
+                selector: '#btn-screen-pick-test',
+                onActions: ['click'],
+                methodKey: 'loadScreenPickTest'
             },
             {
                 selector: '#btn-audio-test',

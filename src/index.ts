@@ -24,6 +24,9 @@ import {
   unpackCell,
   TrackController,
   registerPluginComponent,
+  PickBuffer,
+  PickKind,
+  createPickBuffer,
 } from './component';
 import type { ComponentTypeDefinition } from './component';
 
@@ -98,6 +101,9 @@ export async function init(
     packCell,
     unpackCell,
     TrackController,
+    PickBuffer,
+    PickKind,
+    createPickBuffer,
   };
 
   // Register plugin components. Runs after the `Omosuen` global is mounted (the

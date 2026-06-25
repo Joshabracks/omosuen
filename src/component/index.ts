@@ -43,6 +43,19 @@ export type {
   AnimationState,
 } from './animation-controller';
 export type { CameraT as camera, CameraMethods } from './camera';
+export {
+  screenPick,
+  screenToWorldRay,
+  PickBuffer,
+  PickKind,
+  createPickBuffer,
+} from './camera';
+export type {
+  PickHit,
+  PickKindValue,
+  PickOptions,
+  PickTargets,
+} from './camera';
 export type {
   CellMapT as cell_map,
   CellMapMethods,

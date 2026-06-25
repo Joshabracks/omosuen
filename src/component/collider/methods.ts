@@ -214,6 +214,43 @@ function computeOBB(collider: ColliderT): OBB {
   return out;
 }
 
+// ============================================================
+// Public zero-GC world-shape accessors
+// ============================================================
+
+/**
+ * Public OBB shape (structurally identical to the internal OBB). Exposed so other
+ * systems — e.g. the camera screen-pick raycaster — can reuse the canonical OBB
+ * math instead of re-deriving axes/half-extents from the transform.
+ */
+export interface ColliderOBB {
+  center: Vector3D;
+  halfExtents: Vector3D;
+  axes: [Vector3D, Vector3D, Vector3D];
+  worldAABB: { min: Vector3D; max: Vector3D };
+}
+
+/** Allocates a reusable OBB scratch for `computeWorldOBBInto`. */
+export function makeColliderOBB(): ColliderOBB {
+  return makeScratchObb();
+}
+
+/** Writes the collider's world-space OBB into `out` (no allocation). */
+export function computeWorldOBBInto(collider: ColliderT, out: ColliderOBB): void {
+  computeOBBInto(collider, out);
+}
+
+/**
+ * Writes the collider's world-space sphere center into `outCenter` and returns
+ * its effective (scaled) radius (no allocation).
+ */
+export function computeWorldSphereInto(
+  collider: ColliderT,
+  outCenter: Vector3D,
+): number {
+  return computeSphereWorldInto(collider, outCenter);
+}
+
 /**
  * Writes the collider's world-space sphere center into `outCenter` and returns
  * its effective radius (no allocation).

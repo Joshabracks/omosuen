@@ -91,6 +91,20 @@ function validateReceiverOptions(
     warnings.push('[messenger] match-all mode ignores ids field');
   }
 
+  // Warn if a targeted mode has no filters at all. match-any then matches
+  // nothing and match-all matches everything — almost always a mistake; use
+  // broadcast (or a null receiver) to intentionally target all components.
+  if (
+    (options.mode === 'match-any' || options.mode === 'match-all') &&
+    !options.names?.length &&
+    !options.types?.length &&
+    !options.ids?.length
+  ) {
+    warnings.push(
+      `[messenger] ${options.mode} with no name/type/id filters; use broadcast to target all components`,
+    );
+  }
+
   // Log warnings and mark as warned
   if (warnings.length > 0) {
     warnings.forEach((warning) => console.warn(warning, options));

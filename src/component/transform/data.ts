@@ -41,6 +41,18 @@ export interface TransformT
    * (1, 1, 1) is normal size, (2, 2, 2) is double size.
    */
   scale: Vector3D;
+
+  /**
+   * Cached WORLD-space transform, composed from the ancestry chain
+   * (worldPos = parentWorldPos + localPos*parentWorldScale, etc.). Derived — not
+   * serialized. Refreshed once per frame by `updateWorldTransforms` (loop), before
+   * render. Read these (not `position`/`rotation`/`scale`) when you need the
+   * inherited world transform; they equal the local values when there is no
+   * ancestor transform.
+   */
+  worldPosition: Vector3D;
+  worldRotation: Vector3D;
+  worldScale: Vector3D;
 }
 
 export interface TransformOptions extends ComponentOptions {
@@ -63,7 +75,21 @@ export function builder(options: TransformOptions): TransformT {
     position: options.position ?? new Vector3D(0, 0, 0),
     rotation: options.rotation ?? new Vector3D(0, 0, 0),
     scale: options.scale ?? new Vector3D(1, 1, 1),
+
+    // World cache — seeded from local; overwritten by updateWorldTransforms each frame.
+    worldPosition: new Vector3D(0, 0, 0),
+    worldRotation: new Vector3D(0, 0, 0),
+    worldScale: new Vector3D(1, 1, 1),
   };
+  transform.worldPosition.x = transform.position.x;
+  transform.worldPosition.y = transform.position.y;
+  transform.worldPosition.z = transform.position.z;
+  transform.worldRotation.x = transform.rotation.x;
+  transform.worldRotation.y = transform.rotation.y;
+  transform.worldRotation.z = transform.rotation.z;
+  transform.worldScale.x = transform.scale.x;
+  transform.worldScale.y = transform.scale.y;
+  transform.worldScale.z = transform.scale.z;
 
   return transform as unknown as TransformT;
 }
@@ -200,4 +226,11 @@ export const TransformSerializer: ComponentSerializer = {
 /**
  * Allowlist of transform-specific properties accessible via component Proxy.
  */
-export const PROPERTY_ALLOWLIST: string[] = ['position', 'rotation', 'scale'];
+export const PROPERTY_ALLOWLIST: string[] = [
+  'position',
+  'rotation',
+  'scale',
+  'worldPosition',
+  'worldRotation',
+  'worldScale',
+];

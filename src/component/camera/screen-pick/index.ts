@@ -150,13 +150,16 @@ function spriteScreenQuad(
   anchorY: number,
   outQuad: number[],
 ): void {
-  worldToScreen(p, t.position.x, t.position.y, t.position.z, screenScratch);
-  const sizePxX = frameW * t.scale.x * p.zoom;
-  const sizePxY = frameH * t.scale.y * p.zoom;
+  // Use the cached WORLD transform (composed up the ancestry) so the footprint
+  // matches where the renderer draws a nested sprite.
+  const wp = t.worldPosition;
+  worldToScreen(p, wp.x, wp.y, wp.z, screenScratch);
+  const sizePxX = frameW * t.worldScale.x * p.zoom;
+  const sizePxY = frameH * t.worldScale.y * p.zoom;
   const anX = frameW !== 0 ? anchorX / frameW : 0.5;
   const anY = frameH !== 0 ? anchorY / frameH : 0.5;
-  const c = Math.cos(t.rotation.y);
-  const s = Math.sin(t.rotation.y);
+  const c = Math.cos(t.worldRotation.y);
+  const s = Math.sin(t.worldRotation.y);
   // Centered unit-quad corners, re-based around the normalized anchor.
   for (let i = 0; i < 4; i++) {
     const cornerX = i === 1 || i === 2 ? 0.5 : -0.5;
@@ -390,7 +393,7 @@ export function screenPick(
         if (!frameSizeFor(camera, sceneRoot, sprite, frameSize)) continue;
         spriteScreenQuad(params, t, frameSize.x, frameSize.y, sprite.anchor.x, sprite.anchor.y, spriteQuad);
         if (pointInConvex(spriteQuad, 4, px, py)) {
-          const pos = t.position;
+          const pos = t.worldPosition;
           addHit(out, PickKind.Sprite, sprite, null, -1, -1, -1, pos.x, pos.y, pos.z, rawDepth(params, pos.x, pos.y, pos.z) + 1);
         }
       }
@@ -423,7 +426,7 @@ export function screenPick(
           ? segVsConvex(pointsXY[0], pointsXY[1], pointsXY[2], pointsXY[3], spriteQuad, 4)
           : convexVsConvex(pointsXY, pointCount, spriteQuad, 4);
         if (overlaps) {
-          const pos = t.position;
+          const pos = t.worldPosition;
           addHit(out, PickKind.Sprite, sprite, null, -1, -1, -1, pos.x, pos.y, pos.z, rawDepth(params, pos.x, pos.y, pos.z) + 1);
         }
       }

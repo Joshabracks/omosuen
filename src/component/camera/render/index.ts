@@ -117,12 +117,11 @@ export function render(camera: CameraT, _deltaTime: number): void {
   const sinA = Math.sin(angleRad);
   const heightScale = Math.cos(angleRad) * 1.1547005; // cos(a)/cos(30deg)
 
-  // Project camera 3D world position to 2D axonometric space
-  const camIsoX = transform.position.x * ISO_H - transform.position.z * ISO_H;
-  const camIsoY =
-    transform.position.x * sinA -
-    transform.position.y * heightScale +
-    transform.position.z * sinA;
+  // Project camera 3D WORLD position (cached, composed up the ancestry) to 2D
+  // axonometric space — used for the world-locked pixel snap.
+  const camPos = transform.worldPosition;
+  const camIsoX = camPos.x * ISO_H - camPos.z * ISO_H;
+  const camIsoY = camPos.x * sinA - camPos.y * heightScale + camPos.z * sinA;
 
   // Compute camera snap for world-locked pixelation
   const cameraSnap = snapCameraPosition(

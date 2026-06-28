@@ -13,6 +13,7 @@ import { processDisposeQueue } from './dispose';
 import { renderScene } from './render';
 import { pollMessages } from './messaging';
 import { pollFlags } from './flags';
+import { updateWorldTransforms } from '../component/transform/world';
 
 /**
  * Whether the game loop is currently running
@@ -100,6 +101,10 @@ async function gameLoop(currentTime: number): Promise<void> {
 
   // 3. Process disposal queue
   processDisposeQueue(activeScene);
+
+  // 3.5 Refresh cached world transforms (parent→child) after logic has set locals,
+  // before render reads them. Runs even while paused, since render does.
+  updateWorldTransforms(activeScene);
 
   // 4. Render (stub)
   renderScene(activeScene);

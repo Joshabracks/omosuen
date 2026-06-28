@@ -210,11 +210,11 @@ export function renderSprites(
   // Project camera 3D world position to 2D axonometric space
   // (same projection the vertex shader applies to every world position)
   const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
-  const camIsoX = transform.position.x * ISO_H - transform.position.z * ISO_H;
-  const camIsoY =
-    transform.position.x * sinA -
-    transform.position.y * heightScale +
-    transform.position.z * sinA;
+  // Camera uses its cached WORLD position (composed up the ancestry by
+  // updateWorldTransforms), so a nested camera nexus offsets the view.
+  const camPos = transform.worldPosition;
+  const camIsoX = camPos.x * ISO_H - camPos.z * ISO_H;
+  const camIsoY = camPos.x * sinA - camPos.y * heightScale + camPos.z * sinA;
   gl.uniform2f(u_cameraPosition, camIsoX, camIsoY);
   gl.uniform1f(u_zoom, camera.zoom);
   gl.uniform3f(
@@ -320,7 +320,9 @@ export function renderSprites(
       false,
     ) as TransformT | null;
     if (!t) continue;
-    const p = t.position;
+    // World position (cached) so a sprite under a transformed parent nexus is
+    // placed/sorted by its composed world transform.
+    const p = t.worldPosition;
     _drawSprites[drawCount] = sprite;
     _drawTransforms[drawCount] = t;
     _drawDepths[drawCount] = p.x + heightScale * p.y + p.z;
@@ -422,18 +424,15 @@ export function renderSprites(
     gl.uniform1i(u_hasMaterial, 0);
     gl.uniform1i(u_hasEmission, 0);
 
-    // Set sprite transformation uniforms
-    // Pass 3D world position: (x, y=height, z=depth)
-    gl.uniform3f(
-      u_spritePosition,
-      spriteTransform.position.x,
-      spriteTransform.position.y,
-      spriteTransform.position.z,
-    );
+    // Set sprite transformation uniforms from the cached WORLD transform (composed
+    // up the ancestry), so nesting under a transformed parent moves/scales/rotates it.
+    const sWorldPos = spriteTransform.worldPosition;
+    const sWorldScale = spriteTransform.worldScale;
+    gl.uniform3f(u_spritePosition, sWorldPos.x, sWorldPos.y, sWorldPos.z);
     gl.uniform2f(
       u_spriteSize,
-      albedoFrame.size.x * spriteTransform.scale.x,
-      albedoFrame.size.y * spriteTransform.scale.y,
+      albedoFrame.size.x * sWorldScale.x,
+      albedoFrame.size.y * sWorldScale.y,
     );
     // Normalize the pixel anchor (from the frame's top-left) to [0,1] for the shader,
     // which re-bases the centered quad around it (anchor pixel lands on the transform).
@@ -442,7 +441,7 @@ export function renderSprites(
       albedoFrame.size.x !== 0 ? sprite.anchor.x / albedoFrame.size.x : 0.5,
       albedoFrame.size.y !== 0 ? sprite.anchor.y / albedoFrame.size.y : 0.5,
     );
-    gl.uniform1f(u_rotation, spriteTransform.rotation.y);
+    gl.uniform1f(u_rotation, spriteTransform.worldRotation.y);
 
     // Set sprite appearance uniforms
     gl.uniform4f(

@@ -74,14 +74,14 @@ export function resolveProjection(
   const sinA = Math.sin(angleRad);
   const heightScale = Math.cos(angleRad) * 1.1547005; // cos(a)/cos(30deg)
 
-  const p = transform.position;
+  // Camera cached WORLD position (composed up the ancestry) — matches render().
+  const p = transform.worldPosition;
   out.viewportWidth = viewport.width;
   out.viewportHeight = viewport.height;
   out.zoom = camera.zoom;
   out.projScale = camera.zoom * camera.zoom;
   out.sinA = sinA;
   out.heightScale = heightScale;
-  // Camera 3D position projected to 2D axonometric space (matches render()).
   out.camIsoX = p.x * ISO_H - p.z * ISO_H;
   out.camIsoY = p.x * sinA - p.y * heightScale + p.z * sinA;
   out.degenerate = sinA < 0.01;

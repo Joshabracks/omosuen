@@ -190,15 +190,12 @@ export function renderCellMaps(
     camera.glResources.baseResolution.height * camera.pixelScale;
   gl.uniform2f(uViewportSize, logicalWidth, logicalHeight);
 
-  // Project camera 3D world position to 2D axonometric space
-  // (same projection the vertex shader applies to every world position)
+  // Project camera 3D WORLD position (cached, composed up the ancestry) to 2D
+  // axonometric space — same projection the vertex shader applies to every vertex.
   const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
-  const camIsoX =
-    cameraTransform.position.x * ISO_H - cameraTransform.position.z * ISO_H;
-  const camIsoY =
-    cameraTransform.position.x * sinA -
-    cameraTransform.position.y * heightScale +
-    cameraTransform.position.z * sinA;
+  const camPos = cameraTransform.worldPosition;
+  const camIsoX = camPos.x * ISO_H - camPos.z * ISO_H;
+  const camIsoY = camPos.x * sinA - camPos.y * heightScale + camPos.z * sinA;
 
   const snapped = snapCameraPosition(
     camIsoX,

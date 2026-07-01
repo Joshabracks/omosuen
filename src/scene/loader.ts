@@ -522,6 +522,48 @@ export async function deserializeComponentRecursive(
 }
 
 /**
+ * Deserializes an already-parsed scene object — the in-memory analog of loading a
+ * serialized scene file. Resets the component-ID counter, deserializes the whole
+ * component tree, logs any errors, and advances the counter past the highest ID.
+ * Returns the root nexus, or null if the data is not a valid nexus.
+ *
+ * Use to restore a scene/nexus snapshot from any source (browser storage, network,
+ * memory) — pair with `switchScene` / `addComponent`. NOTE: this **resets the
+ * global ID counter**, so it is for full-scene restoration, not inserting a subtree
+ * into a still-live scene (that would need re-IDing).
+ */
+export async function deserializeScene(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data: any,
+): Promise<NexusT | null> {
+  resetComponentCount();
+
+  const maxId = { value: -1 };
+  const result = await deserializeComponentRecursive(data, maxId);
+
+  if (result.errors.length > 0) {
+    for (const err of result.errors) {
+      const suffix =
+        err.count !== undefined && err.count > 1 ? ` (×${err.count})` : '';
+      console.warn(`[SCENE LOADER ${err.code}] ${err.message}${suffix}`);
+    }
+  }
+
+  const scene = result.component as NexusT | null;
+  if (!scene || scene.type !== 'nexus') {
+    console.error(
+      `[SCENE LOADER ERROR] Deserialized data is not a valid nexus component`,
+    );
+    return null;
+  }
+
+  if (maxId.value >= 0) {
+    setComponentCount(maxId.value + 1);
+  }
+  return scene;
+}
+
+/**
  * Loads a scene from a serialized JSON file
  */
 async function loadFromSerialized(
@@ -531,9 +573,6 @@ async function loadFromSerialized(
   console.info(`[SCENE LOADER] Loading scene "${name}" from file: ${filePath}`);
 
   try {
-    // Reset component ID counter before deserialization
-    resetComponentCount();
-
     // Fetch the file
     const response = await fetch(filePath);
 
@@ -544,41 +583,15 @@ async function loadFromSerialized(
       return null;
     }
 
-    // Parse JSON
+    // Parse JSON + deserialize the whole tree (shared with deserializeScene).
     const data = await response.json();
-
-    // Track maximum ID during deserialization
-    const maxId = { value: -1 };
-
-    // Recursively deserialize the entire scene hierarchy
-    const result = await deserializeComponentRecursive(data, maxId);
-
-    // Surface any accumulated errors to the console so the failure mode is
-    // visible even when the top-level component did come back non-null.
-    if (result.errors.length > 0) {
-      for (const err of result.errors) {
-        const suffix =
-          err.count !== undefined && err.count > 1 ? ` (×${err.count})` : '';
-        console.warn(`[SCENE LOADER ${err.code}] ${err.message}${suffix}`);
-      }
-    }
-
-    const scene = result.component as NexusT | null;
-    if (!scene || scene.type !== 'nexus') {
+    const scene = await deserializeScene(data);
+    if (!scene) {
       console.error(
         `[SCENE LOADER ERROR] Deserialized data from "${filePath}" is not a valid nexus component`,
       );
       return null;
     }
-
-    // Set component counter to continue from max deserialized ID
-    if (maxId.value >= 0) {
-      setComponentCount(maxId.value + 1);
-      console.info(
-        `[SCENE LOADER] Component ID counter set to ${maxId.value + 1} (highest deserialized ID: ${maxId.value})`,
-      );
-    }
-
     console.info(
       `[SCENE LOADER] Scene "${name}" loaded successfully from file`,
     );

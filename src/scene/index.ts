@@ -28,4 +28,5 @@ export {
   getActiveScene,
   serializeComponentRecursive,
   deserializeComponentRecursive,
+  deserializeScene,
 } from './loader';

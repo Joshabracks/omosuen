@@ -21,7 +21,10 @@ async function initGame() {
     // plugin (self-registers the `aseprite-loader` component before scenes load).
     await Omosuen.init({
         logSuppression: 5,  // Suppress logs after 5 occurrences
-        plugins: ['./dev/aseprite-loader.plugin.js']
+        plugins: [
+            './dev/aseprite-loader.plugin.js',
+            './dev/browser-local-storage.plugin.js'
+        ]
     });
 
     // Create root-level messenger to log all messages

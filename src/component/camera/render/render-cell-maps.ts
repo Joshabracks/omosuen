@@ -80,6 +80,60 @@ function uploadVisibilityTexture(
 }
 
 /**
+ * Builds the RGBA8 per-cell emission-color texture data from a cell-map's
+ * `emissionColorMap` (packed (r<<16)|(g<<8)|b), flattened `x` + `y·mapX` +
+ * `z·mapX·mapY` — the same order the fragment shader unflattens in
+ * `cellEmissionColorAt`. Returns the byte buffer and whether any cell is non-black
+ * (so an all-black map skips upload + shader term entirely).
+ */
+function buildCellEmissionColorBytes(cellMap: CellMapT): {
+  bytes: Uint8Array;
+  hasAny: boolean;
+} {
+  const packed = cellMap.emissionColorMap.value;
+  const bytes = new Uint8Array(packed.length * 4);
+  let hasAny = false;
+  for (let i = 0; i < packed.length; i++) {
+    const p = packed[i] | 0;
+    if (p !== 0) hasAny = true;
+    bytes[i * 4] = (p >> 16) & 0xff;
+    bytes[i * 4 + 1] = (p >> 8) & 0xff;
+    bytes[i * 4 + 2] = p & 0xff;
+    bytes[i * 4 + 3] = 255;
+  }
+  return { bytes, hasAny };
+}
+
+function uploadCellEmissionColorTexture(
+  gl: WebGL2RenderingContext,
+  camera: CameraT,
+  bytes: Uint8Array,
+  mapSize: { x: number; y: number; z: number },
+): void {
+  if (!camera.glResources.cellEmissionColorTexture) {
+    camera.glResources.cellEmissionColorTexture = gl.createTexture();
+  }
+  gl.activeTexture(gl.TEXTURE4);
+  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.cellEmissionColorTexture);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA8,
+    mapSize.x,
+    mapSize.y * mapSize.z,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    bytes,
+  );
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+}
+
+/**
  * Renders all cell-maps using chunk-based batched rendering.
  * Each chunk has a pre-built mesh with hidden face culling and greedy meshing applied.
  * Indices are grouped by material for efficient multi-material draw calls.
@@ -148,6 +202,29 @@ export function renderCellMaps(
   const uNormalSizeYZ = gl.getUniformLocation(program, 'u_normalSizeYZ');
   const uNormalSizeXZ = gl.getUniformLocation(program, 'u_normalSizeXZ');
   const uNormalSizeXY = gl.getUniformLocation(program, 'u_normalSizeXY');
+
+  // Per-material emissive texture (Part B) — same per-side layout as albedo/normal.
+  const uEmissionTexture = gl.getUniformLocation(program, 'u_emissionTexture');
+  const uHasEmissionTexture = gl.getUniformLocation(
+    program,
+    'u_hasEmissionTexture',
+  );
+  const uEmissionBoundsYZ = gl.getUniformLocation(program, 'u_emissionBoundsYZ');
+  const uEmissionBoundsXZ = gl.getUniformLocation(program, 'u_emissionBoundsXZ');
+  const uEmissionBoundsXY = gl.getUniformLocation(program, 'u_emissionBoundsXY');
+  const uEmissionSizeYZ = gl.getUniformLocation(program, 'u_emissionSizeYZ');
+  const uEmissionSizeXZ = gl.getUniformLocation(program, 'u_emissionSizeXZ');
+  const uEmissionSizeXY = gl.getUniformLocation(program, 'u_emissionSizeXY');
+
+  // Per-cell emission (highlight) color texture (Part A).
+  const uHasCellEmissionColor = gl.getUniformLocation(
+    program,
+    'u_hasCellEmissionColor',
+  );
+  const uCellEmissionColor = gl.getUniformLocation(
+    program,
+    'u_cellEmissionColor',
+  );
 
   // UV-mode uniforms: when a draw range carries mesh UVs, sample the material's
   // base frame by v_uv instead of triplanar.
@@ -350,6 +427,32 @@ export function renderCellMaps(
       gl.uniform1i(uHasVisibilityMask, 0);
     }
 
+    // Per-cell emission (highlight) color texture (Part A). Rebuild the GPU texture
+    // only when the map changed — setEmissionColor sets emissionColorDirty; no remesh
+    // is involved. An all-black map skips upload and disables the shader term.
+    if (cellMap.emissionColorDirty) {
+      const { bytes, hasAny } = buildCellEmissionColorBytes(cellMap);
+      camera.glResources.cellEmissionColorHasAny = hasAny;
+      if (hasAny) {
+        uploadCellEmissionColorTexture(gl, camera, bytes, cellMap.mapSize);
+      }
+      cellMap.emissionColorDirty = false;
+    }
+    if (
+      camera.glResources.cellEmissionColorHasAny &&
+      camera.glResources.cellEmissionColorTexture
+    ) {
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(
+        gl.TEXTURE_2D,
+        camera.glResources.cellEmissionColorTexture,
+      );
+      gl.uniform1i(uCellEmissionColor, 4);
+      gl.uniform1i(uHasCellEmissionColor, 1);
+    } else {
+      gl.uniform1i(uHasCellEmissionColor, 0);
+    }
+
     let totalFaces = 0;
     let drawCalls = 0;
 
@@ -511,6 +614,53 @@ export function renderCellMaps(
           }
         } else {
           gl.uniform1i(uHasNormal, 0);
+        }
+
+        // Bind emissive texture if the material provides one (Part B). Same per-side
+        // atlas layout as normal maps; the shader scales it by per-cell v_emission and
+        // falls back to albedo when u_hasEmissionTexture is false.
+        const emissionTextureMap = textureMapCache.get(
+          material.emissionTextureKey,
+        );
+        const baseEmission = emissionTextureMap
+          ? frameBounds(emissionTextureMap, material.emissionFrame ?? 0)
+          : null;
+        if (emissionTextureMap && baseEmission) {
+          const emissionAtlasTexture =
+            camera.glResources.atlasTextures[baseEmission.atlasIndex];
+
+          if (emissionAtlasTexture) {
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, emissionAtlasTexture);
+            gl.uniform1i(uEmissionTexture, 2);
+
+            const emissionUp = resolvePlane(
+              emissionTextureMap,
+              sides?.up?.emissionFrame,
+              baseEmission,
+            );
+            const emissionSE = resolvePlane(
+              emissionTextureMap,
+              sides?.southEast?.emissionFrame,
+              baseEmission,
+            );
+            const emissionSW = resolvePlane(
+              emissionTextureMap,
+              sides?.southWest?.emissionFrame,
+              baseEmission,
+            );
+            gl.uniform4f(uEmissionBoundsXZ, ...emissionUp.bounds);
+            gl.uniform2f(uEmissionSizeXZ, ...emissionUp.size);
+            gl.uniform4f(uEmissionBoundsYZ, ...emissionSE.bounds);
+            gl.uniform2f(uEmissionSizeYZ, ...emissionSE.size);
+            gl.uniform4f(uEmissionBoundsXY, ...emissionSW.bounds);
+            gl.uniform2f(uEmissionSizeXY, ...emissionSW.size);
+            gl.uniform1i(uHasEmissionTexture, 1);
+          } else {
+            gl.uniform1i(uHasEmissionTexture, 0);
+          }
+        } else {
+          gl.uniform1i(uHasEmissionTexture, 0);
         }
 
         // Draw this material's faces

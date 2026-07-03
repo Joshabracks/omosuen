@@ -2,14 +2,16 @@
  * Per-side frame overrides keyed to the three visible faces of a cell.
  * Any omitted side/channel falls back to the Material's base `*Frame`.
  *
- * Only albedo + normal are supported for now (the two channels cell mode
- * samples). Emission/material are deferred until cell shading samples them.
+ * Albedo, normal, and emission are sampled per-side by cell mode; the material
+ * (PBR) channel is deferred until cell shading samples it.
  */
 export interface MaterialSideFrames {
   /** Frame index into the albedo TextureMap for this side. */
   albedoFrame?: number;
   /** Frame index into the normal TextureMap for this side. */
   normalFrame?: number;
+  /** Frame index into the emission TextureMap for this side. */
+  emissionFrame?: number;
 }
 
 /**

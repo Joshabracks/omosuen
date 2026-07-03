@@ -28,6 +28,20 @@ uniform vec4 u_normalBoundsXY;
 uniform vec2 u_normalSizeYZ;
 uniform vec2 u_normalSizeXZ;
 uniform vec2 u_normalSizeXY;
+    // Per-side emissive-texture frames for cells (Mode 0). Sampled like albedo and
+    // scaled by per-cell v_emission; falls back to albedo when u_hasEmissionTexture
+    // is false (reuses the u_emissionTexture sampler declared below).
+uniform bool u_hasEmissionTexture;
+uniform vec4 u_emissionBoundsYZ;
+uniform vec4 u_emissionBoundsXZ;
+uniform vec4 u_emissionBoundsXY;
+uniform vec2 u_emissionSizeYZ;
+uniform vec2 u_emissionSizeXZ;
+uniform vec2 u_emissionSizeXY;
+    // Per-cell emission (highlight) color: RGB texture keyed by cell coordinate
+    // (Mode 0). Added flat, independent of v_emission. Default black = no-op.
+uniform bool u_hasCellEmissionColor;
+uniform sampler2D u_cellEmissionColor;
 
     // Optional per-vertex UV mode (custom shapes): sample the base frame by v_uv
     // instead of triplanar. u_useMeshUV is set per draw range.
@@ -181,6 +195,20 @@ bool isCellSolid(vec3 cell) {
     float v = (cell.y + cell.z * u_mapSize.y + 0.5)
               / (u_mapSize.y * u_mapSize.z);
     return texture2D(u_cellSolidity, vec2(u, v)).r > 0.5;
+}
+
+// Per-cell emission (highlight) color, sampled by integer cell coordinate using the
+// same grid->2D flatten as isCellSolid. Out-of-bounds cells contribute nothing.
+vec3 cellEmissionColorAt(vec3 cell) {
+    if(cell.x < 0.0 || cell.x >= u_mapSize.x ||
+       cell.y < 0.0 || cell.y >= u_mapSize.y ||
+       cell.z < 0.0 || cell.z >= u_mapSize.z) {
+        return vec3(0.0);
+    }
+    float u = (cell.x + 0.5) / u_mapSize.x;
+    float v = (cell.y + cell.z * u_mapSize.y + 0.5)
+              / (u_mapSize.y * u_mapSize.z);
+    return texture2D(u_cellEmissionColor, vec2(u, v)).rgb;
 }
 
 // 3D DDA ray march using continuous cell-space positions (Amanatides & Woo).
@@ -426,6 +454,9 @@ void main() {
 
         vec4 albedo;
         vec3 finalNormal;
+        // Emissive-texture color (Part B), sampled alongside albedo only when a
+        // material provides an emission texture; otherwise falls back to albedo below.
+        vec3 emissionTexColor = vec3(0.0);
 
         if(u_useMeshUV) {
             // Per-vertex UV mode (custom shapes): sample by the mesh's own UVs, but
@@ -439,6 +470,12 @@ void main() {
             else if(an.y >= an.z)            { ab = u_albedoBoundsXZ; nb = u_normalBoundsXZ; } // +Y up
             else                             { ab = u_albedoBoundsXY; nb = u_normalBoundsXY; } // +Z side
             albedo = texture2D(u_albedoTexture, mix(ab.xy, ab.zw, v_uv));
+            if(u_hasEmissionTexture) {
+                vec4 eb = (an.x >= an.y && an.x >= an.z) ? u_emissionBoundsYZ
+                        : (an.y >= an.z)                 ? u_emissionBoundsXZ
+                        :                                  u_emissionBoundsXY;
+                emissionTexColor = texture2D(u_emissionTexture, mix(eb.xy, eb.zw, v_uv)).rgb;
+            }
             if(u_hasNormal) {
                 vec2 nUV = mix(nb.xy, nb.zw, v_uv);
                 vec3 normalMap = texture2D(u_normalTexture, nUV).rgb * 2.0 - 1.0;
@@ -470,6 +507,14 @@ void main() {
 
             // Blend the three albedo samples using normal weights
             albedo = albedoYZ * blendWeights.x + albedoXZ * blendWeights.y + albedoXY * blendWeights.z;
+
+            // Triplanar emissive-texture sampling (same planes/weights as albedo).
+            if(u_hasEmissionTexture) {
+                vec4 emYZ = sampleBilinear(u_emissionTexture, vec2(v_worldPos.z, -v_worldPos.y), u_emissionSizeYZ, u_emissionBoundsYZ);
+                vec4 emXZ = sampleBilinear(u_emissionTexture, vec2(v_worldPos.x, v_worldPos.z), u_emissionSizeXZ, u_emissionBoundsXZ);
+                vec4 emXY = sampleBilinear(u_emissionTexture, vec2(v_worldPos.x, -v_worldPos.y), u_emissionSizeXY, u_emissionBoundsXY);
+                emissionTexColor = (emYZ * blendWeights.x + emXZ * blendWeights.y + emXY * blendWeights.z).rgb;
+            }
 
             // Triplanar normal mapping (if available)
             if(u_hasNormal) {
@@ -506,9 +551,18 @@ void main() {
             albedo.rgb *= mix(vec3(1.0), mix(u_heightRampLow, u_heightRampHigh, t), u_heightRampWeight);
         }
 
-        // Self-illumination: emissive cells add their (lit-independent) albedo on
-        // top of lighting so a highlighted cell glows. v_emission is 0 for normal cells.
-        vec3 cellColor = albedo.rgb * lighting + albedo.rgb * v_emission;
+        // Self-illumination = two independent additive terms on top of lighting:
+        //  • emissive texture (or albedo when a material has none) × per-cell v_emission
+        //  • per-cell flat highlight color (independent of v_emission; 0 = off)
+        // With no emission texture and no highlight this is exactly the legacy
+        // `albedo.rgb*lighting + albedo.rgb*v_emission`.
+        vec3 emissionSample = u_hasEmissionTexture ? emissionTexColor : albedo.rgb;
+        vec3 highlight = u_hasCellEmissionColor
+            ? cellEmissionColorAt(floor(v_origWorldPos / u_cellSize))
+            : vec3(0.0);
+        vec3 cellColor = albedo.rgb * lighting
+                       + emissionSample * v_emission
+                       + highlight;
         gl_FragColor = vec4(cellColor, albedo.a);
 
     } else {

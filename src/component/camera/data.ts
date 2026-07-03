@@ -196,6 +196,12 @@ export interface CameraT
 
     // Cell solidity texture for per-fragment line-of-sight raycasting
     visibilityTexture: WebGLTexture | null;
+
+    // Per-cell emission (highlight) color texture (RGBA8, flattened cell grid).
+    cellEmissionColorTexture: WebGLTexture | null;
+    // Whether the resident emission-color texture has any non-black cell (gates the
+    // shader term + avoids binding an empty texture).
+    cellEmissionColorHasAny: boolean;
   };
 }
 
@@ -282,6 +288,8 @@ export function builder(options: CameraOptions): CameraT {
       fullscreenQuadBuffer: null,
       baseResolution: { width: 800, height: 600 }, // Default, will be updated in init()
       visibilityTexture: null,
+      cellEmissionColorTexture: null,
+      cellEmissionColorHasAny: false,
     },
   };
 

@@ -45,6 +45,14 @@ export let cmMaterialMap: Array3D<number>;
 export let cmShapeMap: Array3D<number>;
 export let cmMeshes: Mesh[] = [];
 export let cmEmissionMap: Array3D<number>;
+/**
+ * Per-cell emission (highlight) color, packed as (r<<16)|(g<<8)|b (0-255/channel;
+ * 0 = black = no highlight). Sampled GPU-side as a texture keyed by cell coordinate,
+ * so — unlike emissionMap (baked into vertices) — changing it needs no remesh.
+ */
+export let cmEmissionColorMap: Array3D<number>;
+/** Set when cmEmissionColorMap changes so the render pass rebuilds the GPU texture. */
+export let cmEmissionColorDirty: boolean = true;
 export let cmVisibilityMap: Array3D<boolean>;
 export let cmCellSize: Vector3D;
 export let cmMapSize: Vector3D;
@@ -100,6 +108,8 @@ export function resetCellMapState(): void {
   cmShapeMap = undefined!;
   cmMeshes = [];
   cmEmissionMap = undefined!;
+  cmEmissionColorMap = undefined!;
+  cmEmissionColorDirty = true;
   cmVisibilityMap = undefined!;
   cmCellSize = undefined!;
   cmMapSize = undefined!;
@@ -150,6 +160,18 @@ function makeCellMapInstance(name: string): CellMapT {
     },
     set emissionMap(v) {
       cmEmissionMap = v;
+    },
+    get emissionColorMap() {
+      return cmEmissionColorMap;
+    },
+    set emissionColorMap(v) {
+      cmEmissionColorMap = v;
+    },
+    get emissionColorDirty() {
+      return cmEmissionColorDirty;
+    },
+    set emissionColorDirty(v) {
+      cmEmissionColorDirty = v;
     },
     get visibilityMap() {
       return cmVisibilityMap;
@@ -251,6 +273,12 @@ export interface CellMapOptions extends ComponentOptions {
   emissionMap?: Array3D<number>;
 
   /**
+   * Map of per-cell emission (highlight) color per cell (optional). Each value packs
+   * RGB as (r<<16)|(g<<8)|b (0-255/channel). Defaults to 0 (black = no highlight).
+   */
+  emissionColorMap?: Array3D<number>;
+
+  /**
    * Map of visibility flags per cell (optional)
    * Defaults to true everywhere if not provided
    */
@@ -299,6 +327,10 @@ export interface CellMapT extends ComponentData {
   shapeMap: Array3D<number>;
   meshes: Mesh[];
   emissionMap: Array3D<number>;
+  /** Per-cell emission (highlight) color, packed (r<<16)|(g<<8)|b. 0 = no highlight. */
+  emissionColorMap: Array3D<number>;
+  /** Dirty flag: emissionColorMap changed → render pass rebuilds the GPU texture. */
+  emissionColorDirty: boolean;
   visibilityMap: Array3D<boolean>;
 
   // World configuration
@@ -418,6 +450,8 @@ export const PROPERTY_ALLOWLIST = [
   'shapeMap',
   'meshes',
   'emissionMap',
+  'emissionColorMap',
+  'emissionColorDirty',
   'visibilityMap',
   'cellSize',
   'mapSize',
@@ -515,6 +549,19 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     optEmissionMap.size.z !== options.mapSize.z
   ) {
     throw new Error('emissionMap dimensions must match mapSize');
+  }
+
+  // Create default emissionColorMap if not provided (no highlight color, all black = 0)
+  const optEmissionColorMap =
+    options.emissionColorMap || new Array3D<number>(options.mapSize, 0);
+
+  // Validate emissionColorMap dimensions if provided
+  if (
+    optEmissionColorMap.size.x !== options.mapSize.x ||
+    optEmissionColorMap.size.y !== options.mapSize.y ||
+    optEmissionColorMap.size.z !== options.mapSize.z
+  ) {
+    throw new Error('emissionColorMap dimensions must match mapSize');
   }
 
   // Create default visibilityMap if not provided (all visible)
@@ -619,6 +666,8 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   cmShapeMap = optShapeMap;
   cmMeshes = optMeshes;
   cmEmissionMap = optEmissionMap;
+  cmEmissionColorMap = optEmissionColorMap;
+  cmEmissionColorDirty = true;
   cmVisibilityMap = optVisibilityMap;
   cmCellSize = options.cellSize;
   cmMapSize = options.mapSize;
@@ -673,6 +722,12 @@ function serialize(component: ComponentData): any {
       z: size.z,
     },
     packedData: packedFlat,
+    // Per-cell emission color lives outside the packed WASM cell store (it's a
+    // separate texture-side channel), so persist it as its own flat RGB-int array.
+    // Omitted when entirely black (0) to keep legacy scenes byte-identical.
+    emissionColorData: cm.emissionColorMap.value.some((v) => v !== 0)
+      ? Array.from(cm.emissionColorMap.value)
+      : undefined,
     smoothing: cm.smoothing,
     normalSmoothing: cm.normalSmoothing,
     revealExempt: cm.revealExempt,
@@ -719,6 +774,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     cellSize: dataCellSize,
     mapSize: dataMapSize,
     packedData: dataPackedData,
+    emissionColorData: dataEmissionColorData,
     smoothing: dataSmoothing,
     normalSmoothing: dataNormalSmoothing,
     revealExempt: dataRevealExempt,
@@ -806,6 +862,16 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   await initRenderWasm();
   loadCellStore(packedArray.value, packedArray.value.length, ms.x, ms.y, ms.z);
 
+  // Reconstruct the per-cell emission color map (separate texture-side channel;
+  // absent in legacy scenes → all black).
+  const dEmissionColorMap = new Array3D<number>(ms, 0);
+  if (Array.isArray(dataEmissionColorData)) {
+    const colors = dataEmissionColorData as number[];
+    for (let i = 0; i < colors.length; i++) {
+      dEmissionColorMap.indexSet(i, colors[i] | 0);
+    }
+  }
+
   // Meshes: air at 0, default cube at 1 (auto-filled); custom shapes at 2+ are
   // reconstructed from the serialized plain arrays.
   const dMeshes: Mesh[] = [
@@ -865,6 +931,8 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   cmShapeMap = dShapeMap;
   cmMeshes = dMeshes;
   cmEmissionMap = dEmissionMap;
+  cmEmissionColorMap = dEmissionColorMap;
+  cmEmissionColorDirty = true;
   cmVisibilityMap = dVisibilityMap;
   cmCellSize = cs;
   cmMapSize = ms;

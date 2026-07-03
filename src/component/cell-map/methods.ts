@@ -54,6 +54,20 @@ export interface CellMapMethods extends ComponentMethods {
   ) => void;
 
   /**
+   * Set the per-cell emission (highlight) color. `color` channels are 0-1; (0,0,0)
+   * clears the highlight. Independent of `setEmission` (which drives the emissive
+   * texture brightness). Updates a GPU texture next frame — no remesh.
+   */
+  setEmissionColor: (
+    component: CellMapT,
+    coordinates: Vector3D,
+    color: Vector3D,
+  ) => void;
+
+  /** Get the per-cell emission (highlight) color as a Vector3D (channels 0-1). */
+  getEmissionColor: (component: CellMapT, coordinates: Vector3D) => Vector3D;
+
+  /**
    * Set only the visibility flag for a cell
    */
   setVisible: (
@@ -175,6 +189,33 @@ export const CellMap: CellMapMethods = {
     const current = CellMap.getCellData(component, coordinates);
     current.emissionIntensity = Math.max(0, Math.min(0x1f, intensity));
     CellMap.setCellData(component, coordinates, current);
+  },
+
+  setEmissionColor: (
+    component: CellMapT,
+    coordinates: Vector3D,
+    color: Vector3D,
+  ): void => {
+    const to255 = (c: number): number =>
+      Math.max(0, Math.min(255, Math.round(c * 255)));
+    const packed =
+      (to255(color.x) << 16) | (to255(color.y) << 8) | to255(color.z);
+    // Per-cell color is a texture-side channel (not baked into vertices), so this
+    // never triggers a remesh — just flags the GPU texture for re-upload.
+    component.emissionColorMap.set(coordinates, packed);
+    component.emissionColorDirty = true;
+  },
+
+  getEmissionColor: (
+    component: CellMapT,
+    coordinates: Vector3D,
+  ): Vector3D => {
+    const packed = component.emissionColorMap.get(coordinates) | 0;
+    return new Vector3D(
+      ((packed >> 16) & 0xff) / 255,
+      ((packed >> 8) & 0xff) / 255,
+      (packed & 0xff) / 255,
+    );
   },
 
   setVisible: (

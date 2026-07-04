@@ -2,7 +2,13 @@ import { ComponentMethods } from '../types';
 import { Vector3D } from '../../math';
 import { CellMapT, resetCellMapState } from './data';
 import { CellData, Material, Mesh, packCell, unpackCell } from './types';
+import type { RaycastHit, SurfaceHit, RaycastOptions } from './types';
 import { markChunksDirty } from './mesh-builder';
+import {
+  raycastCellMap,
+  cellSurfacePoint,
+  sampleSurfaceHeight,
+} from './raycast';
 import {
   cellStoreGet,
   cellStoreSet,
@@ -116,6 +122,41 @@ export interface CellMapMethods extends ComponentMethods {
    * Get world-space bounding box
    */
   getBounds: (component: CellMapT) => { min: Vector3D; max: Vector3D };
+
+  /**
+   * Cast a ray against the cell-map's ACTUAL rendered surface (smoothing + custom
+   * meshes accounted for) and return the nearest hit, or null on a miss. `dir` need
+   * not be normalized; `distance` is in world units.
+   */
+  raycast: (
+    component: CellMapT,
+    origin: Vector3D,
+    dir: Vector3D,
+    opts?: RaycastOptions,
+  ) => RaycastHit | null;
+
+  /**
+   * World-space point on the real top surface at a cell's top-center — the accurate,
+   * smoothing/custom-mesh-aware counterpart to `cellToWorldCoordinates` for seating a
+   * bottom-center-anchored sprite. Falls back to the analytic top-face center when the
+   * cell has no exposed top surface (air / fully-enclosed).
+   */
+  getSurfacePoint: (
+    component: CellMapT,
+    coordinates: Vector3D,
+    opts?: RaycastOptions,
+  ) => Vector3D;
+
+  /**
+   * Topmost real surface (point + normal) at an arbitrary world (x,z) — for smooth
+   * cell-to-cell traversal as an entity walks. Returns null if the column is empty.
+   */
+  sampleSurfaceHeight: (
+    component: CellMapT,
+    worldX: number,
+    worldZ: number,
+    opts?: RaycastOptions,
+  ) => SurfaceHit | null;
 
   /**
    * Flush dirty changes to compressed storage
@@ -287,6 +328,27 @@ export const CellMap: CellMapMethods = {
     );
     return { min, max };
   },
+
+  raycast: (
+    component: CellMapT,
+    origin: Vector3D,
+    dir: Vector3D,
+    opts?: RaycastOptions,
+  ): RaycastHit | null => raycastCellMap(component, origin, dir, opts),
+
+  getSurfacePoint: (
+    component: CellMapT,
+    coordinates: Vector3D,
+    opts?: RaycastOptions,
+  ): Vector3D => cellSurfacePoint(component, coordinates, opts),
+
+  sampleSurfaceHeight: (
+    component: CellMapT,
+    worldX: number,
+    worldZ: number,
+    opts?: RaycastOptions,
+  ): SurfaceHit | null =>
+    sampleSurfaceHeight(component, worldX, worldZ, opts),
 
   flush: (component: CellMapT): void => {
     cellStoreFlush();

@@ -1,3 +1,5 @@
+import { Vector3D } from '../../math';
+
 /**
  * Per-side frame overrides keyed to the three visible faces of a cell.
  * Any omitted side/channel falls back to the Material's base `*Frame`.
@@ -246,4 +248,39 @@ export interface ChunkMesh {
   /** GPU buffer references (null until uploaded) */
   glVertexBuffer: WebGLBuffer | null;
   glIndexBuffer: WebGLBuffer | null;
+}
+
+// ============================================================
+// Surface / collision query result types (see cell-map/raycast.ts)
+// ============================================================
+
+/** A ray hit against the cell-map's actual (smoothed/custom) mesh surface. */
+export interface RaycastHit {
+  /** World-space intersection point. */
+  point: Vector3D;
+  /** Unit surface normal, oriented to oppose the ray direction. */
+  normal: Vector3D;
+  /** Integer cell coordinate of the solid cell owning the hit surface. */
+  cell: Vector3D;
+  /** World-space distance from the ray origin to `point`. */
+  distance: number;
+}
+
+/** A vertical surface sample: the topmost mesh point at a world (x,z). */
+export interface SurfaceHit {
+  /** World-space surface point. */
+  point: Vector3D;
+  /** Unit surface normal (points generally upward). */
+  normal: Vector3D;
+}
+
+/** Options for cell-map ray/surface queries. */
+export interface RaycastOptions {
+  /** Max world distance to travel before giving up (default: full map extent). */
+  maxDistance?: number;
+  /**
+   * When true, barycentric-interpolate the per-vertex normals for a smooth normal
+   * (slope-aligned orientation). Default false = flat geometric triangle normal.
+   */
+  smoothNormal?: boolean;
 }

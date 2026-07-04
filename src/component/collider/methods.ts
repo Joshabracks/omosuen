@@ -4,7 +4,8 @@ import { CellMapT } from '../cell-map';
 import { NexusT } from '../nexus';
 import { TransformT } from '../transform';
 import { Vector3D } from '../../math';
-import { unpackCell, Mesh, CHUNK_SIZE } from '../cell-map/types';
+import { unpackCell, Mesh } from '../cell-map/types';
+import { getChunkTrianglesInBounds } from '../cell-map/raycast';
 import { cellStoreGet } from '../camera/render/wasm';
 
 // ============================================================
@@ -615,81 +616,8 @@ function getMeshTrianglesWorld(
   return triangles;
 }
 
-/**
- * Extract world-space triangles from smoothed chunk vertex/index buffers
- * within a given AABB. Chunk vertices are already world-space, interleaved
- * [pos3, normal3, origPos3] with stride 9.
- */
-function getChunkTrianglesInBounds(
-  cellMap: CellMapT,
-  bounds: { min: Vector3D; max: Vector3D },
-): Array<[Vector3D, Vector3D, Vector3D]> {
-  const triangles: Array<[Vector3D, Vector3D, Vector3D]> = [];
-
-  // Determine which chunks overlap the bounds
-  const csX = cellMap.cellSize.x * CHUNK_SIZE;
-  const csY = cellMap.cellSize.y * CHUNK_SIZE;
-  const csZ = cellMap.cellSize.z * CHUNK_SIZE;
-  const minCx = Math.floor(bounds.min.x / csX);
-  const minCy = Math.floor(bounds.min.y / csY);
-  const minCz = Math.floor(bounds.min.z / csZ);
-  const maxCx = Math.floor(bounds.max.x / csX);
-  const maxCy = Math.floor(bounds.max.y / csY);
-  const maxCz = Math.floor(bounds.max.z / csZ);
-
-  for (const chunk of cellMap.chunks) {
-    if (
-      chunk.cx < minCx ||
-      chunk.cx > maxCx ||
-      chunk.cy < minCy ||
-      chunk.cy > maxCy ||
-      chunk.cz < minCz ||
-      chunk.cz > maxCz
-    )
-      continue;
-    if (!chunk.vertices || !chunk.indices) continue;
-
-    const verts = chunk.vertices;
-    const indices = chunk.indices;
-    // Chunk vertices are interleaved [pos3, normal3, origPos3] (stride 9), or
-    // [+uv2] (stride 11) when the cell-map has UV custom shapes.
-    const stride = chunk.stride;
-    for (let i = 0; i < indices.length; i += 3) {
-      const i0 = indices[i] * stride;
-      const i1 = indices[i + 1] * stride;
-      const i2 = indices[i + 2] * stride;
-
-      // Quick per-triangle AABB cull against collider bounds
-      const x0 = verts[i0],
-        y0 = verts[i0 + 1],
-        z0 = verts[i0 + 2];
-      const x1 = verts[i1],
-        y1 = verts[i1 + 1],
-        z1 = verts[i1 + 2];
-      const x2 = verts[i2],
-        y2 = verts[i2 + 1],
-        z2 = verts[i2 + 2];
-
-      if (
-        Math.max(x0, x1, x2) < bounds.min.x ||
-        Math.min(x0, x1, x2) > bounds.max.x ||
-        Math.max(y0, y1, y2) < bounds.min.y ||
-        Math.min(y0, y1, y2) > bounds.max.y ||
-        Math.max(z0, z1, z2) < bounds.min.z ||
-        Math.min(z0, z1, z2) > bounds.max.z
-      )
-        continue;
-
-      triangles.push([
-        new Vector3D(x0, y0, z0),
-        new Vector3D(x1, y1, z1),
-        new Vector3D(x2, y2, z2),
-      ]);
-    }
-  }
-
-  return triangles;
-}
+// getChunkTrianglesInBounds moved to cell-map/raycast.ts (its natural home — it
+// reads cellMap.chunks) and shared with the new surface/collision queries.
 
 // ============================================================
 // World bounds computation

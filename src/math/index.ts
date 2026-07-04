@@ -174,6 +174,59 @@ export class Vector4D {
   }
 }
 
+export interface RayTriangleHit {
+  /** Parametric distance along `dir` to the hit (`orig + dir*t`), in `dir` units. */
+  t: number;
+  /** Barycentric coordinates: hit = (1-u-v)*a + u*b + v*c. */
+  u: number;
+  v: number;
+}
+
+/**
+ * Möller–Trumbore ray/triangle intersection (double-sided). Returns the hit
+ * distance `t` (in units of `dir`, which need not be normalized) and barycentric
+ * `u,v`, or null when the ray misses the triangle or the hit lies behind `orig`.
+ * Computed with scalar arithmetic — no intermediate Vector allocations.
+ */
+export function rayTriangle(
+  orig: Vector3D,
+  dir: Vector3D,
+  a: Vector3D,
+  b: Vector3D,
+  c: Vector3D,
+): RayTriangleHit | null {
+  const EPS = 1e-7;
+  // edge1 = b - a, edge2 = c - a
+  const e1x = b.x - a.x,
+    e1y = b.y - a.y,
+    e1z = b.z - a.z;
+  const e2x = c.x - a.x,
+    e2y = c.y - a.y,
+    e2z = c.z - a.z;
+  // h = dir × edge2
+  const hx = dir.y * e2z - dir.z * e2y;
+  const hy = dir.z * e2x - dir.x * e2z;
+  const hz = dir.x * e2y - dir.y * e2x;
+  const det = e1x * hx + e1y * hy + e1z * hz;
+  if (det > -EPS && det < EPS) return null; // ray parallel to triangle
+  const invDet = 1 / det;
+  // s = orig - a
+  const sx = orig.x - a.x,
+    sy = orig.y - a.y,
+    sz = orig.z - a.z;
+  const u = (sx * hx + sy * hy + sz * hz) * invDet;
+  if (u < 0 || u > 1) return null;
+  // q = s × edge1
+  const qx = sy * e1z - sz * e1y;
+  const qy = sz * e1x - sx * e1z;
+  const qz = sx * e1y - sy * e1x;
+  const v = (dir.x * qx + dir.y * qy + dir.z * qz) * invDet;
+  if (v < 0 || u + v > 1) return null;
+  const t = (e2x * qx + e2y * qy + e2z * qz) * invDet;
+  if (t < EPS) return null; // intersection behind the ray origin
+  return { t, u, v };
+}
+
 export class Array2D<T> {
   size: Vector2D;
   value: Array<T>;

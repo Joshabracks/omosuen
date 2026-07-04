@@ -1031,6 +1031,29 @@ export async function createScene() {
         const step = PLAYER_SPEED * (deltaTime / 1000);
         transform.translate(dx * step, 0, dz * step);
 
+        // Surface-follow: seat the (bottom-center-anchored) player on the REAL surface
+        // — smoothing + custom/ramp meshes accounted for. Cast a short ray straight
+        // DOWN from just above the player's current feet and snap to the hit.
+        //   • Uses the player's exact (x,z) → smooth on slopes (not cell-quantized).
+        //   • Starting just above the current feet keeps it correct indoors (the ray
+        //     starts below the roof, so it finds the floor, not the roof above).
+        //   • The hit comes from real geometry (not the follow-Y), and is always at or
+        //     below the origin, so there's no feedback / launch. Keep Y on a miss.
+        // (getSurfacePoint(cell) is the one-shot placement helper for a KNOWN cell;
+        //  a self-referential follow loop must not derive its query cell from its own Y.)
+        const cs = cellMap.cellSize;
+        const origin = new Omosuen.Vector3D(
+            transform.position.x,
+            transform.position.y + cs.y,
+            transform.position.z,
+        );
+        const hit = cellMap.raycast(origin, new Omosuen.Vector3D(0, -1, 0), {
+            maxDistance: 3 * cs.y,
+        });
+        if (hit) {
+            transform.setPosition(transform.position.x, hit.point.y, transform.position.z);
+        }
+
         // Update walk animation based on direction
         const animName = getWalkAnimName(dx, dz);
         if (animName !== currentPlayerAnim) {

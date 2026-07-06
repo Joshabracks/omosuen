@@ -82,9 +82,26 @@ function traverseAndUpdate(
     return;
   }
 
+  // A nexus scales the time delivered to ITSELF and its whole subtree by the product
+  // of any `speed-dial` children (default 1). This gives scoped, "global-like at the
+  // root / granular deep" time control; ancestors are unaffected because the scaling
+  // happens inside this nexus's own recursion. Nested dials compose multiplicatively.
+  let dt = deltaTime;
+  if (component.type === 'nexus') {
+    const n = component as NexusT;
+    let scale = 1;
+    for (let i = 0; i < n.components.length; i++) {
+      const child = n.components[i];
+      if (child.type === 'speed-dial' && !child._disposed) {
+        scale *= (child as unknown as { speed: number }).speed;
+      }
+    }
+    dt = deltaTime * scale;
+  }
+
   // Always call base update first (for initialization, HTML construction, etc.)
   if (method.update && typeof method.update === 'function') {
-    method.update(component, deltaTime);
+    method.update(component, dt);
   }
 
   // Then call instance-specific update override if set
@@ -92,7 +109,7 @@ function traverseAndUpdate(
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const overrideMethod = method[component.updateOverride];
     if (overrideMethod && typeof overrideMethod === 'function') {
-      overrideMethod(component, deltaTime);
+      overrideMethod(component, dt);
     } else {
       console.warn(
         `[UPDATE] Custom update method '${component.updateOverride}' not found for component '${component.name}'`,
@@ -100,11 +117,11 @@ function traverseAndUpdate(
     }
   }
 
-  // Recurse into nexus children
+  // Recurse into nexus children with the (possibly dial-scaled) dt.
   if (component.type === 'nexus') {
     const n = component as NexusT;
     for (let i = 0; i < n.components.length; i++) {
-      traverseAndUpdate(n.components[i], deltaTime, shouldPause);
+      traverseAndUpdate(n.components[i], dt, shouldPause);
     }
   }
 }

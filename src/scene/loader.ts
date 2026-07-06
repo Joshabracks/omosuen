@@ -11,6 +11,7 @@ import { ColliderSerializer } from '../component/collider/data';
 import { EventColliderSerializer } from '../component/event-collider/data';
 import { LightSerializer } from '../component/light/data';
 import { TimerSerializer } from '../component/timer/data';
+import { SpeedDialSerializer } from '../component/speed-dial/data';
 import { MessengerSerializer } from '../component/messenger/data';
 import { InputControllerSerializer } from '../component/input-controller/data';
 import { AudioTrackSerializer } from '../component/audio-track/data';
@@ -53,6 +54,7 @@ const SERIALIZERS: Partial<Record<COMPONENT_TYPE, ComponentSerializer>> = {
   'event-collider': EventColliderSerializer,
   light: LightSerializer,
   timer: TimerSerializer,
+  'speed-dial': SpeedDialSerializer,
   messenger: MessengerSerializer,
   'input-controller': InputControllerSerializer,
   'audio-track': AudioTrackSerializer,

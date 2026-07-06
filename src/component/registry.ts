@@ -84,6 +84,11 @@ import {
   PROPERTY_ALLOWLIST as TimerPropertyAllowlist,
 } from './timer';
 import {
+  SpeedDial,
+  builder as speedDialBuilder,
+  PROPERTY_ALLOWLIST as SpeedDialPropertyAllowlist,
+} from './speed-dial';
+import {
   Light,
   builder as lightBuilder,
   PROPERTY_ALLOWLIST as LightPropertyAllowlist,
@@ -139,6 +144,7 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   collider: colliderBuilder,
   'event-collider': eventColliderBuilder,
   timer: timerBuilder,
+  'speed-dial': speedDialBuilder,
   light: lightBuilder,
   'audio-track': audioTrackBuilder,
   'audio-effect': audioEffectBuilder,
@@ -172,6 +178,7 @@ export const MethodRegistry: Record<
   collider: Collider,
   'event-collider': EventCollider,
   timer: Timer,
+  'speed-dial': SpeedDial,
   light: Light,
   'audio-track': AudioTrack,
   'audio-effect': AudioEffect,
@@ -203,6 +210,7 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   collider: ColliderPropertyAllowlist,
   'event-collider': EventColliderPropertyAllowlist,
   timer: TimerPropertyAllowlist,
+  'speed-dial': SpeedDialPropertyAllowlist,
   light: LightPropertyAllowlist,
   'audio-track': AudioTrackPropertyAllowlist,
   'audio-effect': AudioEffectPropertyAllowlist,

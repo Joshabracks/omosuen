@@ -23,6 +23,7 @@ Omosuen.registerHtmlConstructor('mainMenu', (overlay) => {
                 <button id="btn-depth-cues-test" class="menu-button">Depth Cues Test</button>
                 <button id="btn-screen-pick-test" class="menu-button">Screen Pick Test</button>
                 <button id="btn-audio-test" class="menu-button">Audio Test Scene</button>
+                <button id="btn-speed-dial-test" class="menu-button">Speed-Dial Test</button>
             </div>
             <p class="text center margin-top">
                 Press a button to load a test scene
@@ -77,6 +78,11 @@ Omosuen.registerBinding('loadScreenPickTest', async (event) => {
 Omosuen.registerBinding('loadAudioTest', async (event) => {
     console.log('Loading Audio Test scene...');
     await Omosuen.switchScene('audio-test');
+});
+
+Omosuen.registerBinding('loadSpeedDialTest', async (event) => {
+    console.log('Loading Speed-Dial Test scene...');
+    await Omosuen.switchScene('speed-dial-test');
 });
 
 /**
@@ -137,6 +143,11 @@ export async function createScene() {
                 selector: '#btn-audio-test',
                 onActions: ['click'],
                 methodKey: 'loadAudioTest'
+            },
+            {
+                selector: '#btn-speed-dial-test',
+                onActions: ['click'],
+                methodKey: 'loadSpeedDialTest'
             }
         ]
     });

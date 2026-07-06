@@ -75,6 +75,10 @@ export type {
   EventColliderMethods,
 } from './event-collider';
 export type { TimerT as timer, TimerMethods } from './timer';
+export type {
+  SpeedDialT as speed_dial,
+  SpeedDialMethods,
+} from './speed-dial';
 export type { LightT as light, LightMethods, LightType } from './light';
 export type {
   AudioTrackT as audio_track,
@@ -120,6 +124,7 @@ export { CameraSerializer } from './camera/data';
 export { ColliderSerializer } from './collider/data';
 export { EventColliderSerializer } from './event-collider/data';
 export { TimerSerializer } from './timer/data';
+export { SpeedDialSerializer } from './speed-dial/data';
 export { LightSerializer } from './light/data';
 export { AudioTrackSerializer } from './audio-track/data';
 export { AudioEffectSerializer } from './audio-effect/data';

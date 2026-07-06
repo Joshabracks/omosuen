@@ -126,6 +126,7 @@ export type COMPONENT_TYPE =
   | 'collider'
   | 'event-collider'
   | 'timer'
+  | 'speed-dial'
   | 'light'
   | 'audio-track'
   | 'audio-effect'

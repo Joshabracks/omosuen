@@ -211,6 +211,28 @@ function watchInitThenRemoveOverlay(overlay) {
 }
 
 /**
+ * Demonstrates the engine's awaitable `component.ready` promise. newComponent()
+ * resolves as soon as a component is *queued* for init; `ready` resolves later,
+ * once its frame-budgeted init actually finishes (async asset load, atlas build,
+ * etc.). We fire-and-forget here — never `await component.ready` inside
+ * createScene(), since init only runs AFTER createScene() resolves and the scene
+ * goes active, so awaiting would deadlock — and log the gap once it resolves.
+ */
+function logReadyTiming(component, label) {
+    if (!component || !component.ready) {
+        console.warn(`[Atlas Test] ready: ${label} has no ready promise`);
+        return;
+    }
+    const queuedAt = performance.now();
+    component.ready.then(() => {
+        console.log(
+            `[Atlas Test] ready: ${label} finished init ` +
+                `${(performance.now() - queuedAt).toFixed(0)} ms after newComponent resolved`,
+        );
+    });
+}
+
+/**
  * Converts ImageData to a displayable Image element
  */
 function imageDataToImage(imageData) {
@@ -339,6 +361,7 @@ export async function createScene() {
         },
     });
     scene.addComponent(atlasManager);
+    logReadyTiming(atlasManager, 'AtlasManager');
     console.log('[Atlas Test] AtlasManager created');
 
     // 2. Create 250 copies of TextureMap for objects.png (FrameMap)
@@ -384,6 +407,8 @@ export async function createScene() {
             atlasManager, // Auto-registers with atlas manager
         });
         scene.addComponent(objectsTexture);
+        // Timing sample: watch one texture-map's async init complete via `ready`.
+        if (i === 0) logReadyTiming(objectsTexture, objectsTexture.name);
     }
     console.log('[Atlas Test] Created 250 copies of objects.png TextureMap (5,500 total frames)');
 
@@ -435,6 +460,7 @@ export async function createScene() {
         ],
     });
     scene.addComponent(ui);
+    logReadyTiming(ui, 'Atlas Test UI');
     console.log('[Atlas Test] UI overlay created');
 
     const sceneMs = performance.now() - sceneStart;

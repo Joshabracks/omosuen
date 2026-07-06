@@ -9,6 +9,10 @@ export type {
   UIBinding,
 } from './ui-overlay';
 export type {
+  InputControllerT as input_controller,
+  InputControllerMethods,
+} from './input-controller';
+export type {
   DataLayer as data_layer,
   DataLayerMethods,
   DataLayerType,
@@ -75,10 +79,7 @@ export type {
   EventColliderMethods,
 } from './event-collider';
 export type { TimerT as timer, TimerMethods } from './timer';
-export type {
-  SpeedDialT as speed_dial,
-  SpeedDialMethods,
-} from './speed-dial';
+export type { SpeedDialT as speed_dial, SpeedDialMethods } from './speed-dial';
 export type { LightT as light, LightMethods, LightType } from './light';
 export type {
   AudioTrackT as audio_track,
@@ -120,6 +121,7 @@ export { ViewportSerializer } from './viewport/data';
 export { SpriteSerializer } from './sprite/data';
 export { TransformSerializer } from './transform/data';
 export { AnimationControllerSerializer } from './animation-controller/data';
+export { InputControllerSerializer } from './input-controller/data';
 export { CameraSerializer } from './camera/data';
 export { ColliderSerializer } from './collider/data';
 export { EventColliderSerializer } from './event-collider/data';

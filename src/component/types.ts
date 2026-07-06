@@ -1,5 +1,5 @@
 import { BUILDERS, MethodRegistry, PROPERTY_ALLOWLIST } from './registry';
-import { queueInit } from '../loop/init';
+import { queueInit, attachReady } from '../loop/init';
 import { Nexus, NexusT } from './nexus';
 
 /**
@@ -160,6 +160,7 @@ export interface ComponentData {
   initOverride?: string;
   _initialized?: boolean;
   _initDefer?: number;
+  ready?: Promise<boolean>;
 }
 
 export interface ComponentMethods {
@@ -228,6 +229,7 @@ export function wrapInProxy(component: ComponentData): ComponentData {
     'initOverride',
     '_initialized',
     '_initDefer',
+    'ready',
   ];
 
   // Component-specific properties
@@ -322,6 +324,10 @@ export async function newComponent(
     return null;
   }
   component.id = COMPONENT_COUNT++;
+
+  // Attach an awaitable `ready` promise before queuing init, so callers can
+  // `await component.ready` even though init runs frame-budgeted on a later frame.
+  attachReady(component);
 
   // Preserve ComponentData base fields from options
   if (options.overrideKey !== undefined) {

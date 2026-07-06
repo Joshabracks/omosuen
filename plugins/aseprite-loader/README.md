@@ -37,6 +37,41 @@ await Omosuen.newComponent('aseprite-loader', {
 });
 ```
 
+### Multiple files on one entity (`sources`)
+
+One loader can ingest **several** `.aseprite` files into the **same** nexus — one shared
+animation-controller, one atlas pass — instead of a child nexus per file. Give each source an
+`id` (default: the filename without extension); every artifact from that source is namespaced by
+it, so nothing collides:
+
+```js
+await Omosuen.newComponent('aseprite-loader', {
+  name: 'unit',
+  sources: [
+    { filePath: './sprites/Villager.aseprite' },                 // id defaults to "Villager"
+    { filePath: './sprites/Fighter.aseprite', id: 'fighter' },   // explicit id
+    { filePath: './sprites/Lumberjack.aseprite',
+      layerSlots: { 'hair-a': 'hair', 'hair-b': 'hair' } },      // per-source slots
+  ],
+  flatten: false,      // loader-level default; each source may override flatten / visibleOnly
+  anchorMode: 'bottom-center',
+});
+```
+
+| Artifact | Single `filePath` | `sources` (namespaced) |
+|----------|-------------------|------------------------|
+| Sprite / layer name | layer name | `{id}:{layer}` (flattened source: `{id}`) |
+| Animation (tag) name | `walk` | `{id}-walk` |
+| Texture key | `aseprite:{packageId}:{build}` | `aseprite:{id}:{build}` |
+
+**Swapping variants** (show one source, hide the rest) is done by **name prefix**, not by engine
+`slot` (which is reserved for per-source `layerSlots` and stays *mutually exclusive*). To reveal
+source `fighter`: for every controller layer whose name starts with `fighter:`, call
+`setLayerVisible(name, true)`, and set the others to `false`. Play its animation in the **same
+tick** you reveal it — `controller.play('fighter-walk')` — so no sprite renders a frame index from
+another source's timeline. Duplicate `filePath`s in `sources` are skipped with a warning; use one
+`id` per physical file.
+
 ### Programmatic (bundler / TS)
 
 ```ts
@@ -52,6 +87,16 @@ registerAsepriteLoader(); // or: Omosuen.init({ plugins: [asepriteLoaderDefiniti
 // Or skip the component and build an entity directly:
 const buf = await fetch('./hero.aseprite').then((r) => r.arrayBuffer());
 await importAseprite(buf, { parent, atlasManager, packageId: 'hero', flatten: false });
+
+// Multi-file entity directly (namespaced by each entry's `id`):
+import { importAsepriteSources } from 'omosuen-aseprite-loader';
+await importAsepriteSources(
+  [
+    { buffer: villagerBuf, id: 'villager', flatten: false, visibleOnly: true },
+    { buffer: fighterBuf, id: 'fighter', flatten: false, visibleOnly: true },
+  ],
+  { parent, atlasManager, packageId: 'unit', anchorMode: 'bottom-center' },
+);
 ```
 
 ## Build

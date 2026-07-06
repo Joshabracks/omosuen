@@ -9,11 +9,17 @@ import { registerPluginComponent } from 'omosuen';
 import { asepriteLoaderDefinition } from './component.js';
 
 export { asepriteLoaderDefinition } from './component.js';
-export type { AsepriteLoaderT, AsepriteLoaderOptions } from './component.js';
-export { importAseprite } from './import.js';
+export type {
+  AsepriteLoaderT,
+  AsepriteLoaderOptions,
+  AsepriteSourceOptions,
+} from './component.js';
+export { importAseprite, importAsepriteSources } from './import.js';
 export type {
   AsepriteImportConfig,
   AsepriteImportResult,
+  AsepriteSourceEntry,
+  AsepriteSourcesConfig,
 } from './import.js';
 export { parseAseprite } from './parser/parser.js';
 export type {

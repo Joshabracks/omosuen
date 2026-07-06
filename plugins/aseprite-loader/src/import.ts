@@ -47,6 +47,33 @@ export interface AsepriteImportResult {
 }
 
 /**
+ * One resolved source for `importAsepriteSources`: a fetched .aseprite buffer
+ * plus its namespace `id` and effective (loader-default-resolved) options. The
+ * component's `init` builds these from its `sources` array.
+ */
+export interface AsepriteSourceEntry {
+  buffer: ArrayBuffer;
+  /** Namespace prefix for this source's sprites / tags / texture keys. */
+  id: string;
+  flatten: boolean;
+  visibleOnly: boolean;
+  /** Within-source mutually-exclusive layers (raw layer name → slot name). */
+  layerSlots?: Record<string, string>;
+}
+
+/** Shared config for the multi-source orchestrator. */
+export interface AsepriteSourcesConfig {
+  parent: any;
+  atlasManager: any;
+  /** Atlas-namespace root; also names the transform and controller. */
+  packageId: string;
+  anchor?: Vector2D;
+  anchorMode?: 'center' | 'bottom-center';
+  position?: Vector3D;
+  scale?: Vector3D;
+}
+
+/**
  * Parses an Aseprite buffer and builds a fully-animated, optionally-layered
  * entity into `config.parent`: composited texture-maps + sprites + an
  * animation-controller (tags → animations with per-frame durations). Browser-only
@@ -59,31 +86,14 @@ export async function importAseprite(
   const ase = await parseAseprite(buffer);
   const flatten = config.flatten ?? true;
   const visibleOnly = config.visibleOnly ?? true;
-  // Explicit pixel anchor wins; else resolve the named mode against the parsed
-  // canvas size; else default to center.
-  const anchor =
-    config.anchor ??
-    (config.anchorMode === 'bottom-center'
-      ? new Vector2D(ase.width / 2, ase.height)
-      : new Vector2D(ase.width / 2, ase.height / 2));
+  const anchor = resolveAnchor(ase, config);
   const parent = config.parent;
 
   // Idempotent: drop any previously-generated children before rebuilding.
   removeGeneratedChildren(parent);
 
-  // Ensure a transform exists. It is NOT flagged generated, so it persists
-  // (keeping any runtime position) and is reused on the next init.
-  if (!parent.getComponentByType('transform', false)) {
-    await newComponent(
-      'transform',
-      {
-        name: `${config.packageId} Transform`,
-        position: config.position ?? new Vector3D(0, 0, 0),
-        scale: config.scale ?? new Vector3D(1, 1, 1),
-      },
-      parent,
-    );
-  }
+  // Ensure a transform exists (persists across re-inits — see ensureTransform).
+  await ensureTransform(parent, config.packageId, config);
 
   // Image layers only, filtered by visibility; composited ascending by index.
   const renderLayers = ase.layers.filter(
@@ -104,10 +114,7 @@ export async function importAseprite(
   }
 
   // Frame rectangles into the strip (one per frame).
-  const frameRects: Vector4D[] = [];
-  for (let f = 0; f < ase.frameCount; f++) {
-    frameRects.push(new Vector4D(f * ase.width, 0, ase.width, ase.height));
-  }
+  const frameRects = buildFrameRects(ase);
 
   // Create a texture-map + sprite per build.
   const sprites: any[] = [];
@@ -175,6 +182,178 @@ export async function importAseprite(
   await config.atlasManager.processTextureMaps();
 
   return { controller: controller ?? null, sprites };
+}
+
+/**
+ * Multi-source variant: ingests several .aseprite files into ONE entity nexus —
+ * one merged animation-controller, one atlas pass — with every source's sprites,
+ * layers, and tags namespaced by its `id` so nothing collides.
+ *
+ * Namespacing (vs the single-source `importAseprite`, which stays un-prefixed):
+ *   - sprite / layer name : `${id}:${layerName}`  (flattened source: `${id}`)
+ *   - texture key         : `aseprite:${id}:${build}`
+ *   - synthetic filePath  : `aseprite://${id}/${build}`
+ *   - animation name      : `${id}-${tagName}`
+ *
+ * The engine `slot` is used ONLY for per-source `layerSlots` (mutually-exclusive
+ * layers within one source, e.g. hair A/B/C) and its value is itself id-namespaced
+ * so two sources' identically-named slots don't become cross-source exclusive.
+ * Source-group visibility (show one variant, hide the rest) is the caller's job,
+ * done by toggling every layer whose name starts with `${id}:` — NOT via `slot`.
+ *
+ * The once-per-loader steps (removeGeneratedChildren, ensure transform,
+ * processTextureMaps) run exactly once around the per-source loop.
+ */
+export async function importAsepriteSources(
+  entries: AsepriteSourceEntry[],
+  config: AsepriteSourcesConfig,
+): Promise<AsepriteImportResult> {
+  const parent = config.parent;
+
+  // Idempotent rebuild + shared transform — ONCE, around the whole loop.
+  removeGeneratedChildren(parent);
+  await ensureTransform(parent, config.packageId, config);
+
+  const allSprites: any[] = [];
+  const allLayers: any[] = [];
+  const allAnimations: any[] = [];
+  let renderOrder = 0;
+
+  for (const entry of entries) {
+    const ase = await parseAseprite(entry.buffer);
+    const anchor = resolveAnchor(ase, config);
+    const renderLayers = ase.layers.filter(
+      (l) => l.type === 0 && (!entry.visibleOnly || l.visible),
+    );
+
+    const builds: Array<{ name: string; canvas: HTMLCanvasElement }> =
+      entry.flatten
+        ? [{ name: entry.id, canvas: compositeStrip(ase, renderLayers) }]
+        : renderLayers.map((layer) => ({
+            name: layer.name,
+            canvas: compositeStrip(ase, [layer]),
+          }));
+
+    const frameRects = buildFrameRects(ase);
+
+    for (const build of builds) {
+      // Flattened source is a single strip → the sprite IS the source (`${id}`);
+      // per-layer builds namespace the layer name (`${id}:${layer}`).
+      const spriteName = entry.flatten ? entry.id : `${entry.id}:${build.name}`;
+      const texKey = `aseprite:${entry.id}:${build.name}`;
+      const tm = await newComponent(
+        'texture-map',
+        {
+          name: texKey,
+          textureMapKey: texKey,
+          filePath: `aseprite://${entry.id}/${build.name}`,
+          sourceImage: build.canvas,
+          imageType: frameRects,
+          atlasManager: config.atlasManager,
+        },
+        parent,
+      );
+      if (tm) tm._generated = true;
+
+      const sprite = await newComponent(
+        'sprite',
+        {
+          name: spriteName,
+          textureMapKeys: { albedo: texKey, normal: '', material: '', emission: '' },
+          frame: { albedo: 0, normal: 0, material: 0, emission: 0 },
+          anchor,
+          renderOrder: renderOrder++,
+          visible: true,
+        },
+        parent,
+      );
+      if (sprite) {
+        sprite._generated = true;
+        allSprites.push(sprite);
+      }
+
+      // `layerSlots` is keyed by the raw aseprite layer name; namespace the slot
+      // VALUE so two sources' "hair" slots stay independent.
+      const rawSlot = entry.layerSlots?.[build.name];
+      allLayers.push({
+        name: spriteName,
+        spriteName,
+        visible: true,
+        slot: rawSlot ? `${entry.id}:${rawSlot}` : undefined,
+      });
+    }
+
+    // Prefix tags: `walk` → `${id}-walk`, so villager-walk / fighter-walk coexist.
+    for (const anim of buildAnimations(ase)) {
+      allAnimations.push({ ...anim, name: `${entry.id}-${anim.name}` });
+    }
+  }
+
+  const controller = await newComponent(
+    'animation-controller',
+    {
+      name: `${config.packageId} Anim`,
+      animations: allAnimations,
+      layers: allLayers,
+      channels: ['albedo'],
+    },
+    parent,
+  );
+  if (controller) controller._generated = true;
+
+  // Single atlas pass for the whole loader (all sources' frames at once).
+  await config.atlasManager.processTextureMaps();
+
+  return { controller: controller ?? null, sprites: allSprites };
+}
+
+/**
+ * Resolves the sprite anchor: an explicit pixel `anchor` wins; else the named
+ * mode against the parsed canvas size ('bottom-center' = foot-anchored); else
+ * center.
+ */
+function resolveAnchor(
+  ase: AseFile,
+  config: { anchor?: Vector2D; anchorMode?: 'center' | 'bottom-center' },
+): Vector2D {
+  return (
+    config.anchor ??
+    (config.anchorMode === 'bottom-center'
+      ? new Vector2D(ase.width / 2, ase.height)
+      : new Vector2D(ase.width / 2, ase.height / 2))
+  );
+}
+
+/**
+ * Ensures the nexus has a transform. It is NOT flagged `_generated`, so it
+ * survives `removeGeneratedChildren` — keeping any runtime position across
+ * re-inits.
+ */
+async function ensureTransform(
+  parent: any,
+  name: string,
+  config: { position?: Vector3D; scale?: Vector3D },
+): Promise<void> {
+  if (!parent.getComponentByType('transform', false)) {
+    await newComponent(
+      'transform',
+      {
+        name: `${name} Transform`,
+        position: config.position ?? new Vector3D(0, 0, 0),
+        scale: config.scale ?? new Vector3D(1, 1, 1),
+      },
+      parent,
+    );
+  }
+}
+
+/** One `Vector4D(f*w, 0, w, h)` frame rect per frame into the horizontal strip. */
+function buildFrameRects(ase: AseFile): Vector4D[] {
+  const rects: Vector4D[] = [];
+  for (let f = 0; f < ase.frameCount; f++) {
+    rects.push(new Vector4D(f * ase.width, 0, ase.width, ase.height));
+  }
+  return rects;
 }
 
 /**

@@ -51,6 +51,37 @@ let CURRENT_INIT: ComponentData | null = null;
 let ACTIVE_GEN: AsyncGenerator<void> | null = null;
 
 /**
+ * id → resolver for the awaitable `component.ready` promise (see
+ * attachReady/markInitialized). Keyed by id (not the component object) so it
+ * works across the raw/proxy identity split — newComponent holds the raw
+ * object while the scheduler holds the proxy.
+ */
+const READY_RESOLVERS = new Map<number, (ready: boolean) => void>();
+
+/**
+ * Attaches an awaitable `ready` promise that resolves true when the component's
+ * init completes. Called by newComponent so the promise exists before init runs
+ * (init is queued and runs frame-budgeted on a later frame).
+ */
+export function attachReady(component: ComponentData): void {
+  if (component.id === undefined || component._initialized) return;
+  component.ready = new Promise<boolean>((resolve) => {
+    READY_RESOLVERS.set(component.id!, resolve);
+  });
+}
+
+/** Sets _initialized and resolves the component's ready promise (if any). */
+function markInitialized(component: ComponentData): void {
+  component._initialized = true;
+  if (component.id === undefined) return;
+  const resolve = READY_RESOLVERS.get(component.id);
+  if (resolve) {
+    resolve(true);
+    READY_RESOLVERS.delete(component.id);
+  }
+}
+
+/**
  * Indexes every component in the scene tree by id (single O(scene) walk), so the
  * init cycle can resolve queued ids in O(1) instead of recursive getComponentById.
  */
@@ -139,7 +170,7 @@ export async function processInitQueue(
       INITIALIZATION_IN_PROGRESS = true;
       return; // still initializing — continue next frame
     }
-    if (CURRENT_INIT) CURRENT_INIT._initialized = true;
+    if (CURRENT_INIT) markInitialized(CURRENT_INIT);
     ACTIVE_GEN = null;
     CURRENT_INIT = null;
   }
@@ -213,7 +244,7 @@ export async function processInitQueue(
         INITIALIZATION_IN_PROGRESS = true;
         return; // paused — resume next frame
       }
-      component._initialized = true;
+      markInitialized(component);
       ACTIVE_GEN = null;
       CURRENT_INIT = null;
     } else {
@@ -237,7 +268,7 @@ export async function processInitQueue(
         }
       }
 
-      component._initialized = true;
+      markInitialized(component);
       CURRENT_INIT = null;
     }
 
@@ -324,6 +355,7 @@ export function clearInitQueue(): void {
   INIT_QUEUE.length = 0;
   INIT_QUEUE_LENGTH = -1;
   INITIALIZATION_IN_PROGRESS = false;
+  READY_RESOLVERS.clear();
 }
 
 /**

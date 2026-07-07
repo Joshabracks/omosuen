@@ -4,6 +4,7 @@ import type { Animation, AnimationLayer, AnimationState } from './types';
 import type { ChannelType } from '../sprite/types';
 import type { NexusT } from '../nexus/data';
 import type { SpriteT } from '../sprite/data';
+import type { AnimationMapT } from '../animation-map/data';
 import { MethodRegistry } from '../registry';
 
 export interface AnimationControllerMethods extends ComponentMethods {
@@ -71,6 +72,19 @@ export const AnimationController: AnimationControllerMethods = {
     }
     // parent is stored raw; wrap it to reach the nexus's proxy methods.
     const parent = castTo<NexusT>(ac.parent);
+
+    // Resolve a shared animation-map reference: share its (frozen) animations Map
+    // by reference. Missing key errors like a missing texture-map.
+    if (ac.animationMapRef) {
+      const map = findAnimationMapByKey(parent, ac.animationMapRef);
+      if (map) {
+        ac.animations = map.animations;
+      } else {
+        console.error(
+          `[animation-controller] '${ac.name}' references animation-map '${ac.animationMapRef}' but none was found in the scene`,
+        );
+      }
+    }
 
     // Only sprites in THIS nexus (non-recursive) are layers of this entity.
     const sprites = parent.getComponentsByType('sprite') as SpriteT[];
@@ -207,6 +221,7 @@ export const AnimationController: AnimationControllerMethods = {
       onComplete: animation.onComplete,
     };
 
+    detachAnimationsForWrite(controller);
     controller.animations.set(anim.name, anim);
   },
 
@@ -214,6 +229,7 @@ export const AnimationController: AnimationControllerMethods = {
    * Removes an animation from the controller.
    */
   removeAnimation(controller: AnimationControllerT, name: string) {
+    detachAnimationsForWrite(controller);
     controller.animations.delete(name);
 
     // Stop if removing current animation
@@ -454,6 +470,46 @@ function frameDurationFor(animation: Animation, frameIndex: number): number {
  * configured layers, caches all sibling sprites (auto-bound single-sprite case).
  * Walking the nexus + searching by name happens here, not per frame.
  */
+/**
+ * Finds the `animation-map` with the given key, searching the whole scene tree
+ * from the root (shared animation-maps live at the scene root, not the entity
+ * nexus). Mirrors sprite's `findTextureMapByKey`.
+ */
+function findAnimationMapByKey(
+  fromNexus: NexusT,
+  key: string,
+): AnimationMapT | null {
+  // Walk up to the scene root so the search covers the whole tree.
+  let root: NexusT = fromNexus;
+  while (root.parent && root.parent.type === 'nexus') {
+    root = castTo<NexusT>(root.parent);
+  }
+  const maps = root.getComponentsByType('animation-map', true) as
+    | AnimationMapT[]
+    | undefined;
+  if (!maps) return null;
+  for (const m of maps) {
+    if (m.animationMapKey === key) return m;
+  }
+  return null;
+}
+
+/**
+ * If this controller's `animations` are shared from an animation-map (frozen),
+ * clone them into an owned, mutable Map and detach — so a per-entity edit never
+ * mutates the shared set. No-op once the controller owns its Map.
+ */
+function detachAnimationsForWrite(controller: AnimationControllerT): void {
+  if (!controller.animationMapRef) return;
+  const owned = new Map<string, Animation>();
+  for (const [name, anim] of controller.animations) {
+    // Copy each (frozen) animation so the owned entries are mutable.
+    owned.set(name, { ...anim, frames: anim.frames.slice() });
+  }
+  controller.animations = owned;
+  controller.animationMapRef = undefined;
+}
+
 function resolveLayerSprites(
   controller: AnimationControllerT,
 ): (SpriteT | null)[] {

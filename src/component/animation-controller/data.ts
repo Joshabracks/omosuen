@@ -22,9 +22,19 @@ export interface AnimationControllerT
   unique: ComponentUnique.LOCAL;
 
   /**
-   * Map of named animations.
+   * Map of named animations. Either owned by this controller (built from an
+   * inline `animations` array) or shared by reference from an `animation-map`
+   * component (when `animationMapRef` is set) — resolved at init.
    */
   animations: Map<string, Animation>;
+
+  /**
+   * If set, the `animationMapKey` of a shared `animation-map` component this
+   * controller pulls its animations from (resolved at init). Mutating methods
+   * (addAnimation/removeAnimation/setChannels) copy-on-write into an owned Map
+   * and clear this, so a per-entity edit never touches the shared (frozen) set.
+   */
+  animationMapRef?: string;
 
   /**
    * Current playback state.
@@ -76,7 +86,12 @@ export interface AnimationControllerT
 }
 
 export interface AnimationControllerOptions extends ComponentOptions {
-  animations?: Animation[];
+  /**
+   * Inline animation data, OR a string `animationMapKey` referencing a shared
+   * `animation-map` component (resolved at init). A string lets many controllers
+   * share one set of timelines instead of each inlining a copy.
+   */
+  animations?: Animation[] | string;
   channels?: ChannelType[];
   speed?: number;
   layers?: AnimationLayer[];
@@ -88,9 +103,14 @@ export interface AnimationControllerOptions extends ComponentOptions {
 export function builder(
   options: AnimationControllerOptions,
 ): AnimationControllerT {
-  // Build animations map from array
+  // `animations` may be an array (own the timelines) or a string key (share them
+  // from an animation-map, resolved at init).
+  const animationMapRef =
+    typeof options.animations === 'string' ? options.animations : undefined;
+
+  // Build animations map from array (empty when referencing an animation-map).
   const animationsMap = new Map<string, Animation>();
-  if (options.animations) {
+  if (Array.isArray(options.animations)) {
     for (const anim of options.animations) {
       // Apply defaults
       const animation: Animation = {
@@ -113,6 +133,7 @@ export function builder(
     _disposed: false,
 
     animations: animationsMap,
+    animationMapRef,
     state: 'stopped' as AnimationState,
     currentAnimation: null,
     currentFrameIndex: 0,
@@ -132,14 +153,17 @@ export function builder(
 function serialize(component: ComponentData): any {
   const ac = component as AnimationControllerT;
 
-  // Convert Map to array for serialization
-  const animationsArray = Array.from(ac.animations.values());
+  // Referencing a shared animation-map → persist just the key (a string).
+  // Otherwise convert the owned Map to an array.
+  const animations = ac.animationMapRef
+    ? ac.animationMapRef
+    : Array.from(ac.animations.values());
 
   return {
     type: 'animation-controller',
     name: ac.name,
     unique: ComponentUnique.LOCAL,
-    animations: animationsArray,
+    animations,
     state: ac.state,
     currentAnimation: ac.currentAnimation,
     currentFrameIndex: ac.currentFrameIndex,
@@ -200,6 +224,21 @@ function deserialize(data: any): DeserializeResult<AnimationControllerT> {
   }
 
   const componentName = name as string;
+
+  // A string `animations` is an animation-map reference — round-trip it straight
+  // through the builder's string path.
+  if (typeof animations === 'string') {
+    return {
+      component: builder({
+        name: componentName,
+        animations,
+        speed: (speed as number) ?? 1.0,
+        channels: (channels as ChannelType[]) ?? ['albedo'],
+        layers: layers as AnimationLayer[] | undefined,
+      }) as AnimationControllerT,
+      errors,
+    };
+  }
 
   const animationsMap = new Map<string, Animation>();
   if (animations !== undefined) {
@@ -303,6 +342,7 @@ export const AnimationControllerSerializer: ComponentSerializer = {
  */
 export const PROPERTY_ALLOWLIST: string[] = [
   'animations',
+  'animationMapRef',
   'state',
   'currentAnimation',
   'currentFrameIndex',

@@ -46,6 +46,10 @@ export type {
   Animation,
   AnimationState,
 } from './animation-controller';
+export type {
+  AnimationMapT as animation_map,
+  AnimationMapMethods,
+} from './animation-map';
 export type { CameraT as camera, CameraMethods } from './camera';
 export {
   screenPick,
@@ -121,6 +125,7 @@ export { ViewportSerializer } from './viewport/data';
 export { SpriteSerializer } from './sprite/data';
 export { TransformSerializer } from './transform/data';
 export { AnimationControllerSerializer } from './animation-controller/data';
+export { AnimationMapSerializer } from './animation-map/data';
 export { InputControllerSerializer } from './input-controller/data';
 export { CameraSerializer } from './camera/data';
 export { ColliderSerializer } from './collider/data';

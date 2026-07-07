@@ -104,60 +104,52 @@ function basename(filePath: string): string {
 }
 
 /**
- * Multi-file init: dedupe `sources` by filePath, fetch all in parallel, resolve
- * each source's effective options against the loader defaults, and hand the whole
- * set to `importAsepriteSources` (one controller, one atlas pass).
+ * Multi-file init: dedupe `sources` by filePath and resolve each source's
+ * effective options against the loader defaults into descriptors, then hand them
+ * to `importAsepriteSources`. Fetching is deferred to the importer so repeat
+ * spawns of the same art set (blueprint fast-path) never touch the network.
  */
 async function initFromSources(
   a: AsepriteLoaderT,
   parent: unknown,
   atlasManager: unknown,
+  sceneRoot: unknown,
 ): Promise<void> {
   const seen = new Set<string>();
-  const deduped = (a.sources ?? []).filter((s) => {
+  const entries: AsepriteSourceEntry[] = [];
+  for (const s of a.sources ?? []) {
     if (seen.has(s.filePath)) {
       console.warn(
         `[aseprite-loader] '${a.name}' skipping duplicate source '${s.filePath}'`,
       );
-      return false;
+      continue;
     }
     seen.add(s.filePath);
-    return true;
-  });
+    entries.push({
+      filePath: s.filePath,
+      id: s.id ?? basename(s.filePath),
+      flatten: s.flatten ?? a.flatten,
+      visibleOnly: s.visibleOnly ?? a.visibleOnly,
+      layerSlots: s.layerSlots,
+    });
+  }
 
-  const entries = await Promise.all(
-    deduped.map(async (s): Promise<AsepriteSourceEntry | null> => {
-      const response = await fetch(s.filePath);
-      if (!response.ok) {
-        console.error(
-          `[aseprite-loader] '${a.name}' failed to fetch source '${s.filePath}': ${response.status} ${response.statusText}`,
-        );
-        return null;
-      }
-      const buffer = await response.arrayBuffer();
-      return {
-        buffer,
-        id: s.id ?? basename(s.filePath),
-        flatten: s.flatten ?? a.flatten,
-        visibleOnly: s.visibleOnly ?? a.visibleOnly,
-        layerSlots: s.layerSlots,
-      };
-    }),
-  );
-
-  const resolved = entries.filter((e): e is AsepriteSourceEntry => e !== null);
-  if (resolved.length === 0) {
+  if (entries.length === 0) {
     console.warn(
-      `[aseprite-loader] '${a.name}' has no loadable sources; nothing imported`,
+      `[aseprite-loader] '${a.name}' has no sources; nothing imported`,
     );
     return;
   }
 
-  await importAsepriteSources(resolved, {
+  await importAsepriteSources(entries, {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     parent: parent as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     atlasManager: atlasManager as any,
+    // Shared texture-maps + animation-map live on the scene root so they outlive
+    // any single entity's dispose/re-skin.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    sharedParent: sceneRoot as any,
     packageId: a.packageId,
     anchorMode: a.anchorMode,
   });
@@ -193,7 +185,7 @@ const methods: ComponentMethods = {
 
     try {
       if (a.sources && a.sources.length > 0) {
-        await initFromSources(a, parent, atlasManager);
+        await initFromSources(a, parent, atlasManager, scene);
       } else {
         const response = await fetch(a.filePath);
         if (!response.ok) {

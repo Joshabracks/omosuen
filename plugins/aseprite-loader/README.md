@@ -88,16 +88,32 @@ registerAsepriteLoader(); // or: Omosuen.init({ plugins: [asepriteLoaderDefiniti
 const buf = await fetch('./hero.aseprite').then((r) => r.arrayBuffer());
 await importAseprite(buf, { parent, atlasManager, packageId: 'hero', flatten: false });
 
-// Multi-file entity directly (namespaced by each entry's `id`):
+// Multi-file entity directly (namespaced by each entry's `id`; the importer
+// fetches each filePath lazily, skipping the network on cached repeat spawns):
 import { importAsepriteSources } from 'omosuen-aseprite-loader';
 await importAsepriteSources(
   [
-    { buffer: villagerBuf, id: 'villager', flatten: false, visibleOnly: true },
-    { buffer: fighterBuf, id: 'fighter', flatten: false, visibleOnly: true },
+    { filePath: './sprites/Villager.aseprite', id: 'villager', flatten: false, visibleOnly: true },
+    { filePath: './sprites/Fighter.aseprite', id: 'fighter', flatten: false, visibleOnly: true },
   ],
-  { parent, atlasManager, packageId: 'unit', anchorMode: 'bottom-center' },
+  // `sharedParent` (typically the scene root) owns the shared texture-maps +
+  // animation-map so they outlive any one entity; `parent` gets the per-instance
+  // sprites + controller.
+  { parent, atlasManager, sharedParent: sceneRoot, packageId: 'unit', anchorMode: 'bottom-center' },
 );
 ```
+
+### Shared data & cheap repeat-instancing
+
+A multi-file loader shares its heavy static data across every entity of the same art set:
+
+- **Texture-maps** are created once per key and owned by the scene root; each entity's sprites
+  reference them by key (the engine resolves texture-maps globally by `textureMapKey`).
+- **Animations** live in one shared `animation-map` component; each entity's controller references it
+  by key (`animations: '<key>'`) instead of inlining a copy.
+- The **first** entity of an art set pays the full import; **subsequent** entities are built from a
+  cached blueprint — only their own sprites + controller — with no `fetch`, parse, compositing, or atlas
+  work. So spawning many units of the same art set is cheap.
 
 ## Build
 

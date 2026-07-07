@@ -13,13 +13,14 @@ Omosuen.registerHtmlConstructor('mainMenu', (overlay) => {
         <div class="container screen scan-lines">
             <h1 class="title glow-strong">Omosuen Engine</h1>
             <h2 class="subtitle center">Test Game Menu</h2>
-            <div class="margin-top">
+            <div class="margin-top" style="max-height:60vh;overflow-y:auto;padding-right:8px;">
                 <button id="btn-message-test" class="menu-button">Message Test Scene</button>
                 <button id="btn-viewport-test" class="menu-button">Viewport Test Scene</button>
                 <button id="btn-atlas-test" class="menu-button">Atlas Manager Test</button>
                 <button id="btn-sprite-test" class="menu-button">Sprite Rendering Test</button>
                 <button id="btn-aseprite-test" class="menu-button">Aseprite Import Test</button>
                 <button id="btn-aseprite-multi-test" class="menu-button">Aseprite Multi-Source Test</button>
+                <button id="btn-aseprite-shared-test" class="menu-button">Aseprite Shared-Data Test</button>
                 <button id="btn-cellmap-test" class="menu-button">Cell-Map Rendering Test</button>
                 <button id="btn-depth-cues-test" class="menu-button">Depth Cues Test</button>
                 <button id="btn-screen-pick-test" class="menu-button">Screen Pick Test</button>
@@ -64,6 +65,11 @@ Omosuen.registerBinding('loadAsepriteTest', async (event) => {
 Omosuen.registerBinding('loadAsepriteMultiTest', async (event) => {
     console.log('Loading Aseprite Multi-Source Test scene...');
     await Omosuen.switchScene('aseprite-multi-test');
+});
+
+Omosuen.registerBinding('loadAsepriteSharedTest', async (event) => {
+    console.log('Loading Aseprite Shared-Data Test scene...');
+    await Omosuen.switchScene('aseprite-shared-test');
 });
 
 Omosuen.registerBinding('loadCellmapTest', async (event) => {
@@ -134,6 +140,11 @@ export async function createScene() {
                 selector: '#btn-aseprite-multi-test',
                 onActions: ['click'],
                 methodKey: 'loadAsepriteMultiTest'
+            },
+            {
+                selector: '#btn-aseprite-shared-test',
+                onActions: ['click'],
+                methodKey: 'loadAsepriteSharedTest'
             },
             {
                 selector: '#btn-cellmap-test',

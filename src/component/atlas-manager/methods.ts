@@ -34,6 +34,29 @@ export interface AtlasManagerMethods extends ComponentMethods {
   addTextureMap: (am: AtlasManagerT, textureMap: TextureMapT) => void;
 
   /**
+   * Returns the canonical texture-map registered under `key`, or null.
+   * Used to share one texture-map component across many entities by key.
+   */
+  getTextureMap: (am: AtlasManagerT, key: string) => TextureMapT | null;
+
+  /**
+   * Returns the canonical texture-map for `key`, creating and registering it via
+   * `factory` on first use. Lets callers dedup shared art: the first caller builds
+   * the texture-map, everyone else reuses it. The factory should create the
+   * texture-map parented to a stable owner (typically `am.parent`, the scene root)
+   * so it outlives any single entity.
+   *
+   * @param am - AtlasManager component
+   * @param key - textureMapKey identity
+   * @param factory - builds the texture-map component when the key is new
+   */
+  getOrCreateTextureMap: (
+    am: AtlasManagerT,
+    key: string,
+    factory: () => Promise<TextureMapT | null>,
+  ) => Promise<TextureMapT | null>;
+
+  /**
    * Processes all pending texture maps and compiles atlases.
    * This is an async operation that:
    * 1. Retrieves all pending TextureMap components
@@ -674,7 +697,46 @@ export const AtlasManager: AtlasManagerMethods = {
 
   addTextureMap: (am: AtlasManagerT, textureMap: TextureMapT): void => {
     am.textureMapIds.add(textureMap.textureMapKey);
+    // Register the canonical component for this key. A second, DIFFERENT map
+    // claiming an existing key with different source pixels is a developer
+    // mistake (the engine resolves texture-maps globally by key) — surface it
+    // loudly and keep the first registration (first-wins).
+    const existing = am.textureMapsByKey.get(textureMap.textureMapKey);
+    if (
+      existing &&
+      existing !== textureMap &&
+      existing.filePath !== textureMap.filePath
+    ) {
+      console.error(
+        `[atlas-manager] textureMapKey '${textureMap.textureMapKey}' registered with conflicting sources ` +
+          `('${existing.filePath}' vs '${textureMap.filePath}'); keeping the first. ` +
+          `Texture-map keys must be unique per source.`,
+      );
+    } else if (!existing) {
+      am.textureMapsByKey.set(textureMap.textureMapKey, textureMap);
+    }
     am.compiled = false;
+  },
+
+  getTextureMap: (am: AtlasManagerT, key: string): TextureMapT | null => {
+    return am.textureMapsByKey.get(key) ?? null;
+  },
+
+  getOrCreateTextureMap: async (
+    am: AtlasManagerT,
+    key: string,
+    factory: () => Promise<TextureMapT | null>,
+  ): Promise<TextureMapT | null> => {
+    const existing = am.textureMapsByKey.get(key);
+    if (existing) return existing;
+    const tm = await factory();
+    if (tm) {
+      // The factory-created map registers itself via addTextureMap only if it was
+      // built with the `atlasManager` option; register here too so the key is
+      // cached regardless of how the factory built it.
+      if (!am.textureMapsByKey.has(key)) am.textureMapsByKey.set(key, tm);
+    }
+    return tm;
   },
 
   processTextureMaps: async (am: AtlasManagerT): Promise<void> => {

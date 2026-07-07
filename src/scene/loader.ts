@@ -18,6 +18,7 @@ import { AudioTrackSerializer } from '../component/audio-track/data';
 import { AudioEffectSerializer } from '../component/audio-effect/data';
 import { AudioPlayerSerializer } from '../component/audio-player/data';
 import { AnimationControllerSerializer } from '../component/animation-controller/data';
+import { AnimationMapSerializer } from '../component/animation-map/data';
 import { AtlasManagerSerializer } from '../component/atlas-manager/data';
 import { TextureMapSerializer } from '../component/texture-map/data';
 import { CellMapSerializer } from '../component/cell-map/data';
@@ -61,6 +62,7 @@ const SERIALIZERS: Partial<Record<COMPONENT_TYPE, ComponentSerializer>> = {
   'audio-effect': AudioEffectSerializer,
   'audio-player': AudioPlayerSerializer,
   'animation-controller': AnimationControllerSerializer,
+  'animation-map': AnimationMapSerializer,
   'atlas-manager': AtlasManagerSerializer,
   'texture-map': TextureMapSerializer,
   'cell-map': CellMapSerializer,

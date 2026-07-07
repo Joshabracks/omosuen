@@ -1,6 +1,6 @@
 {
   "name": "omosuen-aseprite-loader",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Official Omosuen plugin: the `aseprite-loader` component ingests Aseprite (.aseprite/.ase) files into layered, animated entities. Dependency-free, browser-static.",
   "type": "module",
   "main": "dist/src/index.js",

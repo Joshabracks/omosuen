@@ -9,6 +9,7 @@ import { ComponentUnique } from '../types';
 import type { AtlasManagerMethods } from './methods';
 import type { ComponentInstanceMethods } from '../types';
 import type { PackerState, PackedRegion, AtlasDirtyRegion } from './types';
+import type { TextureMapT } from '../texture-map/data';
 
 /**
  * Valid atlas sizes (power of 2)
@@ -64,6 +65,14 @@ export interface AtlasManagerT
    * Set of texture map IDs pending processing
    */
   textureMapIds: Set<string>;
+
+  /**
+   * Runtime registry of the canonical texture-map component per `textureMapKey`,
+   * used to dedup shared art: many entities reference one texture-map by key
+   * instead of each owning a duplicate. Populated by `addTextureMap` /
+   * `getOrCreateTextureMap`. NOT serialized (rebuilt as texture-maps register).
+   */
+  textureMapsByKey: Map<string, TextureMapT>;
 
   /**
    * Array of compiled atlas textures (0-15)
@@ -148,6 +157,7 @@ export interface AtlasManagerT
 
 export const PROPERTY_ALLOWLIST = [
   'textureMapIds',
+  'textureMapsByKey',
   'atlases',
   'compiled',
   'atlasVersion',
@@ -206,6 +216,7 @@ export function builder(options: AtlasManagerOptions): AtlasManagerT {
     parent: null,
     _disposed: false,
     textureMapIds: new Set<string>(),
+    textureMapsByKey: new Map<string, TextureMapT>(),
     atlases: [],
     compiled: false,
     atlasVersion: 0,

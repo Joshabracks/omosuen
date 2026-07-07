@@ -120,6 +120,7 @@ export type COMPONENT_TYPE =
   | 'sprite'
   | 'transform'
   | 'animation-controller'
+  | 'animation-map'
   | 'cell-map'
   | 'camera'
   | 'input-controller'

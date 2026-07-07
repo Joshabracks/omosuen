@@ -54,6 +54,11 @@ import {
   PROPERTY_ALLOWLIST as AnimationControllerPropertyAllowlist,
 } from './animation-controller';
 import {
+  AnimationMap,
+  builder as animationMapBuilder,
+  PROPERTY_ALLOWLIST as AnimationMapPropertyAllowlist,
+} from './animation-map';
+import {
   CellMap,
   builder as cellMapBuilder,
   PROPERTY_ALLOWLIST as CellMapPropertyAllowlist,
@@ -138,6 +143,7 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   sprite: spriteBuilder,
   transform: transformBuilder,
   'animation-controller': animationControllerBuilder,
+  'animation-map': animationMapBuilder,
   'cell-map': cellMapBuilder,
   camera: cameraBuilder,
   'input-controller': inputControllerBuilder,
@@ -172,6 +178,7 @@ export const MethodRegistry: Record<
   sprite: Sprite,
   transform: Transform,
   'animation-controller': AnimationController,
+  'animation-map': AnimationMap,
   'cell-map': CellMap,
   camera: Camera,
   'input-controller': InputController,
@@ -204,6 +211,7 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   sprite: SpritePropertyAllowlist,
   transform: TransformPropertyAllowlist,
   'animation-controller': AnimationControllerPropertyAllowlist,
+  'animation-map': AnimationMapPropertyAllowlist,
   'cell-map': CellMapPropertyAllowlist,
   camera: CameraPropertyAllowlist,
   'input-controller': InputControllerPropertyAllowlist,

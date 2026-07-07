@@ -53,6 +53,7 @@ async function initGame() {
     Omosuen.registerSceneModule('sprite-test', '/scenes/sprite-test.js');
     Omosuen.registerSceneModule('aseprite-test', '/scenes/aseprite-test.js');
     Omosuen.registerSceneModule('aseprite-multi-test', '/scenes/aseprite-multi-test.js');
+    Omosuen.registerSceneModule('aseprite-shared-test', '/scenes/aseprite-shared-test.js');
     Omosuen.registerSceneModule('cellmap-test', '/scenes/cellmap-test.js');
     Omosuen.registerSceneModule('depth-cues-test', '/scenes/depth-cues-test.js');
     Omosuen.registerSceneModule('screen-pick-test', '/scenes/screen-pick-test.js');

@@ -52,7 +52,8 @@ export interface AsepriteImportResult {
  * component's `init` builds these from its `sources` array.
  */
 export interface AsepriteSourceEntry {
-  buffer: ArrayBuffer;
+  /** Static URL of the .aseprite file. Fetched lazily, ONLY on a full import. */
+  filePath: string;
   /** Namespace prefix for this source's sprites / tags / texture keys. */
   id: string;
   flatten: boolean;
@@ -63,8 +64,14 @@ export interface AsepriteSourceEntry {
 
 /** Shared config for the multi-source orchestrator. */
 export interface AsepriteSourcesConfig {
+  /** The entity nexus that gets the per-instance sprites + controller. */
   parent: any;
   atlasManager: any;
+  /**
+   * Stable owner (typically the scene root) for the SHARED texture-maps +
+   * animation-map, so they outlive any single entity's dispose/re-skin.
+   */
+  sharedParent: any;
   /** Atlas-namespace root; also names the transform and controller. */
   packageId: string;
   anchor?: Vector2D;
@@ -72,6 +79,27 @@ export interface AsepriteSourcesConfig {
   position?: Vector3D;
   scale?: Vector3D;
 }
+
+/**
+ * Minimal per-instance recipe for one art set, cached after the first import so
+ * subsequent entities of the same set are built WITHOUT fetch/parse/composite.
+ */
+interface InstanceBlueprint {
+  builds: Array<{
+    spriteName: string;
+    texKey: string;
+    anchor: Vector2D;
+    renderOrder: number;
+    slot?: string;
+  }>;
+  animationMapKey: string;
+}
+
+/**
+ * Per-art-set instance blueprints, keyed by the ordered source ids. Lets repeat
+ * spawns skip all the heavy import work (see importAsepriteSources).
+ */
+const BLUEPRINTS = new Map<string, InstanceBlueprint>();
 
 /**
  * Parses an Aseprite buffer and builds a fully-animated, optionally-layered
@@ -209,78 +237,99 @@ export async function importAsepriteSources(
   config: AsepriteSourcesConfig,
 ): Promise<AsepriteImportResult> {
   const parent = config.parent;
+  const artSetKey = entries.map((e) => e.id).join('+');
 
-  // Idempotent rebuild + shared transform — ONCE, around the whole loop.
+  // Fast path: another entity already imported this art set and its SHARED
+  // resources still exist in the current scene → build only the per-instance
+  // sprites + controller from the cached blueprint (no fetch / parse / composite
+  // / atlas work).
+  const blueprint = BLUEPRINTS.get(artSetKey);
+  if (blueprint && sharedResourcesExist(config, blueprint)) {
+    return spawnFromBlueprint(parent, blueprint, config);
+  }
+
+  // Full import. Fetch every source's buffer NOW (in parallel) — only reached
+  // when there's no cached blueprint, so repeat spawns never hit the network.
+  const buffers = await Promise.all(
+    entries.map(async (e) => {
+      const res = await fetch(e.filePath);
+      if (!res.ok) {
+        console.error(
+          `[aseprite-loader] failed to fetch source '${e.filePath}': ${res.status} ${res.statusText}`,
+        );
+        return null;
+      }
+      return res.arrayBuffer();
+    }),
+  );
+
+  // Idempotent rebuild + shared transform — ONCE, around the loop.
   removeGeneratedChildren(parent);
   await ensureTransform(parent, config.packageId, config);
 
   const allSprites: any[] = [];
   const allLayers: any[] = [];
   const allAnimations: any[] = [];
+  const bpBuilds: InstanceBlueprint['builds'] = [];
   let renderOrder = 0;
 
-  for (const entry of entries) {
-    const ase = await parseAseprite(entry.buffer);
+  for (let ei = 0; ei < entries.length; ei++) {
+    const entry = entries[ei];
+    const buffer = buffers[ei];
+    if (!buffer) continue; // fetch failed for this source
+    const ase = await parseAseprite(buffer);
     const anchor = resolveAnchor(ase, config);
     const renderLayers = ase.layers.filter(
       (l) => l.type === 0 && (!entry.visibleOnly || l.visible),
     );
 
-    const builds: Array<{ name: string; canvas: HTMLCanvasElement }> =
-      entry.flatten
-        ? [{ name: entry.id, canvas: compositeStrip(ase, renderLayers) }]
-        : renderLayers.map((layer) => ({
-            name: layer.name,
-            canvas: compositeStrip(ase, [layer]),
-          }));
+    // Which builds this source produces (names only; the strip canvas is
+    // composited lazily, only when the texture-map doesn't already exist).
+    const buildNames: string[] = entry.flatten
+      ? [entry.id]
+      : renderLayers.map((layer) => layer.name);
 
     const frameRects = buildFrameRects(ase);
 
-    for (const build of builds) {
+    for (const buildName of buildNames) {
       // Flattened source is a single strip → the sprite IS the source (`${id}`);
       // per-layer builds namespace the layer name (`${id}:${layer}`).
-      const spriteName = entry.flatten ? entry.id : `${entry.id}:${build.name}`;
-      const texKey = `aseprite:${entry.id}:${build.name}`;
-      const tm = await newComponent(
-        'texture-map',
-        {
-          name: texKey,
-          textureMapKey: texKey,
-          filePath: `aseprite://${entry.id}/${build.name}`,
-          sourceImage: build.canvas,
-          imageType: frameRects,
-          atlasManager: config.atlasManager,
-        },
-        parent,
-      );
-      if (tm) tm._generated = true;
+      const spriteName = entry.flatten ? entry.id : `${entry.id}:${buildName}`;
+      const texKey = `aseprite:${entry.id}:${buildName}`;
 
-      const sprite = await newComponent(
-        'sprite',
-        {
-          name: spriteName,
-          textureMapKeys: { albedo: texKey, normal: '', material: '', emission: '' },
-          frame: { albedo: 0, normal: 0, material: 0, emission: 0 },
-          anchor,
-          renderOrder: renderOrder++,
-          visible: true,
-        },
-        parent,
-      );
-      if (sprite) {
-        sprite._generated = true;
-        allSprites.push(sprite);
-      }
+      // Shared texture-map: create once per key (composite only on first use),
+      // owned by the scene root so entity dispose never drops shared art.
+      await config.atlasManager.getOrCreateTextureMap(texKey, async () => {
+        const canvas = entry.flatten
+          ? compositeStrip(ase, renderLayers)
+          : compositeStrip(ase, [renderLayers.find((l) => l.name === buildName)!]);
+        const tm = await newComponent(
+          'texture-map',
+          {
+            name: texKey,
+            textureMapKey: texKey,
+            filePath: `aseprite://${entry.id}/${buildName}`,
+            sourceImage: canvas,
+            imageType: frameRects,
+            atlasManager: config.atlasManager,
+          },
+          config.sharedParent,
+        );
+        if (tm) tm._generated = true;
+        return tm ?? null;
+      });
 
       // `layerSlots` is keyed by the raw aseprite layer name; namespace the slot
       // VALUE so two sources' "hair" slots stay independent.
-      const rawSlot = entry.layerSlots?.[build.name];
-      allLayers.push({
-        name: spriteName,
-        spriteName,
-        visible: true,
-        slot: rawSlot ? `${entry.id}:${rawSlot}` : undefined,
-      });
+      const rawSlot = entry.layerSlots?.[buildName];
+      const slot = rawSlot ? `${entry.id}:${rawSlot}` : undefined;
+
+      const bp = { spriteName, texKey, anchor, renderOrder: renderOrder++, slot };
+      bpBuilds.push(bp);
+
+      const sprite = await buildInstanceSprite(parent, bp);
+      if (sprite) allSprites.push(sprite);
+      allLayers.push({ name: spriteName, spriteName, visible: true, slot });
     }
 
     // Prefix tags: `walk` → `${id}-walk`, so villager-walk / fighter-walk coexist.
@@ -289,11 +338,19 @@ export async function importAsepriteSources(
     }
   }
 
+  // Shared animation-map (one per art set), referenced by the controller by key.
+  const animationMapKey = artSetKey;
+  await getOrCreateAnimationMap(
+    config.sharedParent,
+    animationMapKey,
+    allAnimations,
+  );
+
   const controller = await newComponent(
     'animation-controller',
     {
       name: `${config.packageId} Anim`,
-      animations: allAnimations,
+      animations: animationMapKey, // reference the shared animation-map by key
       layers: allLayers,
       channels: ['albedo'],
     },
@@ -304,7 +361,105 @@ export async function importAsepriteSources(
   // Single atlas pass for the whole loader (all sources' frames at once).
   await config.atlasManager.processTextureMaps();
 
+  BLUEPRINTS.set(artSetKey, { builds: bpBuilds, animationMapKey });
+
   return { controller: controller ?? null, sprites: allSprites };
+}
+
+/** Creates one per-instance sprite from a blueprint build entry. */
+async function buildInstanceSprite(
+  parent: any,
+  b: InstanceBlueprint['builds'][number],
+): Promise<any> {
+  const sprite = await newComponent(
+    'sprite',
+    {
+      name: b.spriteName,
+      textureMapKeys: { albedo: b.texKey, normal: '', material: '', emission: '' },
+      frame: { albedo: 0, normal: 0, material: 0, emission: 0 },
+      anchor: b.anchor,
+      renderOrder: b.renderOrder,
+      visible: true,
+    },
+    parent,
+  );
+  if (sprite) sprite._generated = true;
+  return sprite ?? null;
+}
+
+/** True when a cached blueprint's shared resources still exist in this scene. */
+function sharedResourcesExist(
+  config: AsepriteSourcesConfig,
+  blueprint: InstanceBlueprint,
+): boolean {
+  if (blueprint.builds.length === 0) return false;
+  const firstTex = config.atlasManager.getTextureMap(blueprint.builds[0].texKey);
+  if (!firstTex) return false;
+  return findAnimationMap(config.sharedParent, blueprint.animationMapKey) !== null;
+}
+
+/**
+ * Blueprint fast-path: rebuild only the per-instance sprites + controller for one
+ * entity, referencing the already-shared texture-maps + animation-map by key.
+ */
+async function spawnFromBlueprint(
+  parent: any,
+  blueprint: InstanceBlueprint,
+  config: AsepriteSourcesConfig,
+): Promise<AsepriteImportResult> {
+  removeGeneratedChildren(parent);
+  await ensureTransform(parent, config.packageId, config);
+
+  const sprites: any[] = [];
+  const layers: any[] = [];
+  for (const b of blueprint.builds) {
+    const sprite = await buildInstanceSprite(parent, b);
+    if (sprite) sprites.push(sprite);
+    layers.push({
+      name: b.spriteName,
+      spriteName: b.spriteName,
+      visible: true,
+      slot: b.slot,
+    });
+  }
+
+  const controller = await newComponent(
+    'animation-controller',
+    {
+      name: `${config.packageId} Anim`,
+      animations: blueprint.animationMapKey,
+      layers,
+      channels: ['albedo'],
+    },
+    parent,
+  );
+  if (controller) controller._generated = true;
+
+  return { controller: controller ?? null, sprites };
+}
+
+/** Finds an animation-map by key anywhere under `sharedParent`. */
+function findAnimationMap(sharedParent: any, key: string): any {
+  const maps = (sharedParent.getComponentsByType('animation-map', true) ??
+    []) as any[];
+  return maps.find((m) => m.animationMapKey === key) ?? null;
+}
+
+/** Returns the shared animation-map for `key`, creating it once if absent. */
+async function getOrCreateAnimationMap(
+  sharedParent: any,
+  key: string,
+  animations: any[],
+): Promise<any> {
+  const existing = findAnimationMap(sharedParent, key);
+  if (existing) return existing;
+  const map = await newComponent(
+    'animation-map',
+    { name: key, animationMapKey: key, animations },
+    sharedParent,
+  );
+  if (map) map._generated = true;
+  return map ?? null;
 }
 
 /**

@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const webpack = require("webpack");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 const CopyPlugin = require("copy-webpack-plugin");
 
@@ -20,11 +21,15 @@ const heroTileCopies = heroTextureIds.map((id) => ({
 
 module.exports = (_env, argv) => {
   const isProd = argv.mode === "production";
+  // GitHub Pages project sites live under /{repo}/ — set BASE_PATH=/omosuen/ in CI.
+  const rawBase = process.env.BASE_PATH ?? "/";
+  const basePath = rawBase.endsWith("/") ? rawBase : `${rawBase}/`;
   return {
     entry: "./src/index.ts",
     output: {
       path: path.resolve(__dirname, "dist"),
       filename: "bundle.[contenthash].js",
+      publicPath: basePath,
       clean: true,
     },
     resolve: {
@@ -47,9 +52,13 @@ module.exports = (_env, argv) => {
       ],
     },
     plugins: [
+      new webpack.DefinePlugin({
+        __BASE_PATH__: JSON.stringify(basePath),
+      }),
       new HtmlWebpackPlugin({
         template: "./index.html",
         inject: "body",
+        templateParameters: { basePath },
       }),
       new CopyPlugin({
         patterns: [

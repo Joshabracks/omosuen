@@ -21,22 +21,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            site/package-lock.json
+          node-version: 24
       - name: Add wasm32 Rust target
         run: rustup target add wasm32-unknown-unknown
       # The site bundles test/dev/omosuen.js, which is gitignored — build it first.
       - name: Build the engine (dev bundle)
         run: |
-          npm ci
+          npm install
           npm run build:dev
       - name: Build the site
         working-directory: site
         run: |
-          npm ci
+          npm install
           npm run typecheck
           npm run build
       - uses: actions/upload-pages-artifact@v3

@@ -11,9 +11,9 @@ const MAP_DEPTH = MAP_SIZE;
 const MAP_HEIGHT = MAP_SIZE;
 
 const TILE_SIZE = 32;
-const AXONOMETRIC_ANGLE = 30;
-/** Inset so the full stepped pyramid clears viewport edges. */
-const ZOOM_PADDING = 0.85;
+const AXONOMETRIC_ANGLE = 15;
+/** Inset margin so the pyramid clears viewport edges. */
+const ZOOM_PADDING = 0.88;
 /** One visible cube per row (trailing x); 10 + 9 + … + 1. */
 const HERO_VISIBLE_CELL_COUNT = (MAP_SIZE * (MAP_SIZE + 1)) / 2;
 
@@ -63,10 +63,8 @@ function projectToIso(x, y, z, angleDeg) {
   };
 }
 
-/** Iso-space half-extents of the pyramid relative to the hero focus point. */
-function getPyramidIsoExtents(mapSize, cell, angleDeg) {
-  const focus = (mapSize / 2) * cell;
-  const camIso = projectToIso(focus, focus, focus, angleDeg);
+/** Iso-space bounds and world focus that centers the visible pyramid shell. */
+function getPyramidFrame(mapSize, cell, angleDeg) {
   let minX = Infinity;
   let maxX = -Infinity;
   let minY = Infinity;
@@ -86,21 +84,39 @@ function getPyramidIsoExtents(mapSize, cell, angleDeg) {
     }
   });
 
+  const isoCenterX = (minX + maxX) / 2;
+  const isoCenterY = (minY + maxY) / 2;
+  const rad = (angleDeg * Math.PI) / 180;
+  const sinA = Math.sin(rad);
+  const heightScale = Math.cos(rad) * 1.1547005383792515;
+  const isoH = 0.8660254037844386;
+  const plane = (mapSize / 2) * cell;
+  const focusX = plane;
+  const focusZ = plane - isoCenterX / isoH;
+  const focusY = (sinA * (focusX + focusZ) - isoCenterY) / heightScale;
+
   return {
-    halfWidth: Math.max(Math.abs(maxX - camIso.x), Math.abs(minX - camIso.x)),
-    halfHeight: Math.max(Math.abs(maxY - camIso.y), Math.abs(minY - camIso.y)),
+    focusX,
+    focusY,
+    focusZ,
+    halfWidth: (maxX - minX) / 2,
+    halfHeight: (maxY - minY) / 2,
   };
 }
 
+const PYRAMID_FRAME = getPyramidFrame(MAP_SIZE, CELL, AXONOMETRIC_ANGLE);
+
 function computeHeroZoom(viewportWidth, viewportHeight) {
-  const { halfWidth, halfHeight } = getPyramidIsoExtents(
-    MAP_SIZE,
-    CELL,
-    AXONOMETRIC_ANGLE,
-  );
-  const fitZoom = Math.min(
-    viewportWidth / (2 * halfWidth),
-    viewportHeight / (2 * halfHeight),
+  if (viewportWidth <= 0 || viewportHeight <= 0) return 1;
+
+  // Rendering uses projScale = zoom² (see camera/screen-pick/ray.ts), so iso extent
+  // E lands at E * zoom² pixels from center. Fit both axes; use the tighter bound.
+  const maxZoomSqByWidth =
+    viewportWidth / (2 * PYRAMID_FRAME.halfWidth);
+  const maxZoomSqByHeight =
+    viewportHeight / (2 * PYRAMID_FRAME.halfHeight);
+  const fitZoom = Math.sqrt(
+    Math.min(maxZoomSqByWidth, maxZoomSqByHeight),
   );
   return fitZoom * ZOOM_PADDING;
 }
@@ -109,6 +125,48 @@ function applyCameraZoom(scene, viewportWidth, viewportHeight) {
   const camera = scene.getComponentByType('camera', true);
   if (!camera) return;
   camera.setZoom(computeHeroZoom(viewportWidth, viewportHeight));
+}
+
+function styleViewportContainer(container, canvas) {
+  container.style.position = 'fixed';
+  container.style.inset = '0';
+  container.style.width = '100%';
+  container.style.height = '100%';
+  container.style.zIndex = '0';
+  container.style.pointerEvents = 'none';
+  container.style.overflow = 'hidden';
+
+  if (canvas) {
+    canvas.style.display = 'block';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+  }
+}
+
+function syncHeroViewport(scene, viewport) {
+  const canvas = viewport.canvas;
+  if (!canvas) return;
+
+  const width = Math.round(canvas.clientWidth);
+  const height = Math.round(canvas.clientHeight);
+  if (width <= 0 || height <= 0) return;
+
+  if (width !== viewport.width || height !== viewport.height) {
+    viewport.resize(width, height);
+  }
+  applyCameraZoom(scene, width, height);
+}
+
+function installHeroViewportFit(scene, viewport) {
+  const target = viewport.container ?? viewport.canvas;
+  if (!target) return;
+
+  const observer = new ResizeObserver(() => {
+    syncHeroViewport(scene, viewport);
+  });
+
+  observer.observe(target);
+  requestAnimationFrame(() => syncHeroViewport(scene, viewport));
 }
 
 /**
@@ -178,13 +236,6 @@ function buildHeroTextureLoads(atlasManager, gridOne, scene) {
   return loads;
 }
 
-function styleViewportContainer(container) {
-  container.style.position = 'fixed';
-  container.style.inset = '0';
-  container.style.zIndex = '0';
-  container.style.pointerEvents = 'none';
-}
-
 export async function createScene() {
   await loadHeroTextureIds();
 
@@ -226,15 +277,11 @@ export async function createScene() {
   ]);
 
   const viewport = scene.getComponentByName('omosuen-viewport', true);
-  if (viewport && viewport.container) {
-    styleViewportContainer(viewport.container);
+  if (viewport?.container) {
+    styleViewportContainer(viewport.container, viewport.canvas);
   }
 
   const { materialMap, shapeMap } = generateQbertPyramid(MAP_SIZE);
-
-  const focusX = (MAP_SIZE / 2) * CELL;
-  const focusZ = (MAP_SIZE / 2) * CELL;
-  const focusY = (MAP_SIZE / 2) * CELL;
 
   const cameraNexus = await Omosuen.newComponent(
     'nexus',
@@ -245,7 +292,11 @@ export async function createScene() {
     'transform',
     {
       name: 'Site Camera Transform',
-      position: new Omosuen.Vector3D(focusX, focusY, focusZ),
+      position: new Omosuen.Vector3D(
+        PYRAMID_FRAME.focusX,
+        PYRAMID_FRAME.focusY,
+        PYRAMID_FRAME.focusZ,
+      ),
     },
     cameraNexus,
   );
@@ -261,7 +312,11 @@ export async function createScene() {
     cameraNexus,
   );
 
-  await Omosuen.newComponent(
+  if (viewport) {
+    installHeroViewportFit(scene, viewport);
+  }
+
+  const cellMap = await Omosuen.newComponent(
     'cell-map',
     {
       name: 'Hero Terrain',
@@ -276,6 +331,16 @@ export async function createScene() {
     scene,
   );
 
+  const heroCharactersUrl = new URL(
+    `./hero-characters.js?t=${Date.now()}`,
+    import.meta.url,
+  ).href;
+  const { initHeroCharacters } = await import(heroCharactersUrl);
+  await initHeroCharacters(scene, cellMap, {
+    mapSize: MAP_SIZE,
+    cellSize: CELL,
+  });
+
   const ambientNexus = await Omosuen.newComponent(
     'nexus',
     { name: 'Ambient Light Nexus' },
@@ -288,7 +353,7 @@ export async function createScene() {
       lightType: 'ambient',
       // Lapis-tinted fill — keeps parchment tiles muted against the UI.
       color: new Omosuen.Vector3D(0.45, 0.52, 0.78),
-      brightness: 0.55,
+      brightness: 0.5,
     },
     ambientNexus,
   );
@@ -304,8 +369,8 @@ export async function createScene() {
       name: 'Key Light',
       lightType: 'directional',
       color: new Omosuen.Vector3D(0.7, 0.74, 0.9),
-      brightness: 0.22,
-      direction: new Omosuen.Vector3D(0.5, -0.8, 0.4),
+      brightness: 0.5,
+      direction: new Omosuen.Vector3D(0.0, -0.25, 0.4),
     },
     dirLightNexus,
   );
@@ -321,16 +386,6 @@ export async function createScene() {
     },
   });
   scene.addComponent(overlay);
-
-  window.addEventListener('resize', () => {
-    const vp = scene.getComponentByName('omosuen-viewport', true);
-    if (vp) {
-      const w = window.innerWidth;
-      const h = window.innerHeight;
-      vp.resize(w, h);
-      applyCameraZoom(scene, w, h);
-    }
-  });
 
   return scene;
 }

@@ -1,17 +1,21 @@
+const fs = require("fs");
 const path = require("path");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 const CopyPlugin = require("copy-webpack-plugin");
 
 const root = path.resolve(__dirname, "..");
-const heroTilesDir = path.join(
+const siteTilesDir = path.join(__dirname, "assets/tiles");
+const designTilesDir = path.join(
   root,
   ".design/website/BaT_v2.0/LapisSin/single_textures",
 );
+const heroTilesDir = fs.existsSync(siteTilesDir) ? siteTilesDir : designTilesDir;
 const heroTextureIds = require("./src/scenes/hero-texture-ids.json");
 
 const heroTileCopies = heroTextureIds.map((id) => ({
   from: path.join(heroTilesDir, `texture${id}.png`),
   to: `assets/tiles/texture${id}.png`,
+  noErrorOnMissing: true,
 }));
 
 module.exports = (_env, argv) => {
@@ -35,7 +39,7 @@ module.exports = (_env, argv) => {
         { test: /\.ts$/, use: "ts-loader", exclude: /node_modules/ },
         {
           test: /\.m?js$/,
-          include: /node_modules[\\/]omosuen-state-overlay/,
+          include: /node_modules[\\/]omosuen-(state-overlay|aseprite-loader)/,
           resolve: { fullySpecified: false },
         },
         { test: /\.css$/, use: ["style-loader", "css-loader"] },
@@ -60,19 +64,32 @@ module.exports = (_env, argv) => {
           },
           ...heroTileCopies,
           { from: "src/scenes/site.js", to: "scenes/site.js" },
+          { from: "src/scenes/hero-characters.js", to: "scenes/hero-characters.js" },
           { from: "src/scenes/hero-texture-ids.json", to: "scenes/hero-texture-ids.json" },
+          { from: "assets", to: "assets/characters" },
         ],
       }),
     ],
     devServer: {
       static: [
+        // Live scene modules — must come before `dist` so dev edits win over
+        // stale copies left in dist/ from the last production build.
+        {
+          directory: path.resolve(__dirname, "src/scenes"),
+          publicPath: "/scenes",
+          watch: true,
+        },
         { directory: path.resolve(__dirname, "dist") },
         {
           directory: heroTilesDir,
           publicPath: "/assets/tiles",
           watch: true,
         },
-        { directory: path.resolve(__dirname, "src/scenes"), publicPath: "/scenes" },
+        {
+          directory: path.resolve(__dirname, "assets"),
+          publicPath: "/assets/characters",
+          watch: true,
+        },
       ],
       watchFiles: ["src/scenes/**/*.{js,json}"],
       port: 8080,

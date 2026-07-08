@@ -1,37 +1,46 @@
 import type { SiteCtx } from "../types";
 
-export function siteHeader(_ctx: SiteCtx): string {
+export function siteHeader(ctx: SiteCtx): string {
+  const onDocs = ctx.state.data.view === "docs";
+  const docsActive = onDocs ? " site-header__link--active" : "";
+
   return `
     <header class="site-header">
       <a class="site-header__brand" href="#landing">
         <img class="site-header__logo" src="assets/text-logo-lapis-sin.svg" alt="Omosuen" width="160" height="32" />
       </a>
       <nav class="site-header__nav" aria-label="Primary">
-        <a class="site-header__link" href="#docs">Docs</a>
-        <a class="site-header__link" href="#demos">Demos</a>
-        <a class="site-header__link" href="#game">Colony Forever</a>
-        <a class="site-header__link site-header__link--cta" href="#download">Download</a>
+        <a class="site-header__link${docsActive}" href="#docs" ${onDocs ? 'aria-current="page"' : ""}>Docs</a>
       </nav>
     </header>
   `;
 }
 
 export function siteFooter(ctx: SiteCtx): string {
+  if (ctx.state.data.view === "docs") {
+    return "";
+  }
   const version = ctx.state.data.engineVersion as string;
   return `
     <footer class="site-footer">
       <div class="site-footer__rule" aria-hidden="true"></div>
       <div class="site-footer__inner">
         <img class="site-footer__logo" src="assets/text-logo-lapis-sin.svg" alt="Omosuen" width="120" height="24" />
-        <p class="site-footer__text">
-          Axonometric WebGL2 engine — zero runtime dependencies.
-          <a href="https://discord.gg/ME82Z3D8yg" target="_blank" rel="noopener noreferrer">Discord</a>
-          ·
-          <a href="https://github.com/Joshabracks/omosuen" target="_blank" rel="noopener noreferrer">GitHub</a>
-          · Hero textures from
-          <a href="https://morain.itch.io/backgrounds-and-textures" target="_blank" rel="noopener noreferrer">Morain</a>
-          (Backgrounds &amp; Textures), recolored for Lapis Sin.
-        </p>
+        <ul class="site-footer__list">
+          <li class="site-footer__item">Axonometric WebGL2 engine — zero runtime dependencies.</li>
+          <li class="site-footer__item">
+            <a href="https://discord.gg/ME82Z3D8yg" target="_blank" rel="noopener noreferrer">Discord</a>
+          </li>
+          <li class="site-footer__item">
+            <a href="https://github.com/Joshabracks/omosuen" target="_blank" rel="noopener noreferrer">GitHub</a>
+          </li>
+          <li class="site-footer__item">
+            Hero textures from&nbsp;<a href="https://morain.itch.io/backgrounds-and-textures" target="_blank" rel="noopener noreferrer">Morain</a>&nbsp;(Backgrounds &amp; Textures), recolored for Lapis Sin.
+          </li>
+          <li class="site-footer__item">
+            Hero sprites from&nbsp;<a href="https://lyaseek.itch.io/" target="_blank" rel="noopener noreferrer">Lyaseek</a>&nbsp;(MiniFolks Demons).
+          </li>
+        </ul>
         <p class="site-footer__version"><span class="hud-tag">BUILD</span> v${version}</p>
       </div>
     </footer>
@@ -119,7 +128,7 @@ export function landingQuickstart(_ctx: SiteCtx): string {
           <span class="terminal__dot"></span>
           <span class="terminal__label">omosuen.boot</span>
         </div>
-        <pre class="code-block"><code><span class="comment">// index.html loads omosuen.js, then your entry script</span>
+        <pre class="code-block"><code :raw=highlightSST>// index.html loads omosuen.js, then your entry script
 await Omosuen.init();
 Omosuen.registerSceneModule('main', './scenes/main.js');
 await Omosuen.switchScene('main');
@@ -130,6 +139,10 @@ Omosuen.start(60);</code></pre>
 }
 
 export function landingPage(ctx: SiteCtx): string {
+  if (ctx.state.data.view !== "landing") {
+    return "";
+  }
+
   return `
     ${landingHero(ctx)}
     ${landingFeatures(ctx)}

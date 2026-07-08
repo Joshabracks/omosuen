@@ -99,7 +99,7 @@ uniform vec3 u_dirLightDir[MAX_DIR_LIGHTS];
 uniform vec3 u_dirLightColor[MAX_DIR_LIGHTS];
 uniform float u_dirLightBrightness[MAX_DIR_LIGHTS];
 
-const int MAX_POINT_LIGHTS = 8;
+const int MAX_POINT_LIGHTS = 64;
 uniform int u_numPointLights;
 uniform vec3 u_pointLightPos[MAX_POINT_LIGHTS];
 uniform vec3 u_pointLightColor[MAX_POINT_LIGHTS];
@@ -209,6 +209,17 @@ vec3 cellEmissionColorAt(vec3 cell) {
     float v = (cell.y + cell.z * u_mapSize.y + 0.5)
               / (u_mapSize.y * u_mapSize.z);
     return texture2D(u_cellEmissionColor, vec2(u, v)).rgb;
+}
+
+// Map a face fragment to the solid cell that owns it. `a_origPosition` sits on
+// cell corners, so a naive floor(orig/cellSize) lands in the neighbor cell on
+// +X/+Y/+Z faces (and breaks the top row, where y+1 is out of map bounds).
+vec3 emissionCellFromFace(vec3 orig, vec3 normal) {
+    vec3 cell = floor(orig / u_cellSize);
+    if(normal.x > 0.5) cell.x -= 1.0;
+    if(normal.y > 0.5) cell.y -= 1.0;
+    if(normal.z > 0.5) cell.z -= 1.0;
+    return cell;
 }
 
 // 3D DDA ray march using continuous cell-space positions (Amanatides & Woo).
@@ -558,7 +569,7 @@ void main() {
         // `albedo.rgb*lighting + albedo.rgb*v_emission`.
         vec3 emissionSample = u_hasEmissionTexture ? emissionTexColor : albedo.rgb;
         vec3 highlight = u_hasCellEmissionColor
-            ? cellEmissionColorAt(floor(v_origWorldPos / u_cellSize))
+            ? cellEmissionColorAt(emissionCellFromFace(v_origWorldPos, v_worldNormal))
             : vec3(0.0);
         vec3 cellColor = albedo.rgb * lighting
                        + emissionSample * v_emission

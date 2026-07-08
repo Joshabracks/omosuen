@@ -12,6 +12,13 @@ import { initialState } from './state';
 
 const Omosuen = window.Omosuen;
 
+/** Engine scene loader resolves `./foo` to `/foo`; prefix the Pages base path. */
+function absoluteScenePath(relativePath: string): string {
+  const path = relativePath.replace(/^\.\//, '');
+  if (__BASE_PATH__ === '/') return `/${path}`;
+  return `${__BASE_PATH__}${path}`;
+}
+
 function registerSiteBundle(): void {
   registerStateBundle('site-chrome', {
     template: `
@@ -52,7 +59,7 @@ async function boot(): Promise<void> {
     plugins: [stateOverlayDefinition, asepriteLoaderDefinition],
   });
   registerSiteBundle();
-  Omosuen.registerSceneModule('site', './scenes/site.js');
+  Omosuen.registerSceneModule('site', absoluteScenePath('./scenes/site.js'));
   await Omosuen.switchScene('site');
   Omosuen.start(60);
 }

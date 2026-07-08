@@ -48,6 +48,9 @@ interface OmosuenGlobal {
 }
 
 declare global {
+  /** Webpack DefinePlugin — `/` locally, `/omosuen/` on GitHub Pages. */
+  const __BASE_PATH__: string;
+
   interface Window {
     Omosuen: OmosuenGlobal;
   }

@@ -1,0 +1,29 @@
+{
+  "name": "omosuen-site",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Official Omosuen website — landing, docs, and demos.",
+  "scripts": {
+    "predev": "npm run build:deps",
+    "dev": "webpack serve --mode development",
+    "prebuild": "npm run build:deps",
+    "build": "webpack --mode production",
+    "build:deps": "npm run build:dev --prefix ..",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "copy-webpack-plugin": "^14.0.0",
+    "css-loader": "^6.10.0",
+    "html-webpack-plugin": "^5.6.0",
+    "omosuen": "file:..",
+    "style-loader": "^3.3.4",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.6.0",
+    "webpack": "^5.95.0",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^5.0.4"
+  },
+  "dependencies": {
+    "omosuen-state-overlay": "github:joshabracks/omosuen#state-overlay0.0.6"
+  }
+}

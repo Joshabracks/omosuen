@@ -45,6 +45,9 @@ const scratchScalar = new Float32Array(1);
 /** Pixels of overscan padding added to FBO dimensions (1px border each side). */
 export const FBO_OVERSCAN_PX = 2;
 
+/** Max point lights uploaded per frame (must match unified.frag). */
+export const MAX_POINT_LIGHTS = 64;
+
 /** Default ambient color when no lights are in the scene. */
 const DEFAULT_AMBIENT_COLOR: [number, number, number] = [0.4, 0.4, 0.4];
 
@@ -103,7 +106,7 @@ export function cacheLightUniformLocations(
   const spBrightness: (WebGLUniformLocation | null)[] = [];
   const spRadius: (WebGLUniformLocation | null)[] = [];
   const spHardness: (WebGLUniformLocation | null)[] = [];
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < MAX_POINT_LIGHTS; i++) {
     ptPos[i] = gl.getUniformLocation(program, `u_pointLightPos[${i}]`);
     ptColor[i] = gl.getUniformLocation(program, `u_pointLightColor[${i}]`);
     ptBrightness[i] = gl.getUniformLocation(
@@ -211,7 +214,9 @@ export function setLightUniforms(
         false,
       ) as TransformT | null;
       if (!siblingTransform) continue;
-      const pos = siblingTransform.position;
+      // World position — lights are often nested under grouping nexuses.
+      if (light.brightness <= 0) continue;
+      const pos = siblingTransform.worldPosition;
       if (light.lightType === 'point') {
         _pointLightsArr.push({ light, pos });
       } else {
@@ -287,8 +292,8 @@ export function setLightUniforms(
     gl.uniform1fv(locDirBrightness[i], scratchScalar);
   }
 
-  // Point lights (capped at 8)
-  const numPoint = Math.min(_pointLightsArr.length, 8);
+  // Point lights (capped at MAX_POINT_LIGHTS)
+  const numPoint = Math.min(_pointLightsArr.length, MAX_POINT_LIGHTS);
   gl.uniform1i(locNumPoint, numPoint);
   for (let i = 0; i < numPoint; i++) {
     const { light: l, pos } = _pointLightsArr[i];

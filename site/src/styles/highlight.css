@@ -1,0 +1,14 @@
+/* Token colors for :raw=highlightSST code blocks (see highlight.ts). */
+
+.code-block .hl-comment { color: var(--text-muted); font-style: italic; }
+.code-block .hl-keyword { color: var(--warning); }
+.code-block .hl-string  { color: var(--success); }
+.code-block .hl-number  { color: #e8915a; }
+.code-block .hl-tag     { color: #7fa6c4; }
+.code-block .hl-comp    { color: var(--accent-hover); font-weight: 600; }
+.code-block .hl-attr    { color: var(--text-muted); }
+.code-block .hl-event   { color: var(--accent-hover); }
+.code-block .hl-fn      { color: var(--warning); }
+.code-block .hl-interp  { color: var(--accent-hover); }
+.code-block .hl-var     { color: var(--parchment); }
+.code-block .hl-punct   { color: var(--text-muted); }

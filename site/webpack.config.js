@@ -75,7 +75,11 @@ module.exports = (_env, argv) => {
           { from: "src/scenes/site.js", to: "scenes/site.js" },
           { from: "src/scenes/hero-characters.js", to: "scenes/hero-characters.js" },
           { from: "src/scenes/hero-texture-ids.json", to: "scenes/hero-texture-ids.json" },
-          { from: "assets", to: "assets/characters" },
+          {
+            from: "assets",
+            to: "assets/characters",
+            globOptions: { ignore: ["**/tiles/**"] },
+          },
         ],
       }),
     ],

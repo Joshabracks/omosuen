@@ -26,6 +26,7 @@ export interface ViewportT
   canvas: HTMLCanvasElement | null;
   gl: WebGL2RenderingContext | null;
   container: HTMLElement;
+  autoResize: boolean;
 }
 
 export interface ViewportOptions extends ComponentOptions {
@@ -34,6 +35,7 @@ export interface ViewportOptions extends ComponentOptions {
   offsetX?: number;
   offsetY?: number;
   backgroundColor?: Vector4D;
+  autoResize?: boolean;
 }
 
 /**
@@ -112,6 +114,7 @@ export function builder(options: ViewportOptions): ViewportT {
     canvas,
     gl,
     container,
+    autoResize: options.autoResize ?? true,
   };
 
   return viewport as unknown as ViewportT;
@@ -133,6 +136,7 @@ function serialize(component: ComponentData): any {
     height: v.height,
     offsetX: v.offsetX,
     offsetY: v.offsetY,
+    autoResize: v.autoResize,
     backgroundColor: {
       _vectorType: 'Vector4D',
       x: v.backgroundColor.x,
@@ -164,7 +168,16 @@ function deserialize(data: any): DeserializeResult<ViewportT> {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-  const { type, name, width, height, offsetX, offsetY, backgroundColor } = data;
+  const {
+    type,
+    name,
+    width,
+    height,
+    offsetX,
+    offsetY,
+    autoResize,
+    backgroundColor,
+  } = data;
 
   if (type !== 'viewport') {
     errors.push({
@@ -217,6 +230,7 @@ function deserialize(data: any): DeserializeResult<ViewportT> {
       height: height as number,
       offsetX: offsetX as number,
       offsetY: offsetY as number,
+      autoResize: autoResize as boolean | undefined,
       backgroundColor: bgColor,
     }),
     errors,
@@ -241,4 +255,5 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'canvas',
   'gl',
   'container',
+  'autoResize',
 ];

@@ -54,10 +54,24 @@ export const Viewport: ViewportMethods = {
 
   /**
    * Updates the viewport each frame.
-   * Currently a no-op, but can be extended for auto-resize or other per-frame logic.
+   * Detects when the canvas's rendered CSS size no longer matches the stored
+   * drawing-buffer size and re-syncs via resize(), so the WebGL buffer follows
+   * a responsively laid-out canvas (e.g. CSS width: 100%).
    */
-  update(_component: ComponentData, _deltaTime: number) {
-    // Reserved for future use (e.g., auto-resize detection, performance monitoring)
+  update(component: ComponentData, _deltaTime: number) {
+    const v = component as ViewportT;
+    if (!v.autoResize || !v.canvas) return;
+
+    const displayWidth = v.canvas.clientWidth;
+    const displayHeight = v.canvas.clientHeight;
+
+    // Skip when the element isn't laid out yet (display:none / detached => 0).
+    // Resizing to a 0-sized buffer would blank the viewport.
+    if (displayWidth === 0 && displayHeight === 0) return;
+
+    if (displayWidth !== v.width || displayHeight !== v.height) {
+      this.resize(v, displayWidth, displayHeight);
+    }
   },
 
   /**

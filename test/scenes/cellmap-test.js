@@ -43,7 +43,9 @@ Omosuen.registerHtmlConstructor('cellmapTest', (overlay) => {
                 <div class="sidebar-status" style="font-size: 12px; line-height: 1.6;">
                     <strong>Move:</strong> WASD keys<br>
                     <strong>Pan:</strong> Middle-click + drag<br>
-                    <strong>Zoom:</strong> Mouse wheel
+                    <strong>Zoom:</strong> Mouse wheel<br>
+                    <strong>Orbit:</strong> ←/→ arrows<br>
+                    <strong>Tilt:</strong> ↑/↓ arrows
                 </div>
 
                 <div id="camera-status" class="sidebar-status" style="margin-top: 10px;"></div>
@@ -164,7 +166,7 @@ function updateCameraStatus() {
     if (cameraTransform && camera) {
         const statusEl = document.getElementById('camera-status');
         if (statusEl) {
-            statusEl.innerHTML = `Position: (${Math.round(cameraTransform.position.x)}, ${Math.round(cameraTransform.position.z)})<br>Zoom: ${camera.zoom.toFixed(2)}x`;
+            statusEl.innerHTML = `Position: (${Math.round(cameraTransform.position.x)}, ${Math.round(cameraTransform.position.z)})<br>Zoom: ${camera.zoom.toFixed(2)}x<br>Orbit: ${camera.orbitYaw.toFixed(0)}°, Tilt: ${camera.axonometricAngle.toFixed(0)}°`;
         }
     }
 }
@@ -517,6 +519,18 @@ export async function createScene() {
     }, cameraNexus)
 
     console.log('[CellMap Test] Camera created');
+
+    // Arrow keys = orbit yaw / tilt. WASD already drives the indoor player-character
+    // (below), so camera orbit/tilt use a separate key group here rather than W/S.
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowLeft') camera.orbitBy(-15);
+        else if (e.key === 'ArrowRight') camera.orbitBy(15);
+        else if (e.key === 'ArrowUp') camera.axonometricAngle = Math.min(90, camera.axonometricAngle + 5);
+        else if (e.key === 'ArrowDown') camera.axonometricAngle = Math.max(0, camera.axonometricAngle - 5);
+        else return;
+        e.preventDefault(); // arrow keys default-scroll the page otherwise
+        updateCameraStatus();
+    });
 
     // 5. Create InputController for camera controls
     const inputController = await Omosuen.newComponent('input-controller', {

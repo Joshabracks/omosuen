@@ -1,7 +1,7 @@
 # Omosuen
 
-An axonometric game engine with a fixed z-axis camera. *Etymology: **Omos** (Greek:
-shoulder/axis) + **Suen** (Mesopotamian moon deity / measurement).*
+An axonometric game engine with an orbiting orthographic camera. *Etymology: **Omos**
+(Greek: shoulder/axis) + **Suen** (Mesopotamian moon deity / measurement).*
 
 Omosuen is a TypeScript engine that ships as a single self-contained UMD bundle. It
 renders with WebGL2, runs hot paths (voxel meshing, visibility, audio time-stretch) in
@@ -198,11 +198,15 @@ colliders overlap it. Same geometry options as `collider`:
 - `offsetX?: number` (default `0`), `offsetY?: number` (default `0`) — placement on screen
 - `backgroundColor?: Vector4D` (default `(0,0,0,1)`)
 
-**`camera`** — Axonometric renderer into a viewport; pixel-perfect zoom and a Y-slice reveal
-for fog-of-war/occlusion. *Unique: one per parent nexus.*
+**`camera`** — Axonometric renderer into a viewport; pixel-perfect zoom, orbit yaw, and a
+Y-slice reveal for fog-of-war/occlusion. *Unique: one per parent nexus.*
 - `viewportRef: string` (**required**) — name of the viewport to render into
 - `zoom?: number` (default `1.0`), `pixelScale?: number` (default `2.0`)
-- `axonometricAngle?: number` (default `30`) — degrees
+- `axonometricAngle?: number` (default `30`) — pitch, degrees
+- `orbitYaw?: number` (default `0`) — degrees, rotates world X/Z around +Y before the
+  orthographic projection; `0` matches the original fixed-azimuth view. Set via
+  `setOrbitYaw(degrees)` or `orbitBy(deltaDegrees)`. Still no perspective/FOV or free
+  6DOF — the projection stays orthographic-axonometric, only the azimuth moves.
 - `revealYOffset?: number` (default `16.0`), `revealFadeHeight?: number` (default `8.0`), `revealRadius?: number` (default `256.0`) — Y-slice reveal tuning
 
 **`sprite`** — Multi-channel billboard; per-channel frame selection, tint, opacity, optional
@@ -216,7 +220,7 @@ silhouette. *Unique: one per parent nexus.*
 **`cell-map`** — Voxel grid (material/shape/emission/visibility per cell); WASM-backed RLE
 store with greedy/smoothed meshing.
 - `materials: Material[]` (**required**) — each `Material` bundles `{ albedoTextureKey, normalTextureKey, emissionTextureKey, materialTextureKey: string }` and a frame index per channel `{ albedoFrame, normalFrame, emissionFrame, materialFrame?: number (default 0) }`
-  - `sides?: { up?, southEast?, southWest?: { albedoFrame?, normalFrame?: number } }` — per-visible-side texture override (the only three faces the axonometric camera shows: `up` = +Y, `southEast` = +X, `southWest` = +Z). Omitted sides/channels fall back to the base frame, so a material with no `sides` renders unchanged. Per-side frames must be frames of the **same** texture-map as the base (single atlas page); albedo + normal only.
+  - `sides?: { up?, southEast?, southWest?: { albedoFrame?, normalFrame?: number } }` — per-visible-side texture override (`up` = +Y, `southEast` = +X, `southWest` = +Z — the three faces the camera shows at `orbitYaw = 0`). Omitted sides/channels fall back to the base frame, so a material with no `sides` renders unchanged. Per-side frames must be frames of the **same** texture-map as the base (single atlas page); albedo + normal only. These names assume `orbitYaw` near `0`/`90`/`180`/`270`; at other yaws the camera sees faces these overrides don't cover, so authors relying on `sides` should snap orbit to those angles (a yaw-aware per-side remap is a possible follow-up, not implemented here).
   - `smoothness?: number` (0–15) — per-cell-type smoothing weight that overrides `smoothingWeights` for cells of this material; omit to use the map/per-cell weight.
 - `cellSize: Vector3D` (**required**), `mapSize: Vector3D` (**required**)
 - `materialMap: Array3D<number>` (**required**)

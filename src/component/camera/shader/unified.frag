@@ -115,29 +115,13 @@ uniform float u_spotLightBrightness[MAX_SPOT_LIGHTS];
 uniform float u_spotLightRadius[MAX_SPOT_LIGHTS];
 uniform float u_spotLightHardness[MAX_SPOT_LIGHTS];
 
-    // Axonometric angle uniform
-uniform float u_axonometricAngle;
-
     // Varying inputs (shared)
 varying vec2 v_uv;
-varying vec3 v_normal;
 varying vec3 v_worldPos;
 varying vec2 v_screenPos;
 varying vec3 v_worldNormal;
 varying vec3 v_origWorldPos;
 varying float v_emission;
-
-// Transform world direction to isometric screen space
-// Same projection matrix as the vertex shader
-vec3 worldDirToIso(vec3 d) {
-    const float ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
-    float sinA = sin(radians(u_axonometricAngle));
-    return normalize(vec3(
-        d.x * ISO_H - d.z * ISO_H,
-        d.x * sinA - d.y + d.z * sinA,
-        0.0
-    ));
-}
 
 // Distance attenuation with hardness control
 float attenuate(float dist, float radius, float hardness) {
@@ -145,7 +129,10 @@ float attenuate(float dist, float radius, float hardness) {
     return 1.0 - smoothstep(inner, radius, dist);
 }
 
-// Compute lighting from all dynamic light sources
+// Compute lighting from all dynamic light sources. `normal` must be a true
+// world-space unit normal — the dot products below are genuine 3D Lambertian
+// terms, so lighting is independent of camera orientation (orbit yaw/tilt)
+// by construction, unlike the old iso-projected-space dot product this replaced.
 vec3 computeLighting(vec3 normal, vec3 worldPos) {
     // Ambient
     vec3 lighting = u_ambientColor * u_ambientBrightness;
@@ -153,8 +140,7 @@ vec3 computeLighting(vec3 normal, vec3 worldPos) {
     // Directional lights (normal-dependent diffuse)
     for (int i = 0; i < MAX_DIR_LIGHTS; i++) {
         if (i >= u_numDirLights) break;
-        vec3 isoDir = worldDirToIso(-u_dirLightDir[i]);
-        float diff = max(dot(normal, isoDir), 0.0);
+        float diff = max(dot(normal, normalize(-u_dirLightDir[i])), 0.0);
         lighting += u_dirLightColor[i] * u_dirLightBrightness[i] * diff;
     }
 
@@ -165,8 +151,7 @@ vec3 computeLighting(vec3 normal, vec3 worldPos) {
         float dist = length(toLight);
         if (dist >= u_pointLightRadius[i]) continue;
         float atten = attenuate(dist, u_pointLightRadius[i], u_pointLightHardness[i]);
-        vec3 isoDir = worldDirToIso(normalize(toLight));
-        float diff = max(dot(normal, isoDir), 0.0);
+        float diff = max(dot(normal, normalize(toLight)), 0.0);
         lighting += u_pointLightColor[i] * u_pointLightBrightness[i] * diff * atten;
     }
 
@@ -465,6 +450,11 @@ void main() {
 
         vec4 albedo;
         vec3 finalNormal;
+        // True world-space base normal (flat-shaded per-face normal). Normal-map
+        // perturbations below are converted into this same world space (rather than
+        // the old iso-projected pseudo-space) so lighting stays camera-orientation-
+        // independent — see computeLighting.
+        vec3 baseNormal = normalize(v_worldNormal);
         // Emissive-texture color (Part B), sampled alongside albedo only when a
         // material provides an emission texture; otherwise falls back to albedo below.
         vec3 emissionTexColor = vec3(0.0);
@@ -477,22 +467,26 @@ void main() {
             // no `sides`, so back-compat is preserved (all faces show the base frame).
             vec3 an = abs(v_worldNormal);
             vec4 ab, nb;
-            if(an.x >= an.y && an.x >= an.z) { ab = u_albedoBoundsYZ; nb = u_normalBoundsYZ; } // +X side
-            else if(an.y >= an.z)            { ab = u_albedoBoundsXZ; nb = u_normalBoundsXZ; } // +Y up
-            else                             { ab = u_albedoBoundsXY; nb = u_normalBoundsXY; } // +Z side
+            int axis; // 0 = +X side (YZ plane), 1 = +Y up (XZ plane), 2 = +Z side (XY plane)
+            if(an.x >= an.y && an.x >= an.z) { ab = u_albedoBoundsYZ; nb = u_normalBoundsYZ; axis = 0; }
+            else if(an.y >= an.z)            { ab = u_albedoBoundsXZ; nb = u_normalBoundsXZ; axis = 1; }
+            else                             { ab = u_albedoBoundsXY; nb = u_normalBoundsXY; axis = 2; }
             albedo = texture2D(u_albedoTexture, mix(ab.xy, ab.zw, v_uv));
             if(u_hasEmissionTexture) {
-                vec4 eb = (an.x >= an.y && an.x >= an.z) ? u_emissionBoundsYZ
-                        : (an.y >= an.z)                 ? u_emissionBoundsXZ
-                        :                                  u_emissionBoundsXY;
+                vec4 eb = axis == 0 ? u_emissionBoundsYZ : axis == 1 ? u_emissionBoundsXZ : u_emissionBoundsXY;
                 emissionTexColor = texture2D(u_emissionTexture, mix(eb.xy, eb.zw, v_uv)).rgb;
             }
             if(u_hasNormal) {
                 vec2 nUV = mix(nb.xy, nb.zw, v_uv);
-                vec3 normalMap = texture2D(u_normalTexture, nUV).rgb * 2.0 - 1.0;
-                finalNormal = normalize(v_normal + normalMap * 0.5);
+                vec3 nm = texture2D(u_normalTexture, nUV).rgb * 2.0 - 1.0;
+                // Map the tangent-space sample (r,g,b) onto this plane's world axes —
+                // matches the (u,v) = (z,-y) / (x,z) / (x,-y) sampling convention below.
+                vec3 pert = axis == 0 ? vec3(sign(v_worldNormal.x) * nm.b, -nm.g, nm.r)
+                          : axis == 1 ? vec3(nm.r, sign(v_worldNormal.y) * nm.b, nm.g)
+                          :             vec3(nm.r, -nm.g, sign(v_worldNormal.z) * nm.b);
+                finalNormal = normalize(baseNormal + pert * 0.5);
             } else {
-                finalNormal = normalize(v_normal);
+                finalNormal = baseNormal;
             }
         } else {
             // Triplanar world-space mapping (default for cubes + non-UV shapes).
@@ -527,21 +521,29 @@ void main() {
                 emissionTexColor = (emYZ * blendWeights.x + emXZ * blendWeights.y + emXY * blendWeights.z).rgb;
             }
 
-            // Triplanar normal mapping (if available)
+            // Triplanar normal mapping (if available). Each plane's tangent-space
+            // sample is converted to a world-space perturbation BEFORE blending
+            // (each plane maps its own (u,v,n) onto different world axes, so they
+            // can't be blended as raw texture values the way albedo can).
             if(u_hasNormal) {
                 vec2 normalAtlasUV_YZ = mix(u_normalBoundsYZ.xy, u_normalBoundsYZ.zw, normalizedUV_YZ);
                 vec2 normalAtlasUV_XZ = mix(u_normalBoundsXZ.xy, u_normalBoundsXZ.zw, normalizedUV_XZ);
                 vec2 normalAtlasUV_XY = mix(u_normalBoundsXY.xy, u_normalBoundsXY.zw, normalizedUV_XY);
 
-                vec3 normalMapYZ = texture2D(u_normalTexture, normalAtlasUV_YZ).rgb;
-                vec3 normalMapXZ = texture2D(u_normalTexture, normalAtlasUV_XZ).rgb;
-                vec3 normalMapXY = texture2D(u_normalTexture, normalAtlasUV_XY).rgb;
+                vec3 nmYZ = texture2D(u_normalTexture, normalAtlasUV_YZ).rgb * 2.0 - 1.0;
+                vec3 nmXZ = texture2D(u_normalTexture, normalAtlasUV_XZ).rgb * 2.0 - 1.0;
+                vec3 nmXY = texture2D(u_normalTexture, normalAtlasUV_XY).rgb * 2.0 - 1.0;
 
-                vec3 normalMap = normalMapYZ * blendWeights.x + normalMapXZ * blendWeights.y + normalMapXY * blendWeights.z;
-                normalMap = normalMap * 2.0 - 1.0;
-                finalNormal = normalize(v_normal + normalMap * 0.5);
+                // Same (u,v) = (z,-y) / (x,z) / (x,-y) axis mapping as the albedo/UV
+                // sampling above, projected onto true world axes per plane.
+                vec3 pertYZ = vec3(sign(v_worldNormal.x) * nmYZ.b, -nmYZ.g, nmYZ.r);
+                vec3 pertXZ = vec3(nmXZ.r, sign(v_worldNormal.y) * nmXZ.b, nmXZ.g);
+                vec3 pertXY = vec3(nmXY.r, -nmXY.g, sign(v_worldNormal.z) * nmXY.b);
+
+                vec3 pert = pertYZ * blendWeights.x + pertXZ * blendWeights.y + pertXY * blendWeights.z;
+                finalNormal = normalize(baseNormal + pert * 0.5);
             } else {
-                finalNormal = normalize(v_normal);
+                finalNormal = baseNormal;
             }
         }
 
@@ -613,20 +615,20 @@ void main() {
             discard;
         }
 
-        // Normal mapping for sprites (if available)
+        // Sprites are billboards with no real oriented surface — world-up is used
+        // as a sensible, camera-orientation-independent base normal (a standee
+        // catching overhead/directional light), matching the cell top-plane's
+        // (u,v,n) = (x,z,y) convention for normal-map perturbation.
         vec3 finalNormal;
+        vec3 baseNormal = vec3(0.0, 1.0, 0.0);
         if(u_hasNormal) {
           // Sample normal map from same UV coords as albedo
             vec2 normalAtlasUV = mix(u_normalUVBounds.xy, u_normalUVBounds.zw, v_uv);
-            vec3 normalMap = texture2D(u_normalTexture, normalAtlasUV).rgb;
-
-          // Convert from [0,1] range to [-1,1] range
-            normalMap = normalMap * 2.0 - 1.0;
-
-          // Perturb the base normal (billboard facing camera)
-            finalNormal = normalize(v_normal + normalMap * 0.5);
+            vec3 nm = texture2D(u_normalTexture, normalAtlasUV).rgb * 2.0 - 1.0;
+            vec3 pert = vec3(nm.r, nm.b, nm.g);
+            finalNormal = normalize(baseNormal + pert * 0.5);
         } else {
-            finalNormal = v_normal;
+            finalNormal = baseNormal;
         }
 
         // Dynamic lighting

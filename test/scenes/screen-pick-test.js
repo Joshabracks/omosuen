@@ -67,7 +67,8 @@ Omosuen.registerHtmlConstructor('screenPickTest', () => `
         Hover = tree snaps to the hovered tile.
         Left-click = log all hits. Left-drag = quad select.<br>
         Right-drag = pan. Wheel = zoom (toward cursor).
-        Pan/zoom to confirm picking tracks the live camera.
+        Q/E = orbit yaw ±15°. W/S = tilt ±5°.<br>
+        Pan/zoom/orbit/tilt to confirm picking tracks the live camera.
       </div>
     </div>
     <div class="sidebar-section">
@@ -349,6 +350,20 @@ export async function createScene() {
 
     // Releasing the button off-canvas ends a pan/drag.
     window.addEventListener('mouseup', () => { panLast = null; dragStart = null; });
+
+    // Q/E = orbit yaw ±15°, W/S = tilt (axonometricAngle) ±5°. Exercises the
+    // yaw/pitch-aware pick/pan math directly — hover/click/drag should keep
+    // landing on the right cells/sprites at any orbit/tilt.
+    window.addEventListener('keydown', (e) => {
+      const cam = getCamera();
+      if (!cam) return;
+      if (e.key === 'q' || e.key === 'Q') cam.orbitBy(-15);
+      else if (e.key === 'e' || e.key === 'E') cam.orbitBy(15);
+      else if (e.key === 'w' || e.key === 'W') cam.axonometricAngle = Math.min(90, cam.axonometricAngle + 5);
+      else if (e.key === 's' || e.key === 'S') cam.axonometricAngle = Math.max(0, cam.axonometricAngle - 5);
+      else return;
+      setStatus(`orbitYaw ${cam.orbitYaw.toFixed(0)}°, tilt ${cam.axonometricAngle.toFixed(0)}°`);
+    });
   }
 
   console.log('[Screen Pick Test] Scene created');

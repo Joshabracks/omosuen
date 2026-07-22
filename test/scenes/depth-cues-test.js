@@ -36,6 +36,14 @@ function getCamera() {
     return scene.getComponentByType('camera', true);
 }
 
+function updateCameraStatus() {
+    const cam = getCamera();
+    const el = document.getElementById('camera-status');
+    if (cam && el) {
+        el.textContent = `orbitYaw ${cam.orbitYaw.toFixed(0)}°, tilt ${cam.axonometricAngle.toFixed(0)}°`;
+    }
+}
+
 // Apply a mutation to the live camera.depthCues object.
 function setDC(fn) {
     const camera = getCamera();
@@ -108,8 +116,11 @@ Omosuen.registerHtmlConstructor('depthCuesTest', () => {
             <div class="sidebar-section">
                 <div class="sidebar-status" style="font-size:12px;line-height:1.5;">
                     Terraced terrain of the same grass. Drag a weight to 0 to disable
-                    that cue. Outline = post-process; AO / Shadow / Height = cell shader.
+                    that cue. Outline = post-process; AO / Shadow / Height = cell shader.<br>
+                    Q/E = orbit yaw ±15°. W/S = tilt ±5°. Confirms the depth cues
+                    (outline, AO, cast shadow, height ramp) stay coherent under orbit/tilt.
                 </div>
+                <div id="camera-status" class="sidebar-status" style="margin-top:6px;"></div>
             </div>
             <div class="sidebar-section">${rows}</div>
         </div>
@@ -207,6 +218,19 @@ export async function createScene() {
         depthCues: INITIAL_DEPTH_CUES,
     }, cameraNexus);
 
+    // Q/E = orbit yaw ±15°, W/S = tilt ±5°. Lets the depth cues (outline, AO,
+    // cast shadow, height ramp) be checked for coherence at any orbit/tilt.
+    window.addEventListener('keydown', (e) => {
+        const cam = getCamera();
+        if (!cam) return;
+        if (e.key === 'q' || e.key === 'Q') cam.orbitBy(-15);
+        else if (e.key === 'e' || e.key === 'E') cam.orbitBy(15);
+        else if (e.key === 'w' || e.key === 'W') cam.axonometricAngle = Math.min(90, cam.axonometricAngle + 5);
+        else if (e.key === 's' || e.key === 'S') cam.axonometricAngle = Math.max(0, cam.axonometricAngle - 5);
+        else return;
+        updateCameraStatus();
+    });
+
     // Materials: grass-cap surface (cap sides / grass top) over dirt.
     const grassMaterial = {
         albedoTextureKey: 'tiles', normalTextureKey: '', emissionTextureKey: '', materialTextureKey: '',
@@ -260,6 +284,7 @@ export async function createScene() {
         bindings,
     }, scene);
     scene.addComponent(ui);
+    updateCameraStatus();
 
     console.log('[Depth Cues Test] Scene created');
     return scene;

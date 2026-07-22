@@ -110,18 +110,24 @@ export function render(camera: CameraT, _deltaTime: number): void {
   gl.clearDepth(1.0); // Ensure depth buffer clears to far plane
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-  // Compute axonometric projection parameters from camera angle
+  // Compute axonometric projection parameters from camera angle + orbit yaw
+  // (matches screen-pick/ray.ts's resolveProjection).
   const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
   const clampedAngle = Math.max(0, Math.min(90, camera.axonometricAngle));
   const angleRad = (clampedAngle * Math.PI) / 180;
   const sinA = Math.sin(angleRad);
   const heightScale = Math.cos(angleRad) * 1.1547005; // cos(a)/cos(30deg)
+  const yawRad = (camera.orbitYaw * Math.PI) / 180;
+  const cosYaw = Math.cos(yawRad);
+  const sinYaw = Math.sin(yawRad);
 
   // Project camera 3D WORLD position (cached, composed up the ancestry) to 2D
   // axonometric space — used for the world-locked pixel snap.
   const camPos = transform.worldPosition;
-  const camIsoX = camPos.x * ISO_H - camPos.z * ISO_H;
-  const camIsoY = camPos.x * sinA - camPos.y * heightScale + camPos.z * sinA;
+  const camRx = camPos.x * cosYaw + camPos.z * sinYaw;
+  const camRz = -camPos.x * sinYaw + camPos.z * cosYaw;
+  const camIsoX = camRx * ISO_H - camRz * ISO_H;
+  const camIsoY = camRx * sinA - camPos.y * heightScale + camRz * sinA;
 
   // Compute camera snap for world-locked pixelation
   const cameraSnap = snapCameraPosition(
@@ -228,6 +234,8 @@ export function render(camera: CameraT, _deltaTime: number): void {
       lights,
       sinA,
       heightScale,
+      cosYaw,
+      sinYaw,
     );
   }
 
@@ -249,6 +257,8 @@ export function render(camera: CameraT, _deltaTime: number): void {
       subPixelOffset,
       sinA,
       heightScale,
+      cosYaw,
+      sinYaw,
     );
   }
 }

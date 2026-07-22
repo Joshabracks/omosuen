@@ -82,7 +82,8 @@ export interface PickOptions {
 
 const params: ProjectionParams = {
   viewportWidth: 0, viewportHeight: 0, zoom: 1, projScale: 1,
-  sinA: 0.5, heightScale: 1, camIsoX: 0, camIsoY: 0, degenerate: false,
+  sinA: 0.5, heightScale: 1, cosYaw: 1, sinYaw: 0,
+  camIsoX: 0, camIsoY: 0, degenerate: false,
 };
 const rayOrigin = new Vector3D(0, 0, 0);
 const rayDir = new Vector3D(0, 0, 0);

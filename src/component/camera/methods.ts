@@ -13,6 +13,8 @@ import {
   setPixelScale,
   setZoomTarget,
   resetZoomTarget,
+  setOrbitYaw,
+  orbitBy,
   setRevealTarget,
   clearRevealTarget,
   setRevealVolume,
@@ -32,6 +34,10 @@ export interface CameraMethods extends ComponentMethods {
   setZoom: (camera: CameraT, zoom: number) => void;
   setZoomTarget: (camera: CameraT, x: number, y: number) => void;
   resetZoomTarget: (camera: CameraT) => void;
+  /** Sets orbit yaw in degrees (rotates world X/Z around +Y before projection). */
+  setOrbitYaw: (camera: CameraT, degrees: number) => void;
+  /** Rotates orbit yaw by a relative amount (degrees) — drag / keyboard. */
+  orbitBy: (camera: CameraT, deltaDegrees: number) => void;
   setPixelScale: (camera: CameraT, pixelScale: number) => void;
   setRevealTarget: (camera: CameraT, x: number, y: number, z: number) => void;
   clearRevealTarget: (camera: CameraT) => void;
@@ -78,6 +84,8 @@ export const Camera: CameraMethods = {
   setZoom,
   setZoomTarget,
   resetZoomTarget,
+  setOrbitYaw,
+  orbitBy,
   setPixelScale,
   setRevealTarget,
   clearRevealTarget,

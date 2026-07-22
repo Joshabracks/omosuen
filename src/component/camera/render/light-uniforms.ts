@@ -4,8 +4,9 @@ import { TransformT } from '../../transform';
 import { castTo } from '../../types';
 import { Vector3D } from '../../../math';
 
-// Axonometric angle uniform location cache — keyed by camera component ID
+// Axonometric angle / orbit yaw uniform location caches — keyed by camera component ID
 const _axonometricAngle = new Map<number, WebGLUniformLocation | null>();
+const _orbitYaw = new Map<number, WebGLUniformLocation | null>();
 
 // Light uniform location caches — keyed by camera component ID
 const _ambientColor = new Map<number, WebGLUniformLocation | null>();
@@ -66,6 +67,7 @@ export function cacheLightUniformLocations(
     cameraId,
     gl.getUniformLocation(program, 'u_axonometricAngle'),
   );
+  _orbitYaw.set(cameraId, gl.getUniformLocation(program, 'u_orbitYaw'));
   _ambientColor.set(cameraId, gl.getUniformLocation(program, 'u_ambientColor'));
   _ambientBrightness.set(
     cameraId,
@@ -141,6 +143,7 @@ export function cacheLightUniformLocations(
 
 export function clearLightUniformCache(cameraId: number): void {
   _axonometricAngle.delete(cameraId);
+  _orbitYaw.delete(cameraId);
   _ambientColor.delete(cameraId);
   _ambientBrightness.delete(cameraId);
   _numDirLights.delete(cameraId);
@@ -173,6 +176,21 @@ export function setAngleUniform(
   const loc = _axonometricAngle.get(cameraId);
   if (loc) {
     gl.uniform1f(loc, angleDegrees);
+  }
+}
+
+/**
+ * Uploads the orbit yaw uniform to the GPU.
+ * Called once per render pass (cells + sprites share the same program).
+ */
+export function setOrbitYawUniform(
+  gl: WebGL2RenderingContext,
+  cameraId: number,
+  yawDegrees: number,
+): void {
+  const loc = _orbitYaw.get(cameraId);
+  if (loc) {
+    gl.uniform1f(loc, yawDegrees);
   }
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "omosuen",
-  "version": "0.21.0",
-  "description": "Omosuen - An axonometric game engine with fixed z-axis camera. Etymology: Omos (Greek: shoulder/axis) + Suen (Mesopotamian moon deity/measurement)",
+  "version": "0.22.0",
+  "description": "Omosuen - An axonometric game engine with an orbiting orthographic camera. Etymology: Omos (Greek: shoulder/axis) + Suen (Mesopotamian moon deity/measurement)",
   "main": "dist/omosuen.min.js",
   "types": "dist/src/index.d.ts",
   "exports": {
@@ -24,6 +24,7 @@
     "test:wasm-mesh": "tsx test/wasm-mesh.test.ts",
     "test:wasm-audio": "tsx test/wasm-audio.test.ts",
     "test:wasm-audio-harness": "tsx test/wasm-audio-harness.test.ts",
+    "test:camera": "tsx test/camera-projection.test.ts",
     "test": "start http://localhost:3000/ && node test/integration-test-server.js",
     "test:cli": "tsx test/cli.test.ts",
     "test:packer": "tsx test/packer-bench.test.ts",

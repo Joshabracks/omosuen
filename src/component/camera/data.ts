@@ -128,6 +128,12 @@ export interface CameraT
   axonometricAngle: number;
 
   /**
+   * Orbit yaw in degrees, rotating world X/Z around +Y before the axonometric
+   * projection. 0 = original fixed-azimuth behavior (bit-for-bit).
+   */
+  orbitYaw: number;
+
+  /**
    * Reference to the viewport component to render to.
    * Looked up by name in the parent nexus.
    */
@@ -223,6 +229,11 @@ export interface CameraOptions extends ComponentOptions {
   axonometricAngle?: number;
 
   /**
+   * Orbit yaw in degrees (default: 0)
+   */
+  orbitYaw?: number;
+
+  /**
    * Name of the viewport component to render to (required)
    */
   viewportRef: string;
@@ -263,6 +274,7 @@ export function builder(options: CameraOptions): CameraT {
     zoom: options.zoom ?? 1.0,
     pixelScale: options.pixelScale ?? 2.0,
     axonometricAngle: options.axonometricAngle ?? 30,
+    orbitYaw: options.orbitYaw ?? 0,
     viewportRef: options.viewportRef,
     zoomTarget: null,
 
@@ -311,6 +323,7 @@ function serialize(component: ComponentData): any {
     zoom: c.zoom,
     pixelScale: c.pixelScale,
     axonometricAngle: c.axonometricAngle,
+    orbitYaw: c.orbitYaw,
     viewportRef: c.viewportRef,
     revealYOffset: c.revealYOffset,
     revealFadeHeight: c.revealFadeHeight,
@@ -346,6 +359,7 @@ function deserialize(data: any): DeserializeResult<CameraT> {
     zoom,
     pixelScale,
     axonometricAngle,
+    orbitYaw,
     viewportRef,
     revealYOffset,
     revealFadeHeight,
@@ -382,6 +396,7 @@ function deserialize(data: any): DeserializeResult<CameraT> {
       zoom: zoom as number,
       pixelScale: pixelScale as number,
       axonometricAngle: axonometricAngle as number,
+      orbitYaw: orbitYaw as number | undefined,
       viewportRef: viewportRef as string,
       revealYOffset: revealYOffset as number | undefined,
       revealFadeHeight: revealFadeHeight as number | undefined,
@@ -404,6 +419,7 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'zoom',
   'pixelScale',
   'axonometricAngle',
+  'orbitYaw',
   'viewportRef',
   'zoomTarget',
   'glResources',

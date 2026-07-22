@@ -11,6 +11,7 @@ import { CameraT } from '../data';
 import {
   FBO_OVERSCAN_PX,
   setAngleUniform,
+  setOrbitYawUniform,
   setLightUniforms,
 } from './light-uniforms';
 
@@ -105,6 +106,8 @@ export function renderSprites(
   subPixelOffset: { remainderX: number; remainderY: number },
   sinA: number,
   heightScale: number,
+  cosYaw: number,
+  sinYaw: number,
 ): void {
   const program = camera.glResources.unifiedProgram;
   if (!program) {
@@ -213,8 +216,10 @@ export function renderSprites(
   // Camera uses its cached WORLD position (composed up the ancestry by
   // updateWorldTransforms), so a nested camera nexus offsets the view.
   const camPos = transform.worldPosition;
-  const camIsoX = camPos.x * ISO_H - camPos.z * ISO_H;
-  const camIsoY = camPos.x * sinA - camPos.y * heightScale + camPos.z * sinA;
+  const camRx = camPos.x * cosYaw + camPos.z * sinYaw;
+  const camRz = -camPos.x * sinYaw + camPos.z * cosYaw;
+  const camIsoX = camRx * ISO_H - camRz * ISO_H;
+  const camIsoY = camRx * sinA - camPos.y * heightScale + camRz * sinA;
   gl.uniform2f(u_cameraPosition, camIsoX, camIsoY);
   gl.uniform1f(u_zoom, camera.zoom);
   gl.uniform3f(
@@ -228,8 +233,9 @@ export function renderSprites(
   // Set dynamic light uniforms (same lights as cell-maps)
   setLightUniforms(gl, camera.id!, lights);
 
-  // Set axonometric angle uniform (GPU computes cos/sin)
+  // Set axonometric angle + orbit yaw uniforms (GPU computes cos/sin)
   setAngleUniform(gl, camera.id!, camera.axonometricAngle);
+  setOrbitYawUniform(gl, camera.id!, camera.orbitYaw);
 
   // Bind cell FBO depth texture for occlusion masking
   gl.activeTexture(gl.TEXTURE2);
@@ -309,7 +315,8 @@ export function renderSprites(
 
   // Build the draw list into reused scratch arrays: apply the per-sprite skip checks
   // (hidden / no nexus parent / no transform), carry the transform, and compute each
-  // sprite's axonometric depth (matches the vertex shader: x + heightScale*y + z).
+  // sprite's axonometric depth (matches the vertex shader: rx + heightScale*y + rz,
+  // where rx/rz are worldX/Z rotated by orbit yaw).
   let drawCount = 0;
   for (const sprite of sprites) {
     // Use `=== false` so any legacy sprite lacking the field still renders.
@@ -323,19 +330,23 @@ export function renderSprites(
     // World position (cached) so a sprite under a transformed parent nexus is
     // placed/sorted by its composed world transform.
     const p = t.worldPosition;
+    const pRx = p.x * cosYaw + p.z * sinYaw;
+    const pRz = -p.x * sinYaw + p.z * cosYaw;
     _drawSprites[drawCount] = sprite;
     _drawTransforms[drawCount] = t;
-    _drawDepths[drawCount] = p.x + heightScale * p.y + p.z;
+    _drawDepths[drawCount] = pRx + heightScale * p.y + pRz;
     drawCount++;
   }
 
   // Sprite-vs-sprite order is pure draw order (the sprite pass has the depth test
   // disabled). Stable-sort back-to-front by depth (larger depth = nearer the camera =
   // drawn last/on top). In-place insertion sort over the parallel arrays: no temp
-  // array / closures (zero GC), and ~O(n) frame-to-frame since the fixed-angle camera
-  // never rotates (static sprites keep their order). Strict `>` keeps it stable, so a
-  // composited entity's layers (equal depth) preserve their segmentedRenderOrderSort
-  // renderOrder.
+  // array / closures (zero GC), and ~O(n) frame-to-frame when depth order is mostly
+  // stable (static sprites + unchanged/slowly-orbiting camera keep their relative
+  // order). A large single-frame orbitYaw jump can reorder many sprites at once,
+  // temporarily costing more swaps — still correct, just not the O(n) common case.
+  // Strict `>` keeps it stable, so a composited entity's layers (equal depth)
+  // preserve their segmentedRenderOrderSort renderOrder.
   for (let i = 1; i < drawCount; i++) {
     const s = _drawSprites[i];
     const st = _drawTransforms[i];

@@ -40,25 +40,33 @@ export function setZoom(camera: CameraT, zoom: number): void {
       const offsetY = camera.zoomTarget.y - viewport.height / 2;
       const factor = 1 / (oldZoom * oldZoom) - 1 / (zoom * zoom);
 
-      // Inverse-project screen-space zoom offset to world-space
+      // Inverse-project screen-space zoom offset to world-space (matches the
+      // rotate-then-de-rotate inverse in pan/index.ts and screen-pick/ray.ts).
       const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
       const clampedAngle = Math.max(0, Math.min(90, camera.axonometricAngle));
       const angleRad = (clampedAngle * Math.PI) / 180;
       const sinA = Math.sin(angleRad);
       const heightScale = Math.cos(angleRad) * 1.1547005; // cos(a)/cos(30deg)
+      const yawRad = (camera.orbitYaw * Math.PI) / 180;
+      const cosYaw = Math.cos(yawRad);
+      const sinYaw = Math.sin(yawRad);
       const screenDx = offsetX * factor;
       const screenDy = offsetY * factor;
 
+      let rDx: number;
+      let rDz: number;
       if (sinA < 0.01) {
-        transform.position.x += screenDx / (2 * ISO_H);
-        transform.position.z += -screenDx / (2 * ISO_H);
+        rDx = screenDx / (2 * ISO_H);
+        rDz = -screenDx / (2 * ISO_H);
         if (heightScale > 0.01) {
           transform.position.y -= screenDy / heightScale;
         }
       } else {
-        transform.position.x += screenDx / (2 * ISO_H) + screenDy / (2 * sinA);
-        transform.position.z += -screenDx / (2 * ISO_H) + screenDy / (2 * sinA);
+        rDx = screenDx / (2 * ISO_H) + screenDy / (2 * sinA);
+        rDz = -screenDx / (2 * ISO_H) + screenDy / (2 * sinA);
       }
+      transform.position.x += rDx * cosYaw - rDz * sinYaw;
+      transform.position.z += rDx * sinYaw + rDz * cosYaw;
     }
   }
 
@@ -88,6 +96,29 @@ export function setZoomTarget(camera: CameraT, x: number, y: number): void {
  */
 export function resetZoomTarget(camera: CameraT): void {
   camera.zoomTarget = null;
+}
+
+/**
+ * Sets the camera's orbit yaw (degrees, rotating world X/Z around +Y before
+ * the axonometric projection). Normalized into [0, 360).
+ *
+ * @param camera - The camera component
+ * @param degrees - New orbit yaw in degrees
+ */
+export function setOrbitYaw(camera: CameraT, degrees: number): void {
+  const wrapped = ((degrees % 360) + 360) % 360;
+  camera.orbitYaw = wrapped;
+}
+
+/**
+ * Rotates the camera's orbit yaw by a relative amount (degrees). Convenience
+ * wrapper for drag/keyboard-driven orbit controls.
+ *
+ * @param camera - The camera component
+ * @param deltaDegrees - Amount to add to the current orbit yaw, in degrees
+ */
+export function orbitBy(camera: CameraT, deltaDegrees: number): void {
+  setOrbitYaw(camera, camera.orbitYaw + deltaDegrees);
 }
 
 /**

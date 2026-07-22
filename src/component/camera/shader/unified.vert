@@ -12,6 +12,7 @@ uniform vec2 u_viewportSize;
 uniform vec2 u_cameraPosition;
 uniform float u_zoom;
 uniform mediump float u_axonometricAngle;
+uniform mediump float u_orbitYaw;
 uniform vec3 u_cellSize;   // Used by both for grid calculations
 uniform vec3 u_mapSize;    // Used by both for depth calculations
 
@@ -23,7 +24,6 @@ uniform float u_rotation;
 
     // Outputs
 varying vec2 v_uv;
-varying vec3 v_normal;
 varying vec3 v_worldPos;
 varying vec2 v_screenPos;
 varying vec3 v_worldNormal;
@@ -35,6 +35,26 @@ void main() {
     float clampedAngle = clamp(u_axonometricAngle, 0.0, 90.0);
     float sinA = sin(radians(clampedAngle));
     float heightScale = cos(radians(clampedAngle)) * 1.1547005; // cos(a)/cos(30deg)
+    float cosYaw = cos(radians(u_orbitYaw));
+    float sinYaw = sin(radians(u_orbitYaw));
+
+    // Depth-buffer normalization must stay valid for ANY yaw. World X/Z are
+    // always >= 0 (cell-map coords start at the origin), so the un-rotated
+    // rawDepth = x + heightScale*y + z was always in [0, maxRawDepth]. Once
+    // rotated by yaw, rx/rz can go negative (e.g. yaw=90: rz = -x), which
+    // without centering would push rawDepth below 0 — past the far clip
+    // plane, silently culling a wedge of the map. Centering rx/rz on the
+    // map's XZ center and biasing by 2x the (yaw-invariant) half-diagonal
+    // keeps rawDepth providably within [0, maxRawDepth] for any yaw; at
+    // yaw=0 this is just a constant shift of the original formula, so
+    // occlusion ordering (and the visible image) is unchanged.
+    float mapCenterX = u_mapSize.x * u_cellSize.x * 0.5;
+    float mapCenterZ = u_mapSize.z * u_cellSize.z * 0.5;
+    float rotCenterX = mapCenterX * cosYaw + mapCenterZ * sinYaw;
+    float rotCenterZ = -mapCenterX * sinYaw + mapCenterZ * cosYaw;
+    float halfDiag = length(vec2(mapCenterX, mapCenterZ));
+    float depthBias = 2.0 * halfDiag;
+    float maxRawDepth = 4.0 * halfDiag + heightScale * u_mapSize.y * u_cellSize.y;
 
     if(u_renderMode == 0) {
         // ============================================================
@@ -44,10 +64,15 @@ void main() {
         // Chunk mesh builder provides world-space positions directly
         vec3 worldPos = a_position;
 
+        // Rotate world X/Z around +Y by orbit yaw before the diamond projection
+        // (yaw 0 = identity, bit-for-bit original behavior).
+        float rx = worldPos.x * cosYaw + worldPos.z * sinYaw;
+        float rz = -worldPos.x * sinYaw + worldPos.z * cosYaw;
+
         // Apply axonometric projection
-        vec2 isoX = worldPos.x * vec2(ISO_H, sinA);
+        vec2 isoX = rx * vec2(ISO_H, sinA);
         vec2 isoY = worldPos.y * vec2(0.0, -heightScale);
-        vec2 isoZ = worldPos.z * vec2(-ISO_H, sinA);
+        vec2 isoZ = rz * vec2(-ISO_H, sinA);
         vec2 isoProjected = isoX + isoY + isoZ;
 
         // Convert to view space and apply zoom
@@ -58,22 +83,15 @@ void main() {
         // Convert to clip space
         vec2 clipSpace = (isoPos / u_viewportSize) * 2.0;
 
-        // Depth = projection onto axonometric view direction.
+        // Depth = projection onto axonometric view direction (centered + biased
+        // to stay within [0, maxRawDepth] for any yaw — see comment above).
         // Higher sum = closer to camera = lower depth buffer value.
-        float rawDepth = worldPos.x + heightScale * worldPos.y + worldPos.z;
-        float maxRawDepth = u_mapSize.x * u_cellSize.x + u_mapSize.y * u_cellSize.y + u_mapSize.z * u_cellSize.z;
+        float rawDepth = (rx - rotCenterX) + heightScale * worldPos.y + (rz - rotCenterZ) + depthBias;
         float clipDepth = 1.0 - rawDepth / maxRawDepth;
 
         gl_Position = vec4(clipSpace * vec2(1, -1), clipDepth, 1.0);
 
-        // Transform normal to isometric screen space
-        vec3 isoNormalX = a_normal.x * vec3(ISO_H, sinA, 0.0);
-        vec3 isoNormalY = a_normal.y * vec3(0.0, -1.0, 0.0);
-        vec3 isoNormalZ = a_normal.z * vec3(-ISO_H, sinA, 0.0);
-        vec3 isoNormal = isoNormalX + isoNormalY + isoNormalZ;
-
         v_uv = a_uv;
-        v_normal = normalize(isoNormal);
         v_worldPos = worldPos;
         v_worldNormal = a_normal;
         v_origWorldPos = a_origPosition;
@@ -84,10 +102,16 @@ void main() {
         // MODE 1: SPRITE RENDERING
         // ============================================================
 
+        // Rotate the sprite's world X/Z around +Y by orbit yaw before projecting
+        // (same rotation as cell mode; only the anchor moves — the billboard
+        // quad itself stays screen-space via u_rotation below).
+        float rx = u_spritePosition.x * cosYaw + u_spritePosition.z * sinYaw;
+        float rz = -u_spritePosition.x * sinYaw + u_spritePosition.z * cosYaw;
+
         // Apply axonometric projection to sprite's 3D world position
-        vec2 isoX = u_spritePosition.x * vec2(ISO_H, sinA);
+        vec2 isoX = rx * vec2(ISO_H, sinA);
         vec2 isoY = u_spritePosition.y * vec2(0.0, -heightScale);
-        vec2 isoZ = u_spritePosition.z * vec2(-ISO_H, sinA);
+        vec2 isoZ = rz * vec2(-ISO_H, sinA);
         vec2 isoProjected = isoX + isoY + isoZ;
 
         // Anchor (u_anchor) is normalized [0,1] from the sprite's TOP-LEFT. The quad
@@ -112,21 +136,16 @@ void main() {
         // Convert to clip space
         vec2 clipSpace = (viewPos / u_viewportSize) * 2.0;
 
-        // Same depth formula as cells, with +1.0 bias so sprite renders
-        // just in front of the cell surface at its position.
-        float rawDepth = u_spritePosition.x + heightScale * u_spritePosition.y + u_spritePosition.z + 1.0;
-        float maxRawDepth = u_mapSize.x * u_cellSize.x + u_mapSize.y * u_cellSize.y + u_mapSize.z * u_cellSize.z;
+        // Same depth formula as cells (centered + biased for yaw safety), with
+        // +1.0 so the sprite renders just in front of the cell surface at its position.
+        float rawDepth = (rx - rotCenterX) + heightScale * u_spritePosition.y + (rz - rotCenterZ) + depthBias + 1.0;
         float clipDepth = 1.0 - rawDepth / maxRawDepth;
 
         gl_Position = vec4(clipSpace * vec2(1, -1), clipDepth, 1.0);
         v_uv = a_uv;
 
-        // Sprite base normal in isometric screen space (matches a top-facing cell surface).
-        // worldDirToIso() projects light directions to the XY plane, so normals must also
-        // live in XY to produce non-zero diffuse dot products.
-        v_normal = vec3(0.0, -1.0, 0.0);  // Isometric up
         v_worldPos = u_spritePosition;
-        v_worldNormal = vec3(0.0, 0.0, 1.0);  // Screen-space normal
+        v_worldNormal = vec3(0.0, 0.0, 1.0);  // Unused by lighting (frag hardcodes world-up); kept for interface symmetry
         v_origWorldPos = u_spritePosition;
         v_screenPos = viewPos;
         v_emission = 0.0;  // Sprites have no per-vertex cell emission

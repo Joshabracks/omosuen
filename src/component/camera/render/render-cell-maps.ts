@@ -5,7 +5,11 @@ import { NexusT } from '../../nexus';
 import { TextureMapT } from '../../texture-map';
 import { TransformT } from '../../transform';
 import { CameraT } from '../data';
-import { setAngleUniform, setLightUniforms } from './light-uniforms';
+import {
+  setAngleUniform,
+  setOrbitYawUniform,
+  setLightUniforms,
+} from './light-uniforms';
 import { computeSolidityMap } from './visibility-mask';
 
 /** A resolved atlas frame: normalized UV bounds, pixel size, and atlas page. */
@@ -148,6 +152,8 @@ export function renderCellMaps(
   lights: LightT[],
   sinA: number,
   heightScale: number,
+  cosYaw: number,
+  sinYaw: number,
 ): void {
   const program = camera.glResources.unifiedProgram;
   if (!program) {
@@ -271,8 +277,10 @@ export function renderCellMaps(
   // axonometric space — same projection the vertex shader applies to every vertex.
   const ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
   const camPos = cameraTransform.worldPosition;
-  const camIsoX = camPos.x * ISO_H - camPos.z * ISO_H;
-  const camIsoY = camPos.x * sinA - camPos.y * heightScale + camPos.z * sinA;
+  const camRx = camPos.x * cosYaw + camPos.z * sinYaw;
+  const camRz = -camPos.x * sinYaw + camPos.z * cosYaw;
+  const camIsoX = camRx * ISO_H - camRz * ISO_H;
+  const camIsoY = camRx * sinA - camPos.y * heightScale + camRz * sinA;
 
   const snapped = snapCameraPosition(
     camIsoX,
@@ -286,8 +294,9 @@ export function renderCellMaps(
   // Set dynamic light uniforms
   setLightUniforms(gl, camera.id!, lights);
 
-  // Set axonometric angle uniform (GPU computes cos/sin)
+  // Set axonometric angle + orbit yaw uniforms (GPU computes cos/sin)
   setAngleUniform(gl, camera.id!, camera.axonometricAngle);
+  setOrbitYawUniform(gl, camera.id!, camera.orbitYaw);
 
   // Depth-cue uniforms (AO / cast shadow / height ramp). null = all weights 0 (off).
   const dc = camera.depthCues;

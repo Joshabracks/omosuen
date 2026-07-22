@@ -66,7 +66,7 @@ export const ENGINE_COMPONENTS: ComponentDocEntry[] = [
     id: "camera",
     title: "camera",
     category: "Rendering",
-    blurb: "Axonometric view, zoom, and render passes for cell-maps and sprites.",
+    blurb: "Axonometric view with orbit yaw, zoom, and render passes for cell-maps and sprites.",
   },
   {
     id: "cell-map",

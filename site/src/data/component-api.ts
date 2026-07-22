@@ -319,7 +319,8 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
     options: withBaseOptions([
       O("zoom", "number?", "Zoom level. Default 1.", "1"),
       O("pixelScale", "number?", "Retro pixelation scale. Default 2.", "2"),
-      O("axonometricAngle", "number?", "Projection angle (degrees). Default 30.", "30"),
+      O("axonometricAngle", "number?", "Projection angle / pitch (degrees). Default 30.", "30"),
+      O("orbitYaw", "number?", "Orbit yaw (degrees), rotates world X/Z around +Y before projection. Default 0.", "0"),
       O("viewportRef", "string", "Viewport component name (required).", "'MainViewport'"),
       O("revealYOffset", "number?", "Reveal clip offset above target.", "16"),
       O("revealFadeHeight", "number?", "Dither fade height below clip.", "8"),
@@ -329,7 +330,8 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
     data: [
       O("zoom", "number", "Current zoom."),
       O("pixelScale", "number", "Pixelation scale."),
-      O("axonometricAngle", "number", "Projection angle (degrees)."),
+      O("axonometricAngle", "number", "Projection angle / pitch (degrees)."),
+      O("orbitYaw", "number", "Orbit yaw (degrees); 0 = original fixed-azimuth view."),
       O("viewportRef", "string", "Referenced viewport name."),
       O("zoomTarget", "{x,y} | null", "Viewport-local zoom anchor."),
       O("glResources", "object", "WebGL programs, buffers, FBOs."),
@@ -357,6 +359,12 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
         A("y", "number", "Viewport-local anchor Y."),
       ]),
       M("resetZoomTarget", "resetZoomTarget()", "Clear zoom anchor."),
+      M("setOrbitYaw", "setOrbitYaw(degrees)", "Set orbit yaw, rotating world X/Z around +Y before projection.", [
+        A("degrees", "number", "New orbit yaw in degrees; normalized into [0, 360)."),
+      ]),
+      M("orbitBy", "orbitBy(deltaDegrees)", "Rotate orbit yaw by a relative amount (drag/keyboard controls).", [
+        A("deltaDegrees", "number", "Amount to add to the current orbit yaw, in degrees."),
+      ]),
       M("setPixelScale", "setPixelScale(scale)", "Set pixelation scale.", [
         A("scale", "number", "Pixelation scale factor."),
       ]),

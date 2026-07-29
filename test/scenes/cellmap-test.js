@@ -277,6 +277,8 @@ setTimeout(() => {
     }
 }, 500); // Wait 500ms for UI to be ready
 
+const LAVA_MATERIAL_INDEX = 4;
+
 /**
  * Generates a 2-cell-deep ground (pure dirt at y=0, grass-cap surface at y=1) with
  * a hollow dirt structure in the center sitting on the surface.
@@ -293,7 +295,8 @@ setTimeout(() => {
  * Returns both materialMap and shapeMap. Shape indices: 0=air, 1=cube,
  *   2=rampSW, 3=rampNE, 4=halfCube (NE side non-covering), 5=UV cube. Material
  *   indices: 0=grass-cap (UV), 1=dirt, 2=grass-cap crisp cube (per-side demo),
- *   3=hard dirt (door frame). Materials 2 and 3 use a smoothness override of 0.
+ *   3=hard dirt (door frame), 4=lava (full 4-channel test, interior floor near
+ *   the back wall). Materials 2, 3, and 4 use a smoothness override of 0.
  */
 function generateStructureMap(width, depth, maxHeight) {
     const materialMap = new Omosuen.Array3D(
@@ -406,6 +409,21 @@ function generateStructureMap(width, depth, maxHeight) {
         materialMap.set(new Omosuen.Vector3D(x, 2, HALF_Z), 0); // grass-cap
     }
 
+    // Lava floor patch: interior floor cells (y=1, the same surface the building
+    // sits on) along the back wall (-X face, opposite the +X doorway). A 2-cell-deep
+    // band just inside x=SX0, spanning the full interior z range. Shape is left as
+    // whatever the ground loop above already set (UV cube for x < half) — only the
+    // material re-skins it to lava.
+    const LAVA_X0 = SX0 + 1;
+    const LAVA_X1 = SX0 + 2;
+    const INTERIOR_Z0 = SZ0 + 1;
+    const INTERIOR_Z1 = SZ1 - 1;
+    for (let x = LAVA_X0; x <= LAVA_X1; x++) {
+        for (let z = INTERIOR_Z0; z <= INTERIOR_Z1; z++) {
+            materialMap.set(new Omosuen.Vector3D(x, 1, z), LAVA_MATERIAL_INDEX);
+        }
+    }
+
     return { materialMap, shapeMap };
 }
 
@@ -421,10 +439,12 @@ export async function createScene() {
     });
 
     // 1. Create AtlasManager (global singleton with built-in image loading)
+    // atlasSize bumped to 4096: the lava material's 4 channel textures are each
+    // a full 2048x2048 image, which (plus padding) can't fit in a 2048 atlas page.
     const atlasManager = await Omosuen.newComponent('atlas-manager', {
         name: 'AtlasManager',
         config: {
-            atlasSize: 2048,
+            atlasSize: 4096,
             maxAtlases: 4,
             padding: 1,
         },
@@ -482,6 +502,65 @@ export async function createScene() {
             name: 'Objects Normal Map',
             filePath: './assets/objects_n.png',
             imageType: objectsFrameMap,
+            atlasManager,
+        }, scene),
+        // Lava material — full 4-channel test (albedo/normal/emission/material),
+        // each a single 2048x2048 image (no grid).
+        Omosuen.newComponent('texture-map', {
+            textureMapKey: 'lava-albedo',
+            name: 'Lava Albedo',
+            filePath: './assets/hr_mats/lava_albedo.png',
+            imageType: {
+                cellSize: new Omosuen.Vector2D(2048, 2048),
+                gridSize: new Omosuen.Vector2D(1, 1),
+                cellCount: 1,
+            },
+            atlasManager,
+        }, scene),
+        Omosuen.newComponent('texture-map', {
+            textureMapKey: 'lava-normal',
+            name: 'Lava Normal',
+            filePath: './assets/hr_mats/lava_normal.png',
+            imageType: {
+                cellSize: new Omosuen.Vector2D(2048, 2048),
+                gridSize: new Omosuen.Vector2D(1, 1),
+                cellCount: 1,
+            },
+            atlasManager,
+        }, scene),
+        Omosuen.newComponent('texture-map', {
+            textureMapKey: 'lava-emission',
+            name: 'Lava Emission',
+            filePath: './assets/hr_mats/lava_emission.png',
+            imageType: {
+                cellSize: new Omosuen.Vector2D(2048, 2048),
+                gridSize: new Omosuen.Vector2D(1, 1),
+                cellCount: 1,
+            },
+            atlasManager,
+        }, scene),
+        Omosuen.newComponent('texture-map', {
+            textureMapKey: 'lava-material',
+            name: 'Lava Material',
+            filePath: './assets/hr_mats/lava_material.png',
+            imageType: {
+                cellSize: new Omosuen.Vector2D(2048, 2048),
+                gridSize: new Omosuen.Vector2D(1, 1),
+                cellCount: 1,
+            },
+            atlasManager,
+        }, scene),
+        // Fire sprite sheet — single row of 8 frames, 32x48 each. Same texture
+        // key is used for both the albedo and emission channels (self-lit flame).
+        Omosuen.newComponent('texture-map', {
+            textureMapKey: 'fire',
+            name: 'Fire Sprite Sheet',
+            filePath: './assets/fire.png',
+            imageType: {
+                cellSize: new Omosuen.Vector2D(32, 48),
+                gridSize: new Omosuen.Vector2D(8, 1),
+                cellCount: 8,
+            },
             atlasManager,
         }, scene),
         // 3. Create Viewport (800x600, centered on screen for better 3D view)
@@ -732,6 +811,22 @@ export async function createScene() {
         smoothness: 0,
     }
 
+    // Lava floor material — full 4-channel test (albedo/normal/emission/material).
+    // Each texture is a single full-image frame (frame 0), so no per-side overrides
+    // are needed. Smoothness 0 keeps the lava patch crisp against the surrounding
+    // smoothed grass-cap floor (no blended/smeared seam).
+    const lavaMaterial = {
+        albedoTextureKey: 'lava-albedo',
+        normalTextureKey: 'lava-normal',
+        emissionTextureKey: 'lava-emission',
+        materialTextureKey: 'lava-material',
+        albedoFrame: 0,
+        normalFrame: 0,
+        emissionFrame: 0,
+        materialFrame: 0,
+        smoothness: 0,
+    }
+
     // Custom roof meshes (triangular-prism wedges in -0.5..0.5 local space, scaled
     // by cellSize and offset to fill the cell footprint at render time). UVs are
     // unused (cells are triplanar-textured); winding is CCW so the outward face
@@ -805,7 +900,7 @@ export async function createScene() {
 
     const cellMap = await Omosuen.newComponent('cell-map', {
         name: 'Terrain Structure',
-        materials: [groundTopMaterial, dirtMaterial, stoneGrassMaterial, dirtHardMaterial],
+        materials: [groundTopMaterial, dirtMaterial, stoneGrassMaterial, dirtHardMaterial, lavaMaterial],
         materialMap: materialMap,
         shapeMap: shapeMap, // 0 = air, 1 = cube, 2 = rampSW, 3 = rampNE, 4 = halfCube, 5 = UV cube
         // Index 0 (air) and 1 (default cube) are null so the builder auto-fills them.
@@ -822,10 +917,10 @@ export async function createScene() {
 
     // 6b. Create lighting components
 
-    // Ambient light (soft yellow, pulsing brightness via sine wave)
+    // Ambient light (soft yellow). Brightness is manually dialed via the number
+    // keys (1-0) below rather than animated.
     const ambientNexus = await Omosuen.newComponent('nexus', {
         name: 'Ambient Light Nexus',
-        updateOverride: 'ambientPulse',
     }, scene);
     const ambientLight = await Omosuen.newComponent('light', {
         name: 'Ambient Light',
@@ -834,12 +929,17 @@ export async function createScene() {
         brightness: 0.3,
     }, ambientNexus);
 
-    let ambientTime = 0;
-    Omosuen.registerMethod('nexus', 'ambientPulse', (_nexus, deltaTime) => {
-        ambientTime += deltaTime / 100000;
-        // Sine wave: oscillates brightness between 0.1 and 0.5 over 1 second period
-        const t = (Math.sin(ambientTime * Math.PI * 2) + 1) / 2; // 0 to 1
-        ambientLight.setBrightness(0.1 + t * 0.4);
+    // Number-key ambient brightness control: 1 = 0.1 ... 9 = 0.9, 0 = 1.0
+    // (evenly spaced in 0.1 increments across the full 1-0 row).
+    const AMBIENT_BRIGHTNESS_BY_KEY = {
+        '1': 0.1, '2': 0.2, '3': 0.3, '4': 0.4, '5': 0.5,
+        '6': 0.6, '7': 0.7, '8': 0.8, '9': 0.9, '0': 1.0,
+    };
+    window.addEventListener('keydown', (e) => {
+        const brightness = AMBIENT_BRIGHTNESS_BY_KEY[e.key];
+        if (brightness === undefined) return;
+        ambientLight.setBrightness(brightness);
+        e.preventDefault();
     });
 
     // Point light (soft blue, center of map)
@@ -1110,6 +1210,35 @@ export async function createScene() {
     console.log('[CellMap Test] Created Walker B at south (528, 32, 528)');
 
     console.log('[CellMap Test] All character sprites created (1 indoor + 2 patrolling around structure)');
+
+    // 7a. Fire sprite — center floor tile in the room. Albedo/emission only (no
+    // normal/material); both channels are driven by the same 8-frame sheet, so
+    // the flame self-illuminates using its own animated colors.
+    const fireNexus = await Omosuen.newComponent('nexus', {
+        name: 'Fire Nexus',
+    }, scene);
+    await Omosuen.newComponent('transform', {
+        name: 'Fire Transform',
+        position: cellMap.cellToWorldCoordinates(new Omosuen.Vector3D(9, SURFACE_Y, 9)),
+    }, fireNexus);
+    const fireSprite = await Omosuen.newComponent('sprite', {
+        name: 'Fire Sprite',
+        textureMapKeys: { albedo: 'fire', normal: '', material: '', emission: 'fire' },
+        frame: { albedo: 0, normal: 0, material: 0, emission: 0 },
+        // Bottom-center anchor (32x48 frame): flame base sits on the floor.
+        anchor: new Omosuen.Vector2D(16, 48),
+    }, fireNexus);
+    fireSprite.setEmissionIntensity(1.0);
+    const fireAnimator = await Omosuen.newComponent('animation-controller', {
+        name: 'Fire Animator',
+        spriteId: fireSprite.id,
+        channels: ['albedo', 'emission'],
+        animations: [
+            { name: 'burn', frames: [0, 1, 2, 3, 4, 5, 6, 7], frameTime: 80, loop: true },
+        ],
+    }, fireNexus);
+    fireAnimator.play('burn');
+    console.log('[CellMap Test] Fire sprite created at room center (9, 9)');
 
     // 7b. Create EventCollider trigger zone covering the structure interior
     const triggerNexus = await Omosuen.newComponent('nexus', {

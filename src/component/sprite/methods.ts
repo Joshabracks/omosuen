@@ -1,6 +1,7 @@
 import { ComponentData, ComponentMethods } from '../types';
 import { SpriteT } from './data';
 import { getActiveScene } from '../../scene';
+import { Vector3D } from '../../math';
 import type { NexusT } from '../nexus/data';
 import type { TextureMapT } from '../texture-map/data';
 
@@ -23,6 +24,9 @@ export interface SpriteMethods extends ComponentMethods {
   setOpacity: (sprite: SpriteT, alpha: number) => void;
   setVisible: (sprite: SpriteT, visible: boolean) => void;
   setRenderOrder: (sprite: SpriteT, order: number) => void;
+  setEmissionIntensity: (sprite: SpriteT, intensity: number) => void;
+  setEmissionColor: (sprite: SpriteT, r: number, g: number, b: number) => void;
+  getEmissionColor: (sprite: SpriteT) => Vector3D;
 }
 
 export const Sprite: SpriteMethods = {
@@ -151,6 +155,45 @@ export const Sprite: SpriteMethods = {
    */
   setRenderOrder(sprite: SpriteT, order: number) {
     sprite.renderOrder = order;
+  },
+
+  /**
+   * Sets how much of the sprite's emission (texture, or its own albedo when
+   * no emission texture is assigned) is added to the final color.
+   *
+   * @param sprite - The sprite component
+   * @param intensity - Emission dial (0-1, where 0 is off and 1 is full glow)
+   */
+  setEmissionIntensity(sprite: SpriteT, intensity: number) {
+    sprite.emissionIntensity = Math.max(0, Math.min(1, intensity)); // Clamp to 0-1
+  },
+
+  /**
+   * Sets the sprite's flat additive emission highlight color. Independent of
+   * emissionIntensity — always added, regardless of the dial value.
+   *
+   * @param sprite - The sprite component
+   * @param r - Red component (0-1)
+   * @param g - Green component (0-1)
+   * @param b - Blue component (0-1)
+   */
+  setEmissionColor(sprite: SpriteT, r: number, g: number, b: number) {
+    sprite.emissionColor.x = r;
+    sprite.emissionColor.y = g;
+    sprite.emissionColor.z = b;
+  },
+
+  /**
+   * Gets the sprite's flat additive emission highlight color.
+   *
+   * @param sprite - The sprite component
+   */
+  getEmissionColor(sprite: SpriteT): Vector3D {
+    return new Vector3D(
+      sprite.emissionColor.x,
+      sprite.emissionColor.y,
+      sprite.emissionColor.z,
+    );
   },
 
   /**

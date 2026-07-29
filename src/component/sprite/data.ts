@@ -7,7 +7,7 @@ import {
   DeserializationError,
   DeserializeResult,
 } from '../types';
-import { Vector2D, Vector4D } from '../../math';
+import { Vector2D, Vector3D, Vector4D } from '../../math';
 import type { SpriteMethods } from './methods';
 
 /**
@@ -88,6 +88,18 @@ export interface SpriteT
    * segmented sort). Default 0.
    */
   renderOrder: number;
+
+  /**
+   * Scales the emission texture (or albedo, when no emission texture is
+   * assigned) that self-illuminates the sprite. 0 = no glow, 1 = full glow.
+   */
+  emissionIntensity: number;
+
+  /**
+   * Flat additive highlight color (RGB, 0-1 range), independent of
+   * emissionIntensity. Default (0, 0, 0) is a no-op.
+   */
+  emissionColor: Vector3D;
 }
 
 export interface SpriteOptions extends ComponentOptions {
@@ -110,6 +122,8 @@ export interface SpriteOptions extends ComponentOptions {
   silhouetteColor?: Vector4D;
   visible?: boolean;
   renderOrder?: number;
+  emissionIntensity?: number;
+  emissionColor?: Vector3D;
 }
 
 /**
@@ -145,6 +159,8 @@ export function builder(options: SpriteOptions): SpriteT {
       options.silhouetteColor ?? new Vector4D(0.2, 0.4, 0.8, 0.5),
     visible: options.visible ?? true,
     renderOrder: options.renderOrder ?? 0,
+    emissionIntensity: Math.max(0, Math.min(1, options.emissionIntensity ?? 0)),
+    emissionColor: options.emissionColor ?? new Vector3D(0, 0, 0),
   };
 
   return sprite as unknown as SpriteT;
@@ -196,6 +212,13 @@ function serialize(component: ComponentData): any {
     },
     visible: s.visible,
     renderOrder: s.renderOrder,
+    emissionIntensity: s.emissionIntensity,
+    emissionColor: {
+      _vectorType: 'Vector3D',
+      x: s.emissionColor.x,
+      y: s.emissionColor.y,
+      z: s.emissionColor.z,
+    },
   };
 }
 
@@ -231,6 +254,8 @@ function deserialize(data: any): DeserializeResult<SpriteT> {
     silhouetteColor,
     visible,
     renderOrder,
+    emissionIntensity,
+    emissionColor,
   } = data;
 
   if (type !== 'sprite') {
@@ -313,6 +338,30 @@ function deserialize(data: any): DeserializeResult<SpriteT> {
     }
   }
 
+  let emissionColorVec = new Vector3D(0, 0, 0);
+  if (emissionColor !== undefined) {
+    if (!emissionColor || typeof emissionColor !== 'object') {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `sprite "${componentName}" emissionColor is not an object; defaulting to (0, 0, 0)`,
+      });
+    } else if (
+      !('_vectorType' in emissionColor) ||
+      emissionColor._vectorType !== 'Vector3D'
+    ) {
+      errors.push({
+        code: 'INVALID_VECTOR',
+        message: `sprite "${componentName}" emissionColor missing _vectorType='Vector3D' marker; defaulting`,
+      });
+    } else {
+      emissionColorVec = new Vector3D(
+        emissionColor.x,
+        emissionColor.y,
+        emissionColor.z,
+      );
+    }
+  }
+
   return {
     component: builder({
       name: componentName,
@@ -325,6 +374,8 @@ function deserialize(data: any): DeserializeResult<SpriteT> {
       silhouetteColor: silhouetteColorVec,
       visible: visible as boolean | undefined,
       renderOrder: renderOrder as number | undefined,
+      emissionIntensity: emissionIntensity as number | undefined,
+      emissionColor: emissionColorVec,
     }),
     errors,
   };
@@ -348,4 +399,6 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'silhouetteColor',
   'visible',
   'renderOrder',
+  'emissionIntensity',
+  'emissionColor',
 ];

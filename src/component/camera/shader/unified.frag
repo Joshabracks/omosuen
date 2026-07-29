@@ -54,6 +54,11 @@ uniform sampler2D u_materialTexture;
 uniform sampler2D u_emissionTexture;
 uniform bool u_hasMaterial;
 uniform bool u_hasEmission;
+uniform vec4 u_emissionUVBounds;
+uniform vec4 u_materialUVBounds;
+uniform float u_emissionIntensity;
+uniform vec3 u_emissionColor;
+uniform highp vec3 u_cameraWorldPos;
 uniform vec4 u_tint;
 uniform float u_opacity;
 
@@ -165,6 +170,40 @@ vec3 computeLighting(vec3 normal, vec3 worldPos) {
     }
 
     return lighting;
+}
+
+// Minimal Blinn-Phong specular for sprite material (metallic/roughness). Deliberately
+// cheap — no Fresnel/GGX/energy normalization, just enough view-dependent glint to sell
+// "metal vs cloth" at 2.5D scale. metallic gates presence (non-metal sprites are bit-for-
+// bit unchanged from today); roughness only shapes highlight width.
+vec3 computeSpecular(vec3 normal, vec3 worldPos, vec3 viewDir, float metallic, float roughness) {
+    if(metallic <= 0.0) return vec3(0.0);
+    float shininess = mix(4.0, 64.0, 1.0 - clamp(roughness, 0.0, 1.0));
+    vec3 spec = vec3(0.0);
+
+    for(int i = 0; i < MAX_DIR_LIGHTS; i++) {
+        if(i >= u_numDirLights) break;
+        vec3 lightDir = normalize(-u_dirLightDir[i]);
+        vec3 halfDir = normalize(lightDir + viewDir);
+        float specTerm = pow(max(dot(normal, halfDir), 0.0), shininess);
+        spec += u_dirLightColor[i] * u_dirLightBrightness[i] * specTerm;
+    }
+
+    for(int i = 0; i < MAX_POINT_LIGHTS; i++) {
+        if(i >= u_numPointLights) break;
+        vec3 toLight = u_pointLightPos[i] - worldPos;
+        float dist = length(toLight);
+        if(dist >= u_pointLightRadius[i]) continue;
+        float atten = attenuate(dist, u_pointLightRadius[i], u_pointLightHardness[i]);
+        vec3 halfDir = normalize(normalize(toLight) + viewDir);
+        float specTerm = pow(max(dot(normal, halfDir), 0.0), shininess);
+        spec += u_pointLightColor[i] * u_pointLightBrightness[i] * specTerm * atten;
+    }
+
+    // Spot lights intentionally excluded — computeLighting treats them as pure ambient-
+    // within-sphere (no normal dependency / no light direction), so there's no vector to
+    // build a half-angle from.
+    return spec * metallic;
 }
 
 // Check if a cell at integer coordinates is solid by sampling the solidity texture.
@@ -631,11 +670,42 @@ void main() {
             finalNormal = baseNormal;
         }
 
+        // Emission texture (or albedo fallback below), sampled from the same UV
+        // rect convention as normal/albedo — a single atlas frame, no triplanar.
+        vec3 emissionTexColor = vec3(0.0);
+        if(u_hasEmission) {
+            vec2 emissionAtlasUV = mix(u_emissionUVBounds.xy, u_emissionUVBounds.zw, v_uv);
+            emissionTexColor = texture2D(u_emissionTexture, emissionAtlasUV).rgb;
+        }
+
+        // Material (metallic/roughness) texture: R = metallic, G = roughness.
+        // Defaults (0 metallic, fully rough) make computeSpecular a no-op when unset.
+        float metallic = 0.0;
+        float roughness = 1.0;
+        if(u_hasMaterial) {
+            vec2 materialAtlasUV = mix(u_materialUVBounds.xy, u_materialUVBounds.zw, v_uv);
+            vec4 materialSample = texture2D(u_materialTexture, materialAtlasUV);
+            metallic = materialSample.r;
+            roughness = materialSample.g;
+        }
+
         // Dynamic lighting
         vec3 lighting = computeLighting(finalNormal, v_worldPos);
 
-        // Apply lighting and tint
-        vec4 tinted = albedo * u_tint * vec4(lighting, 1.0);
+        // Specular highlight (material-driven; zero cost when u_hasMaterial is false,
+        // since metallic defaults to 0.0 and computeSpecular early-outs on it).
+        vec3 viewDir = normalize(u_cameraWorldPos - v_worldPos);
+        vec3 specular = computeSpecular(finalNormal, v_worldPos, viewDir, metallic, roughness);
+
+        // Emission: texture-driven glow (or albedo fallback) scaled by intensity, plus
+        // an independent flat additive highlight — mirrors cell mode's two-term emission.
+        vec3 spriteEmission = (u_hasEmission ? emissionTexColor : albedo.rgb) * u_emissionIntensity
+                             + u_emissionColor;
+
+        // Tint scales lit albedo only — emission/specular stay additive and untinted,
+        // matching cell mode's convention (glow/highlight terms aren't albedo-scaled).
+        vec3 litColor = albedo.rgb * lighting * u_tint.rgb + specular + spriteEmission;
+        vec4 tinted = vec4(litColor, albedo.a * u_tint.a);
 
         // Apply opacity to final alpha channel
         gl_FragColor = vec4(tinted.rgb, tinted.a * u_opacity);

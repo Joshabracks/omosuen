@@ -90,6 +90,132 @@ function bindNormalTexture(
 }
 
 /**
+ * Attempts to bind a sprite's emission texture to TEXTURE4.
+ * Sets u_hasEmission to 1 on success, 0 on any failure (early return).
+ */
+function bindEmissionTexture(
+  sprite: SpriteT,
+  textureMapCache: Map<string, TextureMapT>,
+  camera: CameraT,
+  gl: WebGL2RenderingContext,
+  u_emissionTexture: WebGLUniformLocation | null,
+  u_emissionUVBounds: WebGLUniformLocation | null,
+  u_hasEmission: WebGLUniformLocation | null,
+  atlasSize: number,
+): void {
+  if (!sprite.textureMapKeys.emission) {
+    gl.uniform1i(u_hasEmission, 0);
+    return;
+  }
+
+  const emissionTextureMap = textureMapCache.get(
+    sprite.textureMapKeys.emission,
+  );
+  if (!emissionTextureMap || emissionTextureMap.packedFrames.length === 0) {
+    gl.uniform1i(u_hasEmission, 0);
+    return;
+  }
+
+  const emissionFrame = emissionTextureMap.frameIndexMap.get(
+    sprite.frame.emission,
+  );
+  if (!emissionFrame) {
+    gl.uniform1i(u_hasEmission, 0);
+    return;
+  }
+
+  const emissionAtlasTexture =
+    camera.glResources.atlasTextures[emissionFrame.atlasIndex];
+  if (!emissionAtlasTexture) {
+    gl.uniform1i(u_hasEmission, 0);
+    return;
+  }
+
+  gl.activeTexture(gl.TEXTURE4);
+  gl.bindTexture(gl.TEXTURE_2D, emissionAtlasTexture);
+  gl.uniform1i(u_emissionTexture, 4);
+
+  const emissionMinU = emissionFrame.atlasPosition.x / atlasSize;
+  const emissionMinV = emissionFrame.atlasPosition.y / atlasSize;
+  const emissionMaxU =
+    (emissionFrame.atlasPosition.x + emissionFrame.size.x) / atlasSize;
+  const emissionMaxV =
+    (emissionFrame.atlasPosition.y + emissionFrame.size.y) / atlasSize;
+  gl.uniform4f(
+    u_emissionUVBounds,
+    emissionMinU,
+    emissionMinV,
+    emissionMaxU,
+    emissionMaxV,
+  );
+
+  gl.uniform1i(u_hasEmission, 1);
+}
+
+/**
+ * Attempts to bind a sprite's material (metallic/roughness) texture to TEXTURE5.
+ * Sets u_hasMaterial to 1 on success, 0 on any failure (early return).
+ */
+function bindMaterialTexture(
+  sprite: SpriteT,
+  textureMapCache: Map<string, TextureMapT>,
+  camera: CameraT,
+  gl: WebGL2RenderingContext,
+  u_materialTexture: WebGLUniformLocation | null,
+  u_materialUVBounds: WebGLUniformLocation | null,
+  u_hasMaterial: WebGLUniformLocation | null,
+  atlasSize: number,
+): void {
+  if (!sprite.textureMapKeys.material) {
+    gl.uniform1i(u_hasMaterial, 0);
+    return;
+  }
+
+  const materialTextureMap = textureMapCache.get(
+    sprite.textureMapKeys.material,
+  );
+  if (!materialTextureMap || materialTextureMap.packedFrames.length === 0) {
+    gl.uniform1i(u_hasMaterial, 0);
+    return;
+  }
+
+  const materialFrame = materialTextureMap.frameIndexMap.get(
+    sprite.frame.material,
+  );
+  if (!materialFrame) {
+    gl.uniform1i(u_hasMaterial, 0);
+    return;
+  }
+
+  const materialAtlasTexture =
+    camera.glResources.atlasTextures[materialFrame.atlasIndex];
+  if (!materialAtlasTexture) {
+    gl.uniform1i(u_hasMaterial, 0);
+    return;
+  }
+
+  gl.activeTexture(gl.TEXTURE5);
+  gl.bindTexture(gl.TEXTURE_2D, materialAtlasTexture);
+  gl.uniform1i(u_materialTexture, 5);
+
+  const materialMinU = materialFrame.atlasPosition.x / atlasSize;
+  const materialMinV = materialFrame.atlasPosition.y / atlasSize;
+  const materialMaxU =
+    (materialFrame.atlasPosition.x + materialFrame.size.x) / atlasSize;
+  const materialMaxV =
+    (materialFrame.atlasPosition.y + materialFrame.size.y) / atlasSize;
+  gl.uniform4f(
+    u_materialUVBounds,
+    materialMinU,
+    materialMinV,
+    materialMaxU,
+    materialMaxV,
+  );
+
+  gl.uniform1i(u_hasMaterial, 1);
+}
+
+/**
  * Renders sprites directly to screen at full resolution (no pixelation).
  * Sprites are depth-sorted against cell-maps using the FBO depth texture.
  */
@@ -183,8 +309,24 @@ export function renderSprites(
   const u_albedoTexture = gl.getUniformLocation(program, 'u_albedoTexture');
   const u_normalTexture = gl.getUniformLocation(program, 'u_normalTexture');
   const u_hasNormal = gl.getUniformLocation(program, 'u_hasNormal');
+  const u_materialTexture = gl.getUniformLocation(program, 'u_materialTexture');
+  const u_emissionTexture = gl.getUniformLocation(program, 'u_emissionTexture');
   const u_hasMaterial = gl.getUniformLocation(program, 'u_hasMaterial');
   const u_hasEmission = gl.getUniformLocation(program, 'u_hasEmission');
+  const u_materialUVBounds = gl.getUniformLocation(
+    program,
+    'u_materialUVBounds',
+  );
+  const u_emissionUVBounds = gl.getUniformLocation(
+    program,
+    'u_emissionUVBounds',
+  );
+  const u_emissionIntensity = gl.getUniformLocation(
+    program,
+    'u_emissionIntensity',
+  );
+  const u_emissionColor = gl.getUniformLocation(program, 'u_emissionColor');
+  const u_cameraWorldPos = gl.getUniformLocation(program, 'u_cameraWorldPos');
   const u_tint = gl.getUniformLocation(program, 'u_tint');
   const u_opacity = gl.getUniformLocation(program, 'u_opacity');
   const u_uvBounds = gl.getUniformLocation(program, 'u_uvBounds');
@@ -221,6 +363,9 @@ export function renderSprites(
   const camIsoX = camRx * ISO_H - camRz * ISO_H;
   const camIsoY = camRx * sinA - camPos.y * heightScale + camRz * sinA;
   gl.uniform2f(u_cameraPosition, camIsoX, camIsoY);
+  // Real 3D world-space camera position (distinct from the 2D iso-projected
+  // u_cameraPosition above) — used to build the view direction for specular.
+  gl.uniform3f(u_cameraWorldPos, camPos.x, camPos.y, camPos.z);
   gl.uniform1f(u_zoom, camera.zoom);
   gl.uniform3f(
     u_cellSize,
@@ -431,9 +576,29 @@ export function renderSprites(
       atlasSize,
     );
 
-    // Set other channel flags (not yet implemented)
-    gl.uniform1i(u_hasMaterial, 0);
-    gl.uniform1i(u_hasEmission, 0);
+    // Bind emission texture if available
+    bindEmissionTexture(
+      sprite,
+      textureMapCache,
+      camera,
+      gl,
+      u_emissionTexture,
+      u_emissionUVBounds,
+      u_hasEmission,
+      atlasSize,
+    );
+
+    // Bind material (metallic/roughness) texture if available
+    bindMaterialTexture(
+      sprite,
+      textureMapCache,
+      camera,
+      gl,
+      u_materialTexture,
+      u_materialUVBounds,
+      u_hasMaterial,
+      atlasSize,
+    );
 
     // Set sprite transformation uniforms from the cached WORLD transform (composed
     // up the ancestry), so nesting under a transformed parent moves/scales/rotates it.
@@ -463,6 +628,15 @@ export function renderSprites(
       sprite.tint.w,
     );
     gl.uniform1f(u_opacity, sprite.opacity);
+
+    // Set emission uniforms
+    gl.uniform1f(u_emissionIntensity, sprite.emissionIntensity);
+    gl.uniform3f(
+      u_emissionColor,
+      sprite.emissionColor.x,
+      sprite.emissionColor.y,
+      sprite.emissionColor.z,
+    );
 
     // Set silhouette uniforms
     gl.uniform1i(u_showSilhouette, sprite.showSilhouette ? 1 : 0);

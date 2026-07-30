@@ -66,6 +66,22 @@ export const OFFICIAL_PLUGINS: PluginDocEntry[] = [
     definitionExport: "browserLocalStorageDefinition",
     registerFn: "registerBrowserLocalStorage",
   },
+  {
+    id: "perf-monitor",
+    title: "perf-monitor",
+    blurb:
+      "On-screen frame profiler HUD &mdash; FPS, phase timing, and per-component-type cost &mdash; with a hotkey toggle and a JSON snapshot export for bug reports.",
+    npmPackage: "omosuen-perf-monitor",
+    version: "0.1.0",
+    releaseTag: "perf-monitor0.1.0",
+    umdFile: "perf-monitor.plugin.js",
+    definitionExport: "perfMonitorDefinition",
+    registerFn: "registerPerfMonitor",
+    esmImports: ["exportPerfSnapshot"],
+    umdGlobal: "OmosuenPerfMonitor",
+    umdExtra:
+      "After loading the plugin script,&nbsp;<code>window.OmosuenPerfMonitor.exportPerfSnapshot()</code>&nbsp;logs a console.table of per-component-type cost and downloads a JSON snapshot of the retained frame history.",
+  },
 ];
 
 const byId = new Map(OFFICIAL_PLUGINS.map((p) => [p.id, p]));

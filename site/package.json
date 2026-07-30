@@ -25,6 +25,8 @@
   },
   "dependencies": {
     "omosuen-aseprite-loader": "github:joshabracks/omosuen#aseprite-loader0.3.0",
+    "omosuen-browser-local-storage": "github:joshabracks/omosuen#browser-local-storage0.1.0",
+    "omosuen-perf-monitor": "github:joshabracks/omosuen#perf-monitor0.1.0",
     "omosuen-state-overlay": "github:joshabracks/omosuen#state-overlay0.0.6"
   }
 }

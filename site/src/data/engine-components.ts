@@ -78,7 +78,7 @@ export const ENGINE_COMPONENTS: ComponentDocEntry[] = [
     id: "sprite",
     title: "sprite",
     category: "Rendering",
-    blurb: "Textured billboard quad with atlas frames and tint.",
+    blurb: "Textured billboard quad with atlas frames, tint, and material-driven specular/emission.",
   },
   {
     id: "texture-map",

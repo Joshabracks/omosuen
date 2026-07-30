@@ -122,7 +122,12 @@ function traverseAndUpdate(
   }
 
   if (profiling) {
-    recordComponentUpdate(component.type, performance.now() - t0);
+    recordComponentUpdate(
+      component.id ?? -1,
+      component.name,
+      component.type,
+      performance.now() - t0,
+    );
   }
 
   // Recurse into nexus children with the (possibly dial-scaled) dt.

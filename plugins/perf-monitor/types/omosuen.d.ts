@@ -56,12 +56,20 @@ declare module 'omosuen' {
     count: number;
   }
 
+  export interface ComponentInstanceTiming {
+    name: string;
+    type: string;
+    totalMs: number;
+    count: number;
+  }
+
   export interface FrameProfile {
     timestamp: number;
     frameTime: number;
     fps: number;
     phases: Record<LoopPhase, number>;
     byType: Record<string, ComponentTypeTiming>;
+    byInstance: Record<number, ComponentInstanceTiming>;
   }
 
   export function setProfilingEnabled(enabled: boolean): void;

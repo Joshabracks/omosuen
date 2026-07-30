@@ -20,6 +20,7 @@ import type {
   ComponentSerializer,
   ComponentTypeDefinition,
   ComponentTypeTiming,
+  ComponentInstanceTiming,
   LoopPhase,
 } from 'omosuen';
 
@@ -35,12 +36,16 @@ const PHASE_ORDER: LoopPhase[] = [
 /** Number of per-component-type rows shown, sorted by total time descending. */
 const TOP_TYPES_SHOWN = 8;
 
+/** Number of individual-component rows shown, sorted by total time descending. */
+const TOP_INSTANCES_SHOWN = 8;
+
 /**
- * How often the per-component-type table re-ranks and repaints. Per-frame
- * timing for individual component types is noisy enough (a few microseconds
- * of jitter) that a live per-frame table constantly reorders rows and reads as
- * flicker rather than data. FPS/frame-time/graph/phase totals stay per-frame;
- * only this ranked table is throttled and averaged over the interval.
+ * How often the ranked tables (by type, by component) re-rank and repaint.
+ * Per-frame timing for individual components/types is noisy enough (a few
+ * microseconds of jitter) that live per-frame tables constantly reorder rows
+ * and read as flicker rather than data. FPS/frame-time/graph/phase totals
+ * stay per-frame; only these ranked tables are throttled and averaged over
+ * the interval.
  */
 const TABLE_REFRESH_MS = 1000;
 
@@ -65,9 +70,14 @@ export interface PerfMonitorT extends ComponentData {
   /** One persistent [label, value] span pair per phase, in PHASE_ORDER order —
    * built once so the grid's geometry never changes, only textContent. */
   phaseCells: [HTMLSpanElement, HTMLSpanElement][];
-  /** Persistent <tr> pool, reused/relabeled each frame instead of rebuilt. */
+  /** Persistent <tr> pool for the by-type table, reused/relabeled each
+   * refresh instead of rebuilt. */
   rowPool: HTMLTableRowElement[];
-  /** performance.now() timestamp of the last per-type table repaint. */
+  /** Per-component (name + id) ranked table, mirroring tableEl/rowPool. */
+  instanceTableEl: HTMLTableElement;
+  instanceTbodyEl: HTMLTableSectionElement;
+  instanceRowPool: HTMLTableRowElement[];
+  /** performance.now() timestamp of the last ranked-table repaint. */
   _lastTableRefresh: number;
   visible: boolean;
   toggleKey: string;
@@ -83,6 +93,9 @@ const PROPERTY_ALLOWLIST: string[] = [
   'tbodyEl',
   'phaseCells',
   'rowPool',
+  'instanceTableEl',
+  'instanceTbodyEl',
+  'instanceRowPool',
   '_lastTableRefresh',
   'visible',
   'toggleKey',
@@ -92,6 +105,78 @@ const PROPERTY_ALLOWLIST: string[] = [
 /** Container width in px. Fixed so nothing in the HUD reflows frame to frame —
  * only text content changes, never column/row geometry. */
 const HUD_WIDTH = 300;
+
+interface RankedColumn {
+  width: string;
+  align: 'left' | 'right';
+  /** Text columns (names/types) can overflow at fixed width; ellipsize instead
+   * of letting the cell — and therefore the table — grow. */
+  ellipsis?: boolean;
+}
+
+interface RankedTable {
+  tableEl: HTMLTableElement;
+  tbodyEl: HTMLTableSectionElement;
+  /** Pre-built <tr> pool: fixed geometry, rows beyond the current entry count
+   * are hidden (not removed), so the table never resizes/reflows. */
+  rowPool: HTMLTableRowElement[];
+}
+
+/**
+ * Builds a fixed-layout table (table-layout: fixed + explicit <col> widths)
+ * with a pre-sized row pool. Used for both the by-type and by-component
+ * tables so their geometry is set once at construction and every later
+ * refresh only ever touches textContent / visibility.
+ */
+function buildRankedTable(columns: RankedColumn[], rowCount: number): RankedTable {
+  const tableEl = document.createElement('table');
+  Object.assign(tableEl.style, {
+    borderCollapse: 'collapse',
+    tableLayout: 'fixed',
+    width: '100%',
+  });
+  const colgroup = document.createElement('colgroup');
+  for (const column of columns) {
+    const col = document.createElement('col');
+    col.style.width = column.width;
+    colgroup.appendChild(col);
+  }
+  tableEl.appendChild(colgroup);
+  const tbodyEl = document.createElement('tbody');
+  tableEl.appendChild(tbodyEl);
+
+  const rowPool: HTMLTableRowElement[] = [];
+  for (let i = 0; i < rowCount; i++) {
+    const row = document.createElement('tr');
+    for (const column of columns) {
+      const td = document.createElement('td');
+      Object.assign(td.style, {
+        textAlign: column.align,
+        // Table cells are flush against each other (border-collapse); without
+        // this, a right-aligned column butts straight into the next column's
+        // left-aligned text (e.g. "#14viewport") with no visible gap.
+        paddingRight: '6px',
+        boxSizing: 'border-box',
+        ...(column.ellipsis
+          ? { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+          : {}),
+      });
+      row.appendChild(td);
+    }
+    tbodyEl.appendChild(row);
+    rowPool.push(row);
+  }
+
+  return { tableEl, tbodyEl, rowPool };
+}
+
+/** Small section label above a ranked table (matches the phase labels' dim style). */
+function sectionLabel(text: string): HTMLDivElement {
+  const el = document.createElement('div');
+  el.textContent = text;
+  Object.assign(el.style, { opacity: '0.7', marginBottom: '2px' });
+  return el;
+}
 
 function builder(options: PerfMonitorOptions): PerfMonitorT {
   const container = document.createElement('div');
@@ -148,47 +233,39 @@ function builder(options: PerfMonitorOptions): PerfMonitorT {
     },
   );
 
-  const tableEl = document.createElement('table');
-  Object.assign(tableEl.style, {
-    borderCollapse: 'collapse',
-    tableLayout: 'fixed',
-    width: '100%',
-  });
-  const colgroup = document.createElement('colgroup');
-  const colWidths = ['40%', '22%', '14%', '24%'];
-  for (const w of colWidths) {
-    const col = document.createElement('col');
-    col.style.width = w;
-    colgroup.appendChild(col);
-  }
-  tableEl.appendChild(colgroup);
-  const tbodyEl = document.createElement('tbody');
-  tableEl.appendChild(tbodyEl);
+  const { tableEl, tbodyEl, rowPool } = buildRankedTable(
+    [
+      { width: '40%', align: 'left', ellipsis: true },
+      { width: '22%', align: 'right' },
+      { width: '14%', align: 'right' },
+      { width: '24%', align: 'right' },
+    ],
+    TOP_TYPES_SHOWN,
+  );
 
-  // Pre-built row pool: fixed geometry, rows beyond the current type count are
-  // simply hidden rather than removed, so the table never resizes/reflows.
-  const rowPool: HTMLTableRowElement[] = [];
-  for (let i = 0; i < TOP_TYPES_SHOWN; i++) {
-    const row = document.createElement('tr');
-    const cellStyles = [
-      { textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-      { textAlign: 'right' },
-      { textAlign: 'right' },
-      { textAlign: 'right' },
-    ];
-    for (const style of cellStyles) {
-      const td = document.createElement('td');
-      Object.assign(td.style, style);
-      row.appendChild(td);
-    }
-    tbodyEl.appendChild(row);
-    rowPool.push(row);
-  }
+  const {
+    tableEl: instanceTableEl,
+    tbodyEl: instanceTbodyEl,
+    rowPool: instanceRowPool,
+  } = buildRankedTable(
+    [
+      { width: '32%', align: 'left', ellipsis: true },
+      { width: '14%', align: 'right' },
+      { width: '26%', align: 'left', ellipsis: true },
+      { width: '28%', align: 'right' },
+    ],
+    TOP_INSTANCES_SHOWN,
+  );
 
   container.appendChild(headlineEl);
   container.appendChild(canvas);
   container.appendChild(phasesEl);
+  container.appendChild(sectionLabel('by type'));
   container.appendChild(tableEl);
+  const instanceLabel = sectionLabel('by component');
+  instanceLabel.style.marginTop = '4px';
+  container.appendChild(instanceLabel);
+  container.appendChild(instanceTableEl);
 
   const startVisible = options.startVisible ?? true;
   container.style.display = startVisible ? 'block' : 'none';
@@ -205,6 +282,9 @@ function builder(options: PerfMonitorOptions): PerfMonitorT {
     tbodyEl,
     phaseCells,
     rowPool,
+    instanceTableEl,
+    instanceTbodyEl,
+    instanceRowPool,
     _lastTableRefresh: 0,
     visible: startVisible,
     toggleKey: options.toggleKey ?? DEFAULT_TOGGLE_KEY,
@@ -277,6 +357,38 @@ function averageByType(
   ]);
 }
 
+/**
+ * Same idea as averageByType, but keyed by component id so a specific slow
+ * instance (not just "sprite" in general) can be identified. Keeps the last-
+ * seen name/type for that id in case either changes mid-window.
+ */
+function averageByInstance(
+  frames: { byInstance: Record<number, ComponentInstanceTiming> }[],
+): [number, ComponentInstanceTiming][] {
+  const totals = new Map<number, ComponentInstanceTiming>();
+  for (const frame of frames) {
+    for (const [idKey, timing] of Object.entries(frame.byInstance)) {
+      const id = Number(idKey);
+      const entry = totals.get(id) ?? {
+        name: timing.name,
+        type: timing.type,
+        totalMs: 0,
+        count: 0,
+      };
+      entry.name = timing.name;
+      entry.type = timing.type;
+      entry.totalMs += timing.totalMs;
+      entry.count += timing.count;
+      totals.set(id, entry);
+    }
+  }
+  const n = frames.length || 1;
+  return Array.from(totals.entries()).map(([id, t]) => [
+    id,
+    { name: t.name, type: t.type, totalMs: t.totalMs / n, count: t.count / n },
+  ]);
+}
+
 function render(p: PerfMonitorT): void {
   const last = getLastFrameProfile();
   if (!last) return;
@@ -290,20 +402,23 @@ function render(p: PerfMonitorT): void {
     p.phaseCells[i][1].textContent = `${padMs(last.phases[phase], 5)}ms`;
   });
 
-  // Throttled + averaged: per-component-type ranking. Recomputing/repainting
-  // this every frame reorders rows constantly on ordinary timing noise, so it
-  // only refreshes on TABLE_REFRESH_MS, using the frames since the last
-  // refresh (see averageByType above) rather than one frame's raw numbers.
+  // Throttled + averaged: by-type and by-component rankings. Recomputing/
+  // repainting either every frame reorders rows constantly on ordinary timing
+  // noise, so both only refresh on TABLE_REFRESH_MS, using the frames since
+  // the last refresh (see averageByType/averageByInstance above) rather than
+  // one frame's raw numbers.
   if (last.timestamp - p._lastTableRefresh >= TABLE_REFRESH_MS) {
     const windowFrames = getFrameHistory().filter(
       (f) => f.timestamp >= p._lastTableRefresh - TABLE_REFRESH_MS,
     );
-    const rows = averageByType(windowFrames.length ? windowFrames : [last])
+    const framesOrLast = windowFrames.length ? windowFrames : [last];
+
+    const typeRows = averageByType(framesOrLast)
       .sort((a, b) => b[1].totalMs - a[1].totalMs)
       .slice(0, TOP_TYPES_SHOWN);
 
     p.rowPool.forEach((row, i) => {
-      const entry = rows[i];
+      const entry = typeRows[i];
       if (!entry) {
         row.style.visibility = 'hidden';
         return;
@@ -316,6 +431,25 @@ function render(p: PerfMonitorT): void {
       cells[1].textContent = `${padMs(timing.totalMs, 5)}ms`;
       cells[2].textContent = `x${timing.count.toFixed(1)}`;
       cells[3].textContent = `${avg.toFixed(3)}ms`;
+    });
+
+    const instanceRows = averageByInstance(framesOrLast)
+      .sort((a, b) => b[1].totalMs - a[1].totalMs)
+      .slice(0, TOP_INSTANCES_SHOWN);
+
+    p.instanceRowPool.forEach((row, i) => {
+      const entry = instanceRows[i];
+      if (!entry) {
+        row.style.visibility = 'hidden';
+        return;
+      }
+      row.style.visibility = 'visible';
+      const [id, timing] = entry;
+      const cells = row.children;
+      cells[0].textContent = timing.name;
+      cells[1].textContent = `#${id}`;
+      cells[2].textContent = timing.type;
+      cells[3].textContent = `${padMs(timing.totalMs, 5)}ms`;
     });
 
     p._lastTableRefresh = last.timestamp;

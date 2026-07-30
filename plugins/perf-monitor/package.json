@@ -1,6 +1,6 @@
 {
   "name": "omosuen-perf-monitor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Official Omosuen plugin: an on-screen frame profiler HUD (FPS, phase breakdown, per-component-type timing, rolling history graph) with a hotkey toggle and a JSON snapshot export for bug reports.",
   "type": "module",
   "main": "dist/src/index.js",

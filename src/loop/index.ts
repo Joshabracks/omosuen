@@ -72,4 +72,9 @@ export {
   getLastFrameProfile,
   getFrameHistory,
 } from './profile';
-export type { LoopPhase, ComponentTypeTiming, FrameProfile } from './profile';
+export type {
+  LoopPhase,
+  ComponentTypeTiming,
+  ComponentInstanceTiming,
+  FrameProfile,
+} from './profile';

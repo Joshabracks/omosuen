@@ -24,6 +24,14 @@ export interface ComponentTypeTiming {
   count: number;
 }
 
+/** Accumulated update time for one component instance across a single frame. */
+export interface ComponentInstanceTiming {
+  name: string;
+  type: string;
+  totalMs: number;
+  count: number;
+}
+
 /** A complete record of one frame's timing, retained in the rolling history. */
 export interface FrameProfile {
   /** performance.now() timestamp when this frame's record was finalized. */
@@ -33,6 +41,8 @@ export interface FrameProfile {
   fps: number;
   phases: Record<LoopPhase, number>;
   byType: Record<string, ComponentTypeTiming>;
+  /** Keyed by component id. */
+  byInstance: Record<number, ComponentInstanceTiming>;
 }
 
 const HISTORY_SIZE = 300;
@@ -52,6 +62,7 @@ function emptyPhases(): Record<LoopPhase, number> {
 
 let currentPhases: Record<LoopPhase, number> = emptyPhases();
 const currentByType = new Map<string, ComponentTypeTiming>();
+const currentByInstance = new Map<number, ComponentInstanceTiming>();
 
 const history: FrameProfile[] = [];
 
@@ -64,6 +75,7 @@ export function setProfilingEnabled(enabled: boolean): void {
   if (!enabled) {
     currentPhases = emptyPhases();
     currentByType.clear();
+    currentByInstance.clear();
     history.length = 0;
   }
 }
@@ -76,6 +88,7 @@ export function isProfilingEnabled(): boolean {
 export function beginFrame(): void {
   currentPhases = emptyPhases();
   currentByType.clear();
+  currentByInstance.clear();
 }
 
 /** Records time spent in a named loop phase, called once per phase per frame. */
@@ -83,15 +96,33 @@ export function recordPhase(phase: LoopPhase, ms: number): void {
   currentPhases[phase] += ms;
 }
 
-/** Records time spent updating a single component, accumulated by component type. */
-export function recordComponentUpdate(type: string, ms: number): void {
-  let entry = currentByType.get(type);
-  if (!entry) {
-    entry = { totalMs: 0, count: 0 };
-    currentByType.set(type, entry);
+/**
+ * Records time spent updating a single component, accumulated both by
+ * component type (for the type-level breakdown) and by component id (for the
+ * per-instance breakdown, so a specific slow sprite/nexus/etc. can be
+ * identified rather than just its type).
+ */
+export function recordComponentUpdate(
+  id: number,
+  name: string,
+  type: string,
+  ms: number,
+): void {
+  let typeEntry = currentByType.get(type);
+  if (!typeEntry) {
+    typeEntry = { totalMs: 0, count: 0 };
+    currentByType.set(type, typeEntry);
   }
-  entry.totalMs += ms;
-  entry.count += 1;
+  typeEntry.totalMs += ms;
+  typeEntry.count += 1;
+
+  let instanceEntry = currentByInstance.get(id);
+  if (!instanceEntry) {
+    instanceEntry = { name, type, totalMs: 0, count: 0 };
+    currentByInstance.set(id, instanceEntry);
+  }
+  instanceEntry.totalMs += ms;
+  instanceEntry.count += 1;
 }
 
 /**
@@ -104,12 +135,22 @@ export function endFrame(frameTime: number, fps: number): void {
   currentByType.forEach((value, key) => {
     byType[key] = { totalMs: value.totalMs, count: value.count };
   });
+  const byInstance: Record<number, ComponentInstanceTiming> = {};
+  currentByInstance.forEach((value, key) => {
+    byInstance[key] = {
+      name: value.name,
+      type: value.type,
+      totalMs: value.totalMs,
+      count: value.count,
+    };
+  });
   history.push({
     timestamp: performance.now(),
     frameTime,
     fps,
     phases: currentPhases,
     byType,
+    byInstance,
   });
   if (history.length > HISTORY_SIZE) {
     history.shift();

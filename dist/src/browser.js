@@ -1,0 +1,21 @@
+// omosuen-perf-monitor — self-registering browser entry (the "JS file" plugin
+// path). Bundled into a single classic script (see webpack.config.cjs) that,
+// when loaded after the Omosuen UMD bundle, registers the `perf-monitor`
+// component type on the global and exposes `exportPerfSnapshot` to the host
+// page.
+//
+// Usage: Omosuen.init({ plugins: ['./perf-monitor.plugin.js'] }) — or load it
+// via a <script> tag after omosuen.js.
+import { perfMonitorDefinition } from './component.js';
+import { exportPerfSnapshot } from './index.js';
+if (typeof window !== 'undefined') {
+    const omo = window.Omosuen;
+    if (omo && typeof omo.registerPluginComponent === 'function') {
+        omo.registerPluginComponent(perfMonitorDefinition);
+    }
+    else {
+        console.warn('[perf-monitor] window.Omosuen.registerPluginComponent not found — ' +
+            'load the Omosuen engine before this plugin file.');
+    }
+    window.OmosuenPerfMonitor = { exportPerfSnapshot };
+}

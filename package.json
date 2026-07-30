@@ -1,0 +1,43 @@
+{
+  "name": "omosuen-perf-monitor",
+  "version": "0.1.1",
+  "description": "Official Omosuen plugin: an on-screen frame profiler HUD (FPS, phase breakdown, per-component-type timing, rolling history graph) with a hotkey toggle and a JSON snapshot export for bug reports.",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "module": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./src": "./src/index.ts"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npx tsc -p tsconfig.json && npx webpack --config webpack.config.cjs",
+    "build:esm": "npx tsc -p tsconfig.json",
+    "build:browser": "npx webpack --config webpack.config.cjs"
+  },
+  "keywords": [
+    "omosuen",
+    "omosuen-plugin",
+    "profiler",
+    "performance",
+    "fps",
+    "devtools"
+  ],
+  "license": "ISC",
+  "peerDependencies": {
+    "omosuen": ">=0.23.0"
+  },
+  "peerDependenciesMeta": {
+    "omosuen": {
+      "optional": true
+    }
+  }
+}

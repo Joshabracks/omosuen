@@ -23,7 +23,8 @@ async function initGame() {
         logSuppression: 5,  // Suppress logs after 5 occurrences
         plugins: [
             './dev/aseprite-loader.plugin.js',
-            './dev/browser-local-storage.plugin.js'
+            './dev/browser-local-storage.plugin.js',
+            './dev/perf-monitor.plugin.js'
         ]
     });
 

@@ -438,6 +438,10 @@ export async function createScene() {
         name: 'CellMap Test Scene',
     });
 
+    // Perf profiler HUD (backtick to toggle) — stress-test verification for the
+    // perf-monitor plugin against this scene's many sprites/timers/lights.
+    await Omosuen.newComponent('perf-monitor', { name: 'PerfMonitor' }, scene);
+
     // 1. Create AtlasManager (global singleton with built-in image loading)
     // atlasSize bumped to 4096: the lava material's 4 channel textures are each
     // a full 2048x2048 image, which (plus padding) can't fit in a 2048 atlas page.

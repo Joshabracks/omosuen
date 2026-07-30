@@ -14,6 +14,7 @@ import { renderScene } from './render';
 import { pollMessages } from './messaging';
 import { pollFlags } from './flags';
 import { updateWorldTransforms } from '../component/transform/world';
+import { beginFrame, endFrame, isProfilingEnabled, recordPhase } from './profile';
 
 /**
  * Whether the game loop is currently running
@@ -80,6 +81,9 @@ async function gameLoop(currentTime: number): Promise<void> {
   // Calculate FPS
   currentFPS = deltaTime > 0 ? 1000 / deltaTime : 0;
 
+  const profiling = isProfilingEnabled();
+  if (profiling) beginFrame();
+
   // Get active scene
   const activeScene = getActiveScene();
   if (!activeScene) {
@@ -92,28 +96,42 @@ async function gameLoop(currentTime: number): Promise<void> {
   const targetFrameTime = 1000 / targetFPS; // e.g., 16.67ms for 60fps
 
   // 1. Progressive initialization (time-limited, async)
+  let t0 = profiling ? performance.now() : 0;
   await processInitQueue(activeScene, targetFrameTime);
+  if (profiling) recordPhase('init', performance.now() - t0);
 
   // 2. Update components (skip if paused)
   if (!loopPaused) {
+    t0 = profiling ? performance.now() : 0;
     updateScene(activeScene, deltaTime);
+    if (profiling) recordPhase('update', performance.now() - t0);
   }
 
   // 3. Process disposal queue
+  t0 = profiling ? performance.now() : 0;
   processDisposeQueue(activeScene);
+  if (profiling) recordPhase('dispose', performance.now() - t0);
 
   // 3.5 Refresh cached world transforms (parent→child) after logic has set locals,
   // before render reads them. Runs even while paused, since render does.
+  t0 = profiling ? performance.now() : 0;
   updateWorldTransforms(activeScene);
+  if (profiling) recordPhase('transforms', performance.now() - t0);
 
   // 4. Render (stub)
+  t0 = profiling ? performance.now() : 0;
   renderScene(activeScene);
+  if (profiling) recordPhase('render', performance.now() - t0);
 
   // 5. Poll messages (stub)
+  t0 = profiling ? performance.now() : 0;
   pollMessages();
 
   // 6. Poll flags (stub)
   pollFlags();
+  if (profiling) recordPhase('messages', performance.now() - t0);
+
+  if (profiling) endFrame(deltaTime, currentFPS);
 
   // Schedule next frame (wrap async gameLoop to handle errors)
   animationFrameId = requestAnimationFrame((time) => {

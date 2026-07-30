@@ -138,6 +138,24 @@ export const PLUGIN_API: Record<string, ComponentApiDoc> = {
       M("saveMirror", "saveMirror()", "Manually persist linked data-layer."),
     ],
   },
+
+  "perf-monitor": {
+    options: withBase([
+      O("toggleKey", "string?", "KeyboardEvent.key that shows/hides the HUD.", "'`'"),
+      O("startVisible", "boolean?", "Whether the HUD is visible immediately after init.", "true"),
+    ]),
+    data: [
+      O("visible", "boolean", "Current HUD visibility."),
+      O("toggleKey", "string", "Hotkey that toggles HUD visibility."),
+    ],
+    methods: [
+      M("init", "init()", "Append the HUD container to document.body; enable engine profiling."),
+      M("update", "update(dt)", "Repaint FPS/graph/phase totals every frame; re-rank the per-type table once per second.", [
+        A("dt", "number", "Frame delta time from engine loop (ms)."),
+      ]),
+      M("dispose", "dispose()", "Remove the HUD container and disable engine profiling."),
+    ],
+  },
 };
 
 export function getPluginApi(id: string): ComponentApiDoc | undefined {

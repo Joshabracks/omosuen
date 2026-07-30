@@ -27,7 +27,7 @@ renders with WebGL2, runs hot paths (voxel meshing, visibility, audio time-stret
 
 ```bash
 # npm / bundler — install a tagged engine release straight from GitHub
-npm i github:joshabracks/omosuen#v0.7.0
+npm i github:joshabracks/omosuen#v0.24.0
 ```
 
 ```ts
@@ -135,7 +135,7 @@ Create any of these with `Omosuen.newComponent('<type>', options)`. Quick index:
 | `nexus` | Scene container / component-tree node |
 | `transform` | Position / rotation / scale (hierarchical) |
 | `sprite` | Multi-channel billboard (albedo / normal / material / emission) |
-| `camera` | Axonometric renderer (zoom, pixelation, Y-slice reveal) |
+| `camera` | Axonometric renderer (zoom, pixelation, orbit yaw, Y-slice reveal) |
 | `viewport` | WebGL2 canvas + context |
 | `cell-map` | Voxel grid store (WASM-backed, RLE-compressed) |
 | `light` | Ambient / point / spot / directional light |
@@ -210,12 +210,14 @@ Y-slice reveal for fog-of-war/occlusion. *Unique: one per parent nexus.*
 - `revealYOffset?: number` (default `16.0`), `revealFadeHeight?: number` (default `8.0`), `revealRadius?: number` (default `256.0`) — Y-slice reveal tuning
 
 **`sprite`** — Multi-channel billboard; per-channel frame selection, tint, opacity, optional
-silhouette. *Unique: one per parent nexus.*
-- `textureMapKeys?: { albedo?, normal?, material?, emission?: string }` (default all empty) — which texture-maps feed each channel
+silhouette, material-driven specular and emission. *Unique: one per parent nexus.*
+- `textureMapKeys?: { albedo?, normal?, material?, emission?: string }` (default all empty) — which texture-maps feed each channel. `material` is `R=metallic, G=roughness`, driving a cheap Blinn-Phong specular highlight (metallic gates it — non-metal sprites are unaffected).
 - `frame?: { albedo?, normal?, material?, emission?: number }` (default all `0`) — frame index per channel
 - `anchor?: Vector2D` (default `(0,0)`)
 - `tint?: Vector4D` (default `(1,1,1,1)`), `opacity?: number` (default `1.0`)
 - `showSilhouette?: boolean` (default `false`), `silhouetteColor?: Vector4D` (default `(0.2,0.4,0.8,0.5)`)
+- `emissionIntensity?: number` (default `0`, clamped 0–1) — scales the emission texture (or albedo as a fallback when no emission texture is assigned) into a self-illuminating glow. Set via `setEmissionIntensity(intensity)`.
+- `emissionColor?: Vector3D` (default `(0,0,0)`, no-op) — flat additive RGB highlight, added independent of `emissionIntensity`. Set via `setEmissionColor(r,g,b)`, read via `getEmissionColor()`.
 
 **`cell-map`** — Voxel grid (material/shape/emission/visibility per cell); WASM-backed RLE
 store with greedy/smoothed meshing.
@@ -352,7 +354,31 @@ Plugin/UI registrations must happen **before** the scene that uses them is loade
   Omosuen loop (no second `requestAnimationFrame`).
 
   ```bash
-  npm i github:joshabracks/omosuen#state-overlay0.0.1
+  npm i github:joshabracks/omosuen#state-overlay0.0.6
+  ```
+
+- **[omosuen-aseprite-loader](plugins/aseprite-loader/README.md)** — ingests
+  [Aseprite](https://www.aseprite.org/) (`.aseprite`/`.ase`) files into layered,
+  animated entities with shared atlases and animation maps.
+
+  ```bash
+  npm i github:joshabracks/omosuen#aseprite-loader0.3.0
+  ```
+
+- **[omosuen-browser-local-storage](plugins/browser-local-storage/README.md)** —
+  persists game state to browser storage (localStorage, sessionStorage, IndexedDB,
+  cookies) with optional data-layer mirroring and nexus snapshots.
+
+  ```bash
+  npm i github:joshabracks/omosuen#browser-local-storage0.1.0
+  ```
+
+- **[omosuen-perf-monitor](plugins/perf-monitor/README.md)** — on-screen frame
+  profiler HUD (FPS, phase timing, per-component-type cost) with a hotkey toggle and a
+  JSON snapshot export for bug reports.
+
+  ```bash
+  npm i github:joshabracks/omosuen#perf-monitor0.1.0
   ```
 
   Each plugin is its own package (`omosuen-<name>`) released as a git tag

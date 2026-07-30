@@ -509,6 +509,8 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("silhouetteColor", "Vector4D?", "Silhouette color.", "new Omosuen.Vector4D(0.2, 0.4, 0.8, 0.5)"),
       O("visible", "boolean?", "Whether renderer draws sprite.", "true"),
       O("renderOrder", "number?", "Sibling draw order.", "0"),
+      O("emissionIntensity", "number?", "Self-illumination dial (clamped 0–1); scales the emission texture, or albedo as a fallback when no emission texture is assigned.", "0"),
+      O("emissionColor", "Vector3D?", "Flat additive RGB highlight, added independent of emissionIntensity.", "new Omosuen.Vector3D(0, 0, 0)"),
     ]),
     data: [
       O("textureMapKeys", "object", "Texture-map key per channel."),
@@ -520,6 +522,8 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("silhouetteColor", "Vector4D", "Silhouette color."),
       O("visible", "boolean", "Render visibility."),
       O("renderOrder", "number", "Draw order among siblings."),
+      O("emissionIntensity", "number", "Self-illumination dial, 0–1."),
+      O("emissionColor", "Vector3D", "Additive RGB highlight."),
     ],
     methods: [
       M("init", "init()", "Validate texture-map references."),
@@ -542,6 +546,15 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       M("setRenderOrder", "setRenderOrder(order)", "Set draw order.", [
         A("order", "number", "Draw order among sibling sprites."),
       ]),
+      M("setEmissionIntensity", "setEmissionIntensity(intensity)", "Set/clamp the self-illumination dial.", [
+        A("intensity", "number", "Emission intensity, clamped 0–1."),
+      ]),
+      M("setEmissionColor", "setEmissionColor(r,g,b)", "Set the additive emission color.", [
+        A("r", "number", "Red channel 0–1."),
+        A("g", "number", "Green channel 0–1."),
+        A("b", "number", "Blue channel 0–1."),
+      ]),
+      M("getEmissionColor", "getEmissionColor()", "Returns a copy of the current emission color (Vector3D)."),
     ],
   },
 

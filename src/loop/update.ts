@@ -9,6 +9,7 @@ import type { ComponentData } from '../component/types';
 import type { NexusT } from '../component/nexus/data';
 import { MethodRegistry } from '../component/registry';
 import { isInitializing } from './init';
+import { isProfilingEnabled, recordComponentUpdate } from './profile';
 
 /**
  * Recursively traverses and updates a component and its children.
@@ -99,6 +100,9 @@ function traverseAndUpdate(
     dt = deltaTime * scale;
   }
 
+  const profiling = isProfilingEnabled();
+  const t0 = profiling ? performance.now() : 0;
+
   // Always call base update first (for initialization, HTML construction, etc.)
   if (method.update && typeof method.update === 'function') {
     method.update(component, dt);
@@ -115,6 +119,10 @@ function traverseAndUpdate(
         `[UPDATE] Custom update method '${component.updateOverride}' not found for component '${component.name}'`,
       );
     }
+  }
+
+  if (profiling) {
+    recordComponentUpdate(component.type, performance.now() - t0);
   }
 
   // Recurse into nexus children with the (possibly dial-scaled) dt.

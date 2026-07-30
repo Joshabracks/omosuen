@@ -62,3 +62,14 @@ export { pollMessages } from './messaging';
 // Flag System (Stub)
 // ============================================================================
 export { pollFlags } from './flags';
+
+// ============================================================================
+// Frame Profiler (opt-in, see loop/profile.ts)
+// ============================================================================
+export {
+  setProfilingEnabled,
+  isProfilingEnabled,
+  getLastFrameProfile,
+  getFrameHistory,
+} from './profile';
+export type { LoopPhase, ComponentTypeTiming, FrameProfile } from './profile';

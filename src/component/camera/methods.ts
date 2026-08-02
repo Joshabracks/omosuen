@@ -19,6 +19,7 @@ import {
   clearRevealTarget,
   setRevealVolume,
   clearRevealVolume,
+  resize,
 } from './set';
 import { init } from './init';
 import { dispose } from './dispose';
@@ -39,6 +40,8 @@ export interface CameraMethods extends ComponentMethods {
   /** Rotates orbit yaw by a relative amount (degrees) — drag / keyboard. */
   orbitBy: (camera: CameraT, deltaDegrees: number) => void;
   setPixelScale: (camera: CameraT, pixelScale: number) => void;
+  /** Re-syncs the offscreen framebuffer to the current viewport size. */
+  resize: (camera: CameraT) => void;
   setRevealTarget: (camera: CameraT, x: number, y: number, z: number) => void;
   clearRevealTarget: (camera: CameraT) => void;
   setRevealVolume: (
@@ -87,6 +90,7 @@ export const Camera: CameraMethods = {
   setOrbitYaw,
   orbitBy,
   setPixelScale,
+  resize,
   setRevealTarget,
   clearRevealTarget,
   setRevealVolume,

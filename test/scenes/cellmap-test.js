@@ -567,16 +567,28 @@ export async function createScene() {
             },
             atlasManager,
         }, scene),
-        // 3. Create Viewport (800x600, centered on screen for better 3D view)
-        Omosuen.newComponent('viewport', {
-            name: 'CellMap Viewport',
-            width: 800,
-            height: 600,
-            offsetX: window.innerWidth / 2 - 400,
-            offsetY: window.innerHeight / 2 - 300,
-            backgroundColor: new Omosuen.Vector4D(0.05, 0.05, 0.1, 1.0), // Dark blue background
-        }, scene),
     ])
+
+    // 3. Create Viewport, filling its parent container (document.body) and
+    // resizing as that container resizes. Initial width/height match the
+    // window so there's no flash before the first autoResize pass; the CSS
+    // percentages below are what actually keep it in sync afterward — the
+    // viewport's own per-frame autoResize check (Viewport.update) detects
+    // the resulting canvas.clientWidth/clientHeight change and calls resize().
+    const viewport = await Omosuen.newComponent('viewport', {
+        name: 'CellMap Viewport',
+        width: window.innerWidth,
+        height: window.innerHeight,
+        offsetX: 0,
+        offsetY: 0,
+        backgroundColor: new Omosuen.Vector4D(0.05, 0.05, 0.1, 1.0), // Dark blue background
+    }, scene);
+    viewport.container.style.left = '0';
+    viewport.container.style.top = '0';
+    viewport.container.style.width = '100%';
+    viewport.container.style.height = '100%';
+    viewport.canvas.style.width = '100%';
+    viewport.canvas.style.height = '100%';
 
     // 4. Create Camera Nexus with Transform and Camera
     const cameraNexus = await Omosuen.newComponent('nexus', {
@@ -602,6 +614,19 @@ export async function createScene() {
     }, cameraNexus)
 
     console.log('[CellMap Test] Camera created');
+
+    // Viewport fills the window and resizes with it (see viewport creation above).
+    // Re-sync the camera's offscreen framebuffer to match on every window resize —
+    // otherwise it stays pinned to the size it was last computed at and the image
+    // stretches/squashes to fill the new canvas dimensions instead of staying pixel-perfect.
+    // Viewport.width/height only update via the per-frame autoResize check in the
+    // engine's render loop, which hasn't necessarily run yet by the time this event
+    // fires — so resize the viewport explicitly first (from the canvas's already-
+    // current CSS size) before camera.resize() reads it, rather than racing the frame.
+    window.addEventListener('resize', () => {
+        viewport.resize(viewport.canvas.clientWidth, viewport.canvas.clientHeight);
+        camera.resize();
+    });
 
     // Arrow keys = orbit yaw / tilt. WASD already drives the indoor player-character
     // (below), so camera orbit/tilt use a separate key group here rather than W/S.

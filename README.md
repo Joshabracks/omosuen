@@ -208,6 +208,10 @@ Y-slice reveal for fog-of-war/occlusion. *Unique: one per parent nexus.*
   `setOrbitYaw(degrees)` or `orbitBy(deltaDegrees)`. Still no perspective/FOV or free
   6DOF — the projection stays orthographic-axonometric, only the azimuth moves.
 - `revealYOffset?: number` (default `16.0`), `revealFadeHeight?: number` (default `8.0`), `revealRadius?: number` (default `256.0`) — Y-slice reveal tuning
+- The camera's offscreen framebuffer (used for pixel-perfect zoom) is only recomputed on
+  `setZoom`/`setPixelScale`, not automatically when the viewport resizes. Call
+  `resize()` after resizing the viewport (e.g. from a `window.resize` listener) to
+  re-sync it — otherwise the rendered image stretches/squashes to the new canvas size.
 
 **`sprite`** — Multi-channel billboard; per-channel frame selection, tint, opacity, optional
 silhouette, material-driven specular and emission. *Unique: one per parent nexus.*

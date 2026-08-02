@@ -368,6 +368,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       M("setPixelScale", "setPixelScale(scale)", "Set pixelation scale.", [
         A("scale", "number", "Pixelation scale factor."),
       ]),
+      M("resize", "resize()", "Re-sync the offscreen framebuffer to the current viewport size. Call after resizing the viewport."),
       M("setRevealTarget", "setRevealTarget(x,y,z)", "Enable Y-slice reveal.", [
         A("x", "number", "World reveal point X."),
         A("y", "number", "World reveal point Y."),

@@ -140,6 +140,15 @@ export function setPixelScale(camera: CameraT, pixelScale: number): void {
 }
 
 /**
+ * Re-syncs the camera's offscreen framebuffer to the current viewport size.
+ * Call after resizing the viewport (e.g. Viewport.resize, or its autoResize
+ * pass) so the pixel-perfect FBO grid matches the new dimensions.
+ */
+export function resize(camera: CameraT): void {
+  setPixelScale(camera, camera.pixelScale);
+}
+
+/**
  * Sets the Y-slice reveal target in world-space coordinates.
  * Cell geometry above target.y + revealYOffset will be clipped.
  */

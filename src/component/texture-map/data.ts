@@ -121,7 +121,7 @@ export interface TextureMapOptions extends ComponentOptions {
  * @param imageSize - Size of the source image (width, height)
  * @returns Array of OriginalFrame definitions
  */
-function extractOriginalFrames(
+export function extractOriginalFrames(
   imageType: ImageType,
   imageSize?: Vector2D,
 ): OriginalFrame[] {

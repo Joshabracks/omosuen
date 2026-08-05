@@ -1,6 +1,8 @@
 import type { ComponentData, ComponentMethods } from '../types';
 import type { TextureMapT } from './data';
+import { extractOriginalFrames } from './data';
 import type { OriginalFrame, PackedFrame } from './types';
+import type { Vector2D } from '../../math';
 
 export interface TextureMapMethods extends ComponentMethods {
   type: 'texture-map';
@@ -63,6 +65,24 @@ export interface TextureMapMethods extends ComponentMethods {
   setPackedFrames: (tm: TextureMapT, packedFrames: PackedFrame[]) => void;
 
   /**
+   * Recomputes `originalFrames` from the texture map's current `imageType`.
+   * Call this after changing `imageType` post-construction (e.g. switching a
+   * texture-map from whole-image to a grid/framemap layout) — nothing else
+   * re-derives frames from `imageType` once construction has run.
+   *
+   * Clears any existing `packedFrames`/`frameIndexMap`, since they belonged to
+   * the old frame layout. The caller is responsible for triggering a recompile
+   * afterward (`atlasManager.compiled = false; await atlasManager.processTextureMaps();`).
+   *
+   * `imageSize` is only consulted for the "whole-image single frame" fallback
+   * (`imageType === undefined`) — grid/framemap configs need no image size.
+   *
+   * @param tm - TextureMap component
+   * @param imageSize - Source image dimensions, needed only when `imageType` is undefined
+   */
+  recomputeFrames: (tm: TextureMapT, imageSize?: Vector2D) => void;
+
+  /**
    * Disposes of this texture map.
    *
    * @param component - Component to dispose
@@ -106,6 +126,11 @@ export const TextureMap: TextureMapMethods = {
     for (const frame of packedFrames) {
       tm.frameIndexMap.set(frame.frameIndex, frame);
     }
+  },
+
+  recomputeFrames: (tm: TextureMapT, imageSize?: Vector2D): void => {
+    tm.originalFrames = extractOriginalFrames(tm.imageType, imageSize);
+    TextureMap.clearPackedFrames(tm);
   },
 
   dispose: (component: ComponentData): void => {

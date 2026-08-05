@@ -137,7 +137,7 @@ Create any of these with `Omosuen.newComponent('<type>', options)`. Quick index:
 | `sprite` | Multi-channel billboard (albedo / normal / material / emission) |
 | `camera` | Axonometric renderer (zoom, pixelation, orbit yaw, Y-slice reveal) |
 | `viewport` | WebGL2 canvas + context |
-| `cell-map` | Voxel grid store (WASM-backed, RLE-compressed) |
+| `cell-map` | Voxel grid store (WASM-backed, RLE-compressed) (one per engine instance) |
 | `light` | Ambient / point / spot / directional light |
 | `collider` | Box / sphere collision shape + queries |
 | `event-collider` | Trigger volume with enter / exit / while callbacks |
@@ -224,7 +224,11 @@ silhouette, material-driven specular and emission. *Unique: one per parent nexus
 - `emissionColor?: Vector3D` (default `(0,0,0)`, no-op) — flat additive RGB highlight, added independent of `emissionIntensity`. Set via `setEmissionColor(r,g,b)`, read via `getEmissionColor()`.
 
 **`cell-map`** — Voxel grid (material/shape/emission/visibility per cell); WASM-backed RLE
-store with greedy/smoothed meshing.
+store with greedy/smoothed meshing. *Unique: one per engine instance* — its state lives in
+module-level storage (the underlying WASM cell store is itself a process-wide singleton), so
+constructing a second live `cell-map` while one exists throws (`builder()`) or returns a
+`LIVE_INSTANCE_EXISTS` error (`deserialize()`) instead of silently corrupting the first. Dispose
+the existing instance before constructing another.
 - `materials: Material[]` (**required**) — each `Material` bundles `{ albedoTextureKey, normalTextureKey, emissionTextureKey, materialTextureKey: string }` and a frame index per channel `{ albedoFrame, normalFrame, emissionFrame, materialFrame?: number (default 0) }`
   - `sides?: { up?, southEast?, southWest?: { albedoFrame?, normalFrame?: number } }` — per-visible-side texture override (`up` = +Y, `southEast` = +X, `southWest` = +Z — the three faces the camera shows at `orbitYaw = 0`). Omitted sides/channels fall back to the base frame, so a material with no `sides` renders unchanged. Per-side frames must be frames of the **same** texture-map as the base (single atlas page); albedo + normal only. These names assume `orbitYaw` near `0`/`90`/`180`/`270`; at other yaws the camera sees faces these overrides don't cover, so authors relying on `sides` should snap orbit to those angles (a yaw-aware per-side remap is a possible follow-up, not implemented here).
   - `smoothness?: number` (0–15) — per-cell-type smoothing weight that overrides `smoothingWeights` for cells of this material; omit to use the map/per-cell weight.
@@ -250,10 +254,22 @@ store with greedy/smoothed meshing.
 - `textureMapKey: string` (**required**), `filePath: string` (**required**)
 - `imageType?: Vector4D[] | GridConfig` (default: whole image as one frame) — a frame-rect list `[x,y,w,h]`, or a grid `{ cellSize: Vector2D, gridSize: Vector2D, cellCount?: number }`
 - `atlasManager?` — if provided, auto-registers with that atlas-manager
+- `recomputeFrames(tm, imageSize?)` — recomputes `originalFrames` from the texture-map's
+  *current* `imageType`. Nothing does this automatically after construction, so call it after
+  changing `imageType` post-construction (e.g. switching from whole-image to a grid/framemap
+  layout). Clears stale `packedFrames`; follow with `atlasManager.compiled = false` +
+  `processTextureMaps()` to re-pack. `imageSize` is only needed for the whole-image fallback
+  (`imageType === undefined`) — grid/framemap configs don't need it.
 
 **`atlas-manager`** — Packs texture-maps into GPU atlases (incremental upload in retain mode).
 *Unique: one per scene.*
 - `config?: { atlasSize?: 1024 | 2048 | 4096 | 8192 (default 4096); maxAtlases?: number 1–16 (default 16); padding?: number 0–4 (default 1); retainAtlas?: boolean (default false) }`
+- `rekeyTextureMap(am, textureMap, oldKey)` — re-registers a texture-map after its
+  `textureMapKey` changed post-registration. `addTextureMap` alone only registers under
+  whatever key is current *at call time*; changing the key afterward and not calling
+  `rekeyTextureMap` leaves the old key's bookkeeping dangling and camera texture-map caches
+  stale. Follow with a recompile (`am.compiled = false; await am.processTextureMaps();`) —
+  camera caches self-heal automatically at the tail of that recompile.
 
 ### Animation, timing & input
 

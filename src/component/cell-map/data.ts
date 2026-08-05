@@ -39,6 +39,19 @@ export interface CellPackedReadView {
 // ── Module-level singleton storage ──
 // Data lives here to avoid GC pressure and enable direct imports.
 // The CellMapT instance delegates to these via getter/setter properties.
+//
+// This makes cell-map a genuine single-instance-per-engine component (like
+// atlas-manager/audio-player/flag-manager) — the underlying WASM RLE cell
+// store (see camera/render/wasm.ts) is itself a process-wide singleton, so
+// per-instance JS-side storage wouldn't enable true multi-instance anyway.
+// Unlike those other singletons, cell-map does NOT use Nexus's generic
+// `unique: GLOBAL` dispose-on-add mechanism: that mechanism disposes the OLD
+// instance *after* the NEW instance's builder() has already run, which would
+// wipe the new instance's just-written data (both instances alias the same
+// module bindings). Instead, `cmLive` below guards construction directly:
+// building a second instance while one is live throws/errors immediately
+// rather than silently overwriting the first.
+let cmLive = false;
 
 export let cmMaterials: Material[] = [];
 export let cmMaterialMap: Array3D<number>;
@@ -103,6 +116,7 @@ const packedDataView: CellPackedReadView = {
  * Called by dispose to release memory.
  */
 export function resetCellMapState(): void {
+  cmLive = false;
   cmMaterials = [];
   cmMaterialMap = undefined!;
   cmShapeMap = undefined!;
@@ -130,6 +144,12 @@ function makeCellMapInstance(name: string): CellMapT {
   return {
     name,
     type: 'cell-map',
+    // Deliberately FALSE, not GLOBAL: Nexus's generic GLOBAL-uniqueness
+    // dispose-on-add would run after this instance's data is already written
+    // into the shared module bindings and would corrupt it (see module
+    // comment above `cmLive`). The `cmLive` guard in builder()/deserialize()
+    // enforces the singleton invariant instead.
+    unique: ComponentUnique.FALSE,
     parent: null,
     get materials() {
       return cmMaterials;
@@ -318,6 +338,7 @@ export interface CellMapOptions extends ComponentOptions {
 
 export interface CellMapT extends ComponentData {
   type: 'cell-map';
+  unique: ComponentUnique.FALSE;
 
   // Material definitions
   materials: Material[];
@@ -500,6 +521,17 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   // instantiated before we load cells into it.
   await initRenderWasm();
 
+  // cell-map state is a process-wide singleton (see module comment above
+  // `cmLive`) — refuse to construct a second live instance rather than
+  // silently corrupting the first.
+  if (cmLive) {
+    throw new Error(
+      'A live cell-map already exists; dispose it before constructing another ' +
+        '(cell-map state is a process-wide singleton — see the module comment ' +
+        'above `cmLive` in cell-map/data.ts).',
+    );
+  }
+
   // Validate required inputs
   if (!options.materials || options.materials.length === 0) {
     throw new Error('CellMap requires at least one material');
@@ -678,6 +710,7 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   cmChunkGridSize = optChunkGridSize;
   cmChunks = initChunks(optChunkGridSize);
   cmRevealExempt = options.revealExempt ?? false;
+  cmLive = true;
 
   return makeCellMapInstance(options.name);
 }
@@ -696,7 +729,7 @@ function serialize(component: ComponentData): any {
   return {
     type: 'cell-map',
     name: cm.name,
-    unique: ComponentUnique.GLOBAL,
+    unique: ComponentUnique.FALSE,
     materials: cm.materials.map((m) => ({
       albedoTextureKey: m.albedoTextureKey,
       normalTextureKey: m.normalTextureKey,
@@ -793,10 +826,14 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
       message: 'cell-map requires a name',
     });
   }
-  if (!dataMaterials || !Array.isArray(dataMaterials)) {
+  if (
+    !dataMaterials ||
+    !Array.isArray(dataMaterials) ||
+    dataMaterials.length === 0
+  ) {
     errors.push({
       code: 'MISSING_MATERIALS',
-      message: 'cell-map requires a materials array',
+      message: 'cell-map requires at least one material',
     });
   }
   if (!dataCellSize || !dataMapSize) {
@@ -809,6 +846,17 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     errors.push({
       code: 'MISSING_PACKED_DATA',
       message: 'cell-map requires packedData array',
+    });
+  }
+  // cell-map state is a process-wide singleton (see module comment above
+  // `cmLive`) — refuse to construct a second live instance rather than
+  // silently corrupting the first.
+  if (cmLive) {
+    errors.push({
+      code: 'LIVE_INSTANCE_EXISTS',
+      message:
+        'A live cell-map already exists; dispose it before deserializing another ' +
+        '(cell-map state is a process-wide singleton).',
     });
   }
   if (errors.length > 0) {
@@ -946,6 +994,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   cmChunkGridSize = dChunkGridSize;
   cmChunks = initChunks(dChunkGridSize);
   cmRevealExempt = (dataRevealExempt as boolean) ?? false;
+  cmLive = true;
 
   return {
     component: makeCellMapInstance(name as string),

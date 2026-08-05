@@ -28,10 +28,35 @@ export interface AtlasManagerMethods extends ComponentMethods {
    * Adds a TextureMap to the processing queue.
    * Sets compiled flag to false.
    *
+   * If `textureMap.textureMapKey` changes *after* it was already registered
+   * here, calling `addTextureMap` again registers it under the new key but
+   * leaves the old key's bookkeeping dangling — use `rekeyTextureMap` instead
+   * for that case.
+   *
    * @param am - AtlasManager component
    * @param textureMap - TextureMap component to add
    */
   addTextureMap: (am: AtlasManagerT, textureMap: TextureMapT) => void;
+
+  /**
+   * Re-registers a texture-map that was already added under `oldKey` but whose
+   * `textureMapKey` has since changed. Removes the stale `oldKey` bookkeeping
+   * (only if it still points at this exact component) and registers it under
+   * its current key via `addTextureMap`.
+   *
+   * The caller is still responsible for triggering a recompile afterward
+   * (`am.compiled = false; await am.processTextureMaps();`) — camera texture-map
+   * caches self-heal automatically at the tail of that recompile.
+   *
+   * @param am - AtlasManager component
+   * @param textureMap - TextureMap component whose key changed
+   * @param oldKey - The key it was previously registered under
+   */
+  rekeyTextureMap: (
+    am: AtlasManagerT,
+    textureMap: TextureMapT,
+    oldKey: string,
+  ) => void;
 
   /**
    * Returns the canonical texture-map registered under `key`, or null.
@@ -716,6 +741,18 @@ export const AtlasManager: AtlasManagerMethods = {
       am.textureMapsByKey.set(textureMap.textureMapKey, textureMap);
     }
     am.compiled = false;
+  },
+
+  rekeyTextureMap: (
+    am: AtlasManagerT,
+    textureMap: TextureMapT,
+    oldKey: string,
+  ): void => {
+    if (am.textureMapsByKey.get(oldKey) === textureMap) {
+      am.textureMapsByKey.delete(oldKey);
+    }
+    am.textureMapIds.delete(oldKey);
+    AtlasManager.addTextureMap(am, textureMap);
   },
 
   getTextureMap: (am: AtlasManagerT, key: string): TextureMapT | null => {

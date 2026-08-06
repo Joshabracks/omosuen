@@ -1,6 +1,5 @@
 import type { CellMapT } from './data';
 import type { Mesh } from './types';
-import { CHUNK_SIZE } from './types';
 import {
   setMeshCellSize,
   setMeshSmoothing,
@@ -111,30 +110,30 @@ export function markChunksDirty(
   y: number,
   z: number,
 ): void {
-  const { chunkGridSize } = cellMap;
-  const chunkX = Math.floor(x / CHUNK_SIZE);
-  const chunkY = Math.floor(y / CHUNK_SIZE);
-  const chunkZ = Math.floor(z / CHUNK_SIZE);
+  const { chunkGridSize, chunkSize } = cellMap;
+  const chunkX = Math.floor(x / chunkSize.x);
+  const chunkY = Math.floor(y / chunkSize.y);
+  const chunkZ = Math.floor(z / chunkSize.z);
 
   markSingleChunkDirty(cellMap, chunkX, chunkY, chunkZ);
 
   // Mark adjacent chunks if cell is on a chunk boundary
   // (face culling depends on cross-chunk neighbors)
-  const localX = x - chunkX * CHUNK_SIZE;
-  const localY = y - chunkY * CHUNK_SIZE;
-  const localZ = z - chunkZ * CHUNK_SIZE;
+  const localX = x - chunkX * chunkSize.x;
+  const localY = y - chunkY * chunkSize.y;
+  const localZ = z - chunkZ * chunkSize.z;
 
   if (localX === 0 && chunkX > 0)
     markSingleChunkDirty(cellMap, chunkX - 1, chunkY, chunkZ);
-  if (localX === CHUNK_SIZE - 1 && chunkX < chunkGridSize.x - 1)
+  if (localX === chunkSize.x - 1 && chunkX < chunkGridSize.x - 1)
     markSingleChunkDirty(cellMap, chunkX + 1, chunkY, chunkZ);
   if (localY === 0 && chunkY > 0)
     markSingleChunkDirty(cellMap, chunkX, chunkY - 1, chunkZ);
-  if (localY === CHUNK_SIZE - 1 && chunkY < chunkGridSize.y - 1)
+  if (localY === chunkSize.y - 1 && chunkY < chunkGridSize.y - 1)
     markSingleChunkDirty(cellMap, chunkX, chunkY + 1, chunkZ);
   if (localZ === 0 && chunkZ > 0)
     markSingleChunkDirty(cellMap, chunkX, chunkY, chunkZ - 1);
-  if (localZ === CHUNK_SIZE - 1 && chunkZ < chunkGridSize.z - 1)
+  if (localZ === chunkSize.z - 1 && chunkZ < chunkGridSize.z - 1)
     markSingleChunkDirty(cellMap, chunkX, chunkY, chunkZ + 1);
 }
 

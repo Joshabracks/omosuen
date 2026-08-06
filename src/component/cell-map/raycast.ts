@@ -8,7 +8,6 @@
 // these to seat sprites on the real surface of smoothed / ramp / custom cells.
 
 import { Vector3D, rayTriangle } from '../../math';
-import { CHUNK_SIZE } from './types';
 import type { CellMapT } from './data';
 import type { RaycastHit, SurfaceHit, RaycastOptions } from './types';
 
@@ -25,9 +24,9 @@ export function getChunkTrianglesInBounds(
   const triangles: Array<[Vector3D, Vector3D, Vector3D]> = [];
 
   // Determine which chunks overlap the bounds
-  const csX = cellMap.cellSize.x * CHUNK_SIZE;
-  const csY = cellMap.cellSize.y * CHUNK_SIZE;
-  const csZ = cellMap.cellSize.z * CHUNK_SIZE;
+  const csX = cellMap.cellSize.x * cellMap.chunkSize.x;
+  const csY = cellMap.cellSize.y * cellMap.chunkSize.y;
+  const csZ = cellMap.cellSize.z * cellMap.chunkSize.z;
   const minCx = Math.floor(bounds.min.x / csX);
   const minCy = Math.floor(bounds.min.y / csY);
   const minCz = Math.floor(bounds.min.z / csZ);
@@ -170,9 +169,9 @@ export function raycastCellMap(
   let ax = 0, ay = 0, az = 0, bx = 0, by = 0, bz = 0, cx2 = 0, cy2 = 0, cz2 = 0;
   let anx = 0, any0 = 0, anz = 0, bnx = 0, bny = 0, bnz = 0, cnx = 0, cny = 0, cnz = 0;
 
-  const chunkW = CHUNK_SIZE * cs.x;
-  const chunkH = CHUNK_SIZE * cs.y;
-  const chunkD = CHUNK_SIZE * cs.z;
+  const chunkW = cellMap.chunkSize.x * cs.x;
+  const chunkH = cellMap.chunkSize.y * cs.y;
+  const chunkD = cellMap.chunkSize.z * cs.z;
   // Pad the chunk AABB by a cell so smoothing displacement at chunk borders is caught.
   const padX = cs.x, padY = cs.y, padZ = cs.z;
 

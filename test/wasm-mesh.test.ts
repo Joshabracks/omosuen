@@ -9,7 +9,14 @@
  * and re-run — the test prints the captured hashes — then paste them back.
  */
 import { Vector3D, Array3D } from '../src/math';
-import { packCell, CHUNK_SIZE } from '../src/component/cell-map/types';
+import { packCell } from '../src/component/cell-map/types';
+
+// This test drives the WASM mesher directly (bypassing cell-map's per-instance
+// `chunkSize`, which is now runtime-configurable — see the cell-map-overhaul
+// design docs), so it pins its own chunk size matching CHUNK_SIZE's Rust-side
+// default ([16,16,16], unset unless mesh_set_chunk_size is called), keeping
+// these golden hashes stable.
+const CHUNK_SIZE = 16;
 
 /**
  * Local copy of generateDefaultCubeMesh (a 24-vertex cube with per-face 0..1 UVs,

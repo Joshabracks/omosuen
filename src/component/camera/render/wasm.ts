@@ -35,6 +35,7 @@ interface RenderExports {
   solidity_run: () => number;
   // Meshing
   mesh_set_cell_size: (cx: number, cy: number, cz: number) => void;
+  mesh_set_chunk_size: (x: number, y: number, z: number) => void;
   mesh_reserve_weights: (count: number) => number;
   mesh_reserve_material_weights: (count: number) => number;
   mesh_custom_clear: () => void;
@@ -182,6 +183,17 @@ export function solidity(): Uint8Array {
 /** Sets the cell size (world units per cell) used for vertex positions. */
 export function setMeshCellSize(cx: number, cy: number, cz: number): void {
   ex().mesh_set_cell_size(cx, cy, cz);
+}
+
+/**
+ * Sets the chunk size (cells per axis) used by `buildChunkMeshWasm` /
+ * `buildChunkMeshSmoothedWasm`. Intended to be called once per store, during
+ * cell-map construction/deserialization, before any chunk is built — the
+ * store's dims are fixed at load time and chunk boundaries need to agree with
+ * the caller's own chunk grid math for the lifetime of that store.
+ */
+export function setChunkSize(x: number, y: number, z: number): void {
+  ex().mesh_set_chunk_size(x, y, z);
 }
 
 /**

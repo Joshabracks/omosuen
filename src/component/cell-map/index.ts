@@ -13,6 +13,7 @@ export {
   cmVisibilityMap,
   cmCellSize,
   cmMapSize,
+  cmChunkSize,
   cmSmoothing,
   cmSmoothingWeights,
   cmNormalSmoothing,
@@ -36,6 +37,6 @@ export {
   createDefaultCellData,
   packCell,
   unpackCell,
-  CHUNK_SIZE,
+  DEFAULT_CHUNK_SIZE,
 } from './types';
 export { rebuildDirtyChunks, markChunksDirty } from './mesh-builder';

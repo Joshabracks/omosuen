@@ -202,8 +202,13 @@ export function unpackCell(packed: number): CellData {
 // Chunk types for batched rendering
 // ============================================================
 
-/** Chunk size in cells per axis */
-export const CHUNK_SIZE = 16;
+/**
+ * Default chunk size in cells per axis, used when a cell-map doesn't specify
+ * its own `chunkSize`. Sized to roughly match a "full zoomed-out" camera view
+ * (X/Z wide, Y shallow) rather than a cube. Runtime-configurable per cell-map
+ * (see `CellMapOptions.chunkSize`) — this is only the fallback.
+ */
+export const DEFAULT_CHUNK_SIZE = new Vector3D(32, 32, 20);
 
 /**
  * A draw range within a chunk's index buffer for a specific material.

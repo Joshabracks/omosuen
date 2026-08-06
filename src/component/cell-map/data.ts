@@ -14,13 +14,14 @@ import {
   packCell,
   unpackCell,
   createDefaultCellData,
-  CHUNK_SIZE,
+  DEFAULT_CHUNK_SIZE,
 } from './types';
 import {
   initRenderWasm,
   loadCellStore,
   cellStoreDump,
   cellStoreGet,
+  setChunkSize,
 } from '../camera/render/wasm';
 
 /**
@@ -69,6 +70,14 @@ export let cmEmissionColorDirty: boolean = true;
 export let cmVisibilityMap: Array3D<boolean>;
 export let cmCellSize: Vector3D;
 export let cmMapSize: Vector3D;
+/**
+ * Chunk size in cells per axis. Runtime-configurable (see `DEFAULT_CHUNK_SIZE`
+ * in `./types` and `setChunkSize` in `camera/render/wasm`) rather than the
+ * fixed compile-time constant it used to be — set once at construction/
+ * deserialize time and mirrored into the WASM mesher, which is the actual
+ * single source of truth for chunk boundaries at mesh-build time.
+ */
+export let cmChunkSize: Vector3D;
 export let cmSmoothing: number = 0;
 export let cmSmoothingWeights: Array3Di;
 export let cmNormalSmoothing: number = 0;
@@ -127,6 +136,7 @@ export function resetCellMapState(): void {
   cmVisibilityMap = undefined!;
   cmCellSize = undefined!;
   cmMapSize = undefined!;
+  cmChunkSize = undefined!;
   cmSmoothing = 0;
   cmSmoothingWeights = undefined!;
   cmNormalSmoothing = 0;
@@ -210,6 +220,12 @@ function makeCellMapInstance(name: string): CellMapT {
     },
     set mapSize(v) {
       cmMapSize = v;
+    },
+    get chunkSize() {
+      return cmChunkSize;
+    },
+    set chunkSize(v) {
+      cmChunkSize = v;
     },
     get packedData() {
       return packedDataView;
@@ -315,6 +331,13 @@ export interface CellMapOptions extends ComponentOptions {
   mapSize: Vector3D;
 
   /**
+   * Chunk size in cells per axis, for mesh batching (optional). Defaults to
+   * `DEFAULT_CHUNK_SIZE` (see `./types`). Not safe to change on an existing
+   * cell-map — pick this once, at construction/deserialize time.
+   */
+  chunkSize?: Vector3D;
+
+  /**
    * Number of surface-net smoothing iterations (0 or less = no smoothing)
    */
   smoothing?: number;
@@ -357,6 +380,8 @@ export interface CellMapT extends ComponentData {
   // World configuration
   cellSize: Vector3D;
   mapSize: Vector3D;
+  /** Chunk size in cells per axis. See `CellMapOptions.chunkSize`. */
+  chunkSize: Vector3D;
 
   /** Read-only view over the canonical cell store (see CellPackedReadView). */
   packedData: CellPackedReadView;
@@ -476,6 +501,7 @@ export const PROPERTY_ALLOWLIST = [
   'visibilityMap',
   'cellSize',
   'mapSize',
+  'chunkSize',
   'packedData',
   'needsGPUUpdate',
   'chunks',
@@ -652,6 +678,13 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     packedArray.indexSet(i, packCell(cellData));
   });
 
+  // Chunk size must be configured before any mesh_build_chunk* call. Resolved
+  // here (after every validation above has passed, so a failed construction
+  // never mutates the shared WASM chunk-size static) and set once, alongside
+  // the store load below.
+  const optChunkSize = options.chunkSize ?? DEFAULT_CHUNK_SIZE;
+  setChunkSize(optChunkSize.x, optChunkSize.y, optChunkSize.z);
+
   // Load the packed cells into the canonical WASM store (RLE-compressed there).
   loadCellStore(
     packedArray.value,
@@ -687,9 +720,9 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
 
   // Calculate chunk grid dimensions
   const optChunkGridSize = {
-    x: Math.ceil(options.mapSize.x / CHUNK_SIZE),
-    y: Math.ceil(options.mapSize.y / CHUNK_SIZE),
-    z: Math.ceil(options.mapSize.z / CHUNK_SIZE),
+    x: Math.ceil(options.mapSize.x / optChunkSize.x),
+    y: Math.ceil(options.mapSize.y / optChunkSize.y),
+    z: Math.ceil(options.mapSize.z / optChunkSize.z),
   };
 
   // Assign to module-level storage
@@ -703,6 +736,7 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   cmVisibilityMap = optVisibilityMap;
   cmCellSize = options.cellSize;
   cmMapSize = options.mapSize;
+  cmChunkSize = optChunkSize;
   cmSmoothing = optSmoothing;
   cmSmoothingWeights = optSmoothingWeights;
   cmNormalSmoothing = optNormalSmoothing;
@@ -753,6 +787,12 @@ function serialize(component: ComponentData): any {
       x: size.x,
       y: size.y,
       z: size.z,
+    },
+    chunkSize: {
+      _vectorType: 'Vector3D',
+      x: cm.chunkSize.x,
+      y: cm.chunkSize.y,
+      z: cm.chunkSize.z,
     },
     packedData: packedFlat,
     // Per-cell emission color lives outside the packed WASM cell store (it's a
@@ -806,6 +846,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     materials: dataMaterials,
     cellSize: dataCellSize,
     mapSize: dataMapSize,
+    chunkSize: dataChunkSize,
     packedData: dataPackedData,
     emissionColorData: dataEmissionColorData,
     smoothing: dataSmoothing,
@@ -868,6 +909,12 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   const cs = new Vector3D(dataCellSize.x, dataCellSize.y, dataCellSize.z);
   // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
   const ms = new Vector3D(dataMapSize.x, dataMapSize.y, dataMapSize.z);
+  // chunkSize is absent in scenes saved before this field existed — default it.
+  const cks =
+    dataChunkSize && typeof dataChunkSize === 'object'
+      ? // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        new Vector3D(dataChunkSize.x, dataChunkSize.y, dataChunkSize.z)
+      : DEFAULT_CHUNK_SIZE;
 
   // Reconstruct input maps by unpacking each cell from the flat packed array
   const dMaterialMap = new Array3D<number>(ms, 0);
@@ -906,8 +953,10 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
 
     packedArray.indexSet(i, packCell(cellData));
   });
-  // Load the packed cells into the canonical WASM store.
+  // Load the packed cells into the canonical WASM store. Chunk size must be
+  // configured before any mesh_build_chunk* call, alongside the store load.
   await initRenderWasm();
+  setChunkSize(cks.x, cks.y, cks.z);
   loadCellStore(packedArray.value, packedArray.value.length, ms.x, ms.y, ms.z);
 
   // Reconstruct the per-cell emission color map (separate texture-side channel;
@@ -954,9 +1003,9 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
 
   // Chunk grid
   const dChunkGridSize = {
-    x: Math.ceil(ms.x / CHUNK_SIZE),
-    y: Math.ceil(ms.y / CHUNK_SIZE),
-    z: Math.ceil(ms.z / CHUNK_SIZE),
+    x: Math.ceil(ms.x / cks.x),
+    y: Math.ceil(ms.y / cks.y),
+    z: Math.ceil(ms.z / cks.z),
   };
 
   // Reconstruct materials array
@@ -984,6 +1033,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   cmVisibilityMap = dVisibilityMap;
   cmCellSize = cs;
   cmMapSize = ms;
+  cmChunkSize = cks;
   cmSmoothing = (dataSmoothing as number) ?? 0;
   cmSmoothingWeights = dSmoothingWeights;
   cmNormalSmoothing = Math.max(

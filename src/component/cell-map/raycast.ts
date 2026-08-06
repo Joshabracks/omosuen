@@ -144,6 +144,12 @@ export function raycastCellMap(
   const ndir = new Vector3D(dx, dy, dz);
 
   const cs = cellMap.cellSize;
+  // `mapSize` is now the resident WINDOW's size, not the whole world (see
+  // `.design/cell-map-overhaul/08-live-construction-and-ownership.md`), so
+  // this default caps a ray at the window's diagonal rather than the whole
+  // map's — a ray can no longer default-travel further than what's currently
+  // loaded. Callers that need farther reach must pass `maxDistance` explicitly;
+  // see `.design/cell-map-overhaul/12-live-read-write-path-and-bounds.md`.
   const maxDist =
     opts.maxDistance ??
     Math.hypot(
@@ -300,6 +306,12 @@ export function sampleSurfaceHeight(
   opts: RaycastOptions = {},
 ): SurfaceHit | null {
   const cs = cellMap.cellSize;
+  // Same window-size-vs-world-size heuristic shift as `raycastCellMap` above:
+  // `mapSize.y` is the resident window's height, so this cast starts just
+  // above the window's top and reaches only as far as the window's own
+  // height by default (not the whole world's) — pass `maxDistance` explicitly
+  // for a taller world. See `.design/cell-map-overhaul/12-live-read-write-
+  // path-and-bounds.md`.
   const origin = new Vector3D(worldX, cellMap.mapSize.y * cs.y + cs.y, worldZ);
   const hit = raycastCellMap(cellMap, origin, new Vector3D(0, -1, 0), {
     maxDistance: opts.maxDistance ?? cellMap.mapSize.y * cs.y + 2 * cs.y,

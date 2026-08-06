@@ -145,7 +145,13 @@ export function cellStoreDump(): Uint32Array {
   const e = ex();
   const len = e.store_expanded_len();
   if (len === 0) return new Uint32Array(0);
-  return new Uint32Array(e.memory.buffer, e.store_expanded_ptr(), len).slice();
+  // store_expanded_ptr() can lazily rebuild the Rust-side expanded buffer
+  // (Vec::resize), which may grow WASM memory and detach any ArrayBuffer
+  // reference captured before it runs — so the pointer must be captured
+  // first, and `.buffer` read fresh afterward (same pattern as solidity()
+  // and loadCellStore() below).
+  const ptr = e.store_expanded_ptr();
+  return new Uint32Array(e.memory.buffer, ptr, len).slice();
 }
 
 // ── Visibility ─────────────────────────────────────────────────────────────

@@ -18,11 +18,14 @@ import {
 } from './types';
 import {
   initRenderWasm,
-  loadCellStore,
   cellStoreDump,
   cellStoreGet,
   setChunkSize,
 } from '../camera/render/wasm';
+import { CellWindow } from './window';
+import type { ChunkGenerator } from './window';
+import { ChunkColdStorage } from './cold-storage';
+import type { CellData } from './types';
 
 /**
  * Read-only view over the canonical cell store, exposed as `cellMap.packedData`
@@ -89,6 +92,34 @@ export let cmChunkGridSize: { x: number; y: number; z: number } = {
   z: 0,
 };
 export let cmRevealExempt: boolean = false;
+/**
+ * When true (default), the render loop drives `CellMap.setFocus` from the
+ * camera position every frame, so the window follows the camera with no
+ * game code required. Set false for explicit control via `CellMap.setFocus`
+ * instead — see `.design/cell-map-overhaul/11-focus-driving.md`.
+ */
+export let cmAutoFocusFromCamera: boolean = true;
+/**
+ * Owns the shiftable hot window's origin and orchestrates shifts (evict/
+ * assemble/reload). See `.design/cell-map-overhaul/08-live-construction-and-
+ * ownership.md`. `undefined` until first construction.
+ */
+export let cmWindow: CellWindow | undefined;
+/** Everything outside the current window that diverges from baseline. Owned
+ *  jointly with `cmWindow` (constructed together, always non-null together). */
+export let cmColdStorage: ChunkColdStorage | undefined;
+
+/**
+ * Packed value for "nothing here" — material 0, shape 0 (air), no emission,
+ * not visible. The baseline every chunk is compared against to decide
+ * whether it needs a cold-storage entry at all.
+ */
+const EMPTY_CELL = packCell({
+  materialIndex: 0,
+  shapeIndex: 0,
+  emissionIntensity: 0,
+  visible: false,
+});
 
 /**
  * Stable read-only view over the canonical WASM cell store, returned by the
@@ -144,6 +175,9 @@ export function resetCellMapState(): void {
   cmChunks = [];
   cmChunkGridSize = { x: 0, y: 0, z: 0 };
   cmRevealExempt = false;
+  cmAutoFocusFromCamera = true;
+  cmWindow = undefined;
+  cmColdStorage = undefined;
 }
 
 /**
@@ -230,6 +264,12 @@ function makeCellMapInstance(name: string): CellMapT {
     get packedData() {
       return packedDataView;
     },
+    get window() {
+      // Non-null once construction has completed (both builder() and
+      // deserialize() assign it before returning) — the `!` mirrors how
+      // `packedData`'s backing store is likewise always-live post-construction.
+      return cmWindow!;
+    },
     get smoothing() {
       return cmSmoothing;
     },
@@ -272,6 +312,12 @@ function makeCellMapInstance(name: string): CellMapT {
     set revealExempt(v) {
       cmRevealExempt = v;
     },
+    get autoFocusFromCamera() {
+      return cmAutoFocusFromCamera;
+    },
+    set autoFocusFromCamera(v) {
+      cmAutoFocusFromCamera = v;
+    },
   } as CellMapT;
 }
 
@@ -283,10 +329,13 @@ export interface CellMapOptions extends ComponentOptions {
   materials: Material[];
 
   /**
-   * Map of material indices per cell (required)
-   * Must match mapSize dimensions
+   * Map of material indices per cell. Required together with `mapSize` for
+   * the legacy hand-authored-map construction path (must match `mapSize`
+   * dimensions) — omit both for the generative path (`generateCell`/
+   * `generateChunk`), or for a purely-empty map authored entirely via
+   * `setCellData` after construction.
    */
-  materialMap: Array3D<number>;
+  materialMap?: Array3D<number>;
 
   /**
    * Map of shape indices per cell (optional)
@@ -326,9 +375,13 @@ export interface CellMapOptions extends ComponentOptions {
   cellSize: Vector3D;
 
   /**
-   * Dimensions of the map in cells (width, depth, height)
+   * Dimensions of the (legacy, hand-authored) map in cells. Required together
+   * with `materialMap`; omit both for the generative path. Note this is
+   * *not* what `cellMap.mapSize` reads back as post-construction — that now
+   * reflects the resident window's size (see `CellMapT.mapSize`), since a
+   * legacy map larger than the window can't all be resident simultaneously.
    */
-  mapSize: Vector3D;
+  mapSize?: Vector3D;
 
   /**
    * Chunk size in cells per axis, for mesh batching (optional). Defaults to
@@ -336,6 +389,42 @@ export interface CellMapOptions extends ComponentOptions {
    * cell-map — pick this once, at construction/deserialize time.
    */
   chunkSize?: Vector3D;
+
+  /**
+   * Padding radius in chunks, per axis, for the shiftable hot window around
+   * the current focus point (default: `{x:1,y:1,z:1}`, a 3x3x3-chunk
+   * window) — see `CellWindow` (`./window.ts`). For the legacy path
+   * (`mapSize`+`materialMap` supplied), if this is omitted, it's computed
+   * automatically large enough to cover the entire authored `mapSize`, so a
+   * legacy map keeps rendering in full exactly as it does today; supplying
+   * an explicit (smaller) radius opts a legacy map into windowed behavior —
+   * content outside the window simply won't be resident until something
+   * moves the focus there.
+   */
+  windowRadius?: { x: number; y: number; z: number };
+
+  /**
+   * Generates a single cell's data at a world cell coordinate (the
+   * generative path's per-cell baseline — see
+   * `.design/cell-map-overhaul/04-procedural-generation.md`, now archived
+   * under `completed_tasks`). Returning `undefined` falls back to empty/air.
+   * Always used for single-cell point queries, regardless of whether
+   * `generateChunk` is also supplied. Must be a pure function of its
+   * coordinates for a given world/seed.
+   */
+  generateCell?: (
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+  ) => CellData | undefined;
+
+  /**
+   * Generates a whole chunk's cell data at once (`chunkSize.x*y*z`-length
+   * array, x-fastest/y/z-slowest local order) — a performance escape hatch
+   * for whole-chunk materialization, preferred over looping `generateCell`
+   * when both are supplied. Never used for single-cell point queries.
+   */
+  generateChunk?: (cx: number, cy: number, cz: number) => CellData[];
 
   /**
    * Number of surface-net smoothing iterations (0 or less = no smoothing)
@@ -357,6 +446,15 @@ export interface CellMapOptions extends ComponentOptions {
 
   /** If true, this cell-map is exempt from Y-slice reveal clipping (default: false) */
   revealExempt?: boolean;
+
+  /**
+   * When true (default), the render loop drives the window's focus from the
+   * camera position every frame — the window follows the camera with no game
+   * code required. Set false to drive focus explicitly via
+   * `CellMap.setFocus(component, worldX, worldY, worldZ)` instead. See
+   * `.design/cell-map-overhaul/11-focus-driving.md`.
+   */
+  autoFocusFromCamera?: boolean;
 }
 
 export interface CellMapT extends ComponentData {
@@ -379,12 +477,22 @@ export interface CellMapT extends ComponentData {
 
   // World configuration
   cellSize: Vector3D;
+  /**
+   * Size, in cells, of the currently-resident hot window — *not* the whole
+   * world. Constant for the session (window size never changes; only its
+   * origin does, once something moves the focus — see `window`). Renamed in
+   * meaning, not in name, from the pre-windowing "whole map" semantics; see
+   * `.design/cell-map-overhaul/08-live-construction-and-ownership.md`.
+   */
   mapSize: Vector3D;
   /** Chunk size in cells per axis. See `CellMapOptions.chunkSize`. */
   chunkSize: Vector3D;
 
   /** Read-only view over the canonical cell store (see CellPackedReadView). */
   packedData: CellPackedReadView;
+
+  /** Owns the shiftable hot window's origin; see `./window.ts`'s `CellWindow`. */
+  window: CellWindow;
 
   // Smoothing
   smoothing: number;
@@ -400,6 +508,9 @@ export interface CellMapT extends ComponentData {
 
   /** If true, this cell-map is exempt from Y-slice reveal clipping. Default: false */
   revealExempt: boolean;
+
+  /** See `CellMapOptions.autoFocusFromCamera`. */
+  autoFocusFromCamera: boolean;
 }
 
 /**
@@ -503,6 +614,7 @@ export const PROPERTY_ALLOWLIST = [
   'mapSize',
   'chunkSize',
   'packedData',
+  'window',
   'needsGPUUpdate',
   'chunks',
   'chunkGridSize',
@@ -510,6 +622,7 @@ export const PROPERTY_ALLOWLIST = [
   'smoothingWeights',
   'normalSmoothing',
   'revealExempt',
+  'autoFocusFromCamera',
 ];
 
 /**
@@ -540,6 +653,104 @@ function initChunks(cgs: { x: number; y: number; z: number }): ChunkMesh[] {
 }
 
 /**
+ * Wraps `CellData`-returning generator callbacks (the public
+ * `CellMapOptions` shape) into `CellWindow`'s raw-packed-number
+ * `ChunkGenerator` — `window.ts` is deliberately decoupled from cell-map's
+ * own types, so this bridge (via `packCell`) lives here instead.
+ */
+function wrapGenerator(
+  generateCell?: (x: number, y: number, z: number) => CellData | undefined,
+  generateChunk?: (cx: number, cy: number, cz: number) => CellData[],
+): ChunkGenerator | undefined {
+  if (!generateCell && !generateChunk) return undefined;
+  const wrapped: ChunkGenerator = {};
+  if (generateCell) {
+    wrapped.generateCell = (x, y, z) => {
+      const cd = generateCell(x, y, z);
+      return cd ? packCell(cd) : undefined;
+    };
+  }
+  if (generateChunk) {
+    wrapped.generateChunk = (cx, cy, cz) => {
+      const cells = generateChunk(cx, cy, cz);
+      const out = new Uint32Array(cells.length);
+      for (let i = 0; i < cells.length; i++) out[i] = packCell(cells[i]);
+      return out;
+    };
+  }
+  return wrapped;
+}
+
+/**
+ * Smallest radius (chunks of padding per axis) such that a window centered
+ * on it fully covers a legacy map spanning `legacyGridDims` chunks — i.e.
+ * `2*radius+1 >= legacyGridDims` per axis. Used so the legacy construction
+ * path's default window covers the *entire* authored map (matching today's
+ * "everything is always resident" behavior) unless the caller explicitly
+ * opts into a smaller `windowRadius`.
+ */
+function computeCoverageRadius(legacyGridDims: {
+  x: number;
+  y: number;
+  z: number;
+}): { x: number; y: number; z: number } {
+  return {
+    x: Math.max(0, Math.ceil((legacyGridDims.x - 1) / 2)),
+    y: Math.max(0, Math.ceil((legacyGridDims.y - 1) / 2)),
+    z: Math.max(0, Math.ceil((legacyGridDims.z - 1) / 2)),
+  };
+}
+
+/**
+ * Chunks a dense, `mapSize`-sized flat packed-cell array into `coldStorage`,
+ * one `ChunkColdStorage.set()` per chunk that diverges from baseline
+ * (`EMPTY_CELL`) — chunks entirely beyond `mapSize` (when it isn't an exact
+ * multiple of `chunkSize`) are padded with `EMPTY_CELL`. World chunk
+ * coordinates start at `(0,0,0)`, matching the legacy map's own coordinate
+ * space (cell `(0,0,0)` is always the map's authored origin).
+ */
+function chunkDenseArrayIntoColdStorage(
+  coldStorage: ChunkColdStorage,
+  packedFlat: number[],
+  mapSize: Vector3D,
+  chunkSize: Vector3D,
+): void {
+  const gridX = Math.ceil(mapSize.x / chunkSize.x);
+  const gridY = Math.ceil(mapSize.y / chunkSize.y);
+  const gridZ = Math.ceil(mapSize.z / chunkSize.z);
+  const chunkCellCount = chunkSize.x * chunkSize.y * chunkSize.z;
+
+  for (let cz = 0; cz < gridZ; cz++) {
+    for (let cy = 0; cy < gridY; cy++) {
+      for (let cx = 0; cx < gridX; cx++) {
+        const cells = new Uint32Array(chunkCellCount);
+        let differs = false;
+        let idx = 0;
+        for (let lz = 0; lz < chunkSize.z; lz++) {
+          const wz = cz * chunkSize.z + lz;
+          for (let ly = 0; ly < chunkSize.y; ly++) {
+            const wy = cy * chunkSize.y + ly;
+            for (let lx = 0; lx < chunkSize.x; lx++) {
+              const wx = cx * chunkSize.x + lx;
+              let value = EMPTY_CELL;
+              if (wx < mapSize.x && wy < mapSize.y && wz < mapSize.z) {
+                value =
+                  packedFlat[wz * mapSize.y * mapSize.x + wy * mapSize.x + wx];
+              }
+              cells[idx++] = value;
+              if (value !== EMPTY_CELL) differs = true;
+            }
+          }
+        }
+        if (differs) {
+          coldStorage.set(cx, cy, cz, cells);
+        }
+      }
+    }
+  }
+}
+
+/**
  * Builder function for CellMap component
  */
 export async function builder(options: CellMapOptions): Promise<CellMapT> {
@@ -563,74 +774,88 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     throw new Error('CellMap requires at least one material');
   }
 
-  if (!options.materialMap) {
-    throw new Error('CellMap requires materialMap');
+  if (!options.cellSize) {
+    throw new Error('CellMap requires cellSize');
   }
 
-  if (!options.cellSize || !options.mapSize) {
-    throw new Error('CellMap requires cellSize and mapSize');
+  // mapSize + materialMap: both together (the legacy hand-authored path) or
+  // both omitted (the generative path / a purely empty map authored via
+  // setCellData after construction) -- one without the other is a mistake,
+  // not a valid partial configuration.
+  const isLegacy =
+    options.mapSize !== undefined || options.materialMap !== undefined;
+  if (isLegacy && (!options.mapSize || !options.materialMap)) {
+    throw new Error(
+      'CellMap: mapSize and materialMap must be supplied together (the ' +
+        'legacy authored-map path), or both omitted (the generative path)',
+    );
   }
+
+  if (!isLegacy) {
+    return builderGenerative(options);
+  }
+
+  const mapSize = options.mapSize!;
+  const materialMap = options.materialMap!;
 
   // Validate materialMap dimensions match mapSize
   if (
-    options.materialMap.size.x !== options.mapSize.x ||
-    options.materialMap.size.y !== options.mapSize.y ||
-    options.materialMap.size.z !== options.mapSize.z
+    materialMap.size.x !== mapSize.x ||
+    materialMap.size.y !== mapSize.y ||
+    materialMap.size.z !== mapSize.z
   ) {
     throw new Error(
-      `materialMap dimensions (${options.materialMap.size.x},${options.materialMap.size.y},${options.materialMap.size.z}) ` +
-        `must match mapSize (${options.mapSize.x},${options.mapSize.y},${options.mapSize.z})`,
+      `materialMap dimensions (${materialMap.size.x},${materialMap.size.y},${materialMap.size.z}) ` +
+        `must match mapSize (${mapSize.x},${mapSize.y},${mapSize.z})`,
     );
   }
 
   // Create default shapeMap if not provided (all cubes)
-  const optShapeMap =
-    options.shapeMap || new Array3D<number>(options.mapSize, 1);
+  const optShapeMap = options.shapeMap || new Array3D<number>(mapSize, 1);
 
   // Validate shapeMap dimensions if provided
   if (
-    optShapeMap.size.x !== options.mapSize.x ||
-    optShapeMap.size.y !== options.mapSize.y ||
-    optShapeMap.size.z !== options.mapSize.z
+    optShapeMap.size.x !== mapSize.x ||
+    optShapeMap.size.y !== mapSize.y ||
+    optShapeMap.size.z !== mapSize.z
   ) {
     throw new Error('shapeMap dimensions must match mapSize');
   }
 
   // Create default emissionMap if not provided (no emission)
-  const optEmissionMap =
-    options.emissionMap || new Array3D<number>(options.mapSize, 0);
+  const optEmissionMap = options.emissionMap || new Array3D<number>(mapSize, 0);
 
   // Validate emissionMap dimensions if provided
   if (
-    optEmissionMap.size.x !== options.mapSize.x ||
-    optEmissionMap.size.y !== options.mapSize.y ||
-    optEmissionMap.size.z !== options.mapSize.z
+    optEmissionMap.size.x !== mapSize.x ||
+    optEmissionMap.size.y !== mapSize.y ||
+    optEmissionMap.size.z !== mapSize.z
   ) {
     throw new Error('emissionMap dimensions must match mapSize');
   }
 
   // Create default emissionColorMap if not provided (no highlight color, all black = 0)
   const optEmissionColorMap =
-    options.emissionColorMap || new Array3D<number>(options.mapSize, 0);
+    options.emissionColorMap || new Array3D<number>(mapSize, 0);
 
   // Validate emissionColorMap dimensions if provided
   if (
-    optEmissionColorMap.size.x !== options.mapSize.x ||
-    optEmissionColorMap.size.y !== options.mapSize.y ||
-    optEmissionColorMap.size.z !== options.mapSize.z
+    optEmissionColorMap.size.x !== mapSize.x ||
+    optEmissionColorMap.size.y !== mapSize.y ||
+    optEmissionColorMap.size.z !== mapSize.z
   ) {
     throw new Error('emissionColorMap dimensions must match mapSize');
   }
 
   // Create default visibilityMap if not provided (all visible)
   const optVisibilityMap =
-    options.visibilityMap || new Array3D<boolean>(options.mapSize, true);
+    options.visibilityMap || new Array3D<boolean>(mapSize, true);
 
   // Validate visibilityMap dimensions if provided
   if (
-    optVisibilityMap.size.x !== options.mapSize.x ||
-    optVisibilityMap.size.y !== options.mapSize.y ||
-    optVisibilityMap.size.z !== options.mapSize.z
+    optVisibilityMap.size.x !== mapSize.x ||
+    optVisibilityMap.size.y !== mapSize.y ||
+    optVisibilityMap.size.z !== mapSize.z
   ) {
     throw new Error('visibilityMap dimensions must match mapSize');
   }
@@ -653,13 +878,13 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   }
 
   // Pack all cell data into a single Array3D
-  const packedArray = new Array3D<number>(options.mapSize);
+  const packedArray = new Array3D<number>(mapSize);
 
   packedArray.forEach((_, x, y, z, i) => {
     const coords = new Vector3D(x, y, z);
 
     const cellData = createDefaultCellData();
-    cellData.materialIndex = options.materialMap.get(coords);
+    cellData.materialIndex = materialMap.get(coords);
     cellData.shapeIndex = optShapeMap.get(coords);
     cellData.emissionIntensity = optEmissionMap.get(coords);
     cellData.visible = optVisibilityMap.get(coords);
@@ -681,18 +906,9 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   // Chunk size must be configured before any mesh_build_chunk* call. Resolved
   // here (after every validation above has passed, so a failed construction
   // never mutates the shared WASM chunk-size static) and set once, alongside
-  // the store load below.
+  // the window's initial load below.
   const optChunkSize = options.chunkSize ?? DEFAULT_CHUNK_SIZE;
   setChunkSize(optChunkSize.x, optChunkSize.y, optChunkSize.z);
-
-  // Load the packed cells into the canonical WASM store (RLE-compressed there).
-  loadCellStore(
-    packedArray.value,
-    options.mapSize.x * options.mapSize.y * options.mapSize.z,
-    options.mapSize.x,
-    options.mapSize.y,
-    options.mapSize.z,
-  );
 
   // Smoothing configuration
   const optSmoothing = options.smoothing ?? 0;
@@ -705,12 +921,12 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   const rawWeight = options.smoothingWeights ?? 8;
   if (typeof rawWeight === 'number') {
     const clamped = Math.max(0, Math.min(15, Math.round(rawWeight)));
-    weightsArray3D = new Array3D<number>(options.mapSize, clamped);
+    weightsArray3D = new Array3D<number>(mapSize, clamped);
   } else {
     if (
-      rawWeight.size.x !== options.mapSize.x ||
-      rawWeight.size.y !== options.mapSize.y ||
-      rawWeight.size.z !== options.mapSize.z
+      rawWeight.size.x !== mapSize.x ||
+      rawWeight.size.y !== mapSize.y ||
+      rawWeight.size.z !== mapSize.z
     ) {
       throw new Error('smoothingWeights dimensions must match mapSize');
     }
@@ -718,16 +934,54 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   }
   const optSmoothingWeights = new Array3Di(weightsArray3D, 8, [4, 4], 'clamp');
 
-  // Calculate chunk grid dimensions
-  const optChunkGridSize = {
-    x: Math.ceil(options.mapSize.x / optChunkSize.x),
-    y: Math.ceil(options.mapSize.y / optChunkSize.y),
-    z: Math.ceil(options.mapSize.z / optChunkSize.z),
+  // Legacy chunk grid: how many chunks the AUTHORED map spans. The window's
+  // own grid (below) is sized to at least cover this, by default -- not the
+  // same thing as `cmChunkGridSize`, which reflects the window, not the
+  // authored map.
+  const legacyGridDims = {
+    x: Math.ceil(mapSize.x / optChunkSize.x),
+    y: Math.ceil(mapSize.y / optChunkSize.y),
+    z: Math.ceil(mapSize.z / optChunkSize.z),
   };
+  // When no explicit windowRadius is supplied, the window is auto-sized purely to keep
+  // the WHOLE authored map resident (computeCoverageRadius) -- centered at origin and
+  // built with little to no padding beyond the map's own footprint. Driving focus from
+  // the camera in that case can only ever shift the window to show LESS of the map (it's
+  // already showing all of it), and since the window has ~no slack, even a small camera
+  // move can evict all real content with nothing recoverable outside the authored chunk
+  // range. So auto-focus only defaults on when the caller explicitly opted into windowed
+  // behavior via windowRadius; an explicit options.autoFocusFromCamera always wins.
+  const usingCoverageRadius = options.windowRadius === undefined;
+  const radius = options.windowRadius ?? computeCoverageRadius(legacyGridDims);
+
+  const coldStorage = new ChunkColdStorage({
+    chunkCellCount: optChunkSize.x * optChunkSize.y * optChunkSize.z,
+  });
+  chunkDenseArrayIntoColdStorage(
+    coldStorage,
+    packedArray.value,
+    mapSize,
+    optChunkSize,
+  );
+  const window = new CellWindow(
+    { chunkSize: optChunkSize, radius, emptyCell: EMPTY_CELL },
+    coldStorage,
+  );
+  // Force the initial window origin to (0,0,0): a focus point inside the
+  // chunk at grid position `radius` puts origin = focusChunk - radius = 0.
+  // With the default (coverage) radius this means the whole authored map is
+  // resident from the start, world coordinate == window-local coordinate,
+  // and every other read/write/render path stays exactly as it behaves
+  // today -- see 08-live-construction-and-ownership.md for why this matters.
+  window.setFocus(
+    radius.x * optChunkSize.x,
+    radius.y * optChunkSize.y,
+    radius.z * optChunkSize.z,
+  );
 
   // Assign to module-level storage
   cmMaterials = options.materials;
-  cmMaterialMap = options.materialMap;
+  cmMaterialMap = materialMap;
   cmShapeMap = optShapeMap;
   cmMeshes = optMeshes;
   cmEmissionMap = optEmissionMap;
@@ -735,15 +989,129 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   cmEmissionColorDirty = true;
   cmVisibilityMap = optVisibilityMap;
   cmCellSize = options.cellSize;
-  cmMapSize = options.mapSize;
   cmChunkSize = optChunkSize;
   cmSmoothing = optSmoothing;
   cmSmoothingWeights = optSmoothingWeights;
   cmNormalSmoothing = optNormalSmoothing;
   cmNeedsGPUUpdate = true;
-  cmChunkGridSize = optChunkGridSize;
-  cmChunks = initChunks(optChunkGridSize);
+  cmWindow = window;
+  cmColdStorage = coldStorage;
+  cmMapSize = new Vector3D(
+    window.cellDimensions.x,
+    window.cellDimensions.y,
+    window.cellDimensions.z,
+  );
+  cmChunkGridSize = window.gridDimensions;
+  cmChunks = initChunks(window.gridDimensions);
   cmRevealExempt = options.revealExempt ?? false;
+  cmAutoFocusFromCamera = options.autoFocusFromCamera ?? !usingCoverageRadius;
+  cmLive = true;
+
+  return makeCellMapInstance(options.name);
+}
+
+/**
+ * Builder path for a cell-map with no authored `mapSize`/`materialMap` --
+ * content comes from `generateCell`/`generateChunk` (or, if neither is
+ * supplied, an entirely empty map authored via `setCellData` after
+ * construction). Split out from `builder()` for readability; called from
+ * there once the legacy-vs-generative branch is resolved.
+ */
+function builderGenerative(options: CellMapOptions): CellMapT {
+  const optChunkSize = options.chunkSize ?? DEFAULT_CHUNK_SIZE;
+  setChunkSize(optChunkSize.x, optChunkSize.y, optChunkSize.z);
+  const radius = options.windowRadius ?? { x: 1, y: 1, z: 1 };
+  const windowCellDims = new Vector3D(
+    (2 * radius.x + 1) * optChunkSize.x,
+    (2 * radius.y + 1) * optChunkSize.y,
+    (2 * radius.z + 1) * optChunkSize.z,
+  );
+
+  // Prepare meshes array with default cube at index 1 (same as the legacy path).
+  const optMeshes = options.meshes || [];
+  if (!optMeshes[0]) {
+    optMeshes[0] = {
+      vertices: new Float32Array(0),
+      uvs: new Float32Array(0),
+      indices: new Uint16Array(0),
+    };
+  }
+  if (!optMeshes[1]) {
+    optMeshes[1] = generateDefaultCubeMesh();
+  }
+
+  // Smoothing configuration
+  const optSmoothing = options.smoothing ?? 0;
+  const optNormalSmoothing = Math.max(
+    0,
+    Math.min(1, options.normalSmoothing ?? 0),
+  );
+  const rawWeight = options.smoothingWeights ?? 8;
+  if (typeof rawWeight !== 'number') {
+    // A per-cell Array3D of custom weights has no coordinate space to
+    // validate against without a mapSize -- doc 13 (windowing the secondary
+    // per-cell channels) is where this gets real support; for now the
+    // generative path only accepts a uniform weight.
+    throw new Error(
+      'CellMap: a per-cell smoothingWeights Array3D requires mapSize/' +
+        'materialMap (the legacy path) -- the generative path only supports ' +
+        'a uniform number for now',
+    );
+  }
+  const clampedWeight = Math.max(0, Math.min(15, Math.round(rawWeight)));
+  const optSmoothingWeights = new Array3Di(
+    new Array3D<number>(windowCellDims, clampedWeight),
+    8,
+    [4, 4],
+    'clamp',
+  );
+
+  // "Input maps preserved for reference" have no authored input to preserve
+  // in the generative path -- sized to the initial window as inert
+  // placeholders (materialMap/shapeMap/visibilityMap have no consumers post-
+  // construction; emissionColorMap IS live via setEmissionColor/
+  // getEmissionColor, and stays a plain dense array — sized to the *initial*
+  // window only — until doc 13 gives it real per-chunk windowing).
+  const coldStorage = new ChunkColdStorage({
+    chunkCellCount: optChunkSize.x * optChunkSize.y * optChunkSize.z,
+  });
+  const generator = wrapGenerator(options.generateCell, options.generateChunk);
+  const window = new CellWindow(
+    { chunkSize: optChunkSize, radius, emptyCell: EMPTY_CELL, generator },
+    coldStorage,
+  );
+  // Same origin-zeroing trick as the legacy path -- see its comment above.
+  window.setFocus(
+    radius.x * optChunkSize.x,
+    radius.y * optChunkSize.y,
+    radius.z * optChunkSize.z,
+  );
+
+  cmMaterials = options.materials;
+  cmMaterialMap = new Array3D<number>(windowCellDims, 0);
+  cmShapeMap = new Array3D<number>(windowCellDims, 1);
+  cmMeshes = optMeshes;
+  cmEmissionMap = new Array3D<number>(windowCellDims, 0);
+  cmEmissionColorMap = new Array3D<number>(windowCellDims, 0);
+  cmEmissionColorDirty = true;
+  cmVisibilityMap = new Array3D<boolean>(windowCellDims, true);
+  cmCellSize = options.cellSize;
+  cmChunkSize = optChunkSize;
+  cmSmoothing = optSmoothing;
+  cmSmoothingWeights = optSmoothingWeights;
+  cmNormalSmoothing = optNormalSmoothing;
+  cmNeedsGPUUpdate = true;
+  cmWindow = window;
+  cmColdStorage = coldStorage;
+  cmMapSize = new Vector3D(
+    window.cellDimensions.x,
+    window.cellDimensions.y,
+    window.cellDimensions.z,
+  );
+  cmChunkGridSize = window.gridDimensions;
+  cmChunks = initChunks(window.gridDimensions);
+  cmRevealExempt = options.revealExempt ?? false;
+  cmAutoFocusFromCamera = options.autoFocusFromCamera ?? true;
   cmLive = true;
 
   return makeCellMapInstance(options.name);
@@ -953,11 +1321,10 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
 
     packedArray.indexSet(i, packCell(cellData));
   });
-  // Load the packed cells into the canonical WASM store. Chunk size must be
-  // configured before any mesh_build_chunk* call, alongside the store load.
+  // Chunk size must be configured before any mesh_build_chunk* call, before
+  // the window's initial load below (mirrors builder()'s legacy path).
   await initRenderWasm();
   setChunkSize(cks.x, cks.y, cks.z);
-  loadCellStore(packedArray.value, packedArray.value.length, ms.x, ms.y, ms.z);
 
   // Reconstruct the per-cell emission color map (separate texture-side channel;
   // absent in legacy scenes → all black).
@@ -1001,12 +1368,24 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   const weightsArray3D = new Array3D<number>(ms, 8);
   const dSmoothingWeights = new Array3Di(weightsArray3D, 8, [4, 4], 'clamp');
 
-  // Chunk grid
-  const dChunkGridSize = {
+  // Legacy chunk grid: how many chunks the SAVED map spans -- mirrors
+  // builder()'s legacy path (see 08-live-construction-and-ownership.md).
+  const legacyGridDims = {
     x: Math.ceil(ms.x / cks.x),
     y: Math.ceil(ms.y / cks.y),
     z: Math.ceil(ms.z / cks.z),
   };
+  const radius = computeCoverageRadius(legacyGridDims);
+  const dColdStorage = new ChunkColdStorage({
+    chunkCellCount: cks.x * cks.y * cks.z,
+  });
+  chunkDenseArrayIntoColdStorage(dColdStorage, packedArray.value, ms, cks);
+  const dWindow = new CellWindow(
+    { chunkSize: cks, radius, emptyCell: EMPTY_CELL },
+    dColdStorage,
+  );
+  // Origin-zeroing trick, same as builder() -- see its comment for why.
+  dWindow.setFocus(radius.x * cks.x, radius.y * cks.y, radius.z * cks.z);
 
   // Reconstruct materials array
   const mats: Material[] = (dataMaterials as Material[]).map((m) => ({
@@ -1032,7 +1411,6 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   cmEmissionColorDirty = true;
   cmVisibilityMap = dVisibilityMap;
   cmCellSize = cs;
-  cmMapSize = ms;
   cmChunkSize = cks;
   cmSmoothing = (dataSmoothing as number) ?? 0;
   cmSmoothingWeights = dSmoothingWeights;
@@ -1041,9 +1419,20 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     Math.min(1, (dataNormalSmoothing as number) ?? 0),
   );
   cmNeedsGPUUpdate = true;
-  cmChunkGridSize = dChunkGridSize;
-  cmChunks = initChunks(dChunkGridSize);
+  cmWindow = dWindow;
+  cmColdStorage = dColdStorage;
+  cmMapSize = new Vector3D(
+    dWindow.cellDimensions.x,
+    dWindow.cellDimensions.y,
+    dWindow.cellDimensions.z,
+  );
+  cmChunkGridSize = dWindow.gridDimensions;
+  cmChunks = initChunks(dWindow.gridDimensions);
   cmRevealExempt = (dataRevealExempt as boolean) ?? false;
+  // deserialize() always uses the auto-computed coverage radius (windowRadius
+  // isn't part of the serialized format) -- see the matching comment in
+  // builder()'s legacy branch for why that means auto-focus must default off.
+  cmAutoFocusFromCamera = false;
   cmLive = true;
 
   return {

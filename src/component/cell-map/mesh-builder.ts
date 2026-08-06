@@ -101,8 +101,12 @@ function packFaceCover(mesh: Mesh): number {
 }
 
 /**
- * Marks chunks as dirty that contain or border the given cell coordinate.
- * Call when a cell is modified so its chunk mesh gets rebuilt.
+ * Marks chunks as dirty that contain or border the given WORLD cell
+ * coordinate. Call when a cell is modified so its chunk mesh gets rebuilt.
+ * No-ops if the coordinate is currently outside the window — that edit
+ * already went through `CellWindow.setCell`'s cold-storage path instead of
+ * the live store, so there's no resident chunk mesh to dirty. See
+ * `.design/cell-map-overhaul/09-chunk-grid-and-dirty-marking.md`.
  */
 export function markChunksDirty(
   cellMap: CellMapT,
@@ -110,19 +114,41 @@ export function markChunksDirty(
   y: number,
   z: number,
 ): void {
-  const { chunkGridSize, chunkSize } = cellMap;
-  const chunkX = Math.floor(x / chunkSize.x);
-  const chunkY = Math.floor(y / chunkSize.y);
-  const chunkZ = Math.floor(z / chunkSize.z);
+  const { chunkGridSize, chunkSize, window } = cellMap;
+  const origin = window.origin;
+  if (!origin) return; // no window loaded yet
+
+  const worldChunkX = Math.floor(x / chunkSize.x);
+  const worldChunkY = Math.floor(y / chunkSize.y);
+  const worldChunkZ = Math.floor(z / chunkSize.z);
+
+  // Position within its chunk -- origin-independent, so compute this from
+  // the world chunk coordinate before translating to window-local below.
+  const localX = x - worldChunkX * chunkSize.x;
+  const localY = y - worldChunkY * chunkSize.y;
+  const localZ = z - worldChunkZ * chunkSize.z;
+
+  // Window-local chunk-grid position (cmChunks is indexed by this, not by
+  // world chunk coordinate -- see doc 09).
+  const chunkX = worldChunkX - origin.cx;
+  const chunkY = worldChunkY - origin.cy;
+  const chunkZ = worldChunkZ - origin.cz;
+
+  if (
+    chunkX < 0 ||
+    chunkX >= chunkGridSize.x ||
+    chunkY < 0 ||
+    chunkY >= chunkGridSize.y ||
+    chunkZ < 0 ||
+    chunkZ >= chunkGridSize.z
+  ) {
+    return; // outside the current window
+  }
 
   markSingleChunkDirty(cellMap, chunkX, chunkY, chunkZ);
 
   // Mark adjacent chunks if cell is on a chunk boundary
   // (face culling depends on cross-chunk neighbors)
-  const localX = x - chunkX * chunkSize.x;
-  const localY = y - chunkY * chunkSize.y;
-  const localZ = z - chunkZ * chunkSize.z;
-
   if (localX === 0 && chunkX > 0)
     markSingleChunkDirty(cellMap, chunkX - 1, chunkY, chunkZ);
   if (localX === chunkSize.x - 1 && chunkX < chunkGridSize.x - 1)

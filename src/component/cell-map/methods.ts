@@ -9,11 +9,7 @@ import {
   cellSurfacePoint,
   sampleSurfaceHeight,
 } from './raycast';
-import {
-  cellStoreGet,
-  cellStoreSet,
-  cellStoreFlush,
-} from '../camera/render/wasm';
+import { cellStoreFlush } from '../camera/render/wasm';
 
 /**
  * Rejects a malformed coordinate (NaN, ±Infinity, non-numeric) before it
@@ -141,6 +137,21 @@ export interface CellMapMethods extends ComponentMethods {
   getBounds: (component: CellMapT) => { min: Vector3D; max: Vector3D };
 
   /**
+   * Move the resident window to cover the given world position, shifting the
+   * hot buffer if needed. Marks every chunk dirty when a shift occurs (the
+   * doc 09 correctness-first strategy — only the newly-loaded slab needs it,
+   * but a targeted remesh is deferred future work). Called once per frame by
+   * the render loop when `autoFocusFromCamera` is enabled; also public for
+   * games that want explicit control instead.
+   */
+  setFocus: (
+    component: CellMapT,
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+  ) => void;
+
+  /**
    * Cast a ray against the cell-map's ACTUAL rendered surface (smoothing + custom
    * meshes accounted for) and return the nearest hit, or null on a miss. `dir` need
    * not be normalized; `distance` is in world units.
@@ -186,19 +197,8 @@ export const CellMap: CellMapMethods = {
 
   getCellData: (component: CellMapT, coordinates: Vector3D): CellData => {
     const { x, y, z } = coordinates;
-    assertFiniteCoordinates(x, y, z);
-    const { mapSize } = component;
-    if (
-      x < 0 ||
-      x >= mapSize.x ||
-      y < 0 ||
-      y >= mapSize.y ||
-      z < 0 ||
-      z >= mapSize.z
-    ) {
-      throw new Error(`Invalid coordinates: (${x}, ${y}, ${z})`);
-    }
-    return unpackCell(cellStoreGet(x, y, z));
+    const packed = component.window.queryCell(x, y, z);
+    return unpackCell(packed);
   },
 
   setCellData: (
@@ -206,7 +206,6 @@ export const CellMap: CellMapMethods = {
     coordinates: Vector3D,
     data: CellData,
   ): void => {
-    assertFiniteCoordinates(coordinates.x, coordinates.y, coordinates.z);
     // Clamp values to valid ranges
     const clamped: CellData = {
       materialIndex: Math.max(0, Math.min(0xfff, data.materialIndex)),
@@ -216,7 +215,12 @@ export const CellMap: CellMapMethods = {
     };
 
     const packed = packCell(clamped);
-    cellStoreSet(coordinates.x, coordinates.y, coordinates.z, packed);
+    component.window.setCell(
+      coordinates.x,
+      coordinates.y,
+      coordinates.z,
+      packed,
+    );
     component.needsGPUUpdate = true;
     markChunksDirty(component, coordinates.x, coordinates.y, coordinates.z);
   },
@@ -341,13 +345,33 @@ export const CellMap: CellMapMethods = {
   },
 
   getBounds: (component: CellMapT): { min: Vector3D; max: Vector3D } => {
-    const min = new Vector3D(0, 0, 0);
+    const origin = component.window.origin;
+    const ox = (origin?.cx ?? 0) * component.chunkSize.x * component.cellSize.x;
+    const oy = (origin?.cy ?? 0) * component.chunkSize.y * component.cellSize.y;
+    const oz = (origin?.cz ?? 0) * component.chunkSize.z * component.cellSize.z;
+    const min = new Vector3D(ox, oy, oz);
     const max = new Vector3D(
-      component.mapSize.x * component.cellSize.x,
-      component.mapSize.y * component.cellSize.y,
-      component.mapSize.z * component.cellSize.z,
+      ox + component.mapSize.x * component.cellSize.x,
+      oy + component.mapSize.y * component.cellSize.y,
+      oz + component.mapSize.z * component.cellSize.z,
     );
     return { min, max };
+  },
+
+  setFocus: (
+    component: CellMapT,
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+  ): void => {
+    const shifted = component.window.setFocus(
+      Math.floor(worldX / component.cellSize.x),
+      Math.floor(worldY / component.cellSize.y),
+      Math.floor(worldZ / component.cellSize.z),
+    );
+    if (shifted) {
+      for (const chunk of component.chunks) chunk.dirty = true;
+    }
   },
 
   raycast: (

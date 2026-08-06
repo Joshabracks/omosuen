@@ -1,5 +1,5 @@
 import { AtlasManagerT } from '../../atlas-manager';
-import { CellMapT, rebuildDirtyChunks } from '../../cell-map';
+import { CellMapT, CellMap, rebuildDirtyChunks } from '../../cell-map';
 import { LightT } from '../../light';
 import { NexusT } from '../../nexus';
 import { TextureMapT } from '../../texture-map';
@@ -192,17 +192,20 @@ export function renderCellMaps(
   const uCameraPosition = gl.getUniformLocation(program, 'u_cameraPosition');
   const uZoom = gl.getUniformLocation(program, 'u_zoom');
   const uCellSize = gl.getUniformLocation(program, 'u_cellSize');
-  // Still used by the vertex shader's depth-bias math (assumes world X/Z
-  // start at 0 — a separate, not-yet-addressed dependency on a fixed,
-  // non-negative coordinate range; see the Task 06 report for why this is
-  // deliberately untouched here).
-  const uMapSize = gl.getUniformLocation(program, 'u_mapSize');
-  // Size/origin of the currently-resident cell grid, used by the fragment
-  // shader's reveal/occlusion sampling (today: the whole map, at origin
-  // (0,0,0); once the engine's shiftable hot window lands, the window's
-  // size/origin — see .design/completed_tasks/cell-map-overhaul/06-camera-reveal-fix.md).
+  // Size/origin of the currently-resident cell-map window. Used by the
+  // fragment shader's reveal/occlusion sampling (u_windowSize/u_windowOrigin,
+  // in cell units — see
+  // .design/completed_tasks/cell-map-overhaul/06-camera-reveal-fix.md) and by
+  // the vertex shader's position offset + depth-bias recentering
+  // (u_windowSize/u_worldOffset, in world/continuous units — see
+  // .design/cell-map-overhaul/10-vertex-world-offset-and-depth-bias.md).
+  // u_windowSize (cell units) is shared between both stages; u_windowOrigin
+  // (cell units) and u_worldOffset (world units, cellSize-scaled) are
+  // deliberately separate uniforms with different units — do not conflate
+  // them.
   const uWindowSize = gl.getUniformLocation(program, 'u_windowSize');
   const uWindowOrigin = gl.getUniformLocation(program, 'u_windowOrigin');
+  const uWorldOffset = gl.getUniformLocation(program, 'u_worldOffset');
   const uAlbedoTexture = gl.getUniformLocation(program, 'u_albedoTexture');
   const uNormalTexture = gl.getUniformLocation(program, 'u_normalTexture');
   const uHasNormal = gl.getUniformLocation(program, 'u_hasNormal');
@@ -403,6 +406,13 @@ export function renderCellMaps(
 
   // Render each cell-map
   for (const cellMap of cellMaps) {
+    // Drive the window's focus from the camera by default (see
+    // .design/cell-map-overhaul/11-focus-driving.md) -- before rebuilding
+    // dirty chunks, since a shift marks every resident chunk dirty.
+    if (cellMap.autoFocusFromCamera) {
+      CellMap.setFocus(cellMap, camPos.x, camPos.y, camPos.z);
+    }
+
     // Rebuild any dirty chunks
     rebuildDirtyChunks(cellMap);
 
@@ -414,22 +424,28 @@ export function renderCellMaps(
       cellMap.cellSize.z,
     );
     gl.uniform3f(
-      uMapSize,
-      cellMap.mapSize.x,
-      cellMap.mapSize.y,
-      cellMap.mapSize.z,
-    );
-    // Today the resident grid is always the whole map at the origin — no
-    // shiftable window exists yet (see the uWindowSize/uWindowOrigin comment
-    // above), so this is the identity case of what will become the window's
-    // actual size/origin.
-    gl.uniform3f(
       uWindowSize,
       cellMap.mapSize.x,
       cellMap.mapSize.y,
       cellMap.mapSize.z,
     );
-    gl.uniform3f(uWindowOrigin, 0, 0, 0);
+    const windowOrigin = cellMap.window.origin;
+    // Cell units (see the uWindowOrigin/uWorldOffset comment above) -- used
+    // by the fragment shader's reveal/occlusion sampling.
+    gl.uniform3f(
+      uWindowOrigin,
+      (windowOrigin?.cx ?? 0) * cellMap.chunkSize.x,
+      (windowOrigin?.cy ?? 0) * cellMap.chunkSize.y,
+      (windowOrigin?.cz ?? 0) * cellMap.chunkSize.z,
+    );
+    // World/continuous units (cellSize-scaled) -- used by the vertex
+    // shader's position offset + depth-bias recentering.
+    gl.uniform3f(
+      uWorldOffset,
+      (windowOrigin?.cx ?? 0) * cellMap.chunkSize.x * cellMap.cellSize.x,
+      (windowOrigin?.cy ?? 0) * cellMap.chunkSize.y * cellMap.cellSize.y,
+      (windowOrigin?.cz ?? 0) * cellMap.chunkSize.z * cellMap.cellSize.z,
+    );
 
     // Solidity texture (u_cellSolidity) is read by BOTH the reveal raycast and the
     // AO/cast-shadow depth cues — so upload/bind it whenever either needs it.

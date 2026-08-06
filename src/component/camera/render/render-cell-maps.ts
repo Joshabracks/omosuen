@@ -46,15 +46,18 @@ export function snapCameraPosition(
 }
 
 /**
- * Uploads a per-cell visibility mask as a flattened 2D R8 texture.
- * Texture layout: width = mapX, height = mapY * mapZ.
- * Texel at (x, y + z * mapY) → cell (x, y, z).
+ * Uploads a per-cell visibility mask as a flattened 2D R8 texture, sized to
+ * whatever's currently resident in the canonical store (today: the whole
+ * map; once the shiftable hot window lands, the window — see
+ * .design/completed_tasks/cell-map-overhaul/06-camera-reveal-fix.md).
+ * Texture layout: width = windowX, height = windowY * windowZ.
+ * Texel at (x, y + z * windowY) → cell (x, y, z), in window-local coordinates.
  */
 function uploadVisibilityTexture(
   gl: WebGL2RenderingContext,
   camera: CameraT,
   mask: Uint8Array,
-  mapSize: { x: number; y: number; z: number },
+  windowSize: { x: number; y: number; z: number },
 ): void {
   if (!camera.glResources.visibilityTexture) {
     camera.glResources.visibilityTexture = gl.createTexture();
@@ -70,8 +73,8 @@ function uploadVisibilityTexture(
     gl.TEXTURE_2D,
     0,
     gl.R8,
-    mapSize.x,
-    mapSize.y * mapSize.z,
+    windowSize.x,
+    windowSize.y * windowSize.z,
     0,
     gl.RED,
     gl.UNSIGNED_BYTE,
@@ -112,7 +115,7 @@ function uploadCellEmissionColorTexture(
   gl: WebGL2RenderingContext,
   camera: CameraT,
   bytes: Uint8Array,
-  mapSize: { x: number; y: number; z: number },
+  windowSize: { x: number; y: number; z: number },
 ): void {
   if (!camera.glResources.cellEmissionColorTexture) {
     camera.glResources.cellEmissionColorTexture = gl.createTexture();
@@ -124,8 +127,8 @@ function uploadCellEmissionColorTexture(
     gl.TEXTURE_2D,
     0,
     gl.RGBA8,
-    mapSize.x,
-    mapSize.y * mapSize.z,
+    windowSize.x,
+    windowSize.y * windowSize.z,
     0,
     gl.RGBA,
     gl.UNSIGNED_BYTE,
@@ -189,7 +192,17 @@ export function renderCellMaps(
   const uCameraPosition = gl.getUniformLocation(program, 'u_cameraPosition');
   const uZoom = gl.getUniformLocation(program, 'u_zoom');
   const uCellSize = gl.getUniformLocation(program, 'u_cellSize');
+  // Still used by the vertex shader's depth-bias math (assumes world X/Z
+  // start at 0 — a separate, not-yet-addressed dependency on a fixed,
+  // non-negative coordinate range; see the Task 06 report for why this is
+  // deliberately untouched here).
   const uMapSize = gl.getUniformLocation(program, 'u_mapSize');
+  // Size/origin of the currently-resident cell grid, used by the fragment
+  // shader's reveal/occlusion sampling (today: the whole map, at origin
+  // (0,0,0); once the engine's shiftable hot window lands, the window's
+  // size/origin — see .design/completed_tasks/cell-map-overhaul/06-camera-reveal-fix.md).
+  const uWindowSize = gl.getUniformLocation(program, 'u_windowSize');
+  const uWindowOrigin = gl.getUniformLocation(program, 'u_windowOrigin');
   const uAlbedoTexture = gl.getUniformLocation(program, 'u_albedoTexture');
   const uNormalTexture = gl.getUniformLocation(program, 'u_normalTexture');
   const uHasNormal = gl.getUniformLocation(program, 'u_hasNormal');
@@ -406,6 +419,17 @@ export function renderCellMaps(
       cellMap.mapSize.y,
       cellMap.mapSize.z,
     );
+    // Today the resident grid is always the whole map at the origin — no
+    // shiftable window exists yet (see the uWindowSize/uWindowOrigin comment
+    // above), so this is the identity case of what will become the window's
+    // actual size/origin.
+    gl.uniform3f(
+      uWindowSize,
+      cellMap.mapSize.x,
+      cellMap.mapSize.y,
+      cellMap.mapSize.z,
+    );
+    gl.uniform3f(uWindowOrigin, 0, 0, 0);
 
     // Solidity texture (u_cellSolidity) is read by BOTH the reveal raycast and the
     // AO/cast-shadow depth cues — so upload/bind it whenever either needs it.

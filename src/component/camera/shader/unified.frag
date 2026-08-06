@@ -11,7 +11,12 @@ uniform bool u_hasNormal;
 
     // Cell-specific uniforms (Mode 0)
 uniform highp vec3 u_cellSize;
-uniform highp vec3 u_mapSize;
+    // Size of the currently-resident cell grid (today: the whole map; once the
+    // engine's shiftable hot window lands, the window's size — see
+    // .design/completed_tasks/cell-map-overhaul/06-camera-reveal-fix.md). u_windowOrigin is the
+    // world-cell-space corner that grid starts at (today always (0,0,0)).
+uniform highp vec3 u_windowSize;
+uniform highp vec3 u_windowOrigin;
 uniform vec4 u_normalUVBounds;
 
     // Per-side (per-triplanar-plane) frames for cells (Mode 0).
@@ -210,28 +215,34 @@ vec3 computeSpecular(vec3 normal, vec3 worldPos, vec3 viewDir, float metallic, f
 // Out-of-bounds cells are empty — without this, CLAMP_TO_EDGE would fold the lookup
 // back onto a real edge cell and report false occlusion (e.g. AO at the map border).
 bool isCellSolid(vec3 cell) {
-    if(cell.x < 0.0 || cell.x >= u_mapSize.x ||
-       cell.y < 0.0 || cell.y >= u_mapSize.y ||
-       cell.z < 0.0 || cell.z >= u_mapSize.z) {
+    // `cell` is a world-cell coordinate; translate into the resident grid's
+    // own local space before bounds-checking/sampling — a no-op today
+    // (u_windowOrigin is always (0,0,0) until the shiftable hot window
+    // lands), but this is the seam that makes it correct once it does.
+    vec3 local = cell - u_windowOrigin;
+    if(local.x < 0.0 || local.x >= u_windowSize.x ||
+       local.y < 0.0 || local.y >= u_windowSize.y ||
+       local.z < 0.0 || local.z >= u_windowSize.z) {
         return false;
     }
-    float u = (cell.x + 0.5) / u_mapSize.x;
-    float v = (cell.y + cell.z * u_mapSize.y + 0.5)
-              / (u_mapSize.y * u_mapSize.z);
+    float u = (local.x + 0.5) / u_windowSize.x;
+    float v = (local.y + local.z * u_windowSize.y + 0.5)
+              / (u_windowSize.y * u_windowSize.z);
     return texture2D(u_cellSolidity, vec2(u, v)).r > 0.5;
 }
 
 // Per-cell emission (highlight) color, sampled by integer cell coordinate using the
 // same grid->2D flatten as isCellSolid. Out-of-bounds cells contribute nothing.
 vec3 cellEmissionColorAt(vec3 cell) {
-    if(cell.x < 0.0 || cell.x >= u_mapSize.x ||
-       cell.y < 0.0 || cell.y >= u_mapSize.y ||
-       cell.z < 0.0 || cell.z >= u_mapSize.z) {
+    vec3 local = cell - u_windowOrigin;
+    if(local.x < 0.0 || local.x >= u_windowSize.x ||
+       local.y < 0.0 || local.y >= u_windowSize.y ||
+       local.z < 0.0 || local.z >= u_windowSize.z) {
         return vec3(0.0);
     }
-    float u = (cell.x + 0.5) / u_mapSize.x;
-    float v = (cell.y + cell.z * u_mapSize.y + 0.5)
-              / (u_mapSize.y * u_mapSize.z);
+    float u = (local.x + 0.5) / u_windowSize.x;
+    float v = (local.y + local.z * u_windowSize.y + 0.5)
+              / (u_windowSize.y * u_windowSize.z);
     return texture2D(u_cellEmissionColor, vec2(u, v)).rgb;
 }
 
@@ -291,10 +302,12 @@ bool isRayBlocked(vec3 origin, vec3 dest) {
         // Reached destination cell — not blocked
         if(pos == endCell) return false;
 
-        // Out of bounds — not blocked
-        if(pos.x < 0.0 || pos.x >= u_mapSize.x ||
-           pos.y < 0.0 || pos.y >= u_mapSize.y ||
-           pos.z < 0.0 || pos.z >= u_mapSize.z) return false;
+        // Out of bounds — not blocked (same world->local translation as isCellSolid,
+        // kept consistent so this early-exit and isCellSolid's own check agree).
+        vec3 localPos = pos - u_windowOrigin;
+        if(localPos.x < 0.0 || localPos.x >= u_windowSize.x ||
+           localPos.y < 0.0 || localPos.y >= u_windowSize.y ||
+           localPos.z < 0.0 || localPos.z >= u_windowSize.z) return false;
 
         // Intermediate solid cell — blocked
         if(isCellSolid(pos)) return true;

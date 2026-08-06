@@ -16,7 +16,7 @@
  * Both tiers grow (double) only when their free-list empties, never per-chunk
  * — the data that scales with touched-chunk count lives in a handful of
  * long-lived typed-array buffers, not per-chunk objects. See
- * `.design/cell-map-overhaul/03-js-cold-storage-pool.md`.
+ * `.design/completed_tasks/cell-map-overhaul/03-js-cold-storage-pool.md`.
  */
 
 /** A pool of fixed-size typed-array slots, grow-only (doubles on demand). */
@@ -67,13 +67,28 @@ class SlabPool {
  * unbounded; coordinates outside this range silently wrap rather than
  * throwing. Chosen over a string key to avoid a per-lookup string allocation.
  */
+const AXIS_SPAN = 1 << 17;
+const AXIS_BIAS = 1 << 16;
+
 function packChunkKey(cx: number, cy: number, cz: number): number {
-  const BIAS = 1 << 16;
-  const MASK = (1 << 17) - 1;
-  const bx = (cx + BIAS) & MASK;
-  const by = (cy + BIAS) & MASK;
-  const bz = (cz + BIAS) & MASK;
-  return bx + by * (1 << 17) + bz * 2 ** 34;
+  const mask = AXIS_SPAN - 1;
+  const bx = (cx + AXIS_BIAS) & mask;
+  const by = (cy + AXIS_BIAS) & mask;
+  const bz = (cz + AXIS_BIAS) & mask;
+  return bx + by * AXIS_SPAN + bz * AXIS_SPAN * AXIS_SPAN;
+}
+
+/** Inverse of `packChunkKey`. */
+function unpackChunkKey(key: number): {
+  cx: number;
+  cy: number;
+  cz: number;
+} {
+  const bx = key % AXIS_SPAN;
+  const rem = Math.floor(key / AXIS_SPAN);
+  const by = rem % AXIS_SPAN;
+  const bz = Math.floor(rem / AXIS_SPAN);
+  return { cx: bx - AXIS_BIAS, cy: by - AXIS_BIAS, cz: bz - AXIS_BIAS };
 }
 
 interface SlotRef {
@@ -106,6 +121,23 @@ function tryEncodeRLE(
   if (values.length > maxRuns) return null;
   return { values, counts };
 }
+
+/**
+ * A stored chunk's contents in native tier form — the shape used for
+ * serialization (see `.design/completed_tasks/cell-map-overhaul/05-chunked-serialization.md`)
+ * so a save doesn't have to decode-then-recompress every RLE-tier chunk.
+ * Plain numbers/arrays throughout so this round-trips through JSON as-is.
+ */
+export type ColdStorageEntrySnapshot =
+  | {
+      cx: number;
+      cy: number;
+      cz: number;
+      kind: 'rle';
+      values: number[];
+      counts: number[];
+    }
+  | { cx: number; cy: number; cz: number; kind: 'dense'; cells: number[] };
 
 export interface ChunkColdStorageConfig {
   /** Cells per chunk (chunkSize.x * chunkSize.y * chunkSize.z). */
@@ -197,5 +229,85 @@ export class ChunkColdStorage {
   /** Number of chunks currently stored (diagnostics/tests). */
   get size(): number {
     return this.index.size;
+  }
+
+  /**
+   * Dumps every stored chunk in its native tier representation (RLE runs or
+   * a dense cell array) — the save-format shape a chunked serializer wants,
+   * avoiding a decode-then-recompress round trip for RLE-tier chunks.
+   */
+  dumpEntries(): ColdStorageEntrySnapshot[] {
+    const out: ColdStorageEntrySnapshot[] = [];
+    for (const [key, ref] of this.index) {
+      const { cx, cy, cz } = unpackChunkKey(key);
+      if (ref.tier === 0) {
+        const slot = this.rlePool.slotView(ref.slot);
+        const runCount = slot[0];
+        const values: number[] = new Array<number>(runCount);
+        const counts: number[] = new Array<number>(runCount);
+        for (let r = 0; r < runCount; r++) {
+          values[r] = slot[1 + r * 2];
+          counts[r] = slot[1 + r * 2 + 1];
+        }
+        out.push({ cx, cy, cz, kind: 'rle', values, counts });
+      } else {
+        out.push({
+          cx,
+          cy,
+          cz,
+          kind: 'dense',
+          cells: Array.from(this.densePool.slotView(ref.slot)),
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Repopulates storage from a snapshot produced by `dumpEntries` (e.g. on
+   * scene load). Clears any existing entries first.
+   */
+  loadEntries(entries: ColdStorageEntrySnapshot[]): void {
+    this.clear();
+    for (const entry of entries) {
+      const key = packChunkKey(entry.cx, entry.cy, entry.cz);
+      if (entry.kind === 'rle') {
+        if (entry.values.length > this.maxRuns) {
+          throw new Error(
+            `ChunkColdStorage.loadEntries: RLE entry for chunk ` +
+              `(${entry.cx},${entry.cy},${entry.cz}) has ${entry.values.length} runs, ` +
+              `exceeding maxRunsPerSlot (${this.maxRuns})`,
+          );
+        }
+        const slot = this.rlePool.allocate();
+        const view = this.rlePool.slotView(slot);
+        view[0] = entry.values.length;
+        for (let r = 0; r < entry.values.length; r++) {
+          view[1 + r * 2] = entry.values[r];
+          view[1 + r * 2 + 1] = entry.counts[r];
+        }
+        this.index.set(key, { tier: 0, slot });
+      } else {
+        if (entry.cells.length !== this.chunkCellCount) {
+          throw new Error(
+            `ChunkColdStorage.loadEntries: dense entry for chunk ` +
+              `(${entry.cx},${entry.cy},${entry.cz}) has ${entry.cells.length} cells, ` +
+              `expected ${this.chunkCellCount}`,
+          );
+        }
+        const slot = this.densePool.allocate();
+        this.densePool.slotView(slot).set(entry.cells);
+        this.index.set(key, { tier: 1, slot });
+      }
+    }
+  }
+
+  /** Frees every stored entry back to both tiers' free lists. */
+  clear(): void {
+    for (const ref of this.index.values()) {
+      if (ref.tier === 0) this.rlePool.free(ref.slot);
+      else this.densePool.free(ref.slot);
+    }
+    this.index.clear();
   }
 }

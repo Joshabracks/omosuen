@@ -14,15 +14,66 @@
  * new window's contents (reusing the still-overlapping region, pulling
  * newly-exposed chunks from cold storage or the empty baseline), then reload
  * the store with the new contents. See
- * `.design/cell-map-overhaul/02-wasm-windowed-store.md`.
+ * `.design/completed_tasks/cell-map-overhaul/02-wasm-windowed-store.md`.
  */
-import { loadCellStore, cellStoreDump } from '../camera/render/wasm';
+import {
+  loadCellStore,
+  cellStoreDump,
+  cellStoreGet,
+  cellStoreSet,
+} from '../camera/render/wasm';
 import type { ChunkColdStorage } from './cold-storage';
+
+/**
+ * Rejects a malformed coordinate (NaN, ±Infinity, non-numeric) — a bug
+ * regardless of where the window happens to be, so this throws
+ * unconditionally. See
+ * `.design/completed_tasks/cell-map-overhaul/07-bounds-checking-diagnostics.md`.
+ */
+function assertFiniteCoordinates(x: number, y: number, z: number): void {
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    throw new Error(
+      `[cell-map] Invalid coordinates: (${x}, ${y}, ${z}) — must be finite numbers`,
+    );
+  }
+}
 
 export interface ChunkCoord {
   cx: number;
   cy: number;
   cz: number;
+}
+
+/**
+ * Optional procedural baseline. When omitted (or for any cell/chunk it
+ * doesn't cover), a chunk's baseline is `emptyCell` everywhere — today's
+ * behavior. Must be a pure function of its coordinates for a given
+ * world/seed — same input, same output, every time — so re-materializing a
+ * never-edited chunk after it's evicted produces the same result it had
+ * before. This is a contract on the caller, not something enforced here; see
+ * `.design/completed_tasks/cell-map-overhaul/04-procedural-generation.md`.
+ */
+export interface ChunkGenerator {
+  /**
+   * Generates one cell's packed value at a world cell coordinate. Returning
+   * undefined falls back to `emptyCell` for that cell. Used when
+   * `generateChunk` isn't supplied (looped once per cell), and always used
+   * for single-cell point queries regardless of whether `generateChunk` is
+   * also supplied.
+   */
+  generateCell?: (
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+  ) => number | undefined;
+  /**
+   * Optional bulk variant: generates a whole chunk's packed cells at once, as
+   * a `chunkSize.x*y*z`-length array in x-fastest/y/z-slowest local order
+   * (matching `extractChunk`/`writeChunk`). A performance escape hatch for
+   * whole-chunk materialization (e.g. bulk noise sampling) — preferred over
+   * looping `generateCell` when both are supplied.
+   */
+  generateChunk?: (cx: number, cy: number, cz: number) => Uint32Array;
 }
 
 export interface WindowConfig {
@@ -32,13 +83,25 @@ export interface WindowConfig {
   radius?: { x: number; y: number; z: number };
   /** Packed cell value representing "nothing here" (see cell-map/types.ts's packCell). */
   emptyCell: number;
+  /** Optional procedural baseline (see `ChunkGenerator`). Omit for a purely hand-authored map. */
+  generator?: ChunkGenerator;
+  /**
+   * Whether `setCell` logs a diagnostic when a write resolves to the slower
+   * cold-storage path (outside the current window) — visibility for the
+   * common "coordinate-space mixup" bug, not an error (an off-window write is
+   * fully legitimate). Default true; a game that does frequent, intentional
+   * off-window scripted edits may want to disable it.
+   */
+  warnOnOutOfWindowWrite?: boolean;
 }
 
 export class CellWindow {
   private readonly chunkSize: { x: number; y: number; z: number };
   private readonly radius: { x: number; y: number; z: number };
   private readonly emptyCell: number;
+  private readonly generator: ChunkGenerator | undefined;
   private readonly coldStorage: ChunkColdStorage;
+  private readonly warnOnOutOfWindowWrite: boolean;
   /** Window size in chunks (constant for the session). */
   private readonly gridDims: { x: number; y: number; z: number };
   /** Window size in cells (constant for the session). */
@@ -49,7 +112,9 @@ export class CellWindow {
     this.chunkSize = config.chunkSize;
     this.radius = config.radius ?? { x: 1, y: 1, z: 1 };
     this.emptyCell = config.emptyCell;
+    this.generator = config.generator;
     this.coldStorage = coldStorage;
+    this.warnOnOutOfWindowWrite = config.warnOnOutOfWindowWrite ?? true;
     this.gridDims = {
       x: 2 * this.radius.x + 1,
       y: 2 * this.radius.y + 1,
@@ -102,6 +167,101 @@ export class CellWindow {
       return null;
     }
     return { x: lx, y: ly, z: lz };
+  }
+
+  /**
+   * Answers "what's at this world cell coordinate" without forcing its
+   * containing chunk to materialize into the window or cold storage, and
+   * without triggering whole-chunk generation (`generateChunk`) even when one
+   * is configured — the point-query path always uses `generateCell` only, per
+   * `ChunkGenerator`'s contract. Uses the live WASM store directly when the
+   * coordinate is already resident in the window (cheapest path); otherwise
+   * checks cold storage, then falls back to generation/`emptyCell`.
+   */
+  queryCell(worldX: number, worldY: number, worldZ: number): number {
+    assertFiniteCoordinates(worldX, worldY, worldZ);
+    const local = this.worldToLocal(worldX, worldY, worldZ);
+    if (local) {
+      return cellStoreGet(local.x, local.y, local.z);
+    }
+    const { x: csx, y: csy, z: csz } = this.chunkSize;
+    const worldChunk: ChunkCoord = {
+      cx: Math.floor(worldX / csx),
+      cy: Math.floor(worldY / csy),
+      cz: Math.floor(worldZ / csz),
+    };
+    const stored = this.coldStorage.get(
+      worldChunk.cx,
+      worldChunk.cy,
+      worldChunk.cz,
+    );
+    if (stored) {
+      const localX = worldX - worldChunk.cx * csx;
+      const localY = worldY - worldChunk.cy * csy;
+      const localZ = worldZ - worldChunk.cz * csz;
+      return stored[localZ * csy * csx + localY * csx + localX];
+    }
+    return (
+      this.generator?.generateCell?.(worldX, worldY, worldZ) ?? this.emptyCell
+    );
+  }
+
+  /**
+   * Writes one cell's packed value at a world cell coordinate. Resolves to a
+   * direct WASM store write when the coordinate is in the current window
+   * (the fast path); otherwise decodes the containing chunk (from cold
+   * storage or baseline), patches the cell, and writes the whole chunk back —
+   * a fully supported operation (e.g. a scripted edit to an off-window
+   * region), not an error. If the patched chunk ends up matching baseline
+   * again (e.g. an edit reverted by hand), its cold-storage entry is dropped
+   * rather than kept around needlessly.
+   *
+   * When `warnOnOutOfWindowWrite` is enabled (default), the off-window path
+   * logs a diagnostic naming the coordinate and current window bounds, since
+   * it's also the signature of a coordinate-space mixup bug — visibility, not
+   * blocking. See `.design/completed_tasks/cell-map-overhaul/07-bounds-checking-diagnostics.md`.
+   */
+  setCell(worldX: number, worldY: number, worldZ: number, value: number): void {
+    assertFiniteCoordinates(worldX, worldY, worldZ);
+    const local = this.worldToLocal(worldX, worldY, worldZ);
+    if (local) {
+      cellStoreSet(local.x, local.y, local.z, value);
+      return;
+    }
+
+    if (this.warnOnOutOfWindowWrite) {
+      const origin = this.originChunk;
+      const bounds = origin
+        ? `origin chunk (${origin.cx},${origin.cy},${origin.cz}), size ` +
+          `${this.cellDims.x}x${this.cellDims.y}x${this.cellDims.z}`
+        : 'no window loaded yet';
+      console.warn(
+        `[cell-map] setCell(${worldX}, ${worldY}, ${worldZ}) is outside the ` +
+          `current window (${bounds}) — routed through cold storage (slower ` +
+          `path). If this is unexpected, check your coordinate space (world ` +
+          `vs. chunk vs. window-local) or focus point.`,
+      );
+    }
+
+    const { x: csx, y: csy, z: csz } = this.chunkSize;
+    const worldChunk: ChunkCoord = {
+      cx: Math.floor(worldX / csx),
+      cy: Math.floor(worldY / csy),
+      cz: Math.floor(worldZ / csz),
+    };
+    const cells =
+      this.coldStorage.get(worldChunk.cx, worldChunk.cy, worldChunk.cz) ??
+      this.baselineChunk(worldChunk);
+    const localX = worldX - worldChunk.cx * csx;
+    const localY = worldY - worldChunk.cy * csy;
+    const localZ = worldZ - worldChunk.cz * csz;
+    cells[localZ * csy * csx + localY * csx + localX] = value;
+
+    if (this.matchesBaseline(worldChunk, cells)) {
+      this.coldStorage.delete(worldChunk.cx, worldChunk.cy, worldChunk.cz);
+    } else {
+      this.coldStorage.set(worldChunk.cx, worldChunk.cy, worldChunk.cz, cells);
+    }
   }
 
   /**
@@ -158,7 +318,7 @@ export class CellWindow {
             };
             if (this.isWithin(worldChunk, newOrigin)) continue;
             const cells = this.extractChunk(oldFlat, cx, cy, cz);
-            if (!this.matchesBaseline(cells)) {
+            if (!this.matchesBaseline(worldChunk, cells)) {
               this.coldStorage.set(
                 worldChunk.cx,
                 worldChunk.cy,
@@ -195,7 +355,7 @@ export class CellWindow {
                 worldChunk.cx,
                 worldChunk.cy,
                 worldChunk.cz,
-              ) ?? this.baselineChunk();
+              ) ?? this.baselineChunk(worldChunk);
           }
           this.writeChunk(assembled, cx, cy, cz, cells);
         }
@@ -218,16 +378,55 @@ export class CellWindow {
     );
   }
 
-  private matchesBaseline(cells: Uint32Array): boolean {
+  /**
+   * Whether `cells` (already-extracted, chunk-local order) matches this
+   * chunk's baseline exactly — generated, if a generator covers it, or flat
+   * `emptyCell` otherwise. Only a chunk that DIFFERS from its own baseline
+   * needs a cold-storage entry.
+   */
+  private matchesBaseline(worldChunk: ChunkCoord, cells: Uint32Array): boolean {
+    const baseline = this.baselineChunk(worldChunk);
     for (let i = 0; i < cells.length; i++) {
-      if (cells[i] !== this.emptyCell) return false;
+      if (cells[i] !== baseline[i]) return false;
     }
     return true;
   }
 
-  private baselineChunk(): Uint32Array {
-    const count = this.chunkSize.x * this.chunkSize.y * this.chunkSize.z;
-    return new Uint32Array(count).fill(this.emptyCell);
+  /** This chunk's baseline: generated, if a generator covers it, else flat `emptyCell`. */
+  private baselineChunk(worldChunk: ChunkCoord): Uint32Array {
+    const { x: csx, y: csy, z: csz } = this.chunkSize;
+    const count = csx * csy * csz;
+    if (this.generator?.generateChunk) {
+      const generated = this.generator.generateChunk(
+        worldChunk.cx,
+        worldChunk.cy,
+        worldChunk.cz,
+      );
+      if (generated.length !== count) {
+        throw new Error(
+          `ChunkGenerator.generateChunk returned ${generated.length} cells, expected ${count}`,
+        );
+      }
+      return generated;
+    }
+    const out = new Uint32Array(count);
+    if (this.generator?.generateCell) {
+      const generateCell = this.generator.generateCell;
+      const baseX = worldChunk.cx * csx;
+      const baseY = worldChunk.cy * csy;
+      const baseZ = worldChunk.cz * csz;
+      let idx = 0;
+      for (let z = 0; z < csz; z++) {
+        for (let y = 0; y < csy; y++) {
+          for (let x = 0; x < csx; x++) {
+            out[idx++] =
+              generateCell(baseX + x, baseY + y, baseZ + z) ?? this.emptyCell;
+          }
+        }
+      }
+      return out;
+    }
+    return out.fill(this.emptyCell);
   }
 
   /** Extracts one chunk's cells (at chunk-grid position cx,cy,cz) from a dense

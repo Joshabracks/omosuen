@@ -15,6 +15,23 @@ import {
   cellStoreFlush,
 } from '../camera/render/wasm';
 
+/**
+ * Rejects a malformed coordinate (NaN, ±Infinity, non-numeric) before it
+ * reaches the WASM store or an Array3D. This is a well-formedness check, not
+ * a spatial bounds check — plain range comparisons (`x < 0 || x >= mapSize.x`)
+ * silently let NaN through, since every comparison against NaN is false. A
+ * bad coordinate is a bug regardless of where a shiftable window (once one
+ * exists) happens to be, so this throws unconditionally — see
+ * `.design/completed_tasks/cell-map-overhaul/07-bounds-checking-diagnostics.md`.
+ */
+function assertFiniteCoordinates(x: number, y: number, z: number): void {
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    throw new Error(
+      `[cell-map] Invalid coordinates: (${x}, ${y}, ${z}) — must be finite numbers`,
+    );
+  }
+}
+
 export interface CellMapMethods extends ComponentMethods {
   type: 'cell-map';
 
@@ -169,6 +186,7 @@ export const CellMap: CellMapMethods = {
 
   getCellData: (component: CellMapT, coordinates: Vector3D): CellData => {
     const { x, y, z } = coordinates;
+    assertFiniteCoordinates(x, y, z);
     const { mapSize } = component;
     if (
       x < 0 ||
@@ -188,6 +206,7 @@ export const CellMap: CellMapMethods = {
     coordinates: Vector3D,
     data: CellData,
   ): void => {
+    assertFiniteCoordinates(coordinates.x, coordinates.y, coordinates.z);
     // Clamp values to valid ranges
     const clamped: CellData = {
       materialIndex: Math.max(0, Math.min(0xfff, data.materialIndex)),
@@ -237,6 +256,7 @@ export const CellMap: CellMapMethods = {
     coordinates: Vector3D,
     color: Vector3D,
   ): void => {
+    assertFiniteCoordinates(coordinates.x, coordinates.y, coordinates.z);
     const to255 = (c: number): number =>
       Math.max(0, Math.min(255, Math.round(c * 255)));
     const packed =
@@ -251,6 +271,7 @@ export const CellMap: CellMapMethods = {
     component: CellMapT,
     coordinates: Vector3D,
   ): Vector3D => {
+    assertFiniteCoordinates(coordinates.x, coordinates.y, coordinates.z);
     const packed = component.emissionColorMap.get(coordinates) | 0;
     return new Vector3D(
       ((packed >> 16) & 0xff) / 255,

@@ -179,6 +179,15 @@ const pendingResize = new WeakMap<
 const RESIZE_SETTLE_FRAMES = 10;
 
 /**
+ * Extra chunk-radius requested on X/Z (not Y) beyond what the render volume
+ * itself needs, so a ring of terrain just outside the visible cull volume is
+ * already generated (meshed + GPU-uploaded) before the camera reaches it.
+ * The cull test (`aabbOutsideVolume`) is unchanged, so this buffer ring is
+ * resident but not drawn until the camera actually reaches it.
+ */
+const CHUNK_GENERATION_BUFFER = 1;
+
+/**
  * `computeVisibleWindowRadius`'s target is continuous (zoom/tilt/yaw all feed
  * it) and can cross several integer chunk-radius boundaries in a single zoom
  * gesture, since zoom decays smoothly frame-to-frame rather than jumping.
@@ -642,11 +651,19 @@ export function renderCellMaps(
     // resize replaces the chunk array and marks every chunk dirty. Clamped
     // to maxTerrainLoadDimensions inside CellMap.setWindowRadius itself.
     if (cellMap.autoResizeFromZoom) {
-      const rawTargetRadius = worldHalfExtentToChunkRadius(
+      const renderVolumeRadius = worldHalfExtentToChunkRadius(
         { x: halfIsoX, y: halfIsoY, z: halfIsoZ },
         cellMap.chunkSize,
         cellMap.cellSize,
       );
+      // Request a chunk-generation buffer beyond the render volume on X/Z --
+      // see CHUNK_GENERATION_BUFFER. Applied before the texture-size clamp,
+      // which remains the final authority on what the GPU can actually hold.
+      const rawTargetRadius = {
+        x: renderVolumeRadius.x + CHUNK_GENERATION_BUFFER,
+        y: renderVolumeRadius.y,
+        z: renderVolumeRadius.z + CHUNK_GENERATION_BUFFER,
+      };
       const maxTextureSize = getMaxTextureSize(gl);
       const maxArrayLayers = getMaxArrayTextureLayers(gl);
       const targetRadius = clampRadiusToTextureLimit(

@@ -237,6 +237,8 @@ export interface ChunkMesh {
 
   /** Whether this chunk needs its mesh rebuilt */
   dirty: boolean;
+  /** Whether this chunk's mesh has changed since its last GPU buffer upload */
+  gpuDirty: boolean;
 
   /** Interleaved vertex data: pos3+normal3+origPos3+emission1 (stride 10), or +uv2 (stride 12) */
   vertices: Float32Array | null;

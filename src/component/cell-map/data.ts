@@ -690,7 +690,7 @@ export function generateDefaultCubeMesh(): Mesh {
   ]);
 
   // Indices: 6 faces × 2 triangles × 3 vertices = 36 indices
-  /* eslint-disable prettier/prettier */
+
   const indices = new Uint16Array([
     0,
     1,
@@ -732,7 +732,7 @@ export function generateDefaultCubeMesh(): Mesh {
 
   return { vertices, uvs, indices };
 }
-/* eslint-enable prettier/prettier */
+
 /**
  * Property allowlist for CellMap component
  * Defines which properties can be accessed directly on the component
@@ -782,6 +782,7 @@ export function initChunks(cgs: {
           cy,
           cz,
           dirty: true,
+          gpuDirty: true,
           vertices: null,
           stride: 9,
           indices: null,

@@ -841,7 +841,13 @@ export function renderCellMaps(
             };
             if (aabbOutsideVolume(chunkMin, chunkMax, volumeAABB)) continue;
 
-            // Upload GPU buffers if needed
+            // Upload GPU buffers only when the CPU-side mesh has actually
+            // changed since the last upload -- gpuDirty is set whenever
+            // rebuildDirtyChunks (re)meshes a chunk, and cleared right after
+            // the upload below. The binds themselves stay unconditional:
+            // vertexAttribPointer/drawElements further down read whatever's
+            // currently bound, so they must be set every time this chunk is
+            // drawn regardless of whether new data needs uploading.
             if (!chunk.glVertexBuffer) {
               chunk.glVertexBuffer = gl.createBuffer();
             }
@@ -849,17 +855,17 @@ export function renderCellMaps(
               chunk.glIndexBuffer = gl.createBuffer();
             }
 
-            // Upload vertex data (interleaved pos3+normal3)
             gl.bindBuffer(gl.ARRAY_BUFFER, chunk.glVertexBuffer);
-            gl.bufferData(gl.ARRAY_BUFFER, chunk.vertices, gl.STATIC_DRAW);
-
-            // Upload index data
             gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, chunk.glIndexBuffer);
-            gl.bufferData(
-              gl.ELEMENT_ARRAY_BUFFER,
-              chunk.indices,
-              gl.STATIC_DRAW,
-            );
+            if (chunk.gpuDirty) {
+              gl.bufferData(gl.ARRAY_BUFFER, chunk.vertices, gl.STATIC_DRAW);
+              gl.bufferData(
+                gl.ELEMENT_ARRAY_BUFFER,
+                chunk.indices,
+                gl.STATIC_DRAW,
+              );
+              chunk.gpuDirty = false;
+            }
 
             // Interleaved layout: pos3+normal3+origPos3+emission1 (stride 10), or +uv2
             // (stride 12 when the cell-map has UV custom shapes). emission is always

@@ -78,6 +78,7 @@ export function rebuildDirtyChunks(cellMap: CellMapT): void {
     chunk.drawRanges = result.ranges;
     chunk.faceCount = result.indices ? result.indices.length / 6 : 0;
     chunk.dirty = false;
+    chunk.gpuDirty = true;
   }
 }
 

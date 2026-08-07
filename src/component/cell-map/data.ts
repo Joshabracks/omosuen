@@ -100,6 +100,42 @@ export let cmRevealExempt: boolean = false;
  */
 export let cmAutoFocusFromCamera: boolean = true;
 /**
+ * When true, the render loop drives `CellMap.setWindowRadius` from the
+ * camera's zoom level every frame, growing the window when zoomed out (so
+ * the resident/generated extent keeps pace with what's visible on screen)
+ * and shrinking it back when zoomed in. Companion to `autoFocusFromCamera`
+ * and defaulted the same way (see `builder()`/`builderGenerative()`/
+ * `deserialize()`) — off for a legacy map using the auto-computed coverage
+ * radius, since that window is already sized to hold the whole map. See
+ * `maxWindowRadius` for the growth cap.
+ */
+export let cmAutoResizeFromZoom: boolean = true;
+/**
+ * Safety cap on how far `autoResizeFromZoom` (or a direct
+ * `CellMap.setWindowRadius` call) is ever allowed to grow the window's
+ * radius. A resize's assemble step can call `generateCell` for every newly-
+ * exposed chunk synchronously in one frame, so this is deliberately modest —
+ * see `.design/cell-map-overhaul` (runtime window resizing).
+ */
+export let cmMaxWindowRadius: { x: number; y: number; z: number } = {
+  x: 3,
+  y: 2,
+  z: 3,
+};
+/**
+ * Padding, in chunks, added beyond the bare viewport-at-current-zoom extent
+ * when `autoResizeFromZoom` computes a residency target and when the render
+ * loop's per-chunk draw cull computes its view cuboid — an intentional,
+ * developer-facing "how far should the world render" setting, independent of
+ * viewport shape/orbit yaw. See `.design/cell-map-overhaul` (render-distance
+ * cuboid + per-chunk cull).
+ */
+export let cmRenderDistance: { x: number; y: number; z: number } = {
+  x: 1,
+  y: 1,
+  z: 1,
+};
+/**
  * Owns the shiftable hot window's origin and orchestrates shifts (evict/
  * assemble/reload). See `.design/cell-map-overhaul/08-live-construction-and-
  * ownership.md`. `undefined` until first construction.
@@ -176,6 +212,9 @@ export function resetCellMapState(): void {
   cmChunkGridSize = { x: 0, y: 0, z: 0 };
   cmRevealExempt = false;
   cmAutoFocusFromCamera = true;
+  cmAutoResizeFromZoom = true;
+  cmMaxWindowRadius = { x: 3, y: 2, z: 3 };
+  cmRenderDistance = { x: 1, y: 1, z: 1 };
   cmWindow = undefined;
   cmColdStorage = undefined;
 }
@@ -318,6 +357,24 @@ function makeCellMapInstance(name: string): CellMapT {
     set autoFocusFromCamera(v) {
       cmAutoFocusFromCamera = v;
     },
+    get autoResizeFromZoom() {
+      return cmAutoResizeFromZoom;
+    },
+    set autoResizeFromZoom(v) {
+      cmAutoResizeFromZoom = v;
+    },
+    get maxWindowRadius() {
+      return cmMaxWindowRadius;
+    },
+    set maxWindowRadius(v) {
+      cmMaxWindowRadius = v;
+    },
+    get renderDistance() {
+      return cmRenderDistance;
+    },
+    set renderDistance(v) {
+      cmRenderDistance = v;
+    },
   } as CellMapT;
 }
 
@@ -455,6 +512,35 @@ export interface CellMapOptions extends ComponentOptions {
    * `.design/cell-map-overhaul/11-focus-driving.md`.
    */
   autoFocusFromCamera?: boolean;
+
+  /**
+   * When true, the render loop drives the window's radius from the camera's
+   * zoom level every frame, growing it when zoomed out and shrinking it back
+   * when zoomed in (capped by `maxWindowRadius`). Companion to
+   * `autoFocusFromCamera`, defaulted the same way (off for a legacy map
+   * using the auto-computed coverage radius, on otherwise). Set false to
+   * drive it explicitly via `CellMap.setWindowRadius` instead.
+   */
+  autoResizeFromZoom?: boolean;
+
+  /**
+   * Safety cap on how far `autoResizeFromZoom` (or a direct
+   * `CellMap.setWindowRadius` call) is ever allowed to grow the window's
+   * radius, in chunks per axis. Defaults to the constructed `windowRadius`
+   * plus `{x:2, y:1, z:2}`. Deliberately modest — a resize's assemble step
+   * can call `generateCell` for every newly-exposed chunk synchronously in
+   * one frame.
+   */
+  maxWindowRadius?: { x: number; y: number; z: number };
+
+  /**
+   * Padding, in chunks, added beyond the bare viewport-at-current-zoom extent
+   * when `autoResizeFromZoom` computes a residency target and when the
+   * render loop's per-chunk draw cull computes its view cuboid — an
+   * intentional, developer-facing "how far should the world render" setting.
+   * Defaults to `{x:1, y:1, z:1}`.
+   */
+  renderDistance?: { x: number; y: number; z: number };
 }
 
 export interface CellMapT extends ComponentData {
@@ -511,6 +597,15 @@ export interface CellMapT extends ComponentData {
 
   /** See `CellMapOptions.autoFocusFromCamera`. */
   autoFocusFromCamera: boolean;
+
+  /** See `CellMapOptions.autoResizeFromZoom`. */
+  autoResizeFromZoom: boolean;
+
+  /** See `CellMapOptions.maxWindowRadius`. */
+  maxWindowRadius: { x: number; y: number; z: number };
+
+  /** See `CellMapOptions.renderDistance`. */
+  renderDistance: { x: number; y: number; z: number };
 }
 
 /**
@@ -623,12 +718,19 @@ export const PROPERTY_ALLOWLIST = [
   'normalSmoothing',
   'revealExempt',
   'autoFocusFromCamera',
+  'autoResizeFromZoom',
+  'maxWindowRadius',
+  'renderDistance',
 ];
 
 /**
  * Initializes chunk array with all chunks marked dirty.
  */
-function initChunks(cgs: { x: number; y: number; z: number }): ChunkMesh[] {
+export function initChunks(cgs: {
+  x: number;
+  y: number;
+  z: number;
+}): ChunkMesh[] {
   const result: ChunkMesh[] = [];
   for (let cz = 0; cz < cgs.z; cz++) {
     for (let cy = 0; cy < cgs.y; cy++) {
@@ -1005,6 +1107,13 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   cmChunks = initChunks(window.gridDimensions);
   cmRevealExempt = options.revealExempt ?? false;
   cmAutoFocusFromCamera = options.autoFocusFromCamera ?? !usingCoverageRadius;
+  cmAutoResizeFromZoom = options.autoResizeFromZoom ?? cmAutoFocusFromCamera;
+  cmMaxWindowRadius = options.maxWindowRadius ?? {
+    x: radius.x + 2,
+    y: radius.y + 1,
+    z: radius.z + 2,
+  };
+  cmRenderDistance = options.renderDistance ?? { x: 1, y: 1, z: 1 };
   cmLive = true;
 
   return makeCellMapInstance(options.name);
@@ -1112,6 +1221,13 @@ function builderGenerative(options: CellMapOptions): CellMapT {
   cmChunks = initChunks(window.gridDimensions);
   cmRevealExempt = options.revealExempt ?? false;
   cmAutoFocusFromCamera = options.autoFocusFromCamera ?? true;
+  cmAutoResizeFromZoom = options.autoResizeFromZoom ?? cmAutoFocusFromCamera;
+  cmMaxWindowRadius = options.maxWindowRadius ?? {
+    x: radius.x + 2,
+    y: radius.y + 1,
+    z: radius.z + 2,
+  };
+  cmRenderDistance = options.renderDistance ?? { x: 1, y: 1, z: 1 };
   cmLive = true;
 
   return makeCellMapInstance(options.name);
@@ -1433,6 +1549,9 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   // isn't part of the serialized format) -- see the matching comment in
   // builder()'s legacy branch for why that means auto-focus must default off.
   cmAutoFocusFromCamera = false;
+  cmAutoResizeFromZoom = false;
+  cmMaxWindowRadius = { x: radius.x + 2, y: radius.y + 1, z: radius.z + 2 };
+  cmRenderDistance = { x: 1, y: 1, z: 1 };
   cmLive = true;
 
   return {

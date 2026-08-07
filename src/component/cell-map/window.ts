@@ -97,28 +97,29 @@ export interface WindowConfig {
 
 export class CellWindow {
   private readonly chunkSize: { x: number; y: number; z: number };
-  private readonly radius: { x: number; y: number; z: number };
+  /** Padding radius in chunks, per axis. Mutable via `resize()`. */
+  private windowRadius: { x: number; y: number; z: number };
   private readonly emptyCell: number;
   private readonly generator: ChunkGenerator | undefined;
   private readonly coldStorage: ChunkColdStorage;
   private readonly warnOnOutOfWindowWrite: boolean;
-  /** Window size in chunks (constant for the session). */
-  private readonly gridDims: { x: number; y: number; z: number };
-  /** Window size in cells (constant for the session). */
-  private readonly cellDims: { x: number; y: number; z: number };
+  /** Window size in chunks. Mutable via `resize()`, otherwise constant for the session. */
+  private gridDims: { x: number; y: number; z: number };
+  /** Window size in cells. Mutable via `resize()`, otherwise constant for the session. */
+  private cellDims: { x: number; y: number; z: number };
   private originChunk: ChunkCoord | null = null;
 
   constructor(config: WindowConfig, coldStorage: ChunkColdStorage) {
     this.chunkSize = config.chunkSize;
-    this.radius = config.radius ?? { x: 1, y: 1, z: 1 };
+    this.windowRadius = config.radius ?? { x: 1, y: 1, z: 1 };
     this.emptyCell = config.emptyCell;
     this.generator = config.generator;
     this.coldStorage = coldStorage;
     this.warnOnOutOfWindowWrite = config.warnOnOutOfWindowWrite ?? true;
     this.gridDims = {
-      x: 2 * this.radius.x + 1,
-      y: 2 * this.radius.y + 1,
-      z: 2 * this.radius.z + 1,
+      x: 2 * this.windowRadius.x + 1,
+      y: 2 * this.windowRadius.y + 1,
+      z: 2 * this.windowRadius.z + 1,
     };
     this.cellDims = {
       x: this.gridDims.x * this.chunkSize.x,
@@ -140,6 +141,11 @@ export class CellWindow {
   /** Window size in chunks (constant for the session). */
   get gridDimensions(): { x: number; y: number; z: number } {
     return this.gridDims;
+  }
+
+  /** Current padding radius in chunks, per axis. See `resize()`. */
+  get radius(): { x: number; y: number; z: number } {
+    return this.windowRadius;
   }
 
   /**
@@ -281,9 +287,9 @@ export class CellWindow {
       cz: Math.floor(cellZ / this.chunkSize.z),
     };
     const desiredOrigin: ChunkCoord = {
-      cx: focusChunk.cx - this.radius.x,
-      cy: focusChunk.cy - this.radius.y,
-      cz: focusChunk.cz - this.radius.z,
+      cx: focusChunk.cx - this.windowRadius.x,
+      cy: focusChunk.cy - this.windowRadius.y,
+      cz: focusChunk.cz - this.windowRadius.z,
     };
     if (
       this.originChunk &&
@@ -293,13 +299,82 @@ export class CellWindow {
     ) {
       return false;
     }
-    this.shiftTo(desiredOrigin);
+    this.reassemble(desiredOrigin, this.gridDims, this.cellDims);
     return true;
   }
 
-  private shiftTo(newOrigin: ChunkCoord): void {
+  /**
+   * Grows or shrinks the window's padding radius, reassembling its contents
+   * around the current focus point (derived from `origin + radius`, or
+   * `(0,0,0)` if `setFocus` has never run) at the new size — same evict/
+   * reuse-overlap/generate mechanics as a normal shift, just with a
+   * different-sized destination. No-ops (`false`) if `newRadius` is
+   * unchanged. See `.design/cell-map-overhaul` (runtime window resizing).
+   */
+  resize(newRadius: { x: number; y: number; z: number }): boolean {
+    if (
+      !Number.isInteger(newRadius.x) ||
+      newRadius.x < 0 ||
+      !Number.isInteger(newRadius.y) ||
+      newRadius.y < 0 ||
+      !Number.isInteger(newRadius.z) ||
+      newRadius.z < 0
+    ) {
+      throw new Error(
+        `[cell-map] Invalid window radius (${newRadius.x}, ${newRadius.y}, ${newRadius.z}) ` +
+          `— must be non-negative integers`,
+      );
+    }
+    if (
+      newRadius.x === this.windowRadius.x &&
+      newRadius.y === this.windowRadius.y &&
+      newRadius.z === this.windowRadius.z
+    ) {
+      return false;
+    }
+    const focusChunk: ChunkCoord = this.originChunk
+      ? {
+          cx: this.originChunk.cx + this.windowRadius.x,
+          cy: this.originChunk.cy + this.windowRadius.y,
+          cz: this.originChunk.cz + this.windowRadius.z,
+        }
+      : { cx: 0, cy: 0, cz: 0 };
+    const newGridDims = {
+      x: 2 * newRadius.x + 1,
+      y: 2 * newRadius.y + 1,
+      z: 2 * newRadius.z + 1,
+    };
+    const newCellDims = {
+      x: newGridDims.x * this.chunkSize.x,
+      y: newGridDims.y * this.chunkSize.y,
+      z: newGridDims.z * this.chunkSize.z,
+    };
+    const newOrigin: ChunkCoord = {
+      cx: focusChunk.cx - newRadius.x,
+      cy: focusChunk.cy - newRadius.y,
+      cz: focusChunk.cz - newRadius.z,
+    };
+    this.reassemble(newOrigin, newGridDims, newCellDims);
+    this.windowRadius = newRadius;
+    return true;
+  }
+
+  /**
+   * Evicts/reuses/generates the window's contents for `newOrigin` at
+   * `newGridDims`/`newCellDims` (which may differ in size from the current
+   * window, for `resize()`, or match it, for a same-size `setFocus` shift)
+   * and reloads the WASM store. Shared by both — the WASM `CellStore` doesn't
+   * distinguish "shift" from "resize"; it just holds whatever's loaded.
+   */
+  private reassemble(
+    newOrigin: ChunkCoord,
+    newGridDims: { x: number; y: number; z: number },
+    newCellDims: { x: number; y: number; z: number },
+  ): void {
     const oldOrigin = this.originChunk;
-    const { x: dimX, y: dimY, z: dimZ } = this.cellDims;
+    const oldGridDims = this.gridDims;
+    const oldCellDims = this.cellDims;
+    const { x: dimX, y: dimY, z: dimZ } = newCellDims;
     const total = dimX * dimY * dimZ;
 
     // Dump the current window's contents (nothing to dump before the first load).
@@ -308,16 +383,16 @@ export class CellWindow {
     // Evict chunks that fall outside the new window. Ones that still match
     // baseline are simply dropped — nothing to store.
     if (oldOrigin && oldFlat) {
-      for (let cz = 0; cz < this.gridDims.z; cz++) {
-        for (let cy = 0; cy < this.gridDims.y; cy++) {
-          for (let cx = 0; cx < this.gridDims.x; cx++) {
+      for (let cz = 0; cz < oldGridDims.z; cz++) {
+        for (let cy = 0; cy < oldGridDims.y; cy++) {
+          for (let cx = 0; cx < oldGridDims.x; cx++) {
             const worldChunk = {
               cx: oldOrigin.cx + cx,
               cy: oldOrigin.cy + cy,
               cz: oldOrigin.cz + cz,
             };
-            if (this.isWithin(worldChunk, newOrigin)) continue;
-            const cells = this.extractChunk(oldFlat, cx, cy, cz);
+            if (this.isWithin(worldChunk, newOrigin, newGridDims)) continue;
+            const cells = this.extractChunk(oldFlat, cx, cy, cz, oldCellDims);
             if (!this.matchesBaseline(worldChunk, cells)) {
               this.coldStorage.set(
                 worldChunk.cx,
@@ -333,21 +408,26 @@ export class CellWindow {
 
     // Assemble the new window's contents.
     const assembled = new Uint32Array(total);
-    for (let cz = 0; cz < this.gridDims.z; cz++) {
-      for (let cy = 0; cy < this.gridDims.y; cy++) {
-        for (let cx = 0; cx < this.gridDims.x; cx++) {
+    for (let cz = 0; cz < newGridDims.z; cz++) {
+      for (let cy = 0; cy < newGridDims.y; cy++) {
+        for (let cx = 0; cx < newGridDims.x; cx++) {
           const worldChunk = {
             cx: newOrigin.cx + cx,
             cy: newOrigin.cy + cy,
             cz: newOrigin.cz + cz,
           };
           let cells: Uint32Array;
-          if (oldOrigin && oldFlat && this.isWithin(worldChunk, oldOrigin)) {
+          if (
+            oldOrigin &&
+            oldFlat &&
+            this.isWithin(worldChunk, oldOrigin, oldGridDims)
+          ) {
             cells = this.extractChunk(
               oldFlat,
               worldChunk.cx - oldOrigin.cx,
               worldChunk.cy - oldOrigin.cy,
               worldChunk.cz - oldOrigin.cz,
+              oldCellDims,
             );
           } else {
             cells =
@@ -357,24 +437,30 @@ export class CellWindow {
                 worldChunk.cz,
               ) ?? this.baselineChunk(worldChunk);
           }
-          this.writeChunk(assembled, cx, cy, cz, cells);
+          this.writeChunk(assembled, cx, cy, cz, cells, newCellDims);
         }
       }
     }
 
     loadCellStore(assembled, total, dimX, dimY, dimZ);
     this.originChunk = newOrigin;
+    this.gridDims = newGridDims;
+    this.cellDims = newCellDims;
   }
 
-  /** Whether `worldChunk` falls inside the grid-dims-sized window starting at `origin`. */
-  private isWithin(worldChunk: ChunkCoord, origin: ChunkCoord): boolean {
+  /** Whether `worldChunk` falls inside the `gridDims`-sized window starting at `origin`. */
+  private isWithin(
+    worldChunk: ChunkCoord,
+    origin: ChunkCoord,
+    gridDims: { x: number; y: number; z: number },
+  ): boolean {
     return (
       worldChunk.cx >= origin.cx &&
-      worldChunk.cx < origin.cx + this.gridDims.x &&
+      worldChunk.cx < origin.cx + gridDims.x &&
       worldChunk.cy >= origin.cy &&
-      worldChunk.cy < origin.cy + this.gridDims.y &&
+      worldChunk.cy < origin.cy + gridDims.y &&
       worldChunk.cz >= origin.cz &&
-      worldChunk.cz < origin.cz + this.gridDims.z
+      worldChunk.cz < origin.cz + gridDims.z
     );
   }
 
@@ -430,15 +516,18 @@ export class CellWindow {
   }
 
   /** Extracts one chunk's cells (at chunk-grid position cx,cy,cz) from a dense
-   *  window-sized flat array, in chunk-local (0..chunkSize) order. */
+   *  flat array of the given cell dims, in chunk-local (0..chunkSize) order.
+   *  `dims` is explicit (not `this.cellDims`) because during a resize the
+   *  source flat array may be the OLD window's size, not the current one. */
   private extractChunk(
     flat: Uint32Array,
     cx: number,
     cy: number,
     cz: number,
+    dims: { x: number; y: number },
   ): Uint32Array {
     const { x: csx, y: csy, z: csz } = this.chunkSize;
-    const { x: dimX, y: dimY } = this.cellDims;
+    const { x: dimX, y: dimY } = dims;
     const out = new Uint32Array(csx * csy * csz);
     const baseX = cx * csx;
     const baseY = cy * csy;
@@ -456,16 +545,19 @@ export class CellWindow {
     return out;
   }
 
-  /** Writes one chunk's cells into a dense window-sized flat array at chunk-grid position cx,cy,cz. */
+  /** Writes one chunk's cells into a dense flat array of the given cell dims
+   *  at chunk-grid position cx,cy,cz. `dims` is explicit for the same reason
+   *  as `extractChunk`'s — the destination during a resize is the NEW size. */
   private writeChunk(
     flat: Uint32Array,
     cx: number,
     cy: number,
     cz: number,
     cells: Uint32Array,
+    dims: { x: number; y: number },
   ): void {
     const { x: csx, y: csy, z: csz } = this.chunkSize;
-    const { x: dimX, y: dimY } = this.cellDims;
+    const { x: dimX, y: dimY } = dims;
     const baseX = cx * csx;
     const baseY = cy * csy;
     const baseZ = cz * csz;

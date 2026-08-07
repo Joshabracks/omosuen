@@ -1,6 +1,6 @@
 import { ComponentMethods } from '../types';
-import { Vector3D } from '../../math';
-import { CellMapT, resetCellMapState } from './data';
+import { Array3D, Array3Di, Vector3D } from '../../math';
+import { CellMapT, initChunks, resetCellMapState } from './data';
 import { CellData, Material, Mesh, packCell, unpackCell } from './types';
 import type { RaycastHit, SurfaceHit, RaycastOptions } from './types';
 import { markChunksDirty } from './mesh-builder';
@@ -150,6 +150,21 @@ export interface CellMapMethods extends ComponentMethods {
     worldY: number,
     worldZ: number,
   ) => void;
+
+  /**
+   * Grows or shrinks the resident window's padding radius (in chunks per
+   * axis), clamped to `component.maxWindowRadius`, and re-centers it on the
+   * current focus point. Rebuilds the chunk array (and the secondary dense
+   * maps sized to the window — `emissionColorMap`/`smoothingWeights`) and
+   * marks everything dirty when a resize actually happens. Called once per
+   * frame by the render loop when `autoResizeFromZoom` is enabled; also
+   * public for games that want explicit control instead. Returns whether a
+   * resize happened.
+   */
+  setWindowRadius: (
+    component: CellMapT,
+    radius: { x: number; y: number; z: number },
+  ) => boolean;
 
   /**
    * Cast a ray against the cell-map's ACTUAL rendered surface (smoothing + custom
@@ -372,6 +387,48 @@ export const CellMap: CellMapMethods = {
     if (shifted) {
       for (const chunk of component.chunks) chunk.dirty = true;
     }
+  },
+
+  setWindowRadius: (
+    component: CellMapT,
+    radius: { x: number; y: number; z: number },
+  ): boolean => {
+    const max = component.maxWindowRadius;
+    const clamped = {
+      x: Math.min(radius.x, max.x),
+      y: Math.min(radius.y, max.y),
+      z: Math.min(radius.z, max.z),
+    };
+    const resized = component.window.resize(clamped);
+    if (!resized) return false;
+
+    component.mapSize = new Vector3D(
+      component.window.cellDimensions.x,
+      component.window.cellDimensions.y,
+      component.window.cellDimensions.z,
+    );
+    component.chunkGridSize = component.window.gridDimensions;
+    component.chunks = initChunks(component.window.gridDimensions);
+    component.needsGPUUpdate = true;
+
+    // The secondary dense maps (emissionColorMap/smoothingWeights) are sized
+    // to the window and have no per-chunk windowing of their own yet (doc 13,
+    // deferred) -- reallocate them to the new size so nothing downstream reads
+    // a stale length against the new mapSize. This resets any per-cell
+    // emission-color edits made at the old size (a known, accepted
+    // limitation); the uniform smoothing weight is preserved by reading it
+    // back before reallocating.
+    component.emissionColorMap = new Array3D<number>(component.mapSize, 0);
+    component.emissionColorDirty = true;
+    const uniformWeight = component.smoothingWeights.expand().value[0] ?? 8;
+    component.smoothingWeights = new Array3Di(
+      new Array3D<number>(component.mapSize, uniformWeight),
+      8,
+      [4, 4],
+      'clamp',
+    );
+
+    return true;
   },
 
   raycast: (

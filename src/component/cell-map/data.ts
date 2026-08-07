@@ -113,14 +113,17 @@ export let cmAutoResizeFromZoom: boolean = true;
 /**
  * Safety cap on how far `autoResizeFromZoom` (or a direct
  * `CellMap.setWindowRadius` call) is ever allowed to grow the window's
- * radius. A resize's assemble step can call `generateCell` for every newly-
- * exposed chunk synchronously in one frame, so this is deliberately modest —
- * see `.design/cell-map-overhaul` (runtime window resizing).
+ * radius, expressed as a maximum world-space radius per axis (NOT chunks --
+ * converted to a chunk radius internally via `CellMap.setWindowRadius`,
+ * floor-divided by `chunkSize * cellSize`). A resize's assemble step can call
+ * `generateCell` for every newly-exposed chunk synchronously in one frame,
+ * so this is deliberately modest — see `.design/cell-map-overhaul` (runtime
+ * window resizing).
  */
-export let cmMaxWindowRadius: { x: number; y: number; z: number } = {
-  x: 3,
-  y: 2,
-  z: 3,
+export let cmMaxTerrainLoadDimensions: { x: number; y: number; z: number } = {
+  x: 512,
+  y: 512,
+  z: 512,
 };
 /**
  * Padding, in chunks, added beyond the bare viewport-at-current-zoom extent
@@ -134,6 +137,19 @@ export let cmRenderDistance: { x: number; y: number; z: number } = {
   x: 1,
   y: 1,
   z: 1,
+};
+/**
+ * Diagnostic-only additive padding, in WORLD UNITS (not chunks), added
+ * directly to the render loop's already-computed render-volume half-extents
+ * (halfIsoX/halfIsoY/halfIsoZ, one per world axis) -- a raw "just add this
+ * many units" knob, separate from `renderDistance`'s chunk-based semantics,
+ * meant for live tuning via a debug UI while diagnosing the render volume.
+ * Default `{0,0,0}` is a no-op.
+ */
+export let cmFrustumPadding: { x: number; y: number; z: number } = {
+  x: 0,
+  y: 0,
+  z: 0,
 };
 /**
  * Owns the shiftable hot window's origin and orchestrates shifts (evict/
@@ -213,8 +229,9 @@ export function resetCellMapState(): void {
   cmRevealExempt = false;
   cmAutoFocusFromCamera = true;
   cmAutoResizeFromZoom = true;
-  cmMaxWindowRadius = { x: 3, y: 2, z: 3 };
+  cmMaxTerrainLoadDimensions = { x: 512, y: 512, z: 512 };
   cmRenderDistance = { x: 1, y: 1, z: 1 };
+  cmFrustumPadding = { x: 0, y: 0, z: 0 };
   cmWindow = undefined;
   cmColdStorage = undefined;
 }
@@ -363,17 +380,23 @@ function makeCellMapInstance(name: string): CellMapT {
     set autoResizeFromZoom(v) {
       cmAutoResizeFromZoom = v;
     },
-    get maxWindowRadius() {
-      return cmMaxWindowRadius;
+    get maxTerrainLoadDimensions() {
+      return cmMaxTerrainLoadDimensions;
     },
-    set maxWindowRadius(v) {
-      cmMaxWindowRadius = v;
+    set maxTerrainLoadDimensions(v) {
+      cmMaxTerrainLoadDimensions = v;
     },
     get renderDistance() {
       return cmRenderDistance;
     },
     set renderDistance(v) {
       cmRenderDistance = v;
+    },
+    get frustumPadding() {
+      return cmFrustumPadding;
+    },
+    set frustumPadding(v) {
+      cmFrustumPadding = v;
     },
   } as CellMapT;
 }
@@ -526,21 +549,36 @@ export interface CellMapOptions extends ComponentOptions {
   /**
    * Safety cap on how far `autoResizeFromZoom` (or a direct
    * `CellMap.setWindowRadius` call) is ever allowed to grow the window's
-   * radius, in chunks per axis. Defaults to the constructed `windowRadius`
-   * plus `{x:2, y:1, z:2}`. Deliberately modest — a resize's assemble step
+   * radius, as a maximum world-space radius per axis (not chunks — converted
+   * internally by floor-dividing by `chunkSize * cellSize`). Defaults to
+   * `{x:512, y:512, z:512}`. Deliberately modest — a resize's assemble step
    * can call `generateCell` for every newly-exposed chunk synchronously in
    * one frame.
    */
-  maxWindowRadius?: { x: number; y: number; z: number };
+  maxTerrainLoadDimensions?: { x: number; y: number; z: number };
 
   /**
-   * Padding, in chunks, added beyond the bare viewport-at-current-zoom extent
-   * when `autoResizeFromZoom` computes a residency target and when the
-   * render loop's per-chunk draw cull computes its view cuboid — an
+   * Per-world-axis render distance, in chunks: the render loop's render
+   * volume is a plain axis-aligned world-space box centered on the camera,
+   * with independent half-extents on X/Y/Z (`renderDistance.axis *
+   * chunkSize.axis * cellSize.axis`, plus `frustumPadding.axis`) — NOT
+   * derived from the viewport, zoom, or camera rotation, so the same
+   * settings render the same volume no matter how the camera is oriented.
+   * Used both when `autoResizeFromZoom` computes a residency target and when
+   * the render loop's per-chunk draw cull computes its render volume — an
    * intentional, developer-facing "how far should the world render" setting.
    * Defaults to `{x:1, y:1, z:1}`.
    */
   renderDistance?: { x: number; y: number; z: number };
+
+  /**
+   * Diagnostic-only additive padding, in world units (not chunks), added
+   * directly to the render loop's render-volume half-extents (halfIsoX/
+   * halfIsoY/halfIsoZ, one per world axis) — a raw tuning knob, separate from
+   * `renderDistance`'s chunk-based semantics. Defaults to `{x:0, y:0, z:0}`
+   * (no-op).
+   */
+  frustumPadding?: { x: number; y: number; z: number };
 }
 
 export interface CellMapT extends ComponentData {
@@ -601,11 +639,14 @@ export interface CellMapT extends ComponentData {
   /** See `CellMapOptions.autoResizeFromZoom`. */
   autoResizeFromZoom: boolean;
 
-  /** See `CellMapOptions.maxWindowRadius`. */
-  maxWindowRadius: { x: number; y: number; z: number };
+  /** See `CellMapOptions.maxTerrainLoadDimensions`. */
+  maxTerrainLoadDimensions: { x: number; y: number; z: number };
 
   /** See `CellMapOptions.renderDistance`. */
   renderDistance: { x: number; y: number; z: number };
+
+  /** See `CellMapOptions.frustumPadding`. */
+  frustumPadding: { x: number; y: number; z: number };
 }
 
 /**
@@ -719,8 +760,9 @@ export const PROPERTY_ALLOWLIST = [
   'revealExempt',
   'autoFocusFromCamera',
   'autoResizeFromZoom',
-  'maxWindowRadius',
+  'maxTerrainLoadDimensions',
   'renderDistance',
+  'frustumPadding',
 ];
 
 /**
@@ -1108,12 +1150,13 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   cmRevealExempt = options.revealExempt ?? false;
   cmAutoFocusFromCamera = options.autoFocusFromCamera ?? !usingCoverageRadius;
   cmAutoResizeFromZoom = options.autoResizeFromZoom ?? cmAutoFocusFromCamera;
-  cmMaxWindowRadius = options.maxWindowRadius ?? {
-    x: radius.x + 2,
-    y: radius.y + 1,
-    z: radius.z + 2,
+  cmMaxTerrainLoadDimensions = options.maxTerrainLoadDimensions ?? {
+    x: 512,
+    y: 512,
+    z: 512,
   };
   cmRenderDistance = options.renderDistance ?? { x: 1, y: 1, z: 1 };
+  cmFrustumPadding = options.frustumPadding ?? { x: 0, y: 0, z: 0 };
   cmLive = true;
 
   return makeCellMapInstance(options.name);
@@ -1222,12 +1265,13 @@ function builderGenerative(options: CellMapOptions): CellMapT {
   cmRevealExempt = options.revealExempt ?? false;
   cmAutoFocusFromCamera = options.autoFocusFromCamera ?? true;
   cmAutoResizeFromZoom = options.autoResizeFromZoom ?? cmAutoFocusFromCamera;
-  cmMaxWindowRadius = options.maxWindowRadius ?? {
-    x: radius.x + 2,
-    y: radius.y + 1,
-    z: radius.z + 2,
+  cmMaxTerrainLoadDimensions = options.maxTerrainLoadDimensions ?? {
+    x: 512,
+    y: 512,
+    z: 512,
   };
   cmRenderDistance = options.renderDistance ?? { x: 1, y: 1, z: 1 };
+  cmFrustumPadding = options.frustumPadding ?? { x: 0, y: 0, z: 0 };
   cmLive = true;
 
   return makeCellMapInstance(options.name);
@@ -1550,8 +1594,9 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   // builder()'s legacy branch for why that means auto-focus must default off.
   cmAutoFocusFromCamera = false;
   cmAutoResizeFromZoom = false;
-  cmMaxWindowRadius = { x: radius.x + 2, y: radius.y + 1, z: radius.z + 2 };
+  cmMaxTerrainLoadDimensions = { x: 512, y: 512, z: 512 };
   cmRenderDistance = { x: 1, y: 1, z: 1 };
+  cmFrustumPadding = { x: 0, y: 0, z: 0 };
   cmLive = true;
 
   return {

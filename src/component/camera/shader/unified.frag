@@ -1,4 +1,7 @@
+#version 300 es
 precision mediump float;
+
+out vec4 fragColor;
 
     // Render mode selector
 uniform lowp int u_renderMode;  // 0 = cells, 1 = sprites
@@ -46,7 +49,7 @@ uniform vec2 u_emissionSizeXY;
     // Per-cell emission (highlight) color: RGB texture keyed by cell coordinate
     // (Mode 0). Added flat, independent of v_emission. Default black = no-op.
 uniform bool u_hasCellEmissionColor;
-uniform sampler2D u_cellEmissionColor;
+uniform highp sampler2DArray u_cellEmissionColor;  // layer=z
 
     // Optional per-vertex UV mode (custom shapes): sample the base frame by v_uv
     // instead of triplanar. u_useMeshUV is set per draw range.
@@ -79,7 +82,7 @@ uniform vec4 u_silhouetteColor;
 
     // Per-fragment line-of-sight raycasting (both modes)
 uniform bool u_hasVisibilityMask;
-uniform sampler2D u_cellSolidity;   // R8: 0=empty, 255=solid
+uniform highp sampler2DArray u_cellSolidity;   // R8: 0=empty, 255=solid, layer=z
 uniform highp vec3 u_revealTarget;  // World-space reveal target position
 
     // Depth cues (cell mode; each weight 0 = off, early-out → free)
@@ -126,12 +129,12 @@ uniform float u_spotLightRadius[MAX_SPOT_LIGHTS];
 uniform float u_spotLightHardness[MAX_SPOT_LIGHTS];
 
     // Varying inputs (shared)
-varying vec2 v_uv;
-varying vec3 v_worldPos;
-varying vec2 v_screenPos;
-varying vec3 v_worldNormal;
-varying vec3 v_origWorldPos;
-varying float v_emission;
+in vec2 v_uv;
+in vec3 v_worldPos;
+in vec2 v_screenPos;
+in vec3 v_worldNormal;
+in vec3 v_origWorldPos;
+in float v_emission;
 
 // Distance attenuation with hardness control
 float attenuate(float dist, float radius, float hardness) {
@@ -225,14 +228,11 @@ bool isCellSolid(vec3 cell) {
        local.z < 0.0 || local.z >= u_windowSize.z) {
         return false;
     }
-    float u = (local.x + 0.5) / u_windowSize.x;
-    float v = (local.y + local.z * u_windowSize.y + 0.5)
-              / (u_windowSize.y * u_windowSize.z);
-    return texture2D(u_cellSolidity, vec2(u, v)).r > 0.5;
+    return texelFetch(u_cellSolidity, ivec3(local), 0).r > 0.5;
 }
 
 // Per-cell emission (highlight) color, sampled by integer cell coordinate using the
-// same grid->2D flatten as isCellSolid. Out-of-bounds cells contribute nothing.
+// same array-layer lookup as isCellSolid. Out-of-bounds cells contribute nothing.
 vec3 cellEmissionColorAt(vec3 cell) {
     vec3 local = cell - u_windowOrigin;
     if(local.x < 0.0 || local.x >= u_windowSize.x ||
@@ -240,10 +240,7 @@ vec3 cellEmissionColorAt(vec3 cell) {
        local.z < 0.0 || local.z >= u_windowSize.z) {
         return vec3(0.0);
     }
-    float u = (local.x + 0.5) / u_windowSize.x;
-    float v = (local.y + local.z * u_windowSize.y + 0.5)
-              / (u_windowSize.y * u_windowSize.z);
-    return texture2D(u_cellEmissionColor, vec2(u, v)).rgb;
+    return texelFetch(u_cellEmissionColor, ivec3(local), 0).rgb;
 }
 
 // Map a face fragment to the solid cell that owns it. `a_origPosition` sits on
@@ -329,10 +326,10 @@ vec4 sampleBilinear(sampler2D tex, vec2 worldCoord, vec2 texSize, vec4 bounds) {
     vec2 uv11 = (mod(base + vec2(1.0, 1.0), texSize) + 0.5) / texSize;
 
     // Map to atlas bounds
-    vec4 s00 = texture2D(tex, mix(bounds.xy, bounds.zw, uv00));
-    vec4 s10 = texture2D(tex, mix(bounds.xy, bounds.zw, uv10));
-    vec4 s01 = texture2D(tex, mix(bounds.xy, bounds.zw, uv01));
-    vec4 s11 = texture2D(tex, mix(bounds.xy, bounds.zw, uv11));
+    vec4 s00 = texture(tex, mix(bounds.xy, bounds.zw, uv00));
+    vec4 s10 = texture(tex, mix(bounds.xy, bounds.zw, uv10));
+    vec4 s01 = texture(tex, mix(bounds.xy, bounds.zw, uv01));
+    vec4 s11 = texture(tex, mix(bounds.xy, bounds.zw, uv11));
 
     // Bilinear blend
     return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
@@ -523,14 +520,14 @@ void main() {
             if(an.x >= an.y && an.x >= an.z) { ab = u_albedoBoundsYZ; nb = u_normalBoundsYZ; axis = 0; }
             else if(an.y >= an.z)            { ab = u_albedoBoundsXZ; nb = u_normalBoundsXZ; axis = 1; }
             else                             { ab = u_albedoBoundsXY; nb = u_normalBoundsXY; axis = 2; }
-            albedo = texture2D(u_albedoTexture, mix(ab.xy, ab.zw, v_uv));
+            albedo = texture(u_albedoTexture, mix(ab.xy, ab.zw, v_uv));
             if(u_hasEmissionTexture) {
                 vec4 eb = axis == 0 ? u_emissionBoundsYZ : axis == 1 ? u_emissionBoundsXZ : u_emissionBoundsXY;
-                emissionTexColor = texture2D(u_emissionTexture, mix(eb.xy, eb.zw, v_uv)).rgb;
+                emissionTexColor = texture(u_emissionTexture, mix(eb.xy, eb.zw, v_uv)).rgb;
             }
             if(u_hasNormal) {
                 vec2 nUV = mix(nb.xy, nb.zw, v_uv);
-                vec3 nm = texture2D(u_normalTexture, nUV).rgb * 2.0 - 1.0;
+                vec3 nm = texture(u_normalTexture, nUV).rgb * 2.0 - 1.0;
                 // Map the tangent-space sample (r,g,b) onto this plane's world axes —
                 // matches the (u,v) = (z,-y) / (x,z) / (x,-y) sampling convention below.
                 vec3 pert = axis == 0 ? vec3(sign(v_worldNormal.x) * nm.b, -nm.g, nm.r)
@@ -582,9 +579,9 @@ void main() {
                 vec2 normalAtlasUV_XZ = mix(u_normalBoundsXZ.xy, u_normalBoundsXZ.zw, normalizedUV_XZ);
                 vec2 normalAtlasUV_XY = mix(u_normalBoundsXY.xy, u_normalBoundsXY.zw, normalizedUV_XY);
 
-                vec3 nmYZ = texture2D(u_normalTexture, normalAtlasUV_YZ).rgb * 2.0 - 1.0;
-                vec3 nmXZ = texture2D(u_normalTexture, normalAtlasUV_XZ).rgb * 2.0 - 1.0;
-                vec3 nmXY = texture2D(u_normalTexture, normalAtlasUV_XY).rgb * 2.0 - 1.0;
+                vec3 nmYZ = texture(u_normalTexture, normalAtlasUV_YZ).rgb * 2.0 - 1.0;
+                vec3 nmXZ = texture(u_normalTexture, normalAtlasUV_XZ).rgb * 2.0 - 1.0;
+                vec3 nmXY = texture(u_normalTexture, normalAtlasUV_XY).rgb * 2.0 - 1.0;
 
                 // Same (u,v) = (z,-y) / (x,z) / (x,-y) axis mapping as the albedo/UV
                 // sampling above, projected onto true world axes per plane.
@@ -628,7 +625,7 @@ void main() {
         vec3 cellColor = albedo.rgb * lighting
                        + emissionSample * v_emission
                        + highlight;
-        gl_FragColor = vec4(cellColor, albedo.a);
+        fragColor = vec4(cellColor, albedo.a);
 
     } else {
         // ============================================================
@@ -639,7 +636,7 @@ void main() {
         vec2 atlasUV = mix(u_uvBounds.xy, u_uvBounds.zw, v_uv);
 
         // Albedo (always required)
-        vec4 albedo = texture2D(u_albedoTexture, atlasUV);
+        vec4 albedo = texture(u_albedoTexture, atlasUV);
 
         // Discard fully transparent pixels early
         if(albedo.a < 0.01)
@@ -658,10 +655,10 @@ void main() {
         // Occlusion test: discard sprite fragments behind cells (or show silhouette)
         vec2 screenUV = gl_FragCoord.xy / u_screenSize;
         vec2 fboUV = screenUV * u_fboUvScale + u_fboUvOffset;
-        float cellDepth = texture2D(u_depthTexture, fboUV).r;
+        float cellDepth = texture(u_depthTexture, fboUV).r;
         if(cellDepth < gl_FragCoord.z) {
             if(u_showSilhouette) {
-                gl_FragColor = u_silhouetteColor;
+                fragColor = u_silhouetteColor;
                 return;
             }
             discard;
@@ -676,7 +673,7 @@ void main() {
         if(u_hasNormal) {
           // Sample normal map from same UV coords as albedo
             vec2 normalAtlasUV = mix(u_normalUVBounds.xy, u_normalUVBounds.zw, v_uv);
-            vec3 nm = texture2D(u_normalTexture, normalAtlasUV).rgb * 2.0 - 1.0;
+            vec3 nm = texture(u_normalTexture, normalAtlasUV).rgb * 2.0 - 1.0;
             vec3 pert = vec3(nm.r, nm.b, nm.g);
             finalNormal = normalize(baseNormal + pert * 0.5);
         } else {
@@ -688,7 +685,7 @@ void main() {
         vec3 emissionTexColor = vec3(0.0);
         if(u_hasEmission) {
             vec2 emissionAtlasUV = mix(u_emissionUVBounds.xy, u_emissionUVBounds.zw, v_uv);
-            emissionTexColor = texture2D(u_emissionTexture, emissionAtlasUV).rgb;
+            emissionTexColor = texture(u_emissionTexture, emissionAtlasUV).rgb;
         }
 
         // Material (metallic/roughness) texture: R = metallic, G = roughness.
@@ -697,7 +694,7 @@ void main() {
         float roughness = 1.0;
         if(u_hasMaterial) {
             vec2 materialAtlasUV = mix(u_materialUVBounds.xy, u_materialUVBounds.zw, v_uv);
-            vec4 materialSample = texture2D(u_materialTexture, materialAtlasUV);
+            vec4 materialSample = texture(u_materialTexture, materialAtlasUV);
             metallic = materialSample.r;
             roughness = materialSample.g;
         }
@@ -721,6 +718,6 @@ void main() {
         vec4 tinted = vec4(litColor, albedo.a * u_tint.a);
 
         // Apply opacity to final alpha channel
-        gl_FragColor = vec4(tinted.rgb, tinted.a * u_opacity);
+        fragColor = vec4(tinted.rgb, tinted.a * u_opacity);
     }
 }

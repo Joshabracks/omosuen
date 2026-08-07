@@ -153,13 +153,13 @@ export interface CellMapMethods extends ComponentMethods {
 
   /**
    * Grows or shrinks the resident window's padding radius (in chunks per
-   * axis), clamped to `component.maxWindowRadius`, and re-centers it on the
-   * current focus point. Rebuilds the chunk array (and the secondary dense
-   * maps sized to the window — `emissionColorMap`/`smoothingWeights`) and
-   * marks everything dirty when a resize actually happens. Called once per
-   * frame by the render loop when `autoResizeFromZoom` is enabled; also
-   * public for games that want explicit control instead. Returns whether a
-   * resize happened.
+   * axis), clamped to `component.maxTerrainLoadDimensions`, and re-centers
+   * it on the current focus point. Rebuilds the chunk array (and the
+   * secondary dense maps sized to the window — `emissionColorMap`/
+   * `smoothingWeights`) and marks everything dirty when a resize actually
+   * happens. Called once per frame by the render loop when
+   * `autoResizeFromZoom` is enabled; also public for games that want
+   * explicit control instead. Returns whether a resize happened.
    */
   setWindowRadius: (
     component: CellMapT,
@@ -286,10 +286,7 @@ export const CellMap: CellMapMethods = {
     component.emissionColorDirty = true;
   },
 
-  getEmissionColor: (
-    component: CellMapT,
-    coordinates: Vector3D,
-  ): Vector3D => {
+  getEmissionColor: (component: CellMapT, coordinates: Vector3D): Vector3D => {
     assertFiniteCoordinates(coordinates.x, coordinates.y, coordinates.z);
     const packed = component.emissionColorMap.get(coordinates) | 0;
     return new Vector3D(
@@ -393,11 +390,28 @@ export const CellMap: CellMapMethods = {
     component: CellMapT,
     radius: { x: number; y: number; z: number },
   ): boolean => {
-    const max = component.maxWindowRadius;
+    // maxTerrainLoadDimensions is a world-space radius, not chunks -- convert
+    // to a chunk-radius cap the same way renderDistance/frustumPadding are
+    // converted elsewhere (floor-divide by chunkSize*cellSize per axis).
+    const maxWorld = component.maxTerrainLoadDimensions;
+    const maxChunks = {
+      x: Math.max(
+        0,
+        Math.floor(maxWorld.x / (component.chunkSize.x * component.cellSize.x)),
+      ),
+      y: Math.max(
+        0,
+        Math.floor(maxWorld.y / (component.chunkSize.y * component.cellSize.y)),
+      ),
+      z: Math.max(
+        0,
+        Math.floor(maxWorld.z / (component.chunkSize.z * component.cellSize.z)),
+      ),
+    };
     const clamped = {
-      x: Math.min(radius.x, max.x),
-      y: Math.min(radius.y, max.y),
-      z: Math.min(radius.z, max.z),
+      x: Math.min(radius.x, maxChunks.x),
+      y: Math.min(radius.y, maxChunks.y),
+      z: Math.min(radius.z, maxChunks.z),
     };
     const resized = component.window.resize(clamped);
     if (!resized) return false;
@@ -449,8 +463,7 @@ export const CellMap: CellMapMethods = {
     worldX: number,
     worldZ: number,
     opts?: RaycastOptions,
-  ): SurfaceHit | null =>
-    sampleSurfaceHeight(component, worldX, worldZ, opts),
+  ): SurfaceHit | null => sampleSurfaceHeight(component, worldX, worldZ, opts),
 
   flush: (component: CellMapT): void => {
     cellStoreFlush();

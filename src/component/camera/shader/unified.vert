@@ -1,8 +1,10 @@
-attribute vec3 a_position;      // Used by cells
-attribute vec2 a_uv;
-attribute vec3 a_normal;        // Used by cells
-attribute vec3 a_origPosition;  // Pre-smoothing position (cells only)
-attribute float a_emission;     // Per-vertex emission glow 0..1 (cells only)
+#version 300 es
+
+in vec3 a_position;      // Used by cells
+in vec2 a_uv;
+in vec3 a_normal;        // Used by cells
+in vec3 a_origPosition;  // Pre-smoothing position (cells only)
+in float a_emission;     // Per-vertex emission glow 0..1 (cells only)
 
     // Render mode selector
 uniform lowp int u_renderMode;  // 0 = cells, 1 = sprites
@@ -30,12 +32,12 @@ uniform vec2 u_anchor;   // normalized [0,1] from the sprite's top-left
 uniform float u_rotation;
 
     // Outputs
-varying vec2 v_uv;
-varying vec3 v_worldPos;
-varying vec2 v_screenPos;
-varying vec3 v_worldNormal;
-varying vec3 v_origWorldPos;
-varying float v_emission;
+out vec2 v_uv;
+out vec3 v_worldPos;
+out vec2 v_screenPos;
+out vec3 v_worldNormal;
+out vec3 v_origWorldPos;
+out float v_emission;
 
 void main() {
     const float ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread

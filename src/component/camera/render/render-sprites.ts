@@ -414,11 +414,18 @@ export function renderSprites(
   );
   gl.uniform2f(u_screenSize, viewport.width, viewport.height);
 
-  // Bind cell solidity texture and reveal target for per-fragment raycasting
+  // Bind cell solidity texture and reveal target for per-fragment raycasting.
+  // Unit 3 is always pinned, even when there's no reveal target this frame --
+  // a sampler uniform that's never explicitly set defaults to unit 0, which
+  // u_albedoTexture (sampler2D) also uses; since u_cellSolidity is
+  // sampler2DArray, a defaulted/stale unit-0 assignment throws
+  // GL_INVALID_OPERATION ("two textures of different types use the same
+  // sampler location") the moment both uniforms have ever been set anywhere
+  // in this shared program.
+  gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.visibilityTexture);
+  gl.uniform1i(u_cellSolidity, 3);
   if (camera.revealTarget && camera.glResources.visibilityTexture) {
-    gl.activeTexture(gl.TEXTURE3);
-    gl.bindTexture(gl.TEXTURE_2D, camera.glResources.visibilityTexture);
-    gl.uniform1i(u_cellSolidity, 3);
     gl.uniform3f(
       u_revealTarget,
       camera.revealTarget.x,

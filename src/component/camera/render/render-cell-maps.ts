@@ -50,117 +50,15 @@ export function snapCameraPosition(
 
 type Vec3 = { x: number; y: number; z: number };
 
-/**
- * Unit "view direction", pointing INTO the visible scene (away from the
- * camera, toward what it's looking at) -- the single 3D direction along
- * which a world point can move without changing its screen position (only
- * its depth). The axonometric projection (isoX/isoY, see unified.vert /
- * camIsoX/camIsoY below) is an exact LINEAR map from world (x,y,z) to 2D
- * screen space with no perspective divide, so it has a 1-dimensional null
- * space, solved directly from isoX(V)=0, isoY(V)=0 -- but that only pins the
- * *line*, not which of its two directions is "forward"; the sign has to be
- * fixed separately.
- *
- * Sign verified against the top-down boundary case (axonometricAngle=90,
- * sinA=1, heightScale=0): a top-down camera looks DOWN at the ground below
- * it, so "into the scene" must be -Y. The raw null-space solution
- * `(heightScale*(cosYaw-sinYaw), 2*sinA, heightScale*(cosYaw+sinYaw))`
- * gives +Y at that boundary (2*sinA > 0) -- backwards -- so it's negated
- * below. (This was the actual bug: with the un-negated sign, the far rect
- * and the near/far frustum planes extended away from the visible terrain
- * instead of into it, leaving only a thin near-plane sliver of overlap --
- * "one chunk visible in a narrow zoom window.")
- */
-function computeViewDirection(
-  cosYaw: number,
-  sinYaw: number,
-  sinA: number,
-  heightScale: number,
-): Vec3 {
-  const vx = -(heightScale * (cosYaw - sinYaw));
-  const vy = -(2 * sinA);
-  const vz = -(heightScale * (cosYaw + sinYaw));
-  const len = Math.hypot(vx, vy, vz); // never zero for angle in [0,90]
-  return { x: vx / len, y: vy / len, z: vz / len };
-}
-
-/**
- * The "screen" as a world-space rect: 4 corners, in the plane through
- * `camPos` perpendicular to `V` (the true view direction), each one
- * projecting to the corresponding screen corner. For each screen corner, the
- * linear projection is inverted for ONE particular solution (assuming
- * relY=0), then that point is projected along -V onto the plane through the
- * camera -- the standard point-onto-plane-along-a-direction projection.
- */
-function computeNearRectCorners(
-  camPos: Vec3,
-  cosYaw: number,
-  sinYaw: number,
-  sinA: number,
-  halfIsoX: number,
-  halfIsoY: number,
-  V: Vec3,
-): Vec3[] {
-  const safeSinA = Math.max(sinA, 0.05); // same degenerate-angle floor as before
-  const corners: Vec3[] = [];
-  for (const sx of [-halfIsoX, halfIsoX]) {
-    for (const sy of [-halfIsoY, halfIsoY]) {
-      const rx0 = (sx / ISO_H + sy / safeSinA) / 2;
-      const rz0 = (sy / safeSinA - sx / ISO_H) / 2;
-      const relX0 = rx0 * cosYaw - rz0 * sinYaw;
-      const relZ0 = rx0 * sinYaw + rz0 * cosYaw;
-      // relY0 = 0 (the particular solution chosen). Project onto the plane
-      // through the camera (origin, in relative coords) perpendicular to V.
-      const t =
-        -(relX0 * V.x + relZ0 * V.z) / (V.x * V.x + V.y * V.y + V.z * V.z);
-      corners.push({
-        x: camPos.x + relX0 + t * V.x,
-        y: camPos.y + t * V.y,
-        z: camPos.z + relZ0 + t * V.z,
-      });
-    }
-  }
-  return corners;
-}
-
-/**
- * Each center-rect corner translated `distance` along `V` (negative to go
- * backward). Since V is exactly the screen-preserving direction, this is
- * precisely "rays whose direction accounts for viewpoint so the points
- * still render at the screen corners no matter how far away" -- called with
- * +depthMax and -depthMax to build the symmetric render volume's far and
- * near faces (see the call site).
- */
-function computeFarRectCorners(
-  nearCorners: Vec3[],
-  V: Vec3,
-  distance: number,
-): Vec3[] {
-  return nearCorners.map((c) => ({
-    x: c.x + V.x * distance,
-    y: c.y + V.y * distance,
-    z: c.z + V.z * distance,
-  }));
-}
-
-/** Axis-aligned bounding box of the 8 near+far corners (the oriented render volume). */
-function computeVolumeWorldAABB(corners8: Vec3[]): { min: Vec3; max: Vec3 } {
-  const min = { x: Infinity, y: Infinity, z: Infinity };
-  const max = { x: -Infinity, y: -Infinity, z: -Infinity };
-  for (const c of corners8) {
-    min.x = Math.min(min.x, c.x);
-    max.x = Math.max(max.x, c.x);
-    min.y = Math.min(min.y, c.y);
-    max.y = Math.max(max.y, c.y);
-    min.z = Math.min(min.z, c.z);
-    max.z = Math.max(max.z, c.z);
-  }
-  return { min, max };
+/** Axis-aligned min/max box in world space. */
+interface WorldAABB {
+  min: Vec3;
+  max: Vec3;
 }
 
 /** World chunk-coordinate range that could intersect the volume, calculated directly from its AABB -- not scanned from what's resident. */
 function chunkCandidateRange(
-  aabb: { min: Vec3; max: Vec3 },
+  aabb: WorldAABB,
   chunkSize: Vec3,
   cellSize: Vec3,
 ): {
@@ -181,125 +79,39 @@ function chunkCandidateRange(
   };
 }
 
-/** One face of the view frustum: inward normal + offset, s.t. a point is inside where dot(normal, relPos) + offset >= 0. */
-interface FrustumPlane {
-  normal: Vec3;
-  offset: number;
-}
-
 /**
- * The 6 view-frustum planes (standard view-frustum-culling technique --
- * normally extracted from a view-projection matrix via the Gribb/Hartmann
- * method; this engine has no such matrix, so the planes are derived directly
- * from sx/sy/depth's linear coefficients -- since each is already an exact
- * linear function of world position, its gradient IS the plane normal).
+ * True if a chunk's world-space box (`min`/`max`) has no overlap with the
+ * render volume -- a trivial separating-axis reject on each of the three
+ * world axes (the volume is a plain axis-aligned box, so this replaces what
+ * used to be a full oriented-frustum plane test).
  */
-function computeFrustumPlanes(
-  cosYaw: number,
-  sinYaw: number,
-  sinA: number,
-  heightScale: number,
-  halfIsoX: number,
-  halfIsoY: number,
-  V: Vec3,
-  depthMax: number,
-): FrustumPlane[] {
-  const gx = {
-    x: ISO_H * (cosYaw + sinYaw),
-    y: 0,
-    z: ISO_H * (sinYaw - cosYaw),
-  };
-  const gy = {
-    x: sinA * (cosYaw - sinYaw),
-    y: -heightScale,
-    z: sinA * (sinYaw + cosYaw),
-  };
-  const neg = (v: Vec3): Vec3 => ({ x: -v.x, y: -v.y, z: -v.z });
-  return [
-    { normal: neg(gx), offset: halfIsoX }, // right   (sx <=  halfIsoX)
-    { normal: gx, offset: halfIsoX }, // left    (sx >= -halfIsoX)
-    { normal: neg(gy), offset: halfIsoY }, // top     (sy <=  halfIsoY)
-    { normal: gy, offset: halfIsoY }, // bottom  (sy >= -halfIsoY)
-    // Symmetric slab around the camera, not a one-sided forward volume --
-    // see the call site's comment for why (this camera has no "behind").
-    { normal: neg(V), offset: depthMax }, // far   (depth <=  depthMax)
-    { normal: V, offset: depthMax }, // near  (depth >= -depthMax)
-  ];
-}
-
-/**
- * Standard AABB-vs-frustum-plane N-vertex test: true if the box is provably
- * entirely outside at least one plane (the corner most against that plane's
- * normal still fails it) -- a trivial reject with no false negatives, unlike
- * testing a fixed set of corners against the volume directly.
- */
-function aabbOutsideFrustum(
-  min: Vec3,
-  max: Vec3,
-  camPos: Vec3,
-  planes: FrustumPlane[],
-): boolean {
-  for (const { normal, offset } of planes) {
-    const nx = normal.x >= 0 ? min.x : max.x; // N-vertex: worst corner against this normal
-    const ny = normal.y >= 0 ? min.y : max.y;
-    const nz = normal.z >= 0 ? min.z : max.z;
-    const dot =
-      normal.x * (nx - camPos.x) +
-      normal.y * (ny - camPos.y) +
-      normal.z * (nz - camPos.z);
-    if (dot + offset < 0) return true; // even the best corner fails -- wholly outside
-  }
-  return false;
+function aabbOutsideVolume(min: Vec3, max: Vec3, volume: WorldAABB): boolean {
+  return (
+    max.x < volume.min.x ||
+    min.x > volume.max.x ||
+    max.y < volume.min.y ||
+    min.y > volume.max.y ||
+    max.z < volume.min.z ||
+    min.z > volume.max.z
+  );
 }
 
 /**
  * Residency (window sizing) target, in chunks -- necessarily axis-aligned
- * (CellWindow's grid has no rotation concept), sized to cover the worst-case
- * side of the volume's AABB relative to camPos (the AABB is generally NOT
- * symmetric around the camera, since the volume only extends forward along
- * V, not behind it -- a symmetric axis-aligned window still has to reach as
- * far as the single farthest side on each axis). This is a disclosed
- * inefficiency of CellWindow's axis-aligned architecture (some resident
- * chunks behind the camera are never drawn by the frustum cull), not fixable
- * without redesigning residency's data structure.
+ * (CellWindow's grid has no rotation concept), which now matches the render
+ * volume's own shape exactly: the volume is already a world-space box
+ * centered on the camera, so each axis's chunk radius is just that axis's
+ * half-extent converted from world units to chunks.
  */
-function worldAABBToChunkRadius(
-  aabb: { min: Vec3; max: Vec3 },
-  camPos: Vec3,
+function worldHalfExtentToChunkRadius(
+  halfExtent: Vec3,
   chunkSize: Vec3,
   cellSize: Vec3,
 ): Vec3 {
   return {
-    x: Math.max(
-      1,
-      Math.ceil(
-        Math.max(
-          Math.abs(aabb.min.x - camPos.x),
-          Math.abs(aabb.max.x - camPos.x),
-        ) /
-          (chunkSize.x * cellSize.x),
-      ),
-    ),
-    y: Math.max(
-      1,
-      Math.ceil(
-        Math.max(
-          Math.abs(aabb.min.y - camPos.y),
-          Math.abs(aabb.max.y - camPos.y),
-        ) /
-          (chunkSize.y * cellSize.y),
-      ),
-    ),
-    z: Math.max(
-      1,
-      Math.ceil(
-        Math.max(
-          Math.abs(aabb.min.z - camPos.z),
-          Math.abs(aabb.max.z - camPos.z),
-        ) /
-          (chunkSize.z * cellSize.z),
-      ),
-    ),
+    x: Math.max(1, Math.ceil(halfExtent.x / (chunkSize.x * cellSize.x))),
+    y: Math.max(1, Math.ceil(halfExtent.y / (chunkSize.y * cellSize.y))),
+    z: Math.max(1, Math.ceil(halfExtent.z / (chunkSize.z * cellSize.z))),
   };
 }
 
@@ -313,37 +125,45 @@ function getMaxTextureSize(gl: WebGL2RenderingContext): number {
   return cachedMaxTextureSize;
 }
 
+let cachedMaxArrayTextureLayers: number | null = null;
+
+/** `gl.MAX_ARRAY_TEXTURE_LAYERS` never changes for a given context -- query once, cache it. */
+function getMaxArrayTextureLayers(gl: WebGL2RenderingContext): number {
+  if (cachedMaxArrayTextureLayers === null) {
+    cachedMaxArrayTextureLayers = gl.getParameter(
+      gl.MAX_ARRAY_TEXTURE_LAYERS,
+    ) as number;
+  }
+  return cachedMaxArrayTextureLayers;
+}
+
 /** Warn-once guard for `clampRadiusToTextureLimit` actually binding. */
 let warnedTextureClamp = false;
 
 /**
  * `uploadVisibilityTexture`/`uploadCellEmissionColorTexture` (below) pack the
- * window's 3D data into a 2D texture (width=windowSize.x,
- * height=windowSize.y*windowSize.z) -- that product can exceed
- * `gl.MAX_TEXTURE_SIZE` well before `maxWindowRadius`'s own cost-driven cap
- * does (confirmed live: this scene's default zoom alone already requests a
- * radius that overflows a 16384-limit GPU). A failed `texImage2D` call
- * leaves the OLD, smaller texture content in place while the shader samples
- * it against the NEW, larger window uniforms -- corrupting reveal/occlusion
- * rendering across most of the map. Must be clamped before a resize is ever
- * applied, not just before upload.
+ * window's 3D data into a `TEXTURE_2D_ARRAY` (width=windowSize.x,
+ * height=windowSize.y, depth/layers=windowSize.z) -- each axis has its own
+ * independent GPU limit (X/Y against `gl.MAX_TEXTURE_SIZE`, Z against
+ * `gl.MAX_ARRAY_TEXTURE_LAYERS`), unlike the old 2D-packed layout where Y and
+ * Z shared one multiplicative budget. A failed `texImage3D` call leaves the
+ * OLD, smaller texture content in place while the shader samples it against
+ * the NEW, larger window uniforms -- corrupting reveal/occlusion rendering
+ * across most of the map. Must be clamped before a resize is ever applied,
+ * not just before upload.
  */
 function clampRadiusToTextureLimit(
   radius: { x: number; y: number; z: number },
   chunkSize: { x: number; y: number; z: number },
   maxTextureSize: number,
+  maxArrayLayers: number,
 ): { x: number; y: number; z: number } {
   let rx = radius.x;
   let ry = radius.y;
   let rz = radius.z;
-  const width = (): number => (2 * rx + 1) * chunkSize.x;
-  const height = (): number =>
-    (2 * ry + 1) * chunkSize.y * ((2 * rz + 1) * chunkSize.z);
-  while (width() > maxTextureSize && rx > 0) rx--;
-  while (height() > maxTextureSize && (ry > 0 || rz > 0)) {
-    if (rz >= ry && rz > 0) rz--;
-    else if (ry > 0) ry--;
-  }
+  while ((2 * rx + 1) * chunkSize.x > maxTextureSize && rx > 0) rx--;
+  while ((2 * ry + 1) * chunkSize.y > maxTextureSize && ry > 0) ry--;
+  while ((2 * rz + 1) * chunkSize.z > maxArrayLayers && rz > 0) rz--;
   return { x: rx, y: ry, z: rz };
 }
 
@@ -393,12 +213,15 @@ function shouldApplyResize(
 }
 
 /**
- * Uploads a per-cell visibility mask as a flattened 2D R8 texture, sized to
- * whatever's currently resident in the canonical store (today: the whole
- * map; once the shiftable hot window lands, the window — see
+ * Uploads a per-cell visibility mask as a `TEXTURE_2D_ARRAY` R8 texture,
+ * sized to whatever's currently resident in the canonical store (today: the
+ * whole map; once the shiftable hot window lands, the window — see
  * .design/completed_tasks/cell-map-overhaul/06-camera-reveal-fix.md).
- * Texture layout: width = windowX, height = windowY * windowZ.
- * Texel at (x, y + z * windowY) → cell (x, y, z), in window-local coordinates.
+ * Texture layout: width = windowX, height = windowY, layers = windowZ.
+ * Layer z, texel (x, y) → cell (x, y, z), in window-local coordinates. This
+ * is exactly the WASM solidity buffer's own layout (z-outermost, then y,
+ * then x -- see `computeSolidityMap`), so the buffer uploads directly with
+ * no JS-side repacking.
  */
 function uploadVisibilityTexture(
   gl: WebGL2RenderingContext,
@@ -411,26 +234,28 @@ function uploadVisibilityTexture(
   }
 
   gl.activeTexture(gl.TEXTURE3);
-  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.visibilityTexture);
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.visibilityTexture);
   // The R8 mask is tightly packed; default UNPACK_ALIGNMENT (4) would expect each
   // row padded to a multiple of 4 bytes and reject maps whose width isn't a multiple
   // of 4 ("ArrayBufferView not big enough"). Force tight row packing.
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
+  gl.texImage3D(
+    gl.TEXTURE_2D_ARRAY,
     0,
     gl.R8,
     windowSize.x,
-    windowSize.y * windowSize.z,
+    windowSize.y,
+    windowSize.z,
     0,
     gl.RED,
     gl.UNSIGNED_BYTE,
     mask,
   );
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
 }
 
 /**
@@ -467,24 +292,34 @@ function uploadCellEmissionColorTexture(
   if (!camera.glResources.cellEmissionColorTexture) {
     camera.glResources.cellEmissionColorTexture = gl.createTexture();
   }
-  gl.activeTexture(gl.TEXTURE4);
-  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.cellEmissionColorTexture);
+  // Unit 6 -- deliberately not 4, which the sprite draw path (render-sprites.ts)
+  // uses for its own u_emissionTexture (sampler2D). Uniform values persist across
+  // draw calls, so sharing a unit with a differently-typed sampler elsewhere in this
+  // program throws GL_INVALID_OPERATION ("two textures of different types use the
+  // same sampler location") the moment both uniforms have been set at least once.
+  gl.activeTexture(gl.TEXTURE6);
+  gl.bindTexture(
+    gl.TEXTURE_2D_ARRAY,
+    camera.glResources.cellEmissionColorTexture,
+  );
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
+  gl.texImage3D(
+    gl.TEXTURE_2D_ARRAY,
     0,
     gl.RGBA8,
     windowSize.x,
-    windowSize.y * windowSize.z,
+    windowSize.y,
+    windowSize.z,
     0,
     gl.RGBA,
     gl.UNSIGNED_BYTE,
     bytes,
   );
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
 }
 
 /**
@@ -766,66 +601,59 @@ export function renderCellMaps(
 
   // Render each cell-map
   for (const cellMap of cellMaps) {
-    // Build this frame's view volume in world space (view-frustum culling --
-    // see .design/cell-map-overhaul): the true view direction V, the center
-    // rect (the "screen" as a world-space plane through the camera,
-    // perpendicular to V), extruded `depthMax` along V in BOTH directions
-    // (not just forward). This camera is a parallel/orthographic projection
-    // acting as a pan-center reference point, not a directional eye with a
-    // limited field of view -- unlike a perspective camera, it has no
-    // "behind it can't see," so the render volume has to be a symmetric slab
-    // centered on the camera, not a one-sided forward cone/prism. (A
-    // one-sided version was the actual bug: it silently discarded roughly
-    // half of the surrounding terrain on every frame, independent of zoom or
-    // renderDistance, since a forward-only volume's near plane cuts straight
-    // through camPos.) The resulting 8-corner volume's world AABB is used
-    // both to size window residency below, and to derive the direct
-    // chunk-coordinate candidate range in the draw loop further down.
-    const V = computeViewDirection(cosYaw, sinYaw, sinA, heightScale);
-    const halfIsoX = logicalWidth / 2 / Math.max(camera.zoom, 0.0001);
-    const halfIsoY = logicalHeight / 2 / Math.max(camera.zoom, 0.0001);
+    // Build this frame's render/cull volume in world space: a plain
+    // axis-aligned box centered on the camera, with independent half-extents
+    // per world axis (halfIsoX/halfIsoY/halfIsoZ). This is deliberately NOT
+    // oriented by the camera's view direction, tilt, or yaw -- the volume is
+    // the same shape and size no matter how the camera is rotated. Most maps
+    // want a fixed horizontal square footprint plus a vertical extent tuned
+    // to the world's height, not a shape that changes as the camera orbits.
+    // Each half-extent is driven the same way -- a chunk-derived base
+    // (renderDistance) plus a raw world-unit additive pad (frustumPadding),
+    // axis-for-axis (x->halfIsoX, y->halfIsoY, z->halfIsoZ). Deliberately NOT
+    // derived from logicalWidth/logicalHeight/camera.zoom at all: this is an
+    // intentional, developer-controlled render distance, not an attempt to
+    // exactly match the viewport. This AABB is used both to size window
+    // residency below, and to derive the direct chunk-coordinate candidate
+    // range in the draw loop further down.
     const renderDistanceWorld = {
       x: cellMap.renderDistance.x * cellMap.chunkSize.x * cellMap.cellSize.x,
       y: cellMap.renderDistance.y * cellMap.chunkSize.y * cellMap.cellSize.y,
       z: cellMap.renderDistance.z * cellMap.chunkSize.z * cellMap.cellSize.z,
     };
-    const depthMax = Math.hypot(
-      renderDistanceWorld.x,
-      renderDistanceWorld.y,
-      renderDistanceWorld.z,
-    );
-    const centerCorners = computeNearRectCorners(
-      camPos,
-      cosYaw,
-      sinYaw,
-      sinA,
-      halfIsoX,
-      halfIsoY,
-      V,
-    );
-    const forwardCorners = computeFarRectCorners(centerCorners, V, depthMax);
-    const backwardCorners = computeFarRectCorners(centerCorners, V, -depthMax);
-    const volumeAABB = computeVolumeWorldAABB([
-      ...forwardCorners,
-      ...backwardCorners,
-    ]);
+    const halfIsoX = renderDistanceWorld.x + cellMap.frustumPadding.x;
+    const halfIsoY = renderDistanceWorld.y + cellMap.frustumPadding.y;
+    const halfIsoZ = renderDistanceWorld.z + cellMap.frustumPadding.z;
+    const volumeAABB: WorldAABB = {
+      min: {
+        x: camPos.x - halfIsoX,
+        y: camPos.y - halfIsoY,
+        z: camPos.z - halfIsoZ,
+      },
+      max: {
+        x: camPos.x + halfIsoX,
+        y: camPos.y + halfIsoY,
+        z: camPos.z + halfIsoZ,
+      },
+    };
 
     // Drive the window's radius from the render volume by default (runtime
     // window resizing) -- before focus/dirty-chunk rebuilding, since a
     // resize replaces the chunk array and marks every chunk dirty. Clamped
-    // to maxWindowRadius inside CellMap.setWindowRadius itself.
+    // to maxTerrainLoadDimensions inside CellMap.setWindowRadius itself.
     if (cellMap.autoResizeFromZoom) {
-      const rawTargetRadius = worldAABBToChunkRadius(
-        volumeAABB,
-        camPos,
+      const rawTargetRadius = worldHalfExtentToChunkRadius(
+        { x: halfIsoX, y: halfIsoY, z: halfIsoZ },
         cellMap.chunkSize,
         cellMap.cellSize,
       );
       const maxTextureSize = getMaxTextureSize(gl);
+      const maxArrayLayers = getMaxArrayTextureLayers(gl);
       const targetRadius = clampRadiusToTextureLimit(
         rawTargetRadius,
         cellMap.chunkSize,
         maxTextureSize,
+        maxArrayLayers,
       );
       if (
         !warnedTextureClamp &&
@@ -836,8 +664,9 @@ export function renderCellMaps(
         warnedTextureClamp = true;
         console.warn(
           "[camera] cell-map window radius clamped to stay within this GPU's " +
-            `MAX_TEXTURE_SIZE (${maxTextureSize}); consider a smaller chunkSize ` +
-            'or accepting a smaller maxWindowRadius.',
+            `MAX_TEXTURE_SIZE (${maxTextureSize}, applied per-axis to X/Y) or ` +
+            `MAX_ARRAY_TEXTURE_LAYERS (${maxArrayLayers}, applied to Z); ` +
+            'consider a smaller chunkSize or accepting a smaller maxTerrainLoadDimensions.',
         );
       }
       if (shouldApplyResize(cellMap, targetRadius)) {
@@ -906,10 +735,17 @@ export function renderCellMaps(
       // Recompute every frame — cheap for small maps.
       const solidityMap = computeSolidityMap();
       uploadVisibilityTexture(gl, camera, solidityMap, cellMap.mapSize);
-      gl.activeTexture(gl.TEXTURE3);
-      gl.bindTexture(gl.TEXTURE_2D, camera.glResources.visibilityTexture);
-      gl.uniform1i(uCellSolidity, 3);
     }
+    // Always keep u_cellSolidity pointed at unit 3, even on frames that don't
+    // (re)upload solidity data -- a sampler uniform that's never explicitly
+    // set defaults to unit 0, which u_albedoTexture (sampler2D) also uses.
+    // That silently "worked" while both uniforms were sampler2D; now that
+    // u_cellSolidity is sampler2DArray, a defaulted/stale unit-0 assignment
+    // is a hard GL_INVALID_OPERATION ("two textures of different types use
+    // the same sampler location") the moment both uniforms have ever been set.
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.visibilityTexture);
+    gl.uniform1i(uCellSolidity, 3);
 
     // The reveal raycast (Y-slice clip) is separate from the cues.
     if (reveal && camera.revealTarget) {
@@ -935,16 +771,19 @@ export function renderCellMaps(
       }
       cellMap.emissionColorDirty = false;
     }
+    // Same reasoning as u_cellSolidity above -- always pin the unit so this
+    // sampler2DArray uniform never falls back to its default (0) and
+    // collides with a sampler2D uniform also sitting on unit 0.
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(
+      gl.TEXTURE_2D_ARRAY,
+      camera.glResources.cellEmissionColorTexture,
+    );
+    gl.uniform1i(uCellEmissionColor, 6);
     if (
       camera.glResources.cellEmissionColorHasAny &&
       camera.glResources.cellEmissionColorTexture
     ) {
-      gl.activeTexture(gl.TEXTURE4);
-      gl.bindTexture(
-        gl.TEXTURE_2D,
-        camera.glResources.cellEmissionColorTexture,
-      );
-      gl.uniform1i(uCellEmissionColor, 4);
       gl.uniform1i(uHasCellEmissionColor, 1);
     } else {
       gl.uniform1i(uHasCellEmissionColor, 0);
@@ -954,11 +793,11 @@ export function renderCellMaps(
     let drawCalls = 0;
 
     // Render chunks: candidate world chunk-coordinates are calculated
-    // directly from the view volume's AABB (view-frustum culling -- see
-    // .design/cell-map-overhaul), not scanned from cellMap.chunks -- each
-    // candidate's window-local index is computed and used to look the chunk
-    // up directly, then refined against the true (oriented) frustum via the
-    // standard AABB-vs-frustum-plane N-vertex test.
+    // directly from the render volume's AABB, not scanned from
+    // cellMap.chunks -- each candidate's window-local index is computed and
+    // used to look the chunk up directly, then refined against the volume's
+    // exact bounds via a plain AABB-vs-AABB overlap test (the volume is
+    // axis-aligned, so this is exact, not an approximation).
     const origin = cellMap.window.origin;
     if (origin) {
       const gridDims = cellMap.chunkGridSize;
@@ -966,16 +805,6 @@ export function renderCellMaps(
         volumeAABB,
         cellMap.chunkSize,
         cellMap.cellSize,
-      );
-      const planes = computeFrustumPlanes(
-        cosYaw,
-        sinYaw,
-        sinA,
-        heightScale,
-        halfIsoX,
-        halfIsoY,
-        V,
-        depthMax,
       );
       for (let cz = candidateRange.minCz; cz <= candidateRange.maxCz; cz++) {
         const localZ = cz - origin.cz;
@@ -1010,8 +839,7 @@ export function renderCellMaps(
               y: chunkMin.y + cellMap.chunkSize.y * cellMap.cellSize.y,
               z: chunkMin.z + cellMap.chunkSize.z * cellMap.cellSize.z,
             };
-            if (aabbOutsideFrustum(chunkMin, chunkMax, camPos, planes))
-              continue;
+            if (aabbOutsideVolume(chunkMin, chunkMax, volumeAABB)) continue;
 
             // Upload GPU buffers if needed
             if (!chunk.glVertexBuffer) {

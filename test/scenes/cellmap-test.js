@@ -15,6 +15,15 @@ const Omosuen = window.Omosuen;
  * Register HTML constructor for cell-map test UI
  */
 Omosuen.registerHtmlConstructor('cellmapTest', (overlay) => {
+    const frustumRows = FRUSTUM_SLIDERS.map((s) => `
+        <div class="slider-row">
+            <span class="slider-row-label">${s.label}</span>
+            <input type="range" id="${s.id}" class="slider-horizontal"
+                min="${s.min}" max="${s.max}" step="${s.step}" value="${s.value}">
+            <span id="${s.id}-value" class="slider-row-value">${s.fmt(s.value)}</span>
+        </div>
+    `).join('');
+
     return `
         <div class="sidebar">
             <button id="btn-back" class="sidebar-back-button">← Back</button>
@@ -51,6 +60,19 @@ Omosuen.registerHtmlConstructor('cellmapTest', (overlay) => {
                 <div id="camera-status" class="sidebar-status" style="margin-top: 10px;"></div>
             </div>
 
+            <div class="sidebar-section">
+                <div style="text-align: center; color: #ff6600; font-size: 14px; margin-bottom: 10px; text-transform: uppercase;">
+                    Frustum Tuning (Debug)
+                </div>
+                <div class="sidebar-status" style="font-size: 11px; line-height: 1.4; margin-bottom: 8px;">
+                    Live knobs for the render-distance/view-frustum cull. Render
+                    Distance is in chunks. Max Terrain Load Dimensions and Frustum
+                    Padding are both raw world units (max residency radius, and
+                    padding added directly to the volume, respectively).
+                </div>
+                ${frustumRows}
+            </div>
+
             <div id="render-stats" class="sidebar-section" style="display: none;">
                 <h3 style="color: #ff6600; margin: 10px 0;">Render Stats</h3>
                 <div id="stats-display" class="sidebar-status"></div>
@@ -75,6 +97,52 @@ const ZOOM_ACCELERATION = 0.003; // How much each scroll tick adds to zoom veloc
 const ZOOM_ENTROPY = 10.75;       // Rate at which zoom velocity decays toward zero per frame
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 3.0;
+
+// ── Frustum debug controls ──────────────────────────────────────────────────
+// Live-tunable knobs for diagnosing the render-distance/view-frustum cull
+// (see render-cell-maps.ts). Each slider mutates the cell-map's own public
+// properties directly -- no polling needed, the render loop reads them fresh
+// every frame.
+function getCellMap() {
+    const scene = Omosuen.getActiveScene();
+    if (!scene) return null;
+    return scene.getComponentByType('cell-map', true);
+}
+function setFrustumDebug(fn) {
+    const cellMap = getCellMap();
+    if (cellMap) fn(cellMap);
+}
+
+const FRUSTUM_SLIDERS = [
+    { id: 'render-distance-x', label: 'Render Distance X', min: 0, max: 10, step: 1, value: 1,
+      apply: (v) => setFrustumDebug((cm) => { cm.renderDistance = { ...cm.renderDistance, x: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'render-distance-y', label: 'Render Distance Y', min: 0, max: 10, step: 1, value: 1,
+      apply: (v) => setFrustumDebug((cm) => { cm.renderDistance = { ...cm.renderDistance, y: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'render-distance-z', label: 'Render Distance Z', min: 0, max: 10, step: 1, value: 1,
+      apply: (v) => setFrustumDebug((cm) => { cm.renderDistance = { ...cm.renderDistance, z: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'max-terrain-load-dimensions-x', label: 'Max Terrain Load Dimensions X', min: 0, max: 8000, step: 100, value: 512,
+      apply: (v) => setFrustumDebug((cm) => { cm.maxTerrainLoadDimensions = { ...cm.maxTerrainLoadDimensions, x: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'max-terrain-load-dimensions-y', label: 'Max Terrain Load Dimensions Y', min: 0, max: 8000, step: 100, value: 512,
+      apply: (v) => setFrustumDebug((cm) => { cm.maxTerrainLoadDimensions = { ...cm.maxTerrainLoadDimensions, y: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'max-terrain-load-dimensions-z', label: 'Max Terrain Load Dimensions Z', min: 0, max: 8000, step: 100, value: 512,
+      apply: (v) => setFrustumDebug((cm) => { cm.maxTerrainLoadDimensions = { ...cm.maxTerrainLoadDimensions, z: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'frustum-padding-x', label: 'Frustum Padding X', min: 0, max: 3000, step: 50, value: 0,
+      apply: (v) => setFrustumDebug((cm) => { cm.frustumPadding = { ...cm.frustumPadding, x: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'frustum-padding-y', label: 'Frustum Padding Y', min: 0, max: 3000, step: 50, value: 0,
+      apply: (v) => setFrustumDebug((cm) => { cm.frustumPadding = { ...cm.frustumPadding, y: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'frustum-padding-z', label: 'Frustum Padding Z', min: 0, max: 3000, step: 50, value: 0,
+      apply: (v) => setFrustumDebug((cm) => { cm.frustumPadding = { ...cm.frustumPadding, z: v }; }), fmt: (v) => v.toFixed(0) },
+];
+
+// One 'input' handler per slider (reads value → writes the cell-map property).
+FRUSTUM_SLIDERS.forEach((s) => {
+    Omosuen.registerBinding(`set_${s.id}`, (event) => {
+        const v = parseFloat(event.currentTarget.value);
+        s.apply(v);
+        const label = document.getElementById(`${s.id}-value`);
+        if (label) label.textContent = s.fmt(v);
+    });
+});
 
 /**
  * Converts ImageData to a displayable Image element
@@ -1373,6 +1441,11 @@ export async function createScene() {
                 onActions: ['click'],
                 methodKey: 'backToMenuFromCellmap',
             },
+            ...FRUSTUM_SLIDERS.map((s) => ({
+                selector: `#${s.id}`,
+                onActions: ['input'],
+                methodKey: `set_${s.id}`,
+            })),
         ],
     }, scene);
     console.log('[CellMap Test] UI overlay created');

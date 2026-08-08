@@ -820,6 +820,15 @@ export function renderCellMaps(
     let debugUploadCount = 0;
     let debugUploadMs = 0;
 
+    // Caps fresh GPU uploads per frame -- reassembleChunks can mark hundreds
+    // of REUSED (translated, not remeshed) chunks gpuDirty in a single call
+    // (every persisting chunk moves local slot on a shift), independent of
+    // and not covered by rebuildDirtyChunks' meshing budget. See the
+    // gpuDirty check below for how a deferred chunk is handled.
+    const GPU_UPLOAD_BUDGET_MS = 4;
+    const uploadDeadline = performance.now() + GPU_UPLOAD_BUDGET_MS;
+    let uploadedThisFrame = 0;
+
     // Render chunks: candidate world chunk-coordinates are calculated
     // directly from the render volume's AABB, not scanned from
     // cellMap.chunks -- each candidate's window-local index is computed and
@@ -869,6 +878,25 @@ export function renderCellMaps(
             };
             if (aabbOutsideVolume(chunkMin, chunkMax, volumeAABB)) continue;
 
+            // Only a chunk that's NEVER been uploaded (no glVertexBuffer
+            // yet) can be safely skipped this frame when the budget's
+            // exhausted -- it wasn't visible before either way, so
+            // deferring it just delays its first appearance, same as the
+            // meshing budget's existing pop-in. A REUSED/translated chunk
+            // already has a buffer and WAS visible last frame -- skipping
+            // its draw here would make it flicker out and back in as it
+            // waits for its upload turn, so it always uploads immediately
+            // below regardless of budget.
+            const isFirstUpload = !chunk.glVertexBuffer;
+            if (
+              chunk.gpuDirty &&
+              isFirstUpload &&
+              uploadedThisFrame > 0 &&
+              performance.now() > uploadDeadline
+            ) {
+              continue;
+            }
+
             // Upload GPU buffers only when the CPU-side mesh has actually
             // changed since the last upload -- gpuDirty is set whenever
             // rebuildDirtyChunks (re)meshes a chunk, and cleared right after
@@ -896,6 +924,7 @@ export function renderCellMaps(
                 gl.STATIC_DRAW,
               );
               chunk.gpuDirty = false;
+              uploadedThisFrame++;
               if (DEBUG_CHUNK_TIMING) {
                 debugUploadCount++;
                 debugUploadMs += performance.now() - debugUploadStart;

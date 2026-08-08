@@ -11,14 +11,35 @@ import {
 } from '../camera/render/wasm';
 
 /**
- * Rebuilds all dirty chunks in a cell map via the render WASM module
- * (`omosuen-render`). Both greedy meshing (smoothing == 0) and smoothed /
- * Laplacian meshing (smoothing > 0) run in WASM — single source of truth, no JS
+ * Default per-frame time budget for (re)meshing dirty chunks, in
+ * milliseconds. A window shift/resize can dirty hundreds of chunks at once;
+ * spreading their WASM meshing calls across multiple frames (instead of
+ * looping every dirty chunk synchronously in one call) is what keeps a pan/
+ * zoom from stalling a single frame.
+ */
+export const DEFAULT_CHUNK_GEN_BUDGET_MS = 4;
+
+/**
+ * Rebuilds dirty chunks in a cell map via the render WASM module
+ * (`omosuen-render`), up to `budgetMs` of wall-clock time (always processing
+ * at least one chunk, so a single expensive chunk can't stall progress
+ * forever). Chunks are processed nearest-to-focus first -- the window is
+ * centered on the focus point by construction (`CellWindow.setFocus`), so
+ * sorting by distance from the window's own local-grid center means visible/
+ * near chunks pop in before distant buffer-zone ones whenever the budget
+ * can't cover every dirty chunk in one call. Chunks left dirty after the
+ * budget runs out are picked up by the next call -- this function already
+ * runs once per frame from the render loop, so no separate scheduler is
+ * needed. Both greedy meshing (smoothing == 0) and smoothed / Laplacian
+ * meshing (smoothing > 0) run in WASM — single source of truth, no JS
  * fallback. Call before rendering when any chunks are dirty.
  */
-export function rebuildDirtyChunks(cellMap: CellMapT): void {
-  const hasDirty = cellMap.chunks.some((c) => c.dirty);
-  if (!hasDirty) return;
+export function rebuildDirtyChunks(
+  cellMap: CellMapT,
+  budgetMs: number = DEFAULT_CHUNK_GEN_BUDGET_MS,
+): void {
+  const dirtyChunks = cellMap.chunks.filter((c) => c.dirty);
+  if (dirtyChunks.length === 0) return;
 
   // The packed cells are resident in the canonical WASM store (mutated via
   // setCellData), so there is no upload/expand here — just set the cell size,
@@ -67,8 +88,22 @@ export function rebuildDirtyChunks(cellMap: CellMapT): void {
     }
   }
 
-  for (const chunk of cellMap.chunks) {
-    if (!chunk.dirty) continue;
+  const { x: gx, y: gy, z: gz } = cellMap.chunkGridSize;
+  const centerX = (gx - 1) / 2;
+  const centerY = (gy - 1) / 2;
+  const centerZ = (gz - 1) / 2;
+  dirtyChunks.sort((a, b) => {
+    const da =
+      (a.cx - centerX) ** 2 + (a.cy - centerY) ** 2 + (a.cz - centerZ) ** 2;
+    const db =
+      (b.cx - centerX) ** 2 + (b.cy - centerY) ** 2 + (b.cz - centerZ) ** 2;
+    return da - db;
+  });
+
+  const deadline = performance.now() + budgetMs;
+  for (let i = 0; i < dirtyChunks.length; i++) {
+    if (i > 0 && performance.now() > deadline) break;
+    const chunk = dirtyChunks[i];
     const result = smoothed
       ? buildChunkMeshSmoothedWasm(chunk.cx, chunk.cy, chunk.cz)
       : buildChunkMeshWasm(chunk.cx, chunk.cy, chunk.cz);

@@ -648,8 +648,9 @@ export function renderCellMaps(
 
     // Drive the window's radius from the render volume by default (runtime
     // window resizing) -- before focus/dirty-chunk rebuilding, since a
-    // resize replaces the chunk array and marks every chunk dirty. Clamped
-    // to maxTerrainLoadDimensions inside CellMap.setWindowRadius itself.
+    // resize replaces the chunk array (reassembled -- only genuinely new
+    // chunks are marked dirty, see CellMap.setWindowRadius). Clamped to
+    // maxTerrainLoadDimensions inside CellMap.setWindowRadius itself.
     if (cellMap.autoResizeFromZoom) {
       const renderVolumeRadius = worldHalfExtentToChunkRadius(
         { x: halfIsoX, y: halfIsoY, z: halfIsoZ },
@@ -687,24 +688,24 @@ export function renderCellMaps(
         );
       }
       if (shouldApplyResize(cellMap, targetRadius)) {
-        const oldChunks = cellMap.chunks;
-        if (
-          CellMap.setWindowRadius(cellMap, targetRadius) &&
-          oldChunks !== cellMap.chunks
-        ) {
-          for (const chunk of oldChunks) {
-            if (chunk.glVertexBuffer) gl.deleteBuffer(chunk.glVertexBuffer);
-            if (chunk.glIndexBuffer) gl.deleteBuffer(chunk.glIndexBuffer);
-          }
-        }
+        CellMap.setWindowRadius(cellMap, targetRadius);
       }
     }
 
     // Drive the window's focus from the camera by default (see
     // .design/cell-map-overhaul/11-focus-driving.md) -- before rebuilding
-    // dirty chunks, since a shift marks every resident chunk dirty.
+    // dirty chunks, since a shift marks the newly-exposed slab dirty.
     if (cellMap.autoFocusFromCamera) {
       CellMap.setFocus(cellMap, camPos.x, camPos.y, camPos.z);
+    }
+
+    // A resize or shift above may have evicted chunks from the window --
+    // drain and actually delete their GPU buffers here, once per cell-map
+    // per frame, regardless of which path produced them (this component has
+    // no GL context of its own, see reassembleChunks in cell-map/data.ts).
+    for (const chunk of CellMap.takePendingBufferCleanup(cellMap)) {
+      if (chunk.glVertexBuffer) gl.deleteBuffer(chunk.glVertexBuffer);
+      if (chunk.glIndexBuffer) gl.deleteBuffer(chunk.glIndexBuffer);
     }
 
     // Rebuild any dirty chunks

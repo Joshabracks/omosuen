@@ -1,7 +1,20 @@
 import { ComponentMethods } from '../types';
 import { Array3D, Array3Di, Vector3D } from '../../math';
-import { CellMapT, initChunks, resetCellMapState } from './data';
-import { CellData, Material, Mesh, packCell, unpackCell } from './types';
+import {
+  CellMapT,
+  reassembleChunks,
+  queueBufferCleanup,
+  takePendingBufferCleanup,
+  resetCellMapState,
+} from './data';
+import {
+  CellData,
+  Material,
+  Mesh,
+  ChunkMesh,
+  packCell,
+  unpackCell,
+} from './types';
 import type { RaycastHit, SurfaceHit, RaycastOptions } from './types';
 import { markChunksDirty } from './mesh-builder';
 import {
@@ -138,11 +151,13 @@ export interface CellMapMethods extends ComponentMethods {
 
   /**
    * Move the resident window to cover the given world position, shifting the
-   * hot buffer if needed. Marks every chunk dirty when a shift occurs (the
-   * doc 09 correctness-first strategy — only the newly-loaded slab needs it,
-   * but a targeted remesh is deferred future work). Called once per frame by
-   * the render loop when `autoFocusFromCamera` is enabled; also public for
-   * games that want explicit control instead.
+   * hot buffer if needed. On a shift, reassembles the chunk-mesh array so
+   * only the newly-exposed slab is marked dirty — chunks whose world
+   * coordinate stays resident keep their existing mesh and GPU buffers, and
+   * chunks that fall out of the window are queued for GPU buffer cleanup
+   * (see `reassembleChunks` in `data.ts`). Called once per frame by the
+   * render loop when `autoFocusFromCamera` is enabled; also public for games
+   * that want explicit control instead.
    */
   setFocus: (
     component: CellMapT,
@@ -154,17 +169,29 @@ export interface CellMapMethods extends ComponentMethods {
   /**
    * Grows or shrinks the resident window's padding radius (in chunks per
    * axis), clamped to `component.maxTerrainLoadDimensions`, and re-centers
-   * it on the current focus point. Rebuilds the chunk array (and the
-   * secondary dense maps sized to the window — `emissionColorMap`/
-   * `smoothingWeights`) and marks everything dirty when a resize actually
-   * happens. Called once per frame by the render loop when
-   * `autoResizeFromZoom` is enabled; also public for games that want
-   * explicit control instead. Returns whether a resize happened.
+   * it on the current focus point. Reassembles the chunk-mesh array the same
+   * way a `setFocus` shift does (see `reassembleChunks` in `data.ts`) — only
+   * genuinely new chunks are marked dirty, the rest keep their existing
+   * mesh/GPU buffers. The secondary dense maps sized to the window
+   * (`emissionColorMap`/`smoothingWeights`) are still fully reallocated on
+   * any resize — a separate, pre-existing, accepted limitation (doc 13,
+   * deferred), unrelated to chunk meshes. Called once per frame by the
+   * render loop when `autoResizeFromZoom` is enabled; also public for games
+   * that want explicit control instead. Returns whether a resize happened.
    */
   setWindowRadius: (
     component: CellMapT,
     radius: { x: number; y: number; z: number },
   ) => boolean;
+
+  /**
+   * Drains and returns chunk meshes that were evicted from the resident
+   * window since the last call, whose GPU buffers (`glVertexBuffer`/
+   * `glIndexBuffer`) still need `gl.deleteBuffer`ing. This component has no
+   * GL context of its own, so the renderer calls this once per frame and
+   * does the actual deletion. See `reassembleChunks` in `data.ts`.
+   */
+  takePendingBufferCleanup: (component: CellMapT) => ChunkMesh[];
 
   /**
    * Cast a ray against the cell-map's ACTUAL rendered surface (smoothing + custom
@@ -344,6 +371,10 @@ export const CellMap: CellMapMethods = {
     component.needsGPUUpdate = false;
   },
 
+  takePendingBufferCleanup: (): ChunkMesh[] => {
+    return takePendingBufferCleanup();
+  },
+
   cellToWorldCoordinates: (
     component: CellMapT,
     coordinates: Vector3D,
@@ -376,13 +407,25 @@ export const CellMap: CellMapMethods = {
     worldY: number,
     worldZ: number,
   ): void => {
+    const oldOrigin = component.window.origin;
+    const oldChunks = component.chunks;
     const shifted = component.window.setFocus(
       Math.floor(worldX / component.cellSize.x),
       Math.floor(worldY / component.cellSize.y),
       Math.floor(worldZ / component.cellSize.z),
     );
     if (shifted) {
-      for (const chunk of component.chunks) chunk.dirty = true;
+      // Non-null immediately after a shift -- setFocus just set it.
+      const { chunks, evicted } = reassembleChunks(
+        oldChunks,
+        oldOrigin,
+        component.window.origin!,
+        component.window.gridDimensions,
+        component.chunkSize,
+        component.cellSize,
+      );
+      component.chunks = chunks;
+      queueBufferCleanup(evicted);
     }
   },
 
@@ -413,6 +456,8 @@ export const CellMap: CellMapMethods = {
       y: Math.min(radius.y, maxChunks.y),
       z: Math.min(radius.z, maxChunks.z),
     };
+    const oldOrigin = component.window.origin;
+    const oldChunks = component.chunks;
     const resized = component.window.resize(clamped);
     if (!resized) return false;
 
@@ -422,7 +467,17 @@ export const CellMap: CellMapMethods = {
       component.window.cellDimensions.z,
     );
     component.chunkGridSize = component.window.gridDimensions;
-    component.chunks = initChunks(component.window.gridDimensions);
+    // Non-null immediately after a resize -- window.resize just set it.
+    const { chunks, evicted } = reassembleChunks(
+      oldChunks,
+      oldOrigin,
+      component.window.origin!,
+      component.window.gridDimensions,
+      component.chunkSize,
+      component.cellSize,
+    );
+    component.chunks = chunks;
+    queueBufferCleanup(evicted);
     component.needsGPUUpdate = true;
 
     // The secondary dense maps (emissionColorMap/smoothingWeights) are sized

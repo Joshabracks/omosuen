@@ -23,7 +23,7 @@ import {
   setChunkSize,
 } from '../camera/render/wasm';
 import { CellWindow } from './window';
-import type { ChunkGenerator } from './window';
+import type { ChunkGenerator, ChunkCoord } from './window';
 import { ChunkColdStorage } from './cold-storage';
 import type { CellData } from './types';
 
@@ -234,6 +234,7 @@ export function resetCellMapState(): void {
   cmFrustumPadding = { x: 0, y: 0, z: 0 };
   cmWindow = undefined;
   cmColdStorage = undefined;
+  cmPendingBufferCleanup = [];
 }
 
 /**
@@ -765,6 +766,24 @@ export const PROPERTY_ALLOWLIST = [
   'frustumPadding',
 ];
 
+/** A fresh, dirty chunk mesh for the given window-local chunk coordinate. */
+function freshChunkMesh(cx: number, cy: number, cz: number): ChunkMesh {
+  return {
+    cx,
+    cy,
+    cz,
+    dirty: true,
+    gpuDirty: true,
+    vertices: null,
+    stride: 9,
+    indices: null,
+    drawRanges: [],
+    faceCount: 0,
+    glVertexBuffer: null,
+    glIndexBuffer: null,
+  };
+}
+
 /**
  * Initializes chunk array with all chunks marked dirty.
  */
@@ -777,24 +796,196 @@ export function initChunks(cgs: {
   for (let cz = 0; cz < cgs.z; cz++) {
     for (let cy = 0; cy < cgs.y; cy++) {
       for (let cx = 0; cx < cgs.x; cx++) {
-        result.push({
-          cx,
-          cy,
-          cz,
-          dirty: true,
-          gpuDirty: true,
-          vertices: null,
-          stride: 9,
-          indices: null,
-          drawRanges: [],
-          faceCount: 0,
-          glVertexBuffer: null,
-          glIndexBuffer: null,
-        });
+        result.push(freshChunkMesh(cx, cy, cz));
       }
     }
   }
   return result;
+}
+
+/**
+ * Chunks evicted from the resident window whose GPU buffers still need
+ * `gl.deleteBuffer`ing. `data.ts` has no GL context of its own, so the
+ * renderer drains this once per frame via `CellMap.takePendingBufferCleanup`
+ * and does the actual deletion.
+ */
+let cmPendingBufferCleanup: ChunkMesh[] = [];
+
+export function queueBufferCleanup(chunks: ChunkMesh[]): void {
+  cmPendingBufferCleanup.push(...chunks);
+}
+
+/** Drains and returns the chunks queued for GPU buffer cleanup since the last call. */
+export function takePendingBufferCleanup(): ChunkMesh[] {
+  const pending = cmPendingBufferCleanup;
+  cmPendingBufferCleanup = [];
+  return pending;
+}
+
+export interface ReassembleResult {
+  chunks: ChunkMesh[];
+  evicted: ChunkMesh[];
+}
+
+/**
+ * A chunk mesh's `vertices` bake in its WINDOW-LOCAL position at build time
+ * (the WASM mesher is called with the chunk's local `cx/cy/cz`, and the
+ * vertex shader only adds the window's own origin offset on top -- see
+ * `unified.vert`'s `worldPos = a_position + u_worldOffset`). So a chunk
+ * reused at a *different* local slot (its world-chunk-coordinate stayed
+ * resident, but the window shifted under it) renders at the wrong place
+ * unless its already-built vertex data is translated by the local-slot
+ * delta first. Only the position fields need it -- pos3 at offset 0 and
+ * origPos3 at offset 6 in the stride-10/12 interleaved layout; normal3,
+ * emission, and uv are orientation/material data, unaffected by a
+ * translation. Cheap (a linear float-array walk, no WASM call) compared to
+ * the remesh this is standing in for.
+ */
+function translateChunkMeshInPlace(
+  chunk: ChunkMesh,
+  dx: number,
+  dy: number,
+  dz: number,
+): void {
+  const v = chunk.vertices;
+  if (!v) return;
+  const stride = chunk.stride;
+  for (let i = 0; i < v.length; i += stride) {
+    v[i] += dx;
+    v[i + 1] += dy;
+    v[i + 2] += dz;
+    v[i + 6] += dx;
+    v[i + 7] += dy;
+    v[i + 8] += dz;
+  }
+}
+
+/**
+ * Rebuilds the window-local chunk-mesh array for a shift/resize from
+ * `oldOrigin` to `newOrigin`/`newGridDims`, mirroring `CellWindow`'s own
+ * private `reassemble` (same world-chunk-coordinate overlap test, applied to
+ * JS mesh objects instead of WASM cell data): a chunk whose world-chunk-
+ * coordinate stays resident keeps its already-built mesh -- translated
+ * in-place to its new local slot (see `translateChunkMeshInPlace`) and
+ * re-flagged `gpuDirty` so the translated data actually reaches the GPU,
+ * but never re-meshed. A chunk that just left the window is returned
+ * separately as `evicted` for the caller to clean up (this function does
+ * not cache them -- see `.design/chunk-buffering/05-mesh-cache.md`). A
+ * chunk that just entered the window gets a fresh `dirty` entry (same shape
+ * `initChunks` produces) -- and, in turn, re-dirties any REUSED neighbor
+ * sharing a face with it, since that neighbor's mesh was built without
+ * knowledge of this newly-available data and its cross-chunk face culling
+ * at that boundary is now stale (see the face-adjacency pass below). Serves
+ * both a same-size shift (`CellMap.setFocus`) and a resize
+ * (`CellMap.setWindowRadius`), same as `CellWindow.reassemble` does for
+ * cell data.
+ */
+export function reassembleChunks(
+  oldChunks: ChunkMesh[],
+  oldOrigin: ChunkCoord | null,
+  newOrigin: ChunkCoord,
+  newGridDims: { x: number; y: number; z: number },
+  chunkSize: { x: number; y: number; z: number },
+  cellSize: { x: number; y: number; z: number },
+): ReassembleResult {
+  interface OldEntry {
+    chunk: ChunkMesh;
+    wcx: number;
+    wcy: number;
+    wcz: number;
+  }
+  const key = (cx: number, cy: number, cz: number): string =>
+    `${cx},${cy},${cz}`;
+
+  const oldByWorldCoord = new Map<string, OldEntry>();
+  if (oldOrigin) {
+    for (const chunk of oldChunks) {
+      const wcx = oldOrigin.cx + chunk.cx;
+      const wcy = oldOrigin.cy + chunk.cy;
+      const wcz = oldOrigin.cz + chunk.cz;
+      oldByWorldCoord.set(key(wcx, wcy, wcz), { chunk, wcx, wcy, wcz });
+    }
+  }
+
+  const chunks: ChunkMesh[] = [];
+  const isNewSlot: boolean[] = [];
+  for (let cz = 0; cz < newGridDims.z; cz++) {
+    for (let cy = 0; cy < newGridDims.y; cy++) {
+      for (let cx = 0; cx < newGridDims.x; cx++) {
+        const wcx = newOrigin.cx + cx;
+        const wcy = newOrigin.cy + cy;
+        const wcz = newOrigin.cz + cz;
+        const entryKey = key(wcx, wcy, wcz);
+        const entry = oldByWorldCoord.get(entryKey);
+        if (entry) {
+          oldByWorldCoord.delete(entryKey); // consumed
+          const { chunk } = entry;
+          if (chunk.cx !== cx || chunk.cy !== cy || chunk.cz !== cz) {
+            translateChunkMeshInPlace(
+              chunk,
+              (cx - chunk.cx) * chunkSize.x * cellSize.x,
+              (cy - chunk.cy) * chunkSize.y * cellSize.y,
+              (cz - chunk.cz) * chunkSize.z * cellSize.z,
+            );
+            chunk.gpuDirty = true;
+            chunk.cx = cx;
+            chunk.cy = cy;
+            chunk.cz = cz;
+          }
+          chunks.push(chunk);
+          isNewSlot.push(false);
+        } else {
+          chunks.push(freshChunkMesh(cx, cy, cz));
+          isNewSlot.push(true);
+        }
+      }
+    }
+  }
+
+  // A newly-exposed chunk's reused neighbors were meshed without knowledge
+  // of it (cross-chunk face culling depends on the neighbor's actual data,
+  // and a reused chunk at the old window's edge previously had no neighbor
+  // there at all) -- mark those reused neighbors dirty too, so the shared
+  // boundary gets recomputed with both sides known. Mirrors
+  // `markChunksDirty`'s per-edit face adjacency (mesh-builder.ts), applied
+  // structurally here instead of per-edit.
+  const localIndex = (cx: number, cy: number, cz: number): number =>
+    cz * newGridDims.y * newGridDims.x + cy * newGridDims.x + cx;
+  for (let cz = 0; cz < newGridDims.z; cz++) {
+    for (let cy = 0; cy < newGridDims.y; cy++) {
+      for (let cx = 0; cx < newGridDims.x; cx++) {
+        if (!isNewSlot[localIndex(cx, cy, cz)]) continue;
+        if (cx > 0) {
+          const i = localIndex(cx - 1, cy, cz);
+          if (!isNewSlot[i]) chunks[i].dirty = true;
+        }
+        if (cx < newGridDims.x - 1) {
+          const i = localIndex(cx + 1, cy, cz);
+          if (!isNewSlot[i]) chunks[i].dirty = true;
+        }
+        if (cy > 0) {
+          const i = localIndex(cx, cy - 1, cz);
+          if (!isNewSlot[i]) chunks[i].dirty = true;
+        }
+        if (cy < newGridDims.y - 1) {
+          const i = localIndex(cx, cy + 1, cz);
+          if (!isNewSlot[i]) chunks[i].dirty = true;
+        }
+        if (cz > 0) {
+          const i = localIndex(cx, cy, cz - 1);
+          if (!isNewSlot[i]) chunks[i].dirty = true;
+        }
+        if (cz < newGridDims.z - 1) {
+          const i = localIndex(cx, cy, cz + 1);
+          if (!isNewSlot[i]) chunks[i].dirty = true;
+        }
+      }
+    }
+  }
+
+  // Anything left in oldByWorldCoord fell outside the new window.
+  const evicted = Array.from(oldByWorldCoord.values(), (e) => e.chunk);
+  return { chunks, evicted };
 }
 
 /**

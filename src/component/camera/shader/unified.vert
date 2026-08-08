@@ -83,13 +83,12 @@ void main() {
         // MODE 0: CELL RENDERING
         // ============================================================
 
-        // Chunk mesh builder provides WINDOW-LOCAL positions -- add the
-        // window's world-space origin offset to get true world position
-        // (see .design/cell-map-overhaul/10-vertex-world-offset-and-depth-bias.md).
-        // A no-op today (u_worldOffset is (0,0,0) until a window actually
-        // shifts), so this is behavior-preserving groundwork, same as the
-        // already-shipped fragment-shader u_windowOrigin translation.
-        vec3 worldPos = a_position + u_worldOffset;
+        // The chunk mesh builder bakes each vertex's absolute world-space
+        // position in at mesh-build time (see mesh-builder.ts's
+        // bakeWorldOffsetInPlace) -- a_position is already true world
+        // position, no per-frame offset needed here. u_worldOffset is still
+        // used below for the depth-bias centering math, just not for this.
+        vec3 worldPos = a_position;
 
         // Rotate world X/Z around +Y by orbit yaw before the diamond projection
         // (yaw 0 = identity, bit-for-bit original behavior).
@@ -121,11 +120,11 @@ void main() {
         v_uv = a_uv;
         v_worldPos = worldPos;
         v_worldNormal = a_normal;
-        // Same window-local -> world translation as worldPos above -- the
-        // fragment shader's reveal/AO/shadow sampling (already
-        // window-origin-aware, see the archived 06-camera-reveal-fix.md
-        // work) depends on this being true world-space, not window-local.
-        v_origWorldPos = a_origPosition + u_worldOffset;
+        // Same reasoning as worldPos above -- a_origPosition is already
+        // baked to true world-space at mesh-build time. The fragment
+        // shader's reveal/AO/shadow sampling depends on this being real
+        // world-space.
+        v_origWorldPos = a_origPosition;
         v_emission = a_emission;
 
     } else {

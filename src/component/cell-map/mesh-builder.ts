@@ -43,6 +43,36 @@ let lastSmoothing: number | undefined;
 let lastNormalSmoothing: number | undefined;
 
 /**
+ * `buildChunkMeshWasm`/`buildChunkMeshSmoothedWasm` return vertex positions
+ * in WINDOW-LOCAL space (the chunk's local `cx/cy/cz` offset is already
+ * baked in, but not the window's own world-space origin). Baking the
+ * window's *current* origin in too, once, right here, makes the stored
+ * vertex data absolute world-space forever -- a chunk's true world position
+ * never changes, only which local array slot currently holds it does, so a
+ * chunk reused across a later shift never needs its vertices touched or
+ * re-uploaded again (see `reassembleChunks` in `data.ts`, which relies on
+ * this). Only the position fields need it -- pos3 at offset 0 and origPos3
+ * at offset 6 in the stride-10/12 interleaved layout; normal3, emission,
+ * and uv are orientation/material data, unaffected.
+ */
+function bakeWorldOffsetInPlace(
+  vertices: Float32Array,
+  stride: number,
+  dx: number,
+  dy: number,
+  dz: number,
+): void {
+  for (let i = 0; i < vertices.length; i += stride) {
+    vertices[i] += dx;
+    vertices[i + 1] += dy;
+    vertices[i + 2] += dz;
+    vertices[i + 6] += dx;
+    vertices[i + 7] += dy;
+    vertices[i + 8] += dz;
+  }
+}
+
+/**
  * Rebuilds dirty chunks in a cell map via the render WASM module
  * (`omosuen-render`), up to `budgetMs` of wall-clock time (always processing
  * at least one chunk, so a single expensive chunk can't stall progress
@@ -78,6 +108,15 @@ export function rebuildDirtyChunks(
       cellMap.smoothing !== lastSmoothing ||
       cellMap.normalSmoothing !== lastNormalSmoothing;
     if (smoothingChanged) {
+      if (DEBUG_CHUNK_TIMING) {
+        const reasons: string[] = [];
+        if (cellMap.smoothingWeights !== lastSmoothingWeights)
+          reasons.push('weightsRef');
+        if (cellMap.smoothing !== lastSmoothing) reasons.push('smoothing');
+        if (cellMap.normalSmoothing !== lastNormalSmoothing)
+          reasons.push('normalSmoothing');
+        console.log(`[chunk-timing] smoothingChanged: ${reasons.join(',')}`);
+      }
       const weights = cellMap.smoothingWeights.expand();
       const total = cellMap.mapSize.x * cellMap.mapSize.y * cellMap.mapSize.z;
       setMeshSmoothing(
@@ -139,6 +178,14 @@ export function rebuildDirtyChunks(
     ? debugLoopStart - debugSetupStart
     : 0;
 
+  const windowOrigin = cellMap.window.origin;
+  const worldOffsetX =
+    (windowOrigin?.cx ?? 0) * cellMap.chunkSize.x * cellMap.cellSize.x;
+  const worldOffsetY =
+    (windowOrigin?.cy ?? 0) * cellMap.chunkSize.y * cellMap.cellSize.y;
+  const worldOffsetZ =
+    (windowOrigin?.cz ?? 0) * cellMap.chunkSize.z * cellMap.cellSize.z;
+
   const deadline = performance.now() + budgetMs;
   let debugProcessed = 0;
   for (let i = 0; i < dirtyChunks.length; i++) {
@@ -153,6 +200,15 @@ export function rebuildDirtyChunks(
     chunk.indices = result.indices;
     chunk.drawRanges = result.ranges;
     chunk.faceCount = result.indices ? result.indices.length / 6 : 0;
+    if (chunk.vertices) {
+      bakeWorldOffsetInPlace(
+        chunk.vertices,
+        chunk.stride,
+        worldOffsetX,
+        worldOffsetY,
+        worldOffsetZ,
+      );
+    }
     chunk.dirty = false;
     chunk.gpuDirty = true;
   }

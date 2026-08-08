@@ -836,47 +836,15 @@ export interface ReassembleResult {
 }
 
 /**
- * A chunk mesh's `vertices` bake in its WINDOW-LOCAL position at build time
- * (the WASM mesher is called with the chunk's local `cx/cy/cz`, and the
- * vertex shader only adds the window's own origin offset on top -- see
- * `unified.vert`'s `worldPos = a_position + u_worldOffset`). So a chunk
- * reused at a *different* local slot (its world-chunk-coordinate stayed
- * resident, but the window shifted under it) renders at the wrong place
- * unless its already-built vertex data is translated by the local-slot
- * delta first. Only the position fields need it -- pos3 at offset 0 and
- * origPos3 at offset 6 in the stride-10/12 interleaved layout; normal3,
- * emission, and uv are orientation/material data, unaffected by a
- * translation. Cheap (a linear float-array walk, no WASM call) compared to
- * the remesh this is standing in for.
- */
-function translateChunkMeshInPlace(
-  chunk: ChunkMesh,
-  dx: number,
-  dy: number,
-  dz: number,
-): void {
-  const v = chunk.vertices;
-  if (!v) return;
-  const stride = chunk.stride;
-  for (let i = 0; i < v.length; i += stride) {
-    v[i] += dx;
-    v[i + 1] += dy;
-    v[i + 2] += dz;
-    v[i + 6] += dx;
-    v[i + 7] += dy;
-    v[i + 8] += dz;
-  }
-}
-
-/**
  * Rebuilds the window-local chunk-mesh array for a shift/resize from
  * `oldOrigin` to `newOrigin`/`newGridDims`, mirroring `CellWindow`'s own
  * private `reassemble` (same world-chunk-coordinate overlap test, applied to
  * JS mesh objects instead of WASM cell data): a chunk whose world-chunk-
- * coordinate stays resident keeps its already-built mesh -- translated
- * in-place to its new local slot (see `translateChunkMeshInPlace`) and
- * re-flagged `gpuDirty` so the translated data actually reaches the GPU,
- * but never re-meshed. A chunk that just left the window is returned
+ * coordinate stays resident keeps its already-built mesh untouched -- its
+ * vertex data is baked to absolute world-space at mesh-build time (see
+ * `bakeWorldOffsetInPlace` in mesh-builder.ts), so moving to a different
+ * local slot is pure bookkeeping (`cx/cy/cz` only), no vertex edit, no
+ * `gpuDirty`, no re-upload. A chunk that just left the window is returned
  * separately as `evicted` for the caller to clean up (this function does
  * not cache them -- see `.design/chunk-buffering/05-mesh-cache.md`). A
  * chunk that just entered the window gets a fresh `dirty` entry (same shape
@@ -893,13 +861,10 @@ export function reassembleChunks(
   oldOrigin: ChunkCoord | null,
   newOrigin: ChunkCoord,
   newGridDims: { x: number; y: number; z: number },
-  chunkSize: { x: number; y: number; z: number },
-  cellSize: { x: number; y: number; z: number },
 ): ReassembleResult {
   const debugStart = DEBUG_CHUNK_TIMING ? performance.now() : 0;
   let debugNewCount = 0;
   let debugReusedCount = 0;
-  let debugTranslatedCount = 0;
   let debugAdjacencyDirtiedCount = 0;
 
   interface OldEntry {
@@ -935,19 +900,14 @@ export function reassembleChunks(
           oldByWorldCoord.delete(entryKey); // consumed
           const { chunk } = entry;
           debugReusedCount++;
-          if (chunk.cx !== cx || chunk.cy !== cy || chunk.cz !== cz) {
-            translateChunkMeshInPlace(
-              chunk,
-              (cx - chunk.cx) * chunkSize.x * cellSize.x,
-              (cy - chunk.cy) * chunkSize.y * cellSize.y,
-              (cz - chunk.cz) * chunkSize.z * cellSize.z,
-            );
-            chunk.gpuDirty = true;
-            chunk.cx = cx;
-            chunk.cy = cy;
-            chunk.cz = cz;
-            debugTranslatedCount++;
-          }
+          // Vertex data is baked to absolute world-space at mesh-build time
+          // (see `bakeWorldOffsetInPlace` in mesh-builder.ts) -- a chunk's
+          // true world position never changes, so moving to a different
+          // local slot is pure bookkeeping. No vertex translation, no
+          // gpuDirty, no re-upload needed.
+          chunk.cx = cx;
+          chunk.cy = cy;
+          chunk.cz = cz;
           chunks.push(chunk);
           isNewSlot.push(false);
         } else {
@@ -994,7 +954,6 @@ export function reassembleChunks(
     console.log(
       `[chunk-timing] reassembleChunks: ${ms.toFixed(2)}ms | ` +
         `new=${debugNewCount} reused=${debugReusedCount} ` +
-        `translated=${debugTranslatedCount} ` +
         `adjacency-dirtied=${debugAdjacencyDirtiedCount} ` +
         `evicted=${evicted.length}`,
     );

@@ -25,6 +25,16 @@ import {
 import type { ChunkColdStorage } from './cold-storage';
 
 /**
+ * TEMPORARY diagnostic instrumentation for the chunk-buffering FPS
+ * investigation (see `.design/chunk-buffering`) -- logs each
+ * `CellWindow.reassemble` call's timing/volume, prefixed `[chunk-timing]`,
+ * plus how long it's been since the previous call (a small gap suggests two
+ * calls landed in the same frame). Flip to `false` or delete once confirmed.
+ */
+const DEBUG_REASSEMBLE_TIMING = true;
+let debugLastReassembleCallTime: number | null = null;
+
+/**
  * Rejects a malformed coordinate (NaN, ±Infinity, non-numeric) — a bug
  * regardless of where the window happens to be, so this throws
  * unconditionally. See
@@ -103,6 +113,24 @@ export class CellWindow {
   private readonly generator: ChunkGenerator | undefined;
   private readonly coldStorage: ChunkColdStorage;
   private readonly warnOnOutOfWindowWrite: boolean;
+  /**
+   * World-chunk-coordinate keys (`chunkKey`) of chunks that might currently
+   * differ from their procedural baseline — i.e. have been written to since
+   * the last time they were confirmed to match baseline. Absence of a key is
+   * a guarantee (not a heuristic) that the chunk still matches baseline,
+   * letting `reassemble`'s eviction pass skip `extractChunk`+`matchesBaseline`
+   * (and matchesBaseline's own hidden `baselineChunk`/generator call, the
+   * dominant cost measured in this investigation) entirely for it. Populated
+   * by `setCell`'s in-window fast path (a write might move a chunk off
+   * baseline) and by `reassemble`'s assembly loop when a chunk is sourced
+   * from cold storage (cold storage only ever holds non-baseline data, by
+   * the existing invariant below). Cleaned up when eviction re-confirms a
+   * tracked chunk actually matches baseline again (e.g. an edit undone by
+   * hand). Keyed by world coordinate, not window-local slot, so membership
+   * survives a chunk being reused across window shifts with no extra
+   * bookkeeping.
+   */
+  private readonly editedSinceBaseline = new Set<string>();
   /** Window size in chunks. Mutable via `resize()`, otherwise constant for the session. */
   private gridDims: { x: number; y: number; z: number };
   /** Window size in cells. Mutable via `resize()`, otherwise constant for the session. */
@@ -232,6 +260,14 @@ export class CellWindow {
     const local = this.worldToLocal(worldX, worldY, worldZ);
     if (local) {
       cellStoreSet(local.x, local.y, local.z, value);
+      const { x: csx, y: csy, z: csz } = this.chunkSize;
+      this.editedSinceBaseline.add(
+        this.chunkKey(
+          Math.floor(worldX / csx),
+          Math.floor(worldY / csy),
+          Math.floor(worldZ / csz),
+        ),
+      );
       return;
     }
 
@@ -371,6 +407,12 @@ export class CellWindow {
     newGridDims: { x: number; y: number; z: number },
     newCellDims: { x: number; y: number; z: number },
   ): void {
+    const debugStart = DEBUG_REASSEMBLE_TIMING ? performance.now() : 0;
+    const debugMsSinceLastCall =
+      DEBUG_REASSEMBLE_TIMING && debugLastReassembleCallTime !== null
+        ? debugStart - debugLastReassembleCallTime
+        : null;
+
     const oldOrigin = this.originChunk;
     const oldGridDims = this.gridDims;
     const oldCellDims = this.cellDims;
@@ -378,10 +420,18 @@ export class CellWindow {
     const total = dimX * dimY * dimZ;
 
     // Dump the current window's contents (nothing to dump before the first load).
+    const debugDumpStart = DEBUG_REASSEMBLE_TIMING ? performance.now() : 0;
     const oldFlat = oldOrigin ? cellStoreDump() : null;
+    const debugDumpMs = DEBUG_REASSEMBLE_TIMING
+      ? performance.now() - debugDumpStart
+      : 0;
 
     // Evict chunks that fall outside the new window. Ones that still match
     // baseline are simply dropped — nothing to store.
+    const debugEvictStart = DEBUG_REASSEMBLE_TIMING ? performance.now() : 0;
+    let debugMatchesBaselineMs = 0;
+    let debugEvictSkipped = 0;
+    let debugEvictChecked = 0;
     if (oldOrigin && oldFlat) {
       for (let cz = 0; cz < oldGridDims.z; cz++) {
         for (let cy = 0; cy < oldGridDims.y; cy++) {
@@ -392,8 +442,30 @@ export class CellWindow {
               cz: oldOrigin.cz + cz,
             };
             if (this.isWithin(worldChunk, newOrigin, newGridDims)) continue;
+            const key = this.chunkKey(
+              worldChunk.cx,
+              worldChunk.cy,
+              worldChunk.cz,
+            );
+            if (!this.editedSinceBaseline.has(key)) {
+              // Never written to since it last matched baseline — guaranteed
+              // to still match. Skip extractChunk+matchesBaseline (and its
+              // hidden baselineChunk/generator call) entirely.
+              debugEvictSkipped++;
+              continue;
+            }
+            debugEvictChecked++;
             const cells = this.extractChunk(oldFlat, cx, cy, cz, oldCellDims);
-            if (!this.matchesBaseline(worldChunk, cells)) {
+            const debugMbStart = DEBUG_REASSEMBLE_TIMING
+              ? performance.now()
+              : 0;
+            const matches = this.matchesBaseline(worldChunk, cells);
+            if (DEBUG_REASSEMBLE_TIMING) {
+              debugMatchesBaselineMs += performance.now() - debugMbStart;
+            }
+            if (matches) {
+              this.editedSinceBaseline.delete(key);
+            } else {
               this.coldStorage.set(
                 worldChunk.cx,
                 worldChunk.cy,
@@ -405,8 +477,14 @@ export class CellWindow {
         }
       }
     }
+    const debugEvictMs = DEBUG_REASSEMBLE_TIMING
+      ? performance.now() - debugEvictStart
+      : 0;
 
     // Assemble the new window's contents.
+    const debugAssembleStart = DEBUG_REASSEMBLE_TIMING ? performance.now() : 0;
+    let debugBaselineGenMs = 0;
+    let debugBaselineGenCalls = 0;
     const assembled = new Uint32Array(total);
     for (let cz = 0; cz < newGridDims.z; cz++) {
       for (let cy = 0; cy < newGridDims.y; cy++) {
@@ -430,22 +508,69 @@ export class CellWindow {
               oldCellDims,
             );
           } else {
-            cells =
-              this.coldStorage.get(
-                worldChunk.cx,
-                worldChunk.cy,
-                worldChunk.cz,
-              ) ?? this.baselineChunk(worldChunk);
+            const fromCold = this.coldStorage.get(
+              worldChunk.cx,
+              worldChunk.cy,
+              worldChunk.cz,
+            );
+            if (fromCold) {
+              cells = fromCold;
+              // Cold storage only ever holds non-baseline data (it's only
+              // written when matchesBaseline is false), so a chunk sourced
+              // from here must be tracked as possibly-non-baseline too.
+              this.editedSinceBaseline.add(
+                this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz),
+              );
+            } else {
+              const debugBgStart = DEBUG_REASSEMBLE_TIMING
+                ? performance.now()
+                : 0;
+              cells = this.baselineChunk(worldChunk);
+              if (DEBUG_REASSEMBLE_TIMING) {
+                debugBaselineGenMs += performance.now() - debugBgStart;
+                debugBaselineGenCalls++;
+              }
+            }
           }
           this.writeChunk(assembled, cx, cy, cz, cells, newCellDims);
         }
       }
     }
+    const debugAssembleMs = DEBUG_REASSEMBLE_TIMING
+      ? performance.now() - debugAssembleStart
+      : 0;
 
+    const debugLoadStart = DEBUG_REASSEMBLE_TIMING ? performance.now() : 0;
     loadCellStore(assembled, total, dimX, dimY, dimZ);
+    const debugLoadMs = DEBUG_REASSEMBLE_TIMING
+      ? performance.now() - debugLoadStart
+      : 0;
     this.originChunk = newOrigin;
     this.gridDims = newGridDims;
     this.cellDims = newCellDims;
+
+    if (DEBUG_REASSEMBLE_TIMING) {
+      const ms = performance.now() - debugStart;
+      const oldVolume = oldGridDims.x * oldGridDims.y * oldGridDims.z;
+      const newVolume = newGridDims.x * newGridDims.y * newGridDims.z;
+      console.log(
+        `[chunk-timing] CellWindow.reassemble breakdown: ${ms.toFixed(2)}ms | ` +
+          `dumpMs=${debugDumpMs.toFixed(2)} ` +
+          `evictMs=${debugEvictMs.toFixed(2)} (matchesBaselineMs=${debugMatchesBaselineMs.toFixed(2)} checked=${debugEvictChecked} skipped=${debugEvictSkipped}) ` +
+          `assembleMs=${debugAssembleMs.toFixed(2)} (baselineGenMs=${debugBaselineGenMs.toFixed(2)} baselineGenCalls=${debugBaselineGenCalls}) ` +
+          `loadMs=${debugLoadMs.toFixed(2)} | ` +
+          `oldVolume=${oldVolume} newVolume=${newVolume} ` +
+          (debugMsSinceLastCall !== null
+            ? `msSincePrevCall=${debugMsSinceLastCall.toFixed(2)}`
+            : '(first call)'),
+      );
+      debugLastReassembleCallTime = performance.now();
+    }
+  }
+
+  /** Stable string key for `editedSinceBaseline`, by world-chunk coordinate. */
+  private chunkKey(cx: number, cy: number, cz: number): string {
+    return `${cx},${cy},${cz}`;
   }
 
   /** Whether `worldChunk` falls inside the `gridDims`-sized window starting at `origin`. */
@@ -501,14 +626,27 @@ export class CellWindow {
       const baseX = worldChunk.cx * csx;
       const baseY = worldChunk.cy * csy;
       const baseZ = worldChunk.cz * csz;
+      // Flat single-loop traversal (matches Array3D.forEach's shape, see
+      // math/index.ts) instead of a triple-nested for -- avoids two of the
+      // three loop-control overheads. x innermost, then y, then z, same
+      // order and semantics as before.
+      let x = 0;
+      let y = 0;
+      let z = 0;
       let idx = 0;
-      for (let z = 0; z < csz; z++) {
-        for (let y = 0; y < csy; y++) {
-          for (let x = 0; x < csx; x++) {
-            out[idx++] =
-              generateCell(baseX + x, baseY + y, baseZ + z) ?? this.emptyCell;
-          }
+      while (idx < count) {
+        out[idx] =
+          generateCell(baseX + x, baseY + y, baseZ + z) ?? this.emptyCell;
+        x += 1;
+        if (x >= csx) {
+          y += 1;
+          x = 0;
         }
+        if (y >= csy) {
+          z += 1;
+          y = 0;
+        }
+        idx += 1;
       }
       return out;
     }
@@ -533,13 +671,15 @@ export class CellWindow {
     const baseY = cy * csy;
     const baseZ = cz * csz;
     let idx = 0;
+    // A chunk's cells aren't contiguous in the whole-window flat array
+    // (dims-strided, not chunk-strided), but for a fixed (y,z) the x-range
+    // IS contiguous in both -- native bulk-copy one row at a time instead of
+    // one cell at a time, a chunkSize.x-factor fewer JS loop iterations.
     for (let z = 0; z < csz; z++) {
       for (let y = 0; y < csy; y++) {
-        for (let x = 0; x < csx; x++) {
-          const flatIdx =
-            (baseZ + z) * dimY * dimX + (baseY + y) * dimX + (baseX + x);
-          out[idx++] = flat[flatIdx];
-        }
+        const rowStart = (baseZ + z) * dimY * dimX + (baseY + y) * dimX + baseX;
+        out.set(flat.subarray(rowStart, rowStart + csx), idx);
+        idx += csx;
       }
     }
     return out;
@@ -562,13 +702,12 @@ export class CellWindow {
     const baseY = cy * csy;
     const baseZ = cz * csz;
     let idx = 0;
+    // Mirror of extractChunk's row-wise bulk copy.
     for (let z = 0; z < csz; z++) {
       for (let y = 0; y < csy; y++) {
-        for (let x = 0; x < csx; x++) {
-          const flatIdx =
-            (baseZ + z) * dimY * dimX + (baseY + y) * dimX + (baseX + x);
-          flat[flatIdx] = cells[idx++];
-        }
+        const rowStart = (baseZ + z) * dimY * dimX + (baseY + y) * dimX + baseX;
+        flat.set(cells.subarray(idx, idx + csx), rowStart);
+        idx += csx;
       }
     }
   }

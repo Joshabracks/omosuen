@@ -114,9 +114,10 @@ export function loadCellStore(
   const e = ex();
   const ptr = e.store_reserve(total);
   const view = new Uint32Array(e.memory.buffer, ptr, total);
-  for (let i = 0; i < total; i++) {
-    view[i] = packedFlat[i];
-  }
+  // Native bulk copy -- was a manual element-by-element for-loop, which at
+  // full-window scale (millions of cells) is measurably slower than letting
+  // the engine's typed-array set() do it.
+  view.set(packedFlat, 0);
   e.store_load(mapX, mapY, mapZ);
 }
 

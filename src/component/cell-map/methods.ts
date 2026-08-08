@@ -421,8 +421,6 @@ export const CellMap: CellMapMethods = {
         oldOrigin,
         component.window.origin!,
         component.window.gridDimensions,
-        component.chunkSize,
-        component.cellSize,
       );
       component.chunks = chunks;
       queueBufferCleanup(evicted);
@@ -473,8 +471,6 @@ export const CellMap: CellMapMethods = {
       oldOrigin,
       component.window.origin!,
       component.window.gridDimensions,
-      component.chunkSize,
-      component.cellSize,
     );
     component.chunks = chunks;
     queueBufferCleanup(evicted);

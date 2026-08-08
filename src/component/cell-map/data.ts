@@ -40,6 +40,14 @@ export interface CellPackedReadView {
   get(coord: Vector3D): number;
 }
 
+/**
+ * TEMPORARY diagnostic instrumentation for the chunk-buffering FPS
+ * investigation (see `.design/chunk-buffering`) -- logs `reassembleChunks`'s
+ * own timing/counts to the console, prefixed `[chunk-timing]`. Flip to
+ * `false` or delete once the bottleneck is identified.
+ */
+const DEBUG_CHUNK_TIMING = true;
+
 // ── Module-level singleton storage ──
 // Data lives here to avoid GC pressure and enable direct imports.
 // The CellMapT instance delegates to these via getter/setter properties.
@@ -888,6 +896,12 @@ export function reassembleChunks(
   chunkSize: { x: number; y: number; z: number },
   cellSize: { x: number; y: number; z: number },
 ): ReassembleResult {
+  const debugStart = DEBUG_CHUNK_TIMING ? performance.now() : 0;
+  let debugNewCount = 0;
+  let debugReusedCount = 0;
+  let debugTranslatedCount = 0;
+  let debugAdjacencyDirtiedCount = 0;
+
   interface OldEntry {
     chunk: ChunkMesh;
     wcx: number;
@@ -920,6 +934,7 @@ export function reassembleChunks(
         if (entry) {
           oldByWorldCoord.delete(entryKey); // consumed
           const { chunk } = entry;
+          debugReusedCount++;
           if (chunk.cx !== cx || chunk.cy !== cy || chunk.cz !== cz) {
             translateChunkMeshInPlace(
               chunk,
@@ -931,12 +946,14 @@ export function reassembleChunks(
             chunk.cx = cx;
             chunk.cy = cy;
             chunk.cz = cz;
+            debugTranslatedCount++;
           }
           chunks.push(chunk);
           isNewSlot.push(false);
         } else {
           chunks.push(freshChunkMesh(cx, cy, cz));
           isNewSlot.push(true);
+          debugNewCount++;
         }
       }
     }
@@ -951,40 +968,37 @@ export function reassembleChunks(
   // structurally here instead of per-edit.
   const localIndex = (cx: number, cy: number, cz: number): number =>
     cz * newGridDims.y * newGridDims.x + cy * newGridDims.x + cx;
+  const dirtyIfReused = (i: number): void => {
+    if (isNewSlot[i] || chunks[i].dirty) return;
+    chunks[i].dirty = true;
+    debugAdjacencyDirtiedCount++;
+  };
   for (let cz = 0; cz < newGridDims.z; cz++) {
     for (let cy = 0; cy < newGridDims.y; cy++) {
       for (let cx = 0; cx < newGridDims.x; cx++) {
         if (!isNewSlot[localIndex(cx, cy, cz)]) continue;
-        if (cx > 0) {
-          const i = localIndex(cx - 1, cy, cz);
-          if (!isNewSlot[i]) chunks[i].dirty = true;
-        }
-        if (cx < newGridDims.x - 1) {
-          const i = localIndex(cx + 1, cy, cz);
-          if (!isNewSlot[i]) chunks[i].dirty = true;
-        }
-        if (cy > 0) {
-          const i = localIndex(cx, cy - 1, cz);
-          if (!isNewSlot[i]) chunks[i].dirty = true;
-        }
-        if (cy < newGridDims.y - 1) {
-          const i = localIndex(cx, cy + 1, cz);
-          if (!isNewSlot[i]) chunks[i].dirty = true;
-        }
-        if (cz > 0) {
-          const i = localIndex(cx, cy, cz - 1);
-          if (!isNewSlot[i]) chunks[i].dirty = true;
-        }
-        if (cz < newGridDims.z - 1) {
-          const i = localIndex(cx, cy, cz + 1);
-          if (!isNewSlot[i]) chunks[i].dirty = true;
-        }
+        if (cx > 0) dirtyIfReused(localIndex(cx - 1, cy, cz));
+        if (cx < newGridDims.x - 1) dirtyIfReused(localIndex(cx + 1, cy, cz));
+        if (cy > 0) dirtyIfReused(localIndex(cx, cy - 1, cz));
+        if (cy < newGridDims.y - 1) dirtyIfReused(localIndex(cx, cy + 1, cz));
+        if (cz > 0) dirtyIfReused(localIndex(cx, cy, cz - 1));
+        if (cz < newGridDims.z - 1) dirtyIfReused(localIndex(cx, cy, cz + 1));
       }
     }
   }
 
   // Anything left in oldByWorldCoord fell outside the new window.
   const evicted = Array.from(oldByWorldCoord.values(), (e) => e.chunk);
+  if (DEBUG_CHUNK_TIMING) {
+    const ms = performance.now() - debugStart;
+    console.log(
+      `[chunk-timing] reassembleChunks: ${ms.toFixed(2)}ms | ` +
+        `new=${debugNewCount} reused=${debugReusedCount} ` +
+        `translated=${debugTranslatedCount} ` +
+        `adjacency-dirtied=${debugAdjacencyDirtiedCount} ` +
+        `evicted=${evicted.length}`,
+    );
+  }
   return { chunks, evicted };
 }
 

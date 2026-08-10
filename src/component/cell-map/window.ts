@@ -668,6 +668,18 @@ export class CellWindow {
    * whichever source is still valid for its current classification.
    */
   private reresolveChunk(worldChunk: ChunkCoord): Uint32Array {
+    // Live in-window data is always more authoritative than a cold-storage
+    // snapshot when both exist for the same coordinate -- the live store
+    // reflects every edit up to this instant, cold storage only reflects
+    // whatever was true the last time this chunk was evicted (and is never
+    // deleted on a read, so a chunk that re-entered the window via cold
+    // storage can leave a stale entry behind indefinitely). Checked first.
+    if (
+      this.originChunk &&
+      this.isWithin(worldChunk, this.originChunk, this.gridDims)
+    ) {
+      return this.extractLiveChunk(worldChunk);
+    }
     const fromCold = this.coldStorage.get(
       worldChunk.cx,
       worldChunk.cy,
@@ -678,12 +690,6 @@ export class CellWindow {
         this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz),
       );
       return fromCold;
-    }
-    if (
-      this.originChunk &&
-      this.isWithin(worldChunk, this.originChunk, this.gridDims)
-    ) {
-      return this.extractLiveChunk(worldChunk);
     }
     return this.baselineChunk(worldChunk);
   }
@@ -709,10 +715,29 @@ export class CellWindow {
     while (pending.queueIndex < pending.queue.length) {
       if (processed > 0 && performance.now() > deadline) break;
       const item = pending.queue[pending.queueIndex];
-      const cells =
-        item.source === 'reuse'
-          ? this.extractLiveChunk(item.coord)
-          : this.baselineChunk(item.coord);
+      let cells: Uint32Array;
+      if (item.source === 'reuse') {
+        cells = this.extractLiveChunk(item.coord);
+      } else {
+        // A 'generate' item was classified that way because cold storage had
+        // nothing for it back at neededForTarget's classification time -- but
+        // an off-window edit can land on it while it's still sitting in the
+        // queue, writing a cold-storage entry that didn't exist yet then.
+        // Re-check here rather than assuming baselineChunk is still correct.
+        const fromCold = this.coldStorage.get(
+          item.coord.cx,
+          item.coord.cy,
+          item.coord.cz,
+        );
+        if (fromCold) {
+          this.editedSinceBaseline.add(
+            this.chunkKey(item.coord.cx, item.coord.cy, item.coord.cz),
+          );
+          cells = fromCold;
+        } else {
+          cells = this.baselineChunk(item.coord);
+        }
+      }
       pending.staged.set(
         this.chunkKey(item.coord.cx, item.coord.cy, item.coord.cz),
         cells,

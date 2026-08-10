@@ -35,6 +35,15 @@ const DEBUG_REASSEMBLE_TIMING = true;
 let debugLastReassembleCallTime: number | null = null;
 
 /**
+ * Default per-frame time budget, in milliseconds, for generating a pending
+ * shift's newly-exposed chunk data (see `CellWindow.advance`). Mirrors
+ * `DEFAULT_CHUNK_GEN_BUDGET_MS` in `mesh-builder.ts` — same "spread expensive
+ * work across frames, always make at least one chunk of progress" pattern,
+ * applied to procedural generation instead of meshing.
+ */
+export const DEFAULT_CHUNK_DATA_GEN_BUDGET_MS = 4;
+
+/**
  * Rejects a malformed coordinate (NaN, ±Infinity, non-numeric) — a bug
  * regardless of where the window happens to be, so this throws
  * unconditionally. See
@@ -131,6 +140,24 @@ export class CellWindow {
    * bookkeeping.
    */
   private readonly editedSinceBaseline = new Set<string>();
+  /**
+   * A shift/resize whose target has genuinely-new chunks (not reusable from
+   * the current window or cold storage) still waiting on procedural
+   * generation. The window's committed state (`originChunk`/`gridDims`/
+   * `cellDims`) does NOT change until every needed chunk's data is staged
+   * and `reassemble` actually runs — see `advance`. `queue`/`queueIndex`
+   * form a cursor over `queue` (nearest-to-target-center first) rather than
+   * shifting the array, to avoid O(n) removals for large queues.
+   */
+  private pendingShift: {
+    origin: ChunkCoord;
+    gridDims: { x: number; y: number; z: number };
+    cellDims: { x: number; y: number; z: number };
+    queue: ChunkCoord[];
+    queueIndex: number;
+    staged: Map<string, Uint32Array>;
+    targetRadius?: { x: number; y: number; z: number };
+  } | null = null;
   /** Window size in chunks. Mutable via `resize()`, otherwise constant for the session. */
   private gridDims: { x: number; y: number; z: number };
   /** Window size in cells. Mutable via `resize()`, otherwise constant for the session. */
@@ -309,34 +336,30 @@ export class CellWindow {
   /**
    * Moves the window so the chunk containing the given world cell coordinate
    * sits `radius` chunks in from the window's edge on every axis. No-ops if
-   * the focus chunk hasn't changed since the last call. Returns true if a
-   * shift (or the initial load) happened.
-   *
-   * Handles the general case, not just a single-chunk shift — a large jump
-   * (e.g. a teleport) reassembles the whole window from cold storage/baseline
-   * exactly like a normal shift, just with less (or no) reused overlap.
+   * the focus chunk hasn't changed since the last call. Returns true only if
+   * the window's committed state actually changed *this call* — false both
+   * for a true no-op AND for a target that needs generation and is now
+   * pending (see `advance`); the target chunk isn't visited/interactive
+   * until every needed chunk's data exists, so a large jump (e.g. a
+   * teleport) is handled exactly like a normal shift, just with less (or no)
+   * reused overlap to wait less on.
    */
   setFocus(cellX: number, cellY: number, cellZ: number): boolean {
+    // Build on whatever's currently being targeted (a pending shift/resize,
+    // if one's in flight) rather than the stale committed state -- see
+    // effectiveTarget()'s doc comment for why this matters.
+    const eff = this.effectiveTarget();
     const focusChunk: ChunkCoord = {
       cx: Math.floor(cellX / this.chunkSize.x),
       cy: Math.floor(cellY / this.chunkSize.y),
       cz: Math.floor(cellZ / this.chunkSize.z),
     };
     const desiredOrigin: ChunkCoord = {
-      cx: focusChunk.cx - this.windowRadius.x,
-      cy: focusChunk.cy - this.windowRadius.y,
-      cz: focusChunk.cz - this.windowRadius.z,
+      cx: focusChunk.cx - eff.radius.x,
+      cy: focusChunk.cy - eff.radius.y,
+      cz: focusChunk.cz - eff.radius.z,
     };
-    if (
-      this.originChunk &&
-      this.originChunk.cx === desiredOrigin.cx &&
-      this.originChunk.cy === desiredOrigin.cy &&
-      this.originChunk.cz === desiredOrigin.cz
-    ) {
-      return false;
-    }
-    this.reassemble(desiredOrigin, this.gridDims, this.cellDims);
-    return true;
+    return this.requestTarget(desiredOrigin, eff.gridDims, eff.cellDims);
   }
 
   /**
@@ -344,8 +367,10 @@ export class CellWindow {
    * around the current focus point (derived from `origin + radius`, or
    * `(0,0,0)` if `setFocus` has never run) at the new size — same evict/
    * reuse-overlap/generate mechanics as a normal shift, just with a
-   * different-sized destination. No-ops (`false`) if `newRadius` is
-   * unchanged. See `.design/cell-map-overhaul` (runtime window resizing).
+   * different-sized destination. Returns true only if the window's committed
+   * state actually changed *this call* (see `setFocus`'s note on pending
+   * targets — a resize that needs new chunk data doesn't commit
+   * `windowRadius` until `advance` finishes generating it).
    */
   resize(newRadius: { x: number; y: number; z: number }): boolean {
     if (
@@ -361,18 +386,14 @@ export class CellWindow {
           `— must be non-negative integers`,
       );
     }
-    if (
-      newRadius.x === this.windowRadius.x &&
-      newRadius.y === this.windowRadius.y &&
-      newRadius.z === this.windowRadius.z
-    ) {
-      return false;
-    }
-    const focusChunk: ChunkCoord = this.originChunk
+    // Build on whatever's currently being targeted, same as setFocus — see
+    // effectiveTarget()'s doc comment.
+    const eff = this.effectiveTarget();
+    const focusChunk: ChunkCoord = eff.origin
       ? {
-          cx: this.originChunk.cx + this.windowRadius.x,
-          cy: this.originChunk.cy + this.windowRadius.y,
-          cz: this.originChunk.cz + this.windowRadius.z,
+          cx: eff.origin.cx + eff.radius.x,
+          cy: eff.origin.cy + eff.radius.y,
+          cz: eff.origin.cz + eff.radius.z,
         }
       : { cx: 0, cy: 0, cz: 0 };
     const newGridDims = {
@@ -390,8 +411,228 @@ export class CellWindow {
       cy: focusChunk.cy - newRadius.y,
       cz: focusChunk.cz - newRadius.z,
     };
-    this.reassemble(newOrigin, newGridDims, newCellDims);
-    this.windowRadius = newRadius;
+    return this.requestTarget(newOrigin, newGridDims, newCellDims, newRadius);
+  }
+
+  /**
+   * The window state `setFocus`/`resize` should build their next target on
+   * top of: an in-flight `pendingShift`'s target if one exists, else the
+   * committed window. Both `setFocus` and `setWindowRadius` are called
+   * unconditionally every frame by the render loop (see `render-cell-maps
+   * .ts`) — if either computed its target from the stale *committed* state
+   * while the other has a shift pending, they'd compute two different
+   * targets every frame and perpetually overwrite each other's
+   * `pendingShift` before either could ever finish draining its queue (a
+   * livelock, not just wasted work). Building on the SAME in-flight target
+   * instead means a call whose own axis hasn't changed (radius for
+   * `setFocus`, focus point for `resize`) reproduces the exact current
+   * `pendingShift`, which `beginOrRetarget`'s already-targeting-this check
+   * then leaves untouched.
+   */
+  private effectiveTarget(): {
+    origin: ChunkCoord | null;
+    gridDims: { x: number; y: number; z: number };
+    cellDims: { x: number; y: number; z: number };
+    radius: { x: number; y: number; z: number };
+  } {
+    if (this.pendingShift) {
+      return {
+        origin: this.pendingShift.origin,
+        gridDims: this.pendingShift.gridDims,
+        cellDims: this.pendingShift.cellDims,
+        radius: this.pendingShift.targetRadius ?? this.windowRadius,
+      };
+    }
+    return {
+      origin: this.originChunk,
+      gridDims: this.gridDims,
+      cellDims: this.cellDims,
+      radius: this.windowRadius,
+    };
+  }
+
+  /**
+   * Shared no-op/targeting entry point for `setFocus`/`resize`. If `origin`+
+   * `gridDims` already exactly match the *committed* window, any in-flight
+   * `pendingShift` chasing a different target is abandoned (e.g. the focus
+   * point moved away and came back before generation finished) and this is a
+   * true no-op. Otherwise delegates to `beginOrRetarget`.
+   */
+  private requestTarget(
+    origin: ChunkCoord,
+    gridDims: { x: number; y: number; z: number },
+    cellDims: { x: number; y: number; z: number },
+    targetRadius?: { x: number; y: number; z: number },
+  ): boolean {
+    if (
+      this.originChunk &&
+      this.originChunk.cx === origin.cx &&
+      this.originChunk.cy === origin.cy &&
+      this.originChunk.cz === origin.cz &&
+      this.gridDims.x === gridDims.x &&
+      this.gridDims.y === gridDims.y &&
+      this.gridDims.z === gridDims.z
+    ) {
+      this.pendingShift = null;
+      return false;
+    }
+    return this.beginOrRetarget(origin, gridDims, cellDims, targetRadius);
+  }
+
+  /**
+   * Starts (or retargets) a pending shift toward `origin`/`gridDims`. Chunks
+   * that would need generation are classified up front (cheap — no
+   * generation yet, just `isWithin`/cold-storage checks); previously-staged
+   * data for chunks the new target still needs is carried over (world-
+   * coordinate-keyed, so a retarget while mid-flight doesn't waste completed
+   * work). Commits immediately (no deferral) if nothing needs generation —
+   * e.g. a small shift entirely into already-visited territory.
+   */
+  private beginOrRetarget(
+    origin: ChunkCoord,
+    gridDims: { x: number; y: number; z: number },
+    cellDims: { x: number; y: number; z: number },
+    targetRadius?: { x: number; y: number; z: number },
+  ): boolean {
+    if (
+      this.pendingShift &&
+      this.pendingShift.origin.cx === origin.cx &&
+      this.pendingShift.origin.cy === origin.cy &&
+      this.pendingShift.origin.cz === origin.cz &&
+      this.pendingShift.gridDims.x === gridDims.x &&
+      this.pendingShift.gridDims.y === gridDims.y &&
+      this.pendingShift.gridDims.z === gridDims.z
+    ) {
+      return false; // Already targeting this -- advance() keeps progressing it.
+    }
+
+    const needed = this.neededForTarget(origin, gridDims);
+    if (needed.length === 0) {
+      this.pendingShift = null;
+      this.reassemble(origin, gridDims, cellDims);
+      if (targetRadius) this.windowRadius = targetRadius;
+      return true;
+    }
+
+    const prevStaged = this.pendingShift?.staged;
+    const staged = new Map<string, Uint32Array>();
+    const queue: ChunkCoord[] = [];
+    for (const coord of needed) {
+      const key = this.chunkKey(coord.cx, coord.cy, coord.cz);
+      const prior = prevStaged?.get(key);
+      if (prior) {
+        staged.set(key, prior);
+      } else {
+        queue.push(coord);
+      }
+    }
+    // Nearest-to-target-center first, mirroring rebuildDirtyChunks's
+    // distance sort in mesh-builder.ts -- visible/near chunks' data is ready
+    // before distant buffer-zone ones if the budget can't cover everything
+    // in one advance() call.
+    const centerX = origin.cx + (gridDims.x - 1) / 2;
+    const centerY = origin.cy + (gridDims.y - 1) / 2;
+    const centerZ = origin.cz + (gridDims.z - 1) / 2;
+    queue.sort((a, b) => {
+      const da =
+        (a.cx - centerX) ** 2 + (a.cy - centerY) ** 2 + (a.cz - centerZ) ** 2;
+      const db =
+        (b.cx - centerX) ** 2 + (b.cy - centerY) ** 2 + (b.cz - centerZ) ** 2;
+      return da - db;
+    });
+
+    this.pendingShift = {
+      origin,
+      gridDims,
+      cellDims,
+      queue,
+      queueIndex: 0,
+      staged,
+      targetRadius,
+    };
+    return false;
+  }
+
+  /**
+   * Classifies which chunks a target window would need to generate from
+   * scratch -- not reusable from the *current* (committed) window, and not
+   * available in cold storage. No generation happens here; this is the cheap
+   * up-front pass `beginOrRetarget` uses to build (or shrink) a pending
+   * shift's work queue.
+   */
+  private neededForTarget(
+    origin: ChunkCoord,
+    gridDims: { x: number; y: number; z: number },
+  ): ChunkCoord[] {
+    const needed: ChunkCoord[] = [];
+    for (let cz = 0; cz < gridDims.z; cz++) {
+      for (let cy = 0; cy < gridDims.y; cy++) {
+        for (let cx = 0; cx < gridDims.x; cx++) {
+          const worldChunk: ChunkCoord = {
+            cx: origin.cx + cx,
+            cy: origin.cy + cy,
+            cz: origin.cz + cz,
+          };
+          if (
+            this.originChunk &&
+            this.isWithin(worldChunk, this.originChunk, this.gridDims)
+          ) {
+            continue;
+          }
+          if (
+            this.coldStorage.get(worldChunk.cx, worldChunk.cy, worldChunk.cz)
+          ) {
+            continue;
+          }
+          needed.push(worldChunk);
+        }
+      }
+    }
+    return needed;
+  }
+
+  /**
+   * Advances a pending shift's generation queue by up to `budgetMs` of
+   * wall-clock time (always generating at least one chunk, so a single
+   * expensive chunk can't stall progress forever -- same pattern as
+   * `rebuildDirtyChunks` in `mesh-builder.ts`). Once every needed chunk's
+   * data is staged, commits the shift (calls `reassemble`, which finds all
+   * of them already staged and pays no generation cost at swap time) and
+   * returns true. No-ops (false) if there's no pending shift, or if the
+   * queue isn't empty yet. Call once per frame regardless of whether
+   * `setFocus`/`resize` were called with a new target that frame.
+   */
+  advance(budgetMs: number = DEFAULT_CHUNK_DATA_GEN_BUDGET_MS): boolean {
+    const pending = this.pendingShift;
+    if (!pending) return false;
+
+    const debugStart = DEBUG_REASSEMBLE_TIMING ? performance.now() : 0;
+    const deadline = performance.now() + budgetMs;
+    let processed = 0;
+    while (pending.queueIndex < pending.queue.length) {
+      if (processed > 0 && performance.now() > deadline) break;
+      const coord = pending.queue[pending.queueIndex];
+      pending.staged.set(
+        this.chunkKey(coord.cx, coord.cy, coord.cz),
+        this.baselineChunk(coord),
+      );
+      pending.queueIndex++;
+      processed++;
+    }
+
+    const remaining = pending.queue.length - pending.queueIndex;
+    if (DEBUG_REASSEMBLE_TIMING) {
+      const ms = performance.now() - debugStart;
+      console.log(
+        `[chunk-timing] CellWindow.advance: processed=${processed} ` +
+          `remaining=${remaining} ms=${ms.toFixed(2)}`,
+      );
+    }
+    if (remaining > 0) return false;
+
+    this.reassemble(pending.origin, pending.gridDims, pending.cellDims);
+    if (pending.targetRadius) this.windowRadius = pending.targetRadius;
+    this.pendingShift = null;
     return true;
   }
 
@@ -522,13 +763,27 @@ export class CellWindow {
                 this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz),
               );
             } else {
-              const debugBgStart = DEBUG_REASSEMBLE_TIMING
-                ? performance.now()
-                : 0;
-              cells = this.baselineChunk(worldChunk);
-              if (DEBUG_REASSEMBLE_TIMING) {
-                debugBaselineGenMs += performance.now() - debugBgStart;
-                debugBaselineGenCalls++;
+              // A pending shift's advance() pre-generates exactly the
+              // chunks neededForTarget() identified, so by the time this
+              // commits, every chunk that reaches here should already be
+              // staged -- the baselineChunk() fallback below should be
+              // unreachable in that case. Kept as a safe fallback (not an
+              // assertion) rather than a hard requirement, e.g. for a direct
+              // reassemble() commit path bug or future caller.
+              const staged = this.pendingShift?.staged.get(
+                this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz),
+              );
+              if (staged) {
+                cells = staged;
+              } else {
+                const debugBgStart = DEBUG_REASSEMBLE_TIMING
+                  ? performance.now()
+                  : 0;
+                cells = this.baselineChunk(worldChunk);
+                if (DEBUG_REASSEMBLE_TIMING) {
+                  debugBaselineGenMs += performance.now() - debugBgStart;
+                  debugBaselineGenCalls++;
+                }
               }
             }
           }

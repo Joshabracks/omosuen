@@ -33,6 +33,30 @@ import { cellStoreFlush } from '../camera/render/wasm';
  * exists) happens to be, so this throws unconditionally — see
  * `.design/completed_tasks/cell-map-overhaul/07-bounds-checking-diagnostics.md`.
  */
+/**
+ * The secondary dense maps (emissionColorMap/smoothingWeights) are sized to
+ * the window and have no per-chunk windowing of their own yet (doc 13,
+ * deferred) -- reallocate them to the new size so nothing downstream reads a
+ * stale length against the new mapSize. This resets any per-cell
+ * emission-color edits made at the old size (a known, accepted limitation);
+ * the uniform smoothing weight is preserved by reading it back before
+ * reallocating. Shared by `setWindowRadius`'s immediate-commit path and
+ * `advanceWindowGeneration`'s deferred-resize-commit path — both need
+ * identical post-resize bookkeeping, just triggered from different places.
+ */
+function applyResizeSideEffects(component: CellMapT): void {
+  component.needsGPUUpdate = true;
+  component.emissionColorMap = new Array3D<number>(component.mapSize, 0);
+  component.emissionColorDirty = true;
+  const uniformWeight = component.smoothingWeights.expand().value[0] ?? 8;
+  component.smoothingWeights = new Array3Di(
+    new Array3D<number>(component.mapSize, uniformWeight),
+    8,
+    [4, 4],
+    'clamp',
+  );
+}
+
 function assertFiniteCoordinates(x: number, y: number, z: number): void {
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
     throw new Error(
@@ -183,6 +207,20 @@ export interface CellMapMethods extends ComponentMethods {
     component: CellMapT,
     radius: { x: number; y: number; z: number },
   ) => boolean;
+
+  /**
+   * Advances any pending shift/resize's chunk-*data* generation (see
+   * `CellWindow.advance`) by one frame's budget, committing it (updating the
+   * resident window and reassembling the chunk-mesh array, same as a direct
+   * `setFocus`/`setWindowRadius` commit) once every needed chunk's data is
+   * ready. A target with genuinely-new chunks doesn't move the resident
+   * window until this finishes generating them — spreads that cost across
+   * frames instead of paying it synchronously inside a single shift. Call
+   * once per frame regardless of `autoFocusFromCamera`/`autoResizeFromZoom`,
+   * since a pending target needs driving forward even when neither is being
+   * auto-driven that frame.
+   */
+  advanceWindowGeneration: (component: CellMapT) => void;
 
   /**
    * Drains and returns chunk meshes that were evicted from the resident
@@ -474,26 +512,48 @@ export const CellMap: CellMapMethods = {
     );
     component.chunks = chunks;
     queueBufferCleanup(evicted);
-    component.needsGPUUpdate = true;
-
-    // The secondary dense maps (emissionColorMap/smoothingWeights) are sized
-    // to the window and have no per-chunk windowing of their own yet (doc 13,
-    // deferred) -- reallocate them to the new size so nothing downstream reads
-    // a stale length against the new mapSize. This resets any per-cell
-    // emission-color edits made at the old size (a known, accepted
-    // limitation); the uniform smoothing weight is preserved by reading it
-    // back before reallocating.
-    component.emissionColorMap = new Array3D<number>(component.mapSize, 0);
-    component.emissionColorDirty = true;
-    const uniformWeight = component.smoothingWeights.expand().value[0] ?? 8;
-    component.smoothingWeights = new Array3Di(
-      new Array3D<number>(component.mapSize, uniformWeight),
-      8,
-      [4, 4],
-      'clamp',
-    );
+    applyResizeSideEffects(component);
 
     return true;
+  },
+
+  advanceWindowGeneration: (component: CellMapT): void => {
+    const oldOrigin = component.window.origin;
+    const oldChunks = component.chunks;
+    const oldGridDims = component.window.gridDimensions;
+    const committed = component.window.advance();
+    if (!committed) return;
+
+    // A committed target's dims may or may not have changed depending on
+    // whether it originated from setFocus (dims unchanged) or
+    // setWindowRadius (dims changed) -- window.advance() doesn't distinguish,
+    // so derive it here instead of threading that through the window API.
+    const dimsChanged =
+      component.window.gridDimensions.x !== oldGridDims.x ||
+      component.window.gridDimensions.y !== oldGridDims.y ||
+      component.window.gridDimensions.z !== oldGridDims.z;
+
+    if (dimsChanged) {
+      component.mapSize = new Vector3D(
+        component.window.cellDimensions.x,
+        component.window.cellDimensions.y,
+        component.window.cellDimensions.z,
+      );
+      component.chunkGridSize = component.window.gridDimensions;
+    }
+
+    const { chunks, evicted } = reassembleChunks(
+      oldChunks,
+      oldOrigin,
+      component.window.origin!,
+      component.window.gridDimensions,
+    );
+    component.chunks = chunks;
+    queueBufferCleanup(evicted);
+
+    if (dimsChanged) {
+      applyResizeSideEffects(component);
+    }
   },
 
   raycast: (

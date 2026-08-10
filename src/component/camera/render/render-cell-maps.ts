@@ -707,6 +707,16 @@ export function renderCellMaps(
       CellMap.setFocus(cellMap, camPos.x, camPos.y, camPos.z);
     }
 
+    // Drive forward any pending shift/resize's chunk-*data* generation
+    // (see CellWindow.advance) -- a target with genuinely-new chunks doesn't
+    // move the resident window until every one is generated, spread across
+    // frames instead of paid synchronously inside a single shift. Called
+    // unconditionally (not gated behind autoFocusFromCamera/
+    // autoResizeFromZoom) so a pending target still gets driven forward for
+    // manually-driven windows too, and before the buffer-cleanup drain below
+    // since a commit here can also evict chunks.
+    CellMap.advanceWindowGeneration(cellMap);
+
     // A resize or shift above may have evicted chunks from the window --
     // drain and actually delete their GPU buffers here, once per cell-map
     // per frame, regardless of which path produced them (this component has

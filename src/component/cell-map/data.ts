@@ -243,6 +243,7 @@ export function resetCellMapState(): void {
   cmWindow = undefined;
   cmColdStorage = undefined;
   cmPendingBufferCleanup = [];
+  cmMeshCache.clear();
 }
 
 /**
@@ -782,6 +783,7 @@ function freshChunkMesh(cx: number, cy: number, cz: number): ChunkMesh {
     cz,
     dirty: true,
     gpuDirty: true,
+    meshedAtEdge: false,
     vertices: null,
     stride: 9,
     indices: null,
@@ -830,9 +832,85 @@ export function takePendingBufferCleanup(): ChunkMesh[] {
   return pending;
 }
 
-export interface ReassembleResult {
-  chunks: ChunkMesh[];
-  evicted: ChunkMesh[];
+/**
+ * Bounded cache of recently-evicted chunk meshes, keyed by world-chunk
+ * coordinate -- sits between "evicted from the resident window" and
+ * "actually discarded," so revisiting recently-seen terrain can reuse an
+ * already-built mesh (and its already-uploaded GPU buffers) instead of
+ * re-running WASM meshing from scratch. A fixed internal constant, not a
+ * tunable field, matching this effort's established "no unnecessary
+ * tunables" choice. A plain `Map` doubles as the LRU structure: re-`set`ting
+ * an existing key moves it to "most recently used" (end of iteration order),
+ * so the oldest entry is always `.keys().next().value`.
+ * See `.design/chunk-buffering/05-mesh-cache.md`.
+ */
+const MESH_CACHE_CAPACITY = 128;
+const cmMeshCache = new Map<string, ChunkMesh>();
+
+function meshCacheKey(cx: number, cy: number, cz: number): string {
+  return `${cx},${cy},${cz}`;
+}
+
+/**
+ * Hands a chunk that just left the resident window to the cache instead of
+ * discarding it immediately. Evicts (and queues for GPU cleanup) the oldest
+ * cached entry if this pushes the cache over capacity.
+ */
+function cacheEvictedChunk(
+  wcx: number,
+  wcy: number,
+  wcz: number,
+  chunk: ChunkMesh,
+): void {
+  const key = meshCacheKey(wcx, wcy, wcz);
+  cmMeshCache.delete(key);
+  cmMeshCache.set(key, chunk);
+  if (cmMeshCache.size > MESH_CACHE_CAPACITY) {
+    const oldestKey = cmMeshCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      const overflow = cmMeshCache.get(oldestKey);
+      cmMeshCache.delete(oldestKey);
+      if (overflow) queueBufferCleanup([overflow]);
+    }
+  }
+}
+
+/**
+ * Reclaims a cached chunk for reuse (removing it from the cache), or
+ * `undefined` on a cache miss. Called from `reassembleChunks` when a
+ * newly-exposed window slot has no match in the previous window.
+ */
+function takeCachedChunk(
+  wcx: number,
+  wcy: number,
+  wcz: number,
+): ChunkMesh | undefined {
+  const key = meshCacheKey(wcx, wcy, wcz);
+  const chunk = cmMeshCache.get(key);
+  if (chunk) cmMeshCache.delete(key);
+  return chunk;
+}
+
+/**
+ * Purges a world-chunk coordinate from the mesh cache, if present, queuing
+ * its GPU buffers for cleanup same as any other eviction. A cached chunk's
+ * mesh bakes in face-culling decisions against whatever neighbor data was
+ * present when it was cached -- an edit to that chunk, or to a face-adjacent
+ * neighbor's boundary-facing cell, can invalidate that, so `markChunksDirty`
+ * calls this unconditionally (regardless of whether the coordinate is
+ * currently resident) for the edited chunk and each face-adjacent neighbor.
+ * No-ops cleanly on a miss.
+ */
+export function invalidateCachedChunk(
+  wcx: number,
+  wcy: number,
+  wcz: number,
+): void {
+  const key = meshCacheKey(wcx, wcy, wcz);
+  const chunk = cmMeshCache.get(key);
+  if (!chunk) return;
+  cmMeshCache.delete(key);
+  queueBufferCleanup([chunk]);
 }
 
 /**
@@ -844,14 +922,16 @@ export interface ReassembleResult {
  * vertex data is baked to absolute world-space at mesh-build time (see
  * `bakeWorldOffsetInPlace` in mesh-builder.ts), so moving to a different
  * local slot is pure bookkeeping (`cx/cy/cz` only), no vertex edit, no
- * `gpuDirty`, no re-upload. A chunk that just left the window is returned
- * separately as `evicted` for the caller to clean up (this function does
- * not cache them -- see `.design/chunk-buffering/05-mesh-cache.md`). A
- * chunk that just entered the window gets a fresh `dirty` entry (same shape
- * `initChunks` produces) -- and, in turn, re-dirties any REUSED neighbor
- * sharing a face with it, since that neighbor's mesh was built without
- * knowledge of this newly-available data and its cross-chunk face culling
- * at that boundary is now stale (see the face-adjacency pass below). Serves
+ * `gpuDirty`, no re-upload. A chunk that just left the window is handed to
+ * the bounded mesh cache (`cacheEvictedChunk`) instead of being discarded
+ * immediately -- see `.design/chunk-buffering/05-mesh-cache.md`. A chunk
+ * entering a slot with no match in the old window first checks that cache
+ * (`takeCachedChunk`) before falling back to a fresh `dirty` entry (same
+ * shape `initChunks` produces) -- either way (cache hit or fresh), it
+ * re-dirties any REUSED neighbor sharing a face with it, since that
+ * neighbor's mesh was built without knowledge of this newly-available data
+ * and its cross-chunk face culling at that boundary is now stale (see the
+ * face-adjacency pass below). Serves
  * both a same-size shift (`CellMap.setFocus`) and a resize
  * (`CellMap.setWindowRadius`), same as `CellWindow.reassemble` does for
  * cell data.
@@ -861,9 +941,11 @@ export function reassembleChunks(
   oldOrigin: ChunkCoord | null,
   newOrigin: ChunkCoord,
   newGridDims: { x: number; y: number; z: number },
-): ReassembleResult {
+): ChunkMesh[] {
   const debugStart = DEBUG_CHUNK_TIMING ? performance.now() : 0;
   let debugNewCount = 0;
+  let debugCacheHitCount = 0;
+  let debugCacheHitEdgeRemeshCount = 0;
   let debugReusedCount = 0;
   let debugAdjacencyDirtiedCount = 0;
 
@@ -911,7 +993,25 @@ export function reassembleChunks(
           chunks.push(chunk);
           isNewSlot.push(false);
         } else {
-          chunks.push(freshChunkMesh(cx, cy, cz));
+          const cached = takeCachedChunk(wcx, wcy, wcz);
+          if (cached) {
+            cached.cx = cx;
+            cached.cy = cy;
+            cached.cz = cz;
+            // Its mesh may have culled faces against an unknown (not-yet-
+            // loaded) neighbor when it was last built (EDGE_OCCLUDES) --
+            // if so, that assumption may no longer hold now that it's
+            // re-entering the window, so force a remesh against whatever's
+            // actually there now. See ChunkMesh.meshedAtEdge's doc comment.
+            if (cached.meshedAtEdge) {
+              cached.dirty = true;
+              debugCacheHitEdgeRemeshCount++;
+            }
+            chunks.push(cached);
+            debugCacheHitCount++;
+          } else {
+            chunks.push(freshChunkMesh(cx, cy, cz));
+          }
           isNewSlot.push(true);
           debugNewCount++;
         }
@@ -947,18 +1047,24 @@ export function reassembleChunks(
     }
   }
 
-  // Anything left in oldByWorldCoord fell outside the new window.
-  const evicted = Array.from(oldByWorldCoord.values(), (e) => e.chunk);
+  // Anything left in oldByWorldCoord fell outside the new window -- hand it
+  // to the mesh cache instead of discarding it immediately (see
+  // `.design/chunk-buffering/05-mesh-cache.md`).
+  for (const { chunk, wcx, wcy, wcz } of oldByWorldCoord.values()) {
+    cacheEvictedChunk(wcx, wcy, wcz, chunk);
+  }
   if (DEBUG_CHUNK_TIMING) {
     const ms = performance.now() - debugStart;
     console.log(
       `[chunk-timing] reassembleChunks: ${ms.toFixed(2)}ms | ` +
-        `new=${debugNewCount} reused=${debugReusedCount} ` +
+        `new=${debugNewCount} (cacheHits=${debugCacheHitCount} ` +
+        `cacheHitEdgeRemesh=${debugCacheHitEdgeRemeshCount}) ` +
+        `reused=${debugReusedCount} ` +
         `adjacency-dirtied=${debugAdjacencyDirtiedCount} ` +
-        `evicted=${evicted.length}`,
+        `cached-or-evicted=${oldByWorldCoord.size}`,
     );
   }
-  return { chunks, evicted };
+  return chunks;
 }
 
 /**

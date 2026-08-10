@@ -239,6 +239,17 @@ export interface ChunkMesh {
   dirty: boolean;
   /** Whether this chunk's mesh has changed since its last GPU buffer upload */
   gpuDirty: boolean;
+  /**
+   * Whether this chunk sat at the resident window's own edge (any axis) the
+   * last time its mesh was built -- meaning some of its faces may have been
+   * culled by `EDGE_OCCLUDES` against an unknown (not-yet-loaded) neighbor,
+   * rather than real data. A chunk restored from the mesh cache
+   * (`.design/chunk-buffering/05-mesh-cache.md`) with this set needs a
+   * remesh before being trusted, since it may now have a real neighbor on
+   * that side. See `reassembleChunks` in `data.ts` and `rebuildDirtyChunks`
+   * in `mesh-builder.ts` (which sets this after every mesh build).
+   */
+  meshedAtEdge: boolean;
 
   /** Interleaved vertex data: pos3+normal3+origPos3+emission1 (stride 10), or +uv2 (stride 12) */
   vertices: Float32Array | null;

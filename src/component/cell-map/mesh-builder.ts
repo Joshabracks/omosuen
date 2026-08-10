@@ -1,4 +1,5 @@
 import type { CellMapT } from './data';
+import { invalidateCachedChunk } from './data';
 import type { Mesh } from './types';
 import type { Array3Di } from '../../math';
 import {
@@ -218,6 +219,18 @@ export function rebuildDirtyChunks(
     }
     chunk.dirty = false;
     chunk.gpuDirty = true;
+    // Whether any of this chunk's faces may have been culled against an
+    // unknown (not-yet-loaded) neighbor via EDGE_OCCLUDES, rather than real
+    // data -- true if it sits at the resident window's own edge on any
+    // axis. See ChunkMesh.meshedAtEdge's doc comment (types.ts) and the
+    // mesh cache's use of this in reassembleChunks (data.ts).
+    chunk.meshedAtEdge =
+      chunk.cx === 0 ||
+      chunk.cx === cellMap.chunkGridSize.x - 1 ||
+      chunk.cy === 0 ||
+      chunk.cy === cellMap.chunkGridSize.y - 1 ||
+      chunk.cz === 0 ||
+      chunk.cz === cellMap.chunkGridSize.z - 1;
   }
 
   if (DEBUG_CHUNK_TIMING) {
@@ -252,9 +265,16 @@ function packFaceCover(mesh: Mesh): number {
 /**
  * Marks chunks as dirty that contain or border the given WORLD cell
  * coordinate. Call when a cell is modified so its chunk mesh gets rebuilt.
- * No-ops if the coordinate is currently outside the window — that edit
- * already went through `CellWindow.setCell`'s cold-storage path instead of
- * the live store, so there's no resident chunk mesh to dirty. See
+ * Also purges the mesh cache (`.design/chunk-buffering/05-mesh-cache.md`)
+ * for the same coordinates, unconditionally -- a chunk's cell data can
+ * change while it's outside the window (`CellWindow.setCell`'s cold-storage
+ * path, bypassing the resident chunk array entirely), so a currently-cached
+ * chunk needs the same invalidation a resident one gets, or it could later
+ * be served as a stale mesh when it re-enters the window. The resident
+ * dirty-marking below still no-ops if the coordinate (or its window-local
+ * neighbors) are currently outside the window — that part of the edit
+ * already went through the cold-storage path instead of the live store, so
+ * there's no resident chunk mesh to dirty. See
  * `.design/cell-map-overhaul/09-chunk-grid-and-dirty-marking.md`.
  */
 export function markChunksDirty(
@@ -264,8 +284,6 @@ export function markChunksDirty(
   z: number,
 ): void {
   const { chunkGridSize, chunkSize, window } = cellMap;
-  const origin = window.origin;
-  if (!origin) return; // no window loaded yet
 
   const worldChunkX = Math.floor(x / chunkSize.x);
   const worldChunkY = Math.floor(y / chunkSize.y);
@@ -276,6 +294,26 @@ export function markChunksDirty(
   const localX = x - worldChunkX * chunkSize.x;
   const localY = y - worldChunkY * chunkSize.y;
   const localZ = z - worldChunkZ * chunkSize.z;
+
+  // Mesh-cache invalidation: world-coordinate-based, no window-bounds guard
+  // (unlike the resident dirty-marking below) -- the whole point is covering
+  // off-window/cached chunks too. invalidateCachedChunk no-ops on a miss.
+  invalidateCachedChunk(worldChunkX, worldChunkY, worldChunkZ);
+  if (localX === 0)
+    invalidateCachedChunk(worldChunkX - 1, worldChunkY, worldChunkZ);
+  if (localX === chunkSize.x - 1)
+    invalidateCachedChunk(worldChunkX + 1, worldChunkY, worldChunkZ);
+  if (localY === 0)
+    invalidateCachedChunk(worldChunkX, worldChunkY - 1, worldChunkZ);
+  if (localY === chunkSize.y - 1)
+    invalidateCachedChunk(worldChunkX, worldChunkY + 1, worldChunkZ);
+  if (localZ === 0)
+    invalidateCachedChunk(worldChunkX, worldChunkY, worldChunkZ - 1);
+  if (localZ === chunkSize.z - 1)
+    invalidateCachedChunk(worldChunkX, worldChunkY, worldChunkZ + 1);
+
+  const origin = window.origin;
+  if (!origin) return; // no window loaded yet -- nothing resident to dirty
 
   // Window-local chunk-grid position (cmChunks is indexed by this, not by
   // world chunk coordinate -- see doc 09).

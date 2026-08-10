@@ -3,7 +3,6 @@ import { Array3D, Array3Di, Vector3D } from '../../math';
 import {
   CellMapT,
   reassembleChunks,
-  queueBufferCleanup,
   takePendingBufferCleanup,
   resetCellMapState,
 } from './data';
@@ -454,14 +453,12 @@ export const CellMap: CellMapMethods = {
     );
     if (shifted) {
       // Non-null immediately after a shift -- setFocus just set it.
-      const { chunks, evicted } = reassembleChunks(
+      component.chunks = reassembleChunks(
         oldChunks,
         oldOrigin,
         component.window.origin!,
         component.window.gridDimensions,
       );
-      component.chunks = chunks;
-      queueBufferCleanup(evicted);
     }
   },
 
@@ -504,14 +501,12 @@ export const CellMap: CellMapMethods = {
     );
     component.chunkGridSize = component.window.gridDimensions;
     // Non-null immediately after a resize -- window.resize just set it.
-    const { chunks, evicted } = reassembleChunks(
+    component.chunks = reassembleChunks(
       oldChunks,
       oldOrigin,
       component.window.origin!,
       component.window.gridDimensions,
     );
-    component.chunks = chunks;
-    queueBufferCleanup(evicted);
     applyResizeSideEffects(component);
 
     return true;
@@ -542,14 +537,12 @@ export const CellMap: CellMapMethods = {
       component.chunkGridSize = component.window.gridDimensions;
     }
 
-    const { chunks, evicted } = reassembleChunks(
+    component.chunks = reassembleChunks(
       oldChunks,
       oldOrigin,
       component.window.origin!,
       component.window.gridDimensions,
     );
-    component.chunks = chunks;
-    queueBufferCleanup(evicted);
 
     if (dimsChanged) {
       applyResizeSideEffects(component);

@@ -155,6 +155,54 @@ export function cellStoreDump(): Uint32Array {
   return new Uint32Array(e.memory.buffer, ptr, len).slice();
 }
 
+/**
+ * Returns a LIVE view straight over the store's current expanded buffer — no
+ * `.slice()`, unlike `cellStoreDump()`. For callers that read it and are done
+ * before anything else touches WASM memory in between (e.g. `CellWindow`'s
+ * per-chunk reuse-copy staging); `cellStoreDump()` remains the right choice
+ * for anything that needs a stable, owned snapshot (e.g. serialization).
+ */
+export function getExpandedStoreView(): Uint32Array {
+  const e = ex();
+  const len = e.store_expanded_len();
+  if (len === 0) return new Uint32Array(0);
+  const ptr = e.store_expanded_ptr();
+  return new Uint32Array(e.memory.buffer, ptr, len);
+}
+
+/**
+ * Returns live views over BOTH the store's current expanded buffer (`source`
+ * — the pre-swap data, for reuse-copying) and a freshly `store_reserve`'d
+ * buffer of `destTotal` cells (`dest` — write the next window's assembled
+ * contents directly into this, then call `commitCellStore`). Fetches BOTH
+ * raw pointers before constructing EITHER view, and reads `memory.buffer`
+ * only once, fresh, after both — calling `store_expanded_ptr()` and
+ * `store_reserve()` independently (each via its own `memory.buffer` read)
+ * would risk the second call's growth detaching a view already constructed
+ * by the first (same hazard `cellStoreDump()`'s doc comment describes).
+ */
+export function getReassembleViews(destTotal: number): {
+  source: Uint32Array;
+  dest: Uint32Array;
+} {
+  const e = ex();
+  const srcLen = e.store_expanded_len();
+  const srcPtr = srcLen > 0 ? e.store_expanded_ptr() : 0;
+  const destPtr = e.store_reserve(destTotal);
+  const buffer = e.memory.buffer;
+  return {
+    source:
+      srcLen > 0 ? new Uint32Array(buffer, srcPtr, srcLen) : new Uint32Array(0),
+    dest: new Uint32Array(buffer, destPtr, destTotal),
+  };
+}
+
+/** Compresses/commits whatever's currently in the `dest` view from a prior
+ *  `getReassembleViews` call as the new live store, at the given dims. */
+export function commitCellStore(mx: number, my: number, mz: number): void {
+  ex().store_load(mx, my, mz);
+}
+
 // ── Visibility ─────────────────────────────────────────────────────────────
 
 let solidityView: Uint8Array | null = null;

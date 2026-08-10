@@ -17,10 +17,11 @@
  * `.design/completed_tasks/cell-map-overhaul/02-wasm-windowed-store.md`.
  */
 import {
-  loadCellStore,
-  cellStoreDump,
   cellStoreGet,
   cellStoreSet,
+  getExpandedStoreView,
+  getReassembleViews,
+  commitCellStore,
 } from '../camera/render/wasm';
 import type { ChunkColdStorage } from './cold-storage';
 
@@ -141,21 +142,37 @@ export class CellWindow {
    */
   private readonly editedSinceBaseline = new Set<string>();
   /**
-   * A shift/resize whose target has genuinely-new chunks (not reusable from
-   * the current window or cold storage) still waiting on procedural
-   * generation. The window's committed state (`originChunk`/`gridDims`/
-   * `cellDims`) does NOT change until every needed chunk's data is staged
-   * and `reassemble` actually runs — see `advance`. `queue`/`queueIndex`
-   * form a cursor over `queue` (nearest-to-target-center first) rather than
-   * shifting the array, to avoid O(n) removals for large queues.
+   * A shift/resize whose target window isn't fully assembled yet. The
+   * window's committed state (`originChunk`/`gridDims`/`cellDims`) does NOT
+   * change until every chunk the target needs — both genuinely-new ones
+   * (`source: 'generate'`) AND ones reused from the current window
+   * (`source: 'reuse'`) — is staged and `reassemble` actually runs, see
+   * `advance`. Reused chunks are staged by reading the LIVE store directly
+   * (via `extractLiveChunk`) at the moment their turn in the queue comes up,
+   * not from a single upfront snapshot — that's what lets `reassemble`
+   * itself skip `cellStoreDump()`'s whole-window cost for the (now common)
+   * fully-staged case. `queue`/`queueIndex` form a cursor over `queue`
+   * (nearest-to-target-center first) rather than shifting the array, to
+   * avoid O(n) removals for large queues. Cold-storage-resolvable chunks are
+   * NOT staged here — that lookup is already cheap (a `Map.get`), resolved
+   * directly in `reassemble`'s assembly loop same as before.
    */
   private pendingShift: {
     origin: ChunkCoord;
     gridDims: { x: number; y: number; z: number };
     cellDims: { x: number; y: number; z: number };
-    queue: ChunkCoord[];
+    queue: { coord: ChunkCoord; source: 'reuse' | 'generate' }[];
     queueIndex: number;
     staged: Map<string, Uint32Array>;
+    /**
+     * World-chunk keys (→ coord) whose staged copy is now stale because
+     * `setCell` wrote to that chunk (in-window: a 'reuse' chunk already
+     * staged from the live store; off-window: a 'generate' chunk whose
+     * cold-storage/baseline resolution may have changed) AFTER it was
+     * staged. Re-resolved fresh in `advance`'s commit-time correction pass,
+     * right before `reassemble` runs — see `setCell` and `advance`.
+     */
+    editedDuringStaging: Map<string, ChunkCoord>;
     targetRadius?: { x: number; y: number; z: number };
   } | null = null;
   /** Window size in chunks. Mutable via `resize()`, otherwise constant for the session. */
@@ -288,13 +305,20 @@ export class CellWindow {
     if (local) {
       cellStoreSet(local.x, local.y, local.z, value);
       const { x: csx, y: csy, z: csz } = this.chunkSize;
-      this.editedSinceBaseline.add(
-        this.chunkKey(
-          Math.floor(worldX / csx),
-          Math.floor(worldY / csy),
-          Math.floor(worldZ / csz),
-        ),
-      );
+      const worldChunk: ChunkCoord = {
+        cx: Math.floor(worldX / csx),
+        cy: Math.floor(worldY / csy),
+        cz: Math.floor(worldZ / csz),
+      };
+      const key = this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz);
+      this.editedSinceBaseline.add(key);
+      // This chunk may already be staged (as a 'reuse' item) for an
+      // in-flight pending shift -- if so, that staged copy no longer
+      // reflects this write and needs re-resolving before commit. See
+      // advance()'s correction pass.
+      if (this.pendingShift?.staged.has(key)) {
+        this.pendingShift.editedDuringStaging.set(key, worldChunk);
+      }
       return;
     }
 
@@ -330,6 +354,13 @@ export class CellWindow {
       this.coldStorage.delete(worldChunk.cx, worldChunk.cy, worldChunk.cz);
     } else {
       this.coldStorage.set(worldChunk.cx, worldChunk.cy, worldChunk.cz, cells);
+    }
+    // This chunk may already be staged (as a 'generate' item, since an
+    // off-window write only reaches here) for an in-flight pending shift --
+    // the cold-storage entry it resolves to may have just changed above.
+    const key = this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz);
+    if (this.pendingShift?.staged.has(key)) {
+      this.pendingShift.editedDuringStaging.set(key, worldChunk);
     }
   }
 
@@ -515,15 +546,16 @@ export class CellWindow {
     }
 
     const prevStaged = this.pendingShift?.staged;
+    const prevEdited = this.pendingShift?.editedDuringStaging;
     const staged = new Map<string, Uint32Array>();
-    const queue: ChunkCoord[] = [];
-    for (const coord of needed) {
-      const key = this.chunkKey(coord.cx, coord.cy, coord.cz);
+    const queue: { coord: ChunkCoord; source: 'reuse' | 'generate' }[] = [];
+    for (const item of needed) {
+      const key = this.chunkKey(item.coord.cx, item.coord.cy, item.coord.cz);
       const prior = prevStaged?.get(key);
       if (prior) {
         staged.set(key, prior);
       } else {
-        queue.push(coord);
+        queue.push(item);
       }
     }
     // Nearest-to-target-center first, mirroring rebuildDirtyChunks's
@@ -535,9 +567,13 @@ export class CellWindow {
     const centerZ = origin.cz + (gridDims.z - 1) / 2;
     queue.sort((a, b) => {
       const da =
-        (a.cx - centerX) ** 2 + (a.cy - centerY) ** 2 + (a.cz - centerZ) ** 2;
+        (a.coord.cx - centerX) ** 2 +
+        (a.coord.cy - centerY) ** 2 +
+        (a.coord.cz - centerZ) ** 2;
       const db =
-        (b.cx - centerX) ** 2 + (b.cy - centerY) ** 2 + (b.cz - centerZ) ** 2;
+        (b.coord.cx - centerX) ** 2 +
+        (b.coord.cy - centerY) ** 2 +
+        (b.coord.cz - centerZ) ** 2;
       return da - db;
     });
 
@@ -548,23 +584,32 @@ export class CellWindow {
       queue,
       queueIndex: 0,
       staged,
+      // Carried over as-is (not re-filtered against the new target) -- at
+      // worst this re-resolves a chunk the new target no longer needs into
+      // an unused `staged` entry, harmless. See setCell for how this gets
+      // populated.
+      editedDuringStaging: prevEdited ?? new Map<string, ChunkCoord>(),
       targetRadius,
     };
     return false;
   }
 
   /**
-   * Classifies which chunks a target window would need to generate from
-   * scratch -- not reusable from the *current* (committed) window, and not
-   * available in cold storage. No generation happens here; this is the cheap
-   * up-front pass `beginOrRetarget` uses to build (or shrink) a pending
-   * shift's work queue.
+   * Classifies every chunk a target window will need and how to get it:
+   * `'reuse'` if it's within the *current* (committed) window (its data
+   * needs to move, not change -- staged by reading the live store, see
+   * `extractLiveChunk`), `'generate'` if it needs `baselineChunk`. Chunks
+   * resolvable from cold storage are omitted entirely -- that lookup is
+   * already cheap (a `Map.get`, no generation/copy), so `reassemble`'s
+   * assembly loop keeps resolving those directly rather than staging them.
+   * No generation or copying happens here; this is the cheap up-front pass
+   * `beginOrRetarget` uses to build (or shrink) a pending shift's queue.
    */
   private neededForTarget(
     origin: ChunkCoord,
     gridDims: { x: number; y: number; z: number },
-  ): ChunkCoord[] {
-    const needed: ChunkCoord[] = [];
+  ): { coord: ChunkCoord; source: 'reuse' | 'generate' }[] {
+    const needed: { coord: ChunkCoord; source: 'reuse' | 'generate' }[] = [];
     for (let cz = 0; cz < gridDims.z; cz++) {
       for (let cy = 0; cy < gridDims.y; cy++) {
         for (let cx = 0; cx < gridDims.x; cx++) {
@@ -577,6 +622,7 @@ export class CellWindow {
             this.originChunk &&
             this.isWithin(worldChunk, this.originChunk, this.gridDims)
           ) {
+            needed.push({ coord: worldChunk, source: 'reuse' });
             continue;
           }
           if (
@@ -584,7 +630,7 @@ export class CellWindow {
           ) {
             continue;
           }
-          needed.push(worldChunk);
+          needed.push({ coord: worldChunk, source: 'generate' });
         }
       }
     }
@@ -592,43 +638,95 @@ export class CellWindow {
   }
 
   /**
-   * Advances a pending shift's generation queue by up to `budgetMs` of
-   * wall-clock time (always generating at least one chunk, so a single
-   * expensive chunk can't stall progress forever -- same pattern as
-   * `rebuildDirtyChunks` in `mesh-builder.ts`). Once every needed chunk's
-   * data is staged, commits the shift (calls `reassemble`, which finds all
-   * of them already staged and pays no generation cost at swap time) and
-   * returns true. No-ops (false) if there's no pending shift, or if the
-   * queue isn't empty yet. Call once per frame regardless of whether
+   * Reads one chunk's cells directly out of the *live* WASM store, at its
+   * current (pre-shift) position -- used to stage a `'reuse'`-sourced queue
+   * item. Reading live (at the moment this chunk's turn in the queue comes
+   * up) rather than from a single upfront whole-window snapshot is what lets
+   * `reassemble` skip `cellStoreDump()`'s cost entirely for the common,
+   * fully-staged case -- there's no snapshot to take. Only ever called for a
+   * chunk `neededForTarget` classified `'reuse'`, which is only possible
+   * when `originChunk` is set (that's the window it's being reused from).
+   */
+  private extractLiveChunk(worldChunk: ChunkCoord): Uint32Array {
+    const origin = this.originChunk!;
+    const view = getExpandedStoreView();
+    return this.extractChunk(
+      view,
+      worldChunk.cx - origin.cx,
+      worldChunk.cy - origin.cy,
+      worldChunk.cz - origin.cz,
+      this.cellDims,
+    );
+  }
+
+  /**
+   * Re-resolves one chunk fresh, for `advance`'s commit-time correction pass
+   * -- a chunk that was already staged but then written to (via `setCell`)
+   * before the shift committed. Checks cold storage first (an off-window
+   * edit to a `'generate'`-sourced chunk may have just added or removed a
+   * cold-storage entry for it since it was classified), then falls back to
+   * whichever source is still valid for its current classification.
+   */
+  private reresolveChunk(worldChunk: ChunkCoord): Uint32Array {
+    const fromCold = this.coldStorage.get(
+      worldChunk.cx,
+      worldChunk.cy,
+      worldChunk.cz,
+    );
+    if (fromCold) {
+      this.editedSinceBaseline.add(
+        this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz),
+      );
+      return fromCold;
+    }
+    if (
+      this.originChunk &&
+      this.isWithin(worldChunk, this.originChunk, this.gridDims)
+    ) {
+      return this.extractLiveChunk(worldChunk);
+    }
+    return this.baselineChunk(worldChunk);
+  }
+
+  /**
+   * Advances a pending shift's queue by up to `budgetMs` of wall-clock time
+   * (always processing at least one chunk, so a single expensive one can't
+   * stall progress forever -- same pattern as `rebuildDirtyChunks` in
+   * `mesh-builder.ts`). Once every needed chunk's data is staged, re-checks
+   * any chunk edited mid-flight (`editedDuringStaging`) so no edit is ever
+   * silently lost, commits the shift (calls `reassemble`, which finds
+   * everything already staged and pays no per-chunk cost at swap time), and
+   * returns true. No-ops (false) if there's no pending shift, or the queue
+   * isn't empty yet. Call once per frame regardless of whether
    * `setFocus`/`resize` were called with a new target that frame.
    */
   advance(budgetMs: number = DEFAULT_CHUNK_DATA_GEN_BUDGET_MS): boolean {
     const pending = this.pendingShift;
     if (!pending) return false;
 
-    const debugStart = DEBUG_REASSEMBLE_TIMING ? performance.now() : 0;
     const deadline = performance.now() + budgetMs;
     let processed = 0;
     while (pending.queueIndex < pending.queue.length) {
       if (processed > 0 && performance.now() > deadline) break;
-      const coord = pending.queue[pending.queueIndex];
+      const item = pending.queue[pending.queueIndex];
+      const cells =
+        item.source === 'reuse'
+          ? this.extractLiveChunk(item.coord)
+          : this.baselineChunk(item.coord);
       pending.staged.set(
-        this.chunkKey(coord.cx, coord.cy, coord.cz),
-        this.baselineChunk(coord),
+        this.chunkKey(item.coord.cx, item.coord.cy, item.coord.cz),
+        cells,
       );
       pending.queueIndex++;
       processed++;
     }
 
-    const remaining = pending.queue.length - pending.queueIndex;
-    if (DEBUG_REASSEMBLE_TIMING) {
-      const ms = performance.now() - debugStart;
-      console.log(
-        `[chunk-timing] CellWindow.advance: processed=${processed} ` +
-          `remaining=${remaining} ms=${ms.toFixed(2)}`,
-      );
+    if (pending.queueIndex < pending.queue.length) return false;
+
+    for (const [key, coord] of pending.editedDuringStaging) {
+      pending.staged.set(key, this.reresolveChunk(coord));
     }
-    if (remaining > 0) return false;
+    pending.editedDuringStaging.clear();
 
     this.reassemble(pending.origin, pending.gridDims, pending.cellDims);
     if (pending.targetRadius) this.windowRadius = pending.targetRadius;
@@ -659,12 +757,19 @@ export class CellWindow {
     const oldCellDims = this.cellDims;
     const { x: dimX, y: dimY, z: dimZ } = newCellDims;
     const total = dimX * dimY * dimZ;
+    const staged = this.pendingShift?.staged;
 
-    // Dump the current window's contents (nothing to dump before the first load).
-    const debugDumpStart = DEBUG_REASSEMBLE_TIMING ? performance.now() : 0;
-    const oldFlat = oldOrigin ? cellStoreDump() : null;
-    const debugDumpMs = DEBUG_REASSEMBLE_TIMING
-      ? performance.now() - debugDumpStart
+    // Live views over the current store (source, for any rare fallback read
+    // below) and a freshly reserved WASM buffer (dest, written directly --
+    // no intermediate JS-heap `assembled` array). In the common case (a
+    // pending shift's queue has already staged every chunk this call needs),
+    // `source` ends up unused: reused-chunk data was already read live,
+    // per-chunk, during `advance()`'s budgeted staging -- there's no
+    // whole-window snapshot to pay for here anymore.
+    const debugViewsStart = DEBUG_REASSEMBLE_TIMING ? performance.now() : 0;
+    const { source, dest } = getReassembleViews(total);
+    const debugViewsMs = DEBUG_REASSEMBLE_TIMING
+      ? performance.now() - debugViewsStart
       : 0;
 
     // Evict chunks that fall outside the new window. Ones that still match
@@ -673,7 +778,7 @@ export class CellWindow {
     let debugMatchesBaselineMs = 0;
     let debugEvictSkipped = 0;
     let debugEvictChecked = 0;
-    if (oldOrigin && oldFlat) {
+    if (oldOrigin) {
       for (let cz = 0; cz < oldGridDims.z; cz++) {
         for (let cy = 0; cy < oldGridDims.y; cy++) {
           for (let cx = 0; cx < oldGridDims.x; cx++) {
@@ -696,7 +801,7 @@ export class CellWindow {
               continue;
             }
             debugEvictChecked++;
-            const cells = this.extractChunk(oldFlat, cx, cy, cz, oldCellDims);
+            const cells = this.extractChunk(source, cx, cy, cz, oldCellDims);
             const debugMbStart = DEBUG_REASSEMBLE_TIMING
               ? performance.now()
               : 0;
@@ -722,11 +827,13 @@ export class CellWindow {
       ? performance.now() - debugEvictStart
       : 0;
 
-    // Assemble the new window's contents.
+    // Assemble the new window's contents directly into `dest`.
     const debugAssembleStart = DEBUG_REASSEMBLE_TIMING ? performance.now() : 0;
+    let debugStagedHits = 0;
+    let debugReuseFallbackMs = 0;
+    let debugReuseFallbackCalls = 0;
     let debugBaselineGenMs = 0;
     let debugBaselineGenCalls = 0;
-    const assembled = new Uint32Array(total);
     for (let cz = 0; cz < newGridDims.z; cz++) {
       for (let cy = 0; cy < newGridDims.y; cy++) {
         for (let cx = 0; cx < newGridDims.x; cx++) {
@@ -735,19 +842,42 @@ export class CellWindow {
             cy: newOrigin.cy + cy,
             cz: newOrigin.cz + cz,
           };
+          const key = this.chunkKey(
+            worldChunk.cx,
+            worldChunk.cy,
+            worldChunk.cz,
+          );
           let cells: Uint32Array;
-          if (
+          const stagedCells = staged?.get(key);
+          if (stagedCells) {
+            // The common case: this chunk's data was already staged across
+            // prior frames by advance() (reuse-copied live or generated),
+            // so there's nothing left to do for it here.
+            cells = stagedCells;
+            debugStagedHits++;
+          } else if (
             oldOrigin &&
-            oldFlat &&
             this.isWithin(worldChunk, oldOrigin, oldGridDims)
           ) {
+            // Rare fallback: an immediate (non-deferred) commit with
+            // nothing staged at all -- neededForTarget found no chunks
+            // requiring staging, so beginOrRetarget called reassemble
+            // straight away. Only hit for a whole reassemble call, never
+            // mixed with the staged case above.
+            const debugRfStart = DEBUG_REASSEMBLE_TIMING
+              ? performance.now()
+              : 0;
             cells = this.extractChunk(
-              oldFlat,
+              source,
               worldChunk.cx - oldOrigin.cx,
               worldChunk.cy - oldOrigin.cy,
               worldChunk.cz - oldOrigin.cz,
               oldCellDims,
             );
+            if (DEBUG_REASSEMBLE_TIMING) {
+              debugReuseFallbackMs += performance.now() - debugRfStart;
+              debugReuseFallbackCalls++;
+            }
           } else {
             const fromCold = this.coldStorage.get(
               worldChunk.cx,
@@ -759,35 +889,23 @@ export class CellWindow {
               // Cold storage only ever holds non-baseline data (it's only
               // written when matchesBaseline is false), so a chunk sourced
               // from here must be tracked as possibly-non-baseline too.
-              this.editedSinceBaseline.add(
-                this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz),
-              );
+              this.editedSinceBaseline.add(key);
             } else {
-              // A pending shift's advance() pre-generates exactly the
-              // chunks neededForTarget() identified, so by the time this
-              // commits, every chunk that reaches here should already be
-              // staged -- the baselineChunk() fallback below should be
-              // unreachable in that case. Kept as a safe fallback (not an
-              // assertion) rather than a hard requirement, e.g. for a direct
-              // reassemble() commit path bug or future caller.
-              const staged = this.pendingShift?.staged.get(
-                this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz),
-              );
-              if (staged) {
-                cells = staged;
-              } else {
-                const debugBgStart = DEBUG_REASSEMBLE_TIMING
-                  ? performance.now()
-                  : 0;
-                cells = this.baselineChunk(worldChunk);
-                if (DEBUG_REASSEMBLE_TIMING) {
-                  debugBaselineGenMs += performance.now() - debugBgStart;
-                  debugBaselineGenCalls++;
-                }
+              // Same rare-fallback reasoning as the reuse case above --
+              // neededForTarget's classification should make this
+              // unreachable whenever a pending shift actually staged
+              // things, but it's kept as a safe fallback, not an assertion.
+              const debugBgStart = DEBUG_REASSEMBLE_TIMING
+                ? performance.now()
+                : 0;
+              cells = this.baselineChunk(worldChunk);
+              if (DEBUG_REASSEMBLE_TIMING) {
+                debugBaselineGenMs += performance.now() - debugBgStart;
+                debugBaselineGenCalls++;
               }
             }
           }
-          this.writeChunk(assembled, cx, cy, cz, cells, newCellDims);
+          this.writeChunk(dest, cx, cy, cz, cells, newCellDims);
         }
       }
     }
@@ -795,10 +913,10 @@ export class CellWindow {
       ? performance.now() - debugAssembleStart
       : 0;
 
-    const debugLoadStart = DEBUG_REASSEMBLE_TIMING ? performance.now() : 0;
-    loadCellStore(assembled, total, dimX, dimY, dimZ);
-    const debugLoadMs = DEBUG_REASSEMBLE_TIMING
-      ? performance.now() - debugLoadStart
+    const debugCommitStart = DEBUG_REASSEMBLE_TIMING ? performance.now() : 0;
+    commitCellStore(dimX, dimY, dimZ);
+    const debugCommitMs = DEBUG_REASSEMBLE_TIMING
+      ? performance.now() - debugCommitStart
       : 0;
     this.originChunk = newOrigin;
     this.gridDims = newGridDims;
@@ -810,10 +928,10 @@ export class CellWindow {
       const newVolume = newGridDims.x * newGridDims.y * newGridDims.z;
       console.log(
         `[chunk-timing] CellWindow.reassemble breakdown: ${ms.toFixed(2)}ms | ` +
-          `dumpMs=${debugDumpMs.toFixed(2)} ` +
+          `viewsMs=${debugViewsMs.toFixed(2)} ` +
           `evictMs=${debugEvictMs.toFixed(2)} (matchesBaselineMs=${debugMatchesBaselineMs.toFixed(2)} checked=${debugEvictChecked} skipped=${debugEvictSkipped}) ` +
-          `assembleMs=${debugAssembleMs.toFixed(2)} (baselineGenMs=${debugBaselineGenMs.toFixed(2)} baselineGenCalls=${debugBaselineGenCalls}) ` +
-          `loadMs=${debugLoadMs.toFixed(2)} | ` +
+          `assembleMs=${debugAssembleMs.toFixed(2)} (stagedHits=${debugStagedHits} reuseFallbackMs=${debugReuseFallbackMs.toFixed(2)} reuseFallbackCalls=${debugReuseFallbackCalls} baselineGenMs=${debugBaselineGenMs.toFixed(2)} baselineGenCalls=${debugBaselineGenCalls}) ` +
+          `commitMs=${debugCommitMs.toFixed(2)} | ` +
           `oldVolume=${oldVolume} newVolume=${newVolume} ` +
           (debugMsSinceLastCall !== null
             ? `msSincePrevCall=${debugMsSinceLastCall.toFixed(2)}`

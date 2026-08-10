@@ -36,6 +36,7 @@ interface RenderExports {
   // Meshing
   mesh_set_cell_size: (cx: number, cy: number, cz: number) => void;
   mesh_set_chunk_size: (x: number, y: number, z: number) => void;
+  mesh_set_edge_occludes: (v: number) => void;
   mesh_reserve_weights: (count: number) => number;
   mesh_reserve_material_weights: (count: number) => number;
   mesh_custom_clear: () => void;
@@ -249,6 +250,18 @@ export function setMeshCellSize(cx: number, cy: number, cz: number): void {
  */
 export function setChunkSize(x: number, y: number, z: number): void {
   ex().mesh_set_chunk_size(x, y, z);
+}
+
+/**
+ * Whether a face-culling neighbor lookup that falls entirely outside the
+ * resident store should be treated as occluding (true, cull the face -- for
+ * a shiftable window into a much larger world, where "outside the store"
+ * means "not loaded yet," not "nothing there") or empty (false, the WASM
+ * default -- render the face, correct for a complete, bounded store where
+ * "outside" genuinely means the map ends there). See `mesh-builder.ts`.
+ */
+export function setMeshEdgeOccludes(occludes: boolean): void {
+  ex().mesh_set_edge_occludes(occludes ? 1 : 0);
 }
 
 /**

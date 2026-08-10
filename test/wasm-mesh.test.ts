@@ -48,6 +48,7 @@ import {
   initRenderWasm,
   loadCellStore,
   setMeshCellSize,
+  setMeshEdgeOccludes,
   setMeshSmoothing,
   setMeshMaterialWeights,
   setCustomShape,
@@ -573,6 +574,67 @@ function customUvCullingCheck(): number {
   return fails;
 }
 
+/**
+ * `setMeshEdgeOccludes` gates whether a face-culling neighbor lookup that
+ * falls entirely outside the resident store defaults to occluding (true) or
+ * empty (false, the WASM default). A single solid cell alone in a 1x1x1
+ * store has every neighbor out-of-bounds by construction: with the flag off
+ * (default, matches every other case in this file) all 6 faces render, same
+ * as always; with it on, all 6 are culled (a `CellWindow`-backed caller's
+ * real scenario — an edge chunk whose true neighbor just hasn't loaded yet
+ * shouldn't expose an interior cross-section). Checks both the default-cube
+ * path (`buildChunkMeshWasm`) and the custom-shape UV-cube path (reusing
+ * `customUvCullingCheck`'s "lone" setup). Always resets the flag to false
+ * before returning, since every other check in this file assumes it's off.
+ */
+function edgeOccludesCheck(): number {
+  let fails = 0;
+
+  clearCustomShapes();
+  setMeshCellSize(1, 1, 1);
+  const lonePacked = new Array3D<number>(new Vector3D(1, 1, 1));
+  lonePacked.indexSet(0, packCell({ materialIndex: 0, shapeIndex: 1, emissionIntensity: 0, visible: true }));
+  loadCellStore(lonePacked.value, 1, 1, 1, 1);
+
+  setMeshEdgeOccludes(false);
+  const facesOff = buildChunkMeshWasm(0, 0, 0).indices?.length ?? 0;
+  if (facesOff / 6 !== 6) {
+    console.error(`  ✗ edge-occludes: lone cube with flag off should render all 6 faces, got ${facesOff / 6}`);
+    fails++;
+  }
+
+  setMeshEdgeOccludes(true);
+  const facesOn = buildChunkMeshWasm(0, 0, 0).indices?.length ?? 0;
+  if (facesOn !== 0) {
+    console.error(`  ✗ edge-occludes: lone cube with flag on should render 0 faces (unknown neighbor occludes), got ${facesOn / 6}`);
+    fails++;
+  }
+
+  const cube = uvCubeMesh();
+  const uvTris = (r: ChunkMeshResult): number => {
+    let n = 0;
+    for (const rr of r.ranges) if (rr.useMeshUV) n += rr.indexCount / 3;
+    return n;
+  };
+  const loneShapePacked = new Array3D<number>(new Vector3D(1, 1, 1));
+  loneShapePacked.indexSet(0, packCell({ materialIndex: 0, shapeIndex: 2, emissionIntensity: 0, visible: true }));
+  loadCellStore(loneShapePacked.value, 1, 1, 1, 1);
+  clearCustomShapes();
+  setCustomShape(2, cube.vertices, cube.indices, cube.uvs);
+  const trisOn = uvTris(buildChunkMeshWasm(0, 0, 0));
+  if (trisOn !== 0) {
+    console.error(`  ✗ edge-occludes: lone UV-cube with flag on should cull all 12 tris, got ${trisOn}`);
+    fails++;
+  }
+
+  clearCustomShapes();
+  setMeshEdgeOccludes(false);
+  if (fails === 0) {
+    console.log('  ✓ edge-occludes: out-of-store neighbor renders when off, occludes when on (default-cube + UV-cube)');
+  }
+  return fails;
+}
+
 async function main(): Promise<void> {
   await initRenderWasm(buildRenderWasm());
 
@@ -622,6 +684,7 @@ async function main(): Promise<void> {
   failed += customUvSmoothedCheck();
   failed += customUvCullingCheck();
   failed += coverageCheck();
+  failed += edgeOccludesCheck();
 
   if (missing > 0) {
     console.log(

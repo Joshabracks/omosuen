@@ -3,6 +3,7 @@ import type { Mesh } from './types';
 import type { Array3Di } from '../../math';
 import {
   setMeshCellSize,
+  setMeshEdgeOccludes,
   setMeshSmoothing,
   setMeshMaterialWeights,
   setCustomShape,
@@ -100,6 +101,12 @@ export function rebuildDirtyChunks(
   // setCellData), so there is no upload/expand here — just set the cell size,
   // and the smoothing inputs when smoothing is enabled.
   setMeshCellSize(cellMap.cellSize.x, cellMap.cellSize.y, cellMap.cellSize.z);
+  // CellMap always meshes out of CellWindow's shiftable hot window, never a
+  // complete/bounded store -- "outside the resident window" means "not
+  // loaded yet," not "nothing there," so an edge chunk's face-culling should
+  // treat an out-of-window neighbor as occluding rather than exposing an
+  // interior cross-section before the real neighbor streams in.
+  setMeshEdgeOccludes(true);
 
   const smoothed = cellMap.smoothing > 0;
   if (smoothed) {

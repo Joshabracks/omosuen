@@ -24,6 +24,18 @@ use std::collections::BTreeMap;
 /// the current store; JS is responsible for only calling the setter once,
 /// during store setup, before any `mesh_build_chunk*` call.
 static mut CHUNK_SIZE: [usize; 3] = [16, 16, 16];
+/// Whether a face-culling neighbor lookup that falls *entirely outside the
+/// resident store* (not "generated but air" -- genuinely unloaded) should be
+/// treated as occluding (1, cull the face) or empty (0, render it -- the
+/// default, matching this crate's original behavior). Off by default so a
+/// caller that never calls `mesh_set_edge_occludes` -- e.g. a complete,
+/// bounded, never-shifting store, or this crate's own test suite -- sees the
+/// true edge of its data rendered exactly as before. `CellWindow`-backed
+/// callers (a shiftable window into effectively unbounded procedural terrain)
+/// turn this on: for them, "outside the resident window" means "not loaded
+/// yet," not "nothing there," so exposing it as an interior cross-section is
+/// wrong -- see `mesh-builder.ts`.
+static mut EDGE_OCCLUDES: u32 = 0;
 const FLUSH_THRESHOLD: f64 = 0.05;
 
 #[inline]
@@ -433,6 +445,15 @@ pub extern "C" fn mesh_set_chunk_size(x: usize, y: usize, z: usize) {
     }
 }
 
+/// Sets `EDGE_OCCLUDES` -- see its doc comment. Cheap; safe to call before
+/// every `mesh_build_chunk*` call.
+#[no_mangle]
+pub extern "C" fn mesh_set_edge_occludes(v: u32) {
+    unsafe {
+        *core::ptr::addr_of_mut!(EDGE_OCCLUDES) = v;
+    }
+}
+
 /// Reserves the smoothing-weights buffer (0–15 per cell) and returns its pointer.
 #[no_mangle]
 pub extern "C" fn mesh_reserve_weights(count: usize) -> *mut u32 {
@@ -630,7 +651,12 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                         let nbx = coords[0] as i64 + dir.dx as i64;
                         let nby = coords[1] as i64 + dir.dy as i64;
                         let nbz = coords[2] as i64 + dir.dz as i64;
-                        let mut neighbor_solid = false;
+                        // Out of the resident store entirely: occlude only if
+                        // the caller opted in (EDGE_OCCLUDES) -- see its doc
+                        // comment. Overwritten below whenever the neighbor
+                        // genuinely is in-bounds, so this only affects the
+                        // out-of-bounds case.
+                        let mut neighbor_solid = *core::ptr::addr_of!(EDGE_OCCLUDES) != 0;
                         if nbx >= 0
                             && nbx < map_x as i64
                             && nby >= 0
@@ -828,6 +854,12 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                                             t += 3;
                                             continue;
                                         }
+                                    } else if *core::ptr::addr_of!(EDGE_OCCLUDES) != 0 {
+                                        // Out of the resident store entirely --
+                                        // occlude only if the caller opted in,
+                                        // same reasoning as the default-cube case.
+                                        t += 3;
+                                        continue;
                                     }
                                 }
                             }
@@ -1233,7 +1265,11 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                             let nbx = x as i64 + dir.dx as i64;
                             let nby = y as i64 + dir.dy as i64;
                             let nbz = z as i64 + dir.dz as i64;
-                            let mut neighbor_solid = false;
+                            // Out of the resident store entirely -- see the
+                            // greedy mesher's identical EDGE_OCCLUDES reasoning
+                            // above.
+                            let mut neighbor_solid =
+                                *core::ptr::addr_of!(EDGE_OCCLUDES) != 0;
                             if nbx >= 0
                                 && nbx < map_x as i64
                                 && nby >= 0
@@ -1328,6 +1364,12 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                             t += 3;
                                             continue;
                                         }
+                                    } else if *core::ptr::addr_of!(EDGE_OCCLUDES) != 0 {
+                                        // Out of the resident store entirely --
+                                        // occlude only if the caller opted in,
+                                        // same reasoning as the default-cube case.
+                                        t += 3;
+                                        continue;
                                     }
                                 }
                             }

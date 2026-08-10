@@ -26,14 +26,6 @@ let warnedCrossAtlasFrame = false;
 const ISO_H = 0.8660254;
 
 /**
- * TEMPORARY diagnostic instrumentation for the chunk-buffering FPS
- * investigation (see `.design/chunk-buffering`) -- logs the chunk GPU-upload
- * loop's own timing/counts to the console, prefixed `[chunk-timing]`. Flip
- * to `false` or delete once the bottleneck is identified.
- */
-const DEBUG_CHUNK_TIMING = true;
-
-/**
  * Snaps camera position to FBO pixel boundaries so the pixel grid
  * is locked to world space instead of screen space during panning.
  */
@@ -827,8 +819,6 @@ export function renderCellMaps(
 
     let totalFaces = 0;
     let drawCalls = 0;
-    let debugUploadCount = 0;
-    let debugUploadMs = 0;
 
     // Caps fresh GPU uploads per frame -- reassembleChunks can mark hundreds
     // of REUSED (translated, not remeshed) chunks gpuDirty in a single call
@@ -924,9 +914,6 @@ export function renderCellMaps(
             gl.bindBuffer(gl.ARRAY_BUFFER, chunk.glVertexBuffer);
             gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, chunk.glIndexBuffer);
             if (chunk.gpuDirty) {
-              const debugUploadStart = DEBUG_CHUNK_TIMING
-                ? performance.now()
-                : 0;
               gl.bufferData(gl.ARRAY_BUFFER, chunk.vertices, gl.STATIC_DRAW);
               gl.bufferData(
                 gl.ELEMENT_ARRAY_BUFFER,
@@ -935,10 +922,6 @@ export function renderCellMaps(
               );
               chunk.gpuDirty = false;
               uploadedThisFrame++;
-              if (DEBUG_CHUNK_TIMING) {
-                debugUploadCount++;
-                debugUploadMs += performance.now() - debugUploadStart;
-              }
             }
 
             // Interleaved layout: pos3+normal3+origPos3+emission1 (stride 10), or +uv2
@@ -1177,13 +1160,6 @@ export function renderCellMaps(
           }
         }
       }
-    }
-
-    if (DEBUG_CHUNK_TIMING && debugUploadCount > 0) {
-      console.log(
-        `[chunk-timing] gpu upload: chunks=${debugUploadCount} ` +
-          `totalMs=${debugUploadMs.toFixed(2)}`,
-      );
     }
   }
 

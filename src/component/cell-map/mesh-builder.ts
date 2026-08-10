@@ -23,14 +23,6 @@ import {
 export const DEFAULT_CHUNK_GEN_BUDGET_MS = 4;
 
 /**
- * TEMPORARY diagnostic instrumentation for the chunk-buffering FPS
- * investigation (see `.design/chunk-buffering`) -- logs `rebuildDirtyChunks`'
- * own timing/counts to the console, prefixed `[chunk-timing]`. Flip to
- * `false` or delete once the bottleneck is identified.
- */
-const DEBUG_CHUNK_TIMING = true;
-
-/**
  * Last smoothing configuration actually sent to WASM. `smoothingWeights.expand()` unpacks
  * a bit-packed `Array3Di` into a dense array sized `mapSize.x*y*z` -- tens of millions of
  * cells at a large window -- and `setMeshSmoothing` then copies that whole array across the
@@ -96,8 +88,6 @@ export function rebuildDirtyChunks(
   const dirtyChunks = cellMap.chunks.filter((c) => c.dirty);
   if (dirtyChunks.length === 0) return;
 
-  const debugSetupStart = DEBUG_CHUNK_TIMING ? performance.now() : 0;
-
   // The packed cells are resident in the canonical WASM store (mutated via
   // setCellData), so there is no upload/expand here — just set the cell size,
   // and the smoothing inputs when smoothing is enabled.
@@ -116,15 +106,6 @@ export function rebuildDirtyChunks(
       cellMap.smoothing !== lastSmoothing ||
       cellMap.normalSmoothing !== lastNormalSmoothing;
     if (smoothingChanged) {
-      if (DEBUG_CHUNK_TIMING) {
-        const reasons: string[] = [];
-        if (cellMap.smoothingWeights !== lastSmoothingWeights)
-          reasons.push('weightsRef');
-        if (cellMap.smoothing !== lastSmoothing) reasons.push('smoothing');
-        if (cellMap.normalSmoothing !== lastNormalSmoothing)
-          reasons.push('normalSmoothing');
-        console.log(`[chunk-timing] smoothingChanged: ${reasons.join(',')}`);
-      }
       const weights = cellMap.smoothingWeights.expand();
       const total = cellMap.mapSize.x * cellMap.mapSize.y * cellMap.mapSize.z;
       setMeshSmoothing(
@@ -181,11 +162,6 @@ export function rebuildDirtyChunks(
     return da - db;
   });
 
-  const debugLoopStart = DEBUG_CHUNK_TIMING ? performance.now() : 0;
-  const debugSetupMs = DEBUG_CHUNK_TIMING
-    ? debugLoopStart - debugSetupStart
-    : 0;
-
   const windowOrigin = cellMap.window.origin;
   const worldOffsetX =
     (windowOrigin?.cx ?? 0) * cellMap.chunkSize.x * cellMap.cellSize.x;
@@ -195,10 +171,8 @@ export function rebuildDirtyChunks(
     (windowOrigin?.cz ?? 0) * cellMap.chunkSize.z * cellMap.cellSize.z;
 
   const deadline = performance.now() + budgetMs;
-  let debugProcessed = 0;
   for (let i = 0; i < dirtyChunks.length; i++) {
     if (i > 0 && performance.now() > deadline) break;
-    debugProcessed++;
     const chunk = dirtyChunks[i];
     const result = smoothed
       ? buildChunkMeshSmoothedWasm(chunk.cx, chunk.cy, chunk.cz)
@@ -231,15 +205,6 @@ export function rebuildDirtyChunks(
       chunk.cy === cellMap.chunkGridSize.y - 1 ||
       chunk.cz === 0 ||
       chunk.cz === cellMap.chunkGridSize.z - 1;
-  }
-
-  if (DEBUG_CHUNK_TIMING) {
-    const loopMs = performance.now() - debugLoopStart;
-    console.log(
-      `[chunk-timing] rebuildDirtyChunks: totalDirty=${dirtyChunks.length} ` +
-        `processed=${debugProcessed} loopMs=${loopMs.toFixed(2)} ` +
-        `setupMs=${debugSetupMs.toFixed(2)}`,
-    );
   }
 }
 

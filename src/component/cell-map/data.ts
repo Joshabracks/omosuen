@@ -40,14 +40,6 @@ export interface CellPackedReadView {
   get(coord: Vector3D): number;
 }
 
-/**
- * TEMPORARY diagnostic instrumentation for the chunk-buffering FPS
- * investigation (see `.design/chunk-buffering`) -- logs `reassembleChunks`'s
- * own timing/counts to the console, prefixed `[chunk-timing]`. Flip to
- * `false` or delete once the bottleneck is identified.
- */
-const DEBUG_CHUNK_TIMING = true;
-
 // ── Module-level singleton storage ──
 // Data lives here to avoid GC pressure and enable direct imports.
 // The CellMapT instance delegates to these via getter/setter properties.
@@ -942,13 +934,6 @@ export function reassembleChunks(
   newOrigin: ChunkCoord,
   newGridDims: { x: number; y: number; z: number },
 ): ChunkMesh[] {
-  const debugStart = DEBUG_CHUNK_TIMING ? performance.now() : 0;
-  let debugNewCount = 0;
-  let debugCacheHitCount = 0;
-  let debugCacheHitEdgeRemeshCount = 0;
-  let debugReusedCount = 0;
-  let debugAdjacencyDirtiedCount = 0;
-
   interface OldEntry {
     chunk: ChunkMesh;
     wcx: number;
@@ -981,7 +966,6 @@ export function reassembleChunks(
         if (entry) {
           oldByWorldCoord.delete(entryKey); // consumed
           const { chunk } = entry;
-          debugReusedCount++;
           // Vertex data is baked to absolute world-space at mesh-build time
           // (see `bakeWorldOffsetInPlace` in mesh-builder.ts) -- a chunk's
           // true world position never changes, so moving to a different
@@ -1005,15 +989,12 @@ export function reassembleChunks(
             // actually there now. See ChunkMesh.meshedAtEdge's doc comment.
             if (cached.meshedAtEdge) {
               cached.dirty = true;
-              debugCacheHitEdgeRemeshCount++;
             }
             chunks.push(cached);
-            debugCacheHitCount++;
           } else {
             chunks.push(freshChunkMesh(cx, cy, cz));
           }
           isNewSlot.push(true);
-          debugNewCount++;
         }
       }
     }
@@ -1031,7 +1012,6 @@ export function reassembleChunks(
   const dirtyIfReused = (i: number): void => {
     if (isNewSlot[i] || chunks[i].dirty) return;
     chunks[i].dirty = true;
-    debugAdjacencyDirtiedCount++;
   };
   for (let cz = 0; cz < newGridDims.z; cz++) {
     for (let cy = 0; cy < newGridDims.y; cy++) {
@@ -1052,17 +1032,6 @@ export function reassembleChunks(
   // `.design/chunk-buffering/05-mesh-cache.md`).
   for (const { chunk, wcx, wcy, wcz } of oldByWorldCoord.values()) {
     cacheEvictedChunk(wcx, wcy, wcz, chunk);
-  }
-  if (DEBUG_CHUNK_TIMING) {
-    const ms = performance.now() - debugStart;
-    console.log(
-      `[chunk-timing] reassembleChunks: ${ms.toFixed(2)}ms | ` +
-        `new=${debugNewCount} (cacheHits=${debugCacheHitCount} ` +
-        `cacheHitEdgeRemesh=${debugCacheHitEdgeRemeshCount}) ` +
-        `reused=${debugReusedCount} ` +
-        `adjacency-dirtied=${debugAdjacencyDirtiedCount} ` +
-        `cached-or-evicted=${oldByWorldCoord.size}`,
-    );
   }
   return chunks;
 }

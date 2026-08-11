@@ -12,7 +12,6 @@ import {
   Mesh,
   ChunkMesh,
   packCell,
-  unpackCell,
   createDefaultCellData,
   DEFAULT_CHUNK_SIZE,
 } from './types';
@@ -26,6 +25,7 @@ import { CellWindow } from './window';
 import type { ChunkGenerator, ChunkCoord } from './window';
 import { ChunkColdStorage } from './cold-storage';
 import type { CellData } from './types';
+import { MethodRegistry } from '../registry';
 
 /**
  * Read-only view over the canonical cell store, exposed as `cellMap.packedData`
@@ -160,6 +160,18 @@ export let cmWindow: CellWindow | undefined;
 /** Everything outside the current window that diverges from baseline. Owned
  *  jointly with `cmWindow` (constructed together, always non-null together). */
 export let cmColdStorage: ChunkColdStorage | undefined;
+/**
+ * Registry key(s) (`MethodRegistry['cell-map-generator']`) the component's
+ * `generateCell`/`generateChunk` were constructed/deserialized with, if any --
+ * `undefined` per-slot when built with a raw function or no generator at all.
+ * `serialize()` emits these so `deserialize()` can re-resolve the same
+ * generator(s); a raw-function generator has no key to remember and doesn't
+ * survive a round trip (see
+ * `.design/cell-map-overhaul/16-off-window-edit-persistence.md`).
+ */
+export let cmGeneratorKey:
+  | { generateCell?: string; generateChunk?: string }
+  | undefined;
 
 /**
  * Packed value for "nothing here" — material 0, shape 0 (air), no emission,
@@ -234,6 +246,7 @@ export function resetCellMapState(): void {
   cmFrustumPadding = { x: 0, y: 0, z: 0 };
   cmWindow = undefined;
   cmColdStorage = undefined;
+  cmGeneratorKey = undefined;
   cmPendingBufferCleanup = [];
   cmMeshCache.clear();
 }
@@ -493,20 +506,29 @@ export interface CellMapOptions extends ComponentOptions {
    * Always used for single-cell point queries, regardless of whether
    * `generateChunk` is also supplied. Must be a pure function of its
    * coordinates for a given world/seed.
+   *
+   * Accepts either a live function (default; can't be serialized, so a
+   * component built this way doesn't round-trip its generator through
+   * save/load) or a string key registered via
+   * `registerMethod('cell-map-generator', key, fn)`, resolved at
+   * construction/deserialize time — a registry-keyed generator does survive
+   * save/load, since `serialize()` can emit the key instead of the function.
    */
-  generateCell?: (
-    worldX: number,
-    worldY: number,
-    worldZ: number,
-  ) => CellData | undefined;
+  generateCell?:
+    | ((worldX: number, worldY: number, worldZ: number) => CellData | undefined)
+    | string;
 
   /**
    * Generates a whole chunk's cell data at once (`chunkSize.x*y*z`-length
    * array, x-fastest/y/z-slowest local order) — a performance escape hatch
    * for whole-chunk materialization, preferred over looping `generateCell`
    * when both are supplied. Never used for single-cell point queries.
+   *
+   * Same live-function-or-registry-key shape as `generateCell`, resolved
+   * independently (its own key in the same `'cell-map-generator'`
+   * namespace — not necessarily the same key as `generateCell`'s).
    */
-  generateChunk?: (cx: number, cy: number, cz: number) => CellData[];
+  generateChunk?: ((cx: number, cy: number, cz: number) => CellData[]) | string;
 
   /**
    * Number of surface-net smoothing iterations (0 or less = no smoothing)
@@ -1037,6 +1059,66 @@ export function reassembleChunks(
 }
 
 /**
+ * Resolves `CellMapOptions.generateCell`/`generateChunk` (each either a live
+ * function or a `MethodRegistry['cell-map-generator']` key) into plain
+ * functions, plus whichever keys were used (for `serialize()` to remember —
+ * see `cmGeneratorKey`). A string that doesn't resolve to a registered
+ * function is a construction-time error, not a silent no-op generator.
+ */
+function resolveGeneratorOptions(options: CellMapOptions): {
+  generateCell?: (x: number, y: number, z: number) => CellData | undefined;
+  generateChunk?: (cx: number, cy: number, cz: number) => CellData[];
+  key: { generateCell?: string; generateChunk?: string } | undefined;
+} {
+  let generateCell =
+    typeof options.generateCell === 'function'
+      ? options.generateCell
+      : undefined;
+  let generateChunk =
+    typeof options.generateChunk === 'function'
+      ? options.generateChunk
+      : undefined;
+  const key: { generateCell?: string; generateChunk?: string } = {};
+
+  if (typeof options.generateCell === 'string') {
+    const fn = MethodRegistry['cell-map-generator'][options.generateCell] as
+      | ((x: number, y: number, z: number) => CellData | undefined)
+      | undefined;
+    if (typeof fn !== 'function') {
+      throw new Error(
+        `CellMap: generateCell key "${options.generateCell}" is not ` +
+          `registered in MethodRegistry['cell-map-generator'] -- call ` +
+          `registerMethod('cell-map-generator', '${options.generateCell}', fn) ` +
+          `before constructing/loading this cell-map`,
+      );
+    }
+    generateCell = fn;
+    key.generateCell = options.generateCell;
+  }
+  if (typeof options.generateChunk === 'string') {
+    const fn = MethodRegistry['cell-map-generator'][options.generateChunk] as
+      | ((cx: number, cy: number, cz: number) => CellData[])
+      | undefined;
+    if (typeof fn !== 'function') {
+      throw new Error(
+        `CellMap: generateChunk key "${options.generateChunk}" is not ` +
+          `registered in MethodRegistry['cell-map-generator'] -- call ` +
+          `registerMethod('cell-map-generator', '${options.generateChunk}', fn) ` +
+          `before constructing/loading this cell-map`,
+      );
+    }
+    generateChunk = fn;
+    key.generateChunk = options.generateChunk;
+  }
+
+  return {
+    generateCell,
+    generateChunk,
+    key: key.generateCell || key.generateChunk ? key : undefined,
+  };
+}
+
+/**
  * Wraps `CellData`-returning generator callbacks (the public
  * `CellMapOptions` shape) into `CellWindow`'s raw-packed-number
  * `ChunkGenerator` — `window.ts` is deliberately decoupled from cell-map's
@@ -1098,6 +1180,22 @@ function chunkDenseArrayIntoColdStorage(
   packedFlat: number[],
   mapSize: Vector3D,
   chunkSize: Vector3D,
+  // World-chunk coordinate the dense array's local (0,0,0) chunk maps to.
+  // Defaults to the map's own origin (the legacy authored-map path, where
+  // world coordinates and the authored map's coordinates are the same
+  // space); `deserialize()`'s windowed path passes the resident window's
+  // actual saved world-chunk origin instead.
+  originChunk: { cx: number; cy: number; cz: number } = { cx: 0, cy: 0, cz: 0 },
+  // When true, store every chunk regardless of whether it matches the
+  // literal `EMPTY_CELL` baseline. The default (skip literal-empty chunks)
+  // is only correct when there's no generator -- with a generator, a
+  // literal-empty saved chunk still needs an explicit cold-storage entry, or
+  // a later reassemble falls through to the generator's own (possibly
+  // non-empty) output for that chunk and silently resurrects content the
+  // save was supposed to represent as cleared. `deserialize()`'s windowed
+  // path (which may have a generator) always passes `true`; this is a
+  // one-time load-time call, so the extra storage is not a hot-path cost.
+  forceStoreAll = false,
 ): void {
   const gridX = Math.ceil(mapSize.x / chunkSize.x);
   const gridY = Math.ceil(mapSize.y / chunkSize.y);
@@ -1122,12 +1220,17 @@ function chunkDenseArrayIntoColdStorage(
                   packedFlat[wz * mapSize.y * mapSize.x + wy * mapSize.x + wx];
               }
               cells[idx++] = value;
-              if (value !== EMPTY_CELL) differs = true;
+              if (forceStoreAll || value !== EMPTY_CELL) differs = true;
             }
           }
         }
         if (differs) {
-          coldStorage.set(cx, cy, cz, cells);
+          coldStorage.set(
+            originChunk.cx + cx,
+            originChunk.cy + cy,
+            originChunk.cz + cz,
+            cells,
+          );
         }
       }
     }
@@ -1467,7 +1570,11 @@ function builderGenerative(options: CellMapOptions): CellMapT {
   const coldStorage = new ChunkColdStorage({
     chunkCellCount: optChunkSize.x * optChunkSize.y * optChunkSize.z,
   });
-  const generator = wrapGenerator(options.generateCell, options.generateChunk);
+  const resolvedGenerator = resolveGeneratorOptions(options);
+  const generator = wrapGenerator(
+    resolvedGenerator.generateCell,
+    resolvedGenerator.generateChunk,
+  );
   const window = new CellWindow(
     { chunkSize: optChunkSize, radius, emptyCell: EMPTY_CELL, generator },
     coldStorage,
@@ -1495,6 +1602,7 @@ function builderGenerative(options: CellMapOptions): CellMapT {
   cmNeedsGPUUpdate = true;
   cmWindow = window;
   cmColdStorage = coldStorage;
+  cmGeneratorKey = resolvedGenerator.key;
   cmMapSize = new Vector3D(
     window.cellDimensions.x,
     window.cellDimensions.y,
@@ -1523,9 +1631,10 @@ function builderGenerative(options: CellMapOptions): CellMapT {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function serialize(component: ComponentData): any {
   const cm = component as CellMapT;
-  const size = cm.mapSize;
 
-  // Dump the canonical WASM store to a flat array of 32-bit packed ints.
+  // Dump the canonical WASM store to a flat array of 32-bit packed ints --
+  // the resident window's contents, not the whole map (off-window content
+  // lives in `coldStorageEntries` below).
   const packedFlat: number[] = Array.from(cellStoreDump());
 
   return {
@@ -1550,18 +1659,35 @@ function serialize(component: ComponentData): any {
       y: cm.cellSize.y,
       z: cm.cellSize.z,
     },
-    mapSize: {
-      _vectorType: 'Vector3D',
-      x: size.x,
-      y: size.y,
-      z: size.z,
-    },
     chunkSize: {
       _vectorType: 'Vector3D',
       x: cm.chunkSize.x,
       y: cm.chunkSize.y,
       z: cm.chunkSize.z,
     },
+    windowRadius: {
+      _vectorType: 'Vector3D',
+      x: cm.window.radius.x,
+      y: cm.window.radius.y,
+      z: cm.window.radius.z,
+    },
+    // World-chunk coordinate of the window's local (0,0,0) corner. Restoring
+    // this exactly (rather than re-zeroing, as the old whole-map-authored
+    // format did) keeps the reloaded resident window anchored at the same
+    // absolute world position it was saved at -- required for coldStorageEntries
+    // (saved in absolute world-chunk coordinates) and any other saved world
+    // position (e.g. a player transform) to still line up after reload.
+    windowOrigin: cm.window.origin
+      ? {
+          cx: cm.window.origin.cx,
+          cy: cm.window.origin.cy,
+          cz: cm.window.origin.cz,
+        }
+      : undefined,
+    // Off-window content that diverges from baseline -- see
+    // `.design/cell-map-overhaul/16-off-window-edit-persistence.md`.
+    coldStorageEntries: cmColdStorage!.dumpEntries(),
+    generatorKey: cmGeneratorKey,
     packedData: packedFlat,
     // Per-cell emission color lives outside the packed WASM cell store (it's a
     // separate texture-side channel), so persist it as its own flat RGB-int array.
@@ -1613,8 +1739,11 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     name,
     materials: dataMaterials,
     cellSize: dataCellSize,
-    mapSize: dataMapSize,
     chunkSize: dataChunkSize,
+    windowRadius: dataWindowRadius,
+    windowOrigin: dataWindowOrigin,
+    coldStorageEntries: dataColdStorageEntries,
+    generatorKey: dataGeneratorKey,
     packedData: dataPackedData,
     emissionColorData: dataEmissionColorData,
     smoothing: dataSmoothing,
@@ -1645,16 +1774,25 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
       message: 'cell-map requires at least one material',
     });
   }
-  if (!dataCellSize || !dataMapSize) {
+  if (!dataCellSize) {
     errors.push({
       code: 'MISSING_DIMENSIONS',
-      message: 'cell-map requires cellSize and mapSize',
+      message: 'cell-map requires cellSize',
     });
   }
   if (!dataPackedData || !Array.isArray(dataPackedData)) {
     errors.push({
       code: 'MISSING_PACKED_DATA',
       message: 'cell-map requires packedData array',
+    });
+  }
+  if (!dataWindowRadius || !dataWindowOrigin || !dataColdStorageEntries) {
+    errors.push({
+      code: 'UNSUPPORTED_SAVE_FORMAT',
+      message:
+        'cell-map requires windowRadius, windowOrigin, and coldStorageEntries ' +
+        '-- this looks like a pre-1.0 save (whole-map format), which is not ' +
+        'supported; there is no migration path for that format',
     });
   }
   // cell-map state is a process-wide singleton (see module comment above
@@ -1672,63 +1810,97 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     return { component: null, errors };
   }
 
-  // Reconstruct Vector3D for cellSize and mapSize
+  // Reconstruct Vector3D for cellSize/chunkSize/windowRadius.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
   const cs = new Vector3D(dataCellSize.x, dataCellSize.y, dataCellSize.z);
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-  const ms = new Vector3D(dataMapSize.x, dataMapSize.y, dataMapSize.z);
-  // chunkSize is absent in scenes saved before this field existed — default it.
   const cks =
     dataChunkSize && typeof dataChunkSize === 'object'
       ? // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         new Vector3D(dataChunkSize.x, dataChunkSize.y, dataChunkSize.z)
       : DEFAULT_CHUNK_SIZE;
+  const radius = {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    x: dataWindowRadius.x as number,
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    y: dataWindowRadius.y as number,
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    z: dataWindowRadius.z as number,
+  };
+  const windowCellDims = new Vector3D(
+    (2 * radius.x + 1) * cks.x,
+    (2 * radius.y + 1) * cks.y,
+    (2 * radius.z + 1) * cks.z,
+  );
 
-  // Reconstruct input maps by unpacking each cell from the flat packed array
-  const dMaterialMap = new Array3D<number>(ms, 0);
-  const dShapeMap = new Array3D<number>(ms, 1);
-  const dEmissionMap = new Array3D<number>(ms, 0);
-  const dVisibilityMap = new Array3D<boolean>(ms, true);
-
-  for (let i = 0; i < (dataPackedData as number[]).length; i++) {
-    const cell = unpackCell((dataPackedData as number[])[i]);
-    dMaterialMap.indexSet(i, cell.materialIndex);
-    dShapeMap.indexSet(i, cell.shapeIndex);
-    dEmissionMap.indexSet(i, cell.emissionIntensity);
-    dVisibilityMap.indexSet(i, cell.visible);
-  }
-
-  // Pack each cell into an Array3D, then load it into the canonical WASM RLE
-  // store via loadCellStore below (mirrors builder).
-  const packedArray = new Array3D<number>(ms);
-  packedArray.forEach((_, x, y, z, i) => {
-    const coords = new Vector3D(x, y, z);
-    const cellData = createDefaultCellData();
-    cellData.materialIndex = dMaterialMap.get(coords);
-    cellData.shapeIndex = dShapeMap.get(coords);
-    cellData.emissionIntensity = dEmissionMap.get(coords);
-    cellData.visible = dVisibilityMap.get(coords);
-
-    cellData.materialIndex = Math.max(
-      0,
-      Math.min(0xfff, cellData.materialIndex),
-    );
-    cellData.shapeIndex = Math.max(0, Math.min(0xfff, cellData.shapeIndex));
-    cellData.emissionIntensity = Math.max(
-      0,
-      Math.min(0x1f, cellData.emissionIntensity),
-    );
-
-    packedArray.indexSet(i, packCell(cellData));
-  });
   // Chunk size must be configured before any mesh_build_chunk* call, before
-  // the window's initial load below (mirrors builder()'s legacy path).
+  // the window's initial load below (mirrors builder()).
   await initRenderWasm();
   setChunkSize(cks.x, cks.y, cks.z);
 
-  // Reconstruct the per-cell emission color map (separate texture-side channel;
-  // absent in legacy scenes → all black).
-  const dEmissionColorMap = new Array3D<number>(ms, 0);
+  // Resolve a registry-keyed generator, if the component was built with one
+  // (a raw-function generator has no key and doesn't survive a round trip --
+  // see `.design/cell-map-overhaul/16-off-window-edit-persistence.md`). A
+  // saved key that's no longer registered degrades gracefully (the map loads
+  // without that generator) rather than failing the whole load.
+  let dGeneratorKey:
+    | { generateCell?: string; generateChunk?: string }
+    | undefined;
+  let dResolvedGenerateCell:
+    | ((x: number, y: number, z: number) => CellData | undefined)
+    | undefined;
+  let dResolvedGenerateChunk:
+    | ((cx: number, cy: number, cz: number) => CellData[])
+    | undefined;
+  if (dataGeneratorKey && typeof dataGeneratorKey === 'object') {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    const cellKey = dataGeneratorKey.generateCell as string | undefined;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    const chunkKey = dataGeneratorKey.generateChunk as string | undefined;
+    dGeneratorKey = {};
+    if (cellKey) {
+      const fn = MethodRegistry['cell-map-generator'][cellKey] as
+        | ((x: number, y: number, z: number) => CellData | undefined)
+        | undefined;
+      if (typeof fn === 'function') {
+        dResolvedGenerateCell = fn;
+        dGeneratorKey.generateCell = cellKey;
+      } else {
+        errors.push({
+          code: 'MISSING_GENERATOR',
+          message:
+            `cell-map's saved generateCell key "${cellKey}" is not registered ` +
+            `in MethodRegistry['cell-map-generator'] -- register it before ` +
+            'loading this scene; the map will load without that generator',
+        });
+      }
+    }
+    if (chunkKey) {
+      const fn = MethodRegistry['cell-map-generator'][chunkKey] as
+        | ((cx: number, cy: number, cz: number) => CellData[])
+        | undefined;
+      if (typeof fn === 'function') {
+        dResolvedGenerateChunk = fn;
+        dGeneratorKey.generateChunk = chunkKey;
+      } else {
+        errors.push({
+          code: 'MISSING_GENERATOR',
+          message:
+            `cell-map's saved generateChunk key "${chunkKey}" is not registered ` +
+            `in MethodRegistry['cell-map-generator'] -- register it before ` +
+            'loading this scene; the map will load without that generator',
+        });
+      }
+    }
+  }
+  const dGenerator = wrapGenerator(
+    dResolvedGenerateCell,
+    dResolvedGenerateChunk,
+  );
+
+  // Reconstruct the per-cell emission color map (separate texture-side
+  // channel), sized to the resident window -- doesn't get its own windowed
+  // cold-storage treatment yet (see doc 16's "explicitly out of scope").
+  const dEmissionColorMap = new Array3D<number>(windowCellDims, 0);
   if (Array.isArray(dataEmissionColorData)) {
     const colors = dataEmissionColorData as number[];
     for (let i = 0; i < colors.length; i++) {
@@ -1764,28 +1936,48 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     });
   }
 
-  // Smoothing weights (uniform default)
-  const weightsArray3D = new Array3D<number>(ms, 8);
+  // Smoothing weights (uniform default -- the generative path's only
+  // supported shape, see builderGenerative's matching comment).
+  const weightsArray3D = new Array3D<number>(windowCellDims, 8);
   const dSmoothingWeights = new Array3Di(weightsArray3D, 8, [4, 4], 'clamp');
 
-  // Legacy chunk grid: how many chunks the SAVED map spans -- mirrors
-  // builder()'s legacy path (see 08-live-construction-and-ownership.md).
-  const legacyGridDims = {
-    x: Math.ceil(ms.x / cks.x),
-    y: Math.ceil(ms.y / cks.y),
-    z: Math.ceil(ms.z / cks.z),
+  // Restore the window's exact saved world-chunk anchor (not re-zeroed) --
+  // coldStorageEntries are keyed by absolute world-chunk coordinates, and any
+  // other saved world position (e.g. a player transform) needs the resident
+  // window anchored where it actually was, not reset to the map's origin.
+  const originChunk = {
+    cx: (dataWindowOrigin as { cx: number }).cx,
+    cy: (dataWindowOrigin as { cy: number }).cy,
+    cz: (dataWindowOrigin as { cz: number }).cz,
   };
-  const radius = computeCoverageRadius(legacyGridDims);
+
   const dColdStorage = new ChunkColdStorage({
     chunkCellCount: cks.x * cks.y * cks.z,
   });
-  chunkDenseArrayIntoColdStorage(dColdStorage, packedArray.value, ms, cks);
+
+  dColdStorage.loadEntries(dataColdStorageEntries);
+  // The resident window's saved snapshot -- chunked into cold storage at its
+  // actual saved world-chunk location (not (0,0,0)) so the window's own
+  // reassemble (triggered by `setFocus` below) pulls it into the live WASM
+  // store the same way every other chunk load already works, rather than
+  // bulk-writing the store directly.
+  chunkDenseArrayIntoColdStorage(
+    dColdStorage,
+    dataPackedData as number[],
+    windowCellDims,
+    cks,
+    originChunk,
+    true, // forceStoreAll -- see the parameter's doc comment
+  );
   const dWindow = new CellWindow(
-    { chunkSize: cks, radius, emptyCell: EMPTY_CELL },
+    { chunkSize: cks, radius, emptyCell: EMPTY_CELL, generator: dGenerator },
     dColdStorage,
   );
-  // Origin-zeroing trick, same as builder() -- see its comment for why.
-  dWindow.setFocus(radius.x * cks.x, radius.y * cks.y, radius.z * cks.z);
+  dWindow.setFocus(
+    (originChunk.cx + radius.x) * cks.x,
+    (originChunk.cy + radius.y) * cks.y,
+    (originChunk.cz + radius.z) * cks.z,
+  );
 
   // Reconstruct materials array
   const mats: Material[] = (dataMaterials as Material[]).map((m) => ({
@@ -1801,15 +1993,19 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     smoothness: m.smoothness,
   }));
 
-  // Assign to module-level storage
+  // Assign to module-level storage. materialMap/shapeMap/visibilityMap have
+  // no consumers post-construction (see builderGenerative's matching
+  // comment) -- sized to the resident window as inert placeholders, same as
+  // a fresh generative construction, rather than reconstructed from
+  // packedData.
   cmMaterials = mats;
-  cmMaterialMap = dMaterialMap;
-  cmShapeMap = dShapeMap;
+  cmMaterialMap = new Array3D<number>(windowCellDims, 0);
+  cmShapeMap = new Array3D<number>(windowCellDims, 1);
   cmMeshes = dMeshes;
-  cmEmissionMap = dEmissionMap;
+  cmEmissionMap = new Array3D<number>(windowCellDims, 0);
   cmEmissionColorMap = dEmissionColorMap;
   cmEmissionColorDirty = true;
-  cmVisibilityMap = dVisibilityMap;
+  cmVisibilityMap = new Array3D<boolean>(windowCellDims, true);
   cmCellSize = cs;
   cmChunkSize = cks;
   cmSmoothing = (dataSmoothing as number) ?? 0;
@@ -1821,6 +2017,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   cmNeedsGPUUpdate = true;
   cmWindow = dWindow;
   cmColdStorage = dColdStorage;
+  cmGeneratorKey = dGeneratorKey;
   cmMapSize = new Vector3D(
     dWindow.cellDimensions.x,
     dWindow.cellDimensions.y,
@@ -1829,11 +2026,8 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   cmChunkGridSize = dWindow.gridDimensions;
   cmChunks = initChunks(dWindow.gridDimensions);
   cmRevealExempt = (dataRevealExempt as boolean) ?? false;
-  // deserialize() always uses the auto-computed coverage radius (windowRadius
-  // isn't part of the serialized format) -- see the matching comment in
-  // builder()'s legacy branch for why that means auto-focus must default off.
-  cmAutoFocusFromCamera = false;
-  cmAutoResizeFromZoom = false;
+  cmAutoFocusFromCamera = true;
+  cmAutoResizeFromZoom = true;
   cmMaxTerrainLoadDimensions = { x: 512, y: 512, z: 512 };
   cmRenderDistance = { x: 1, y: 1, z: 1 };
   cmFrustumPadding = { x: 0, y: 0, z: 0 };

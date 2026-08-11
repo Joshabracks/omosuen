@@ -128,7 +128,8 @@ import type {
 export type METHOD_TYPE =
   | 'ui-binding'
   | 'html-constructor'
-  | 'message-listener';
+  | 'message-listener'
+  | 'cell-map-generator';
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
 export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
@@ -193,6 +194,7 @@ export const MethodRegistry: Record<
   'ui-binding': {},
   'html-constructor': {},
   'message-listener': {},
+  'cell-map-generator': {},
 };
 
 /**

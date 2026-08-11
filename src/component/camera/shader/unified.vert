@@ -1,8 +1,10 @@
-attribute vec3 a_position;      // Used by cells
-attribute vec2 a_uv;
-attribute vec3 a_normal;        // Used by cells
-attribute vec3 a_origPosition;  // Pre-smoothing position (cells only)
-attribute float a_emission;     // Per-vertex emission glow 0..1 (cells only)
+#version 300 es
+
+in vec3 a_position;      // Used by cells
+in vec2 a_uv;
+in vec3 a_normal;        // Used by cells
+in vec3 a_origPosition;  // Pre-smoothing position (cells only)
+in float a_emission;     // Per-vertex emission glow 0..1 (cells only)
 
     // Render mode selector
 uniform lowp int u_renderMode;  // 0 = cells, 1 = sprites
@@ -14,7 +16,14 @@ uniform float u_zoom;
 uniform mediump float u_axonometricAngle;
 uniform mediump float u_orbitYaw;
 uniform vec3 u_cellSize;   // Used by both for grid calculations
-uniform vec3 u_mapSize;    // Used by both for depth calculations
+    // Size of the currently-resident cell-map window, and the window's
+    // world-space origin offset (window origin * chunkSize * cellSize) --
+    // see .design/cell-map-overhaul/10-vertex-world-offset-and-depth-bias.md.
+    // Both are (0,0,0)-origin/whole-map today until a shiftable window
+    // actually moves; u_windowSize replaces the old u_mapSize for this
+    // shader's depth-bias math (cells only -- sprites don't use either).
+uniform vec3 u_windowSize;
+uniform vec3 u_worldOffset;
 
     // Sprite-specific uniforms (Mode 1)
 uniform vec3 u_spritePosition;  // 3D world position (x, y=height, z)
@@ -23,12 +32,12 @@ uniform vec2 u_anchor;   // normalized [0,1] from the sprite's top-left
 uniform float u_rotation;
 
     // Outputs
-varying vec2 v_uv;
-varying vec3 v_worldPos;
-varying vec2 v_screenPos;
-varying vec3 v_worldNormal;
-varying vec3 v_origWorldPos;
-varying float v_emission;
+out vec2 v_uv;
+out vec3 v_worldPos;
+out vec2 v_screenPos;
+out vec3 v_worldNormal;
+out vec3 v_origWorldPos;
+out float v_emission;
 
 void main() {
     const float ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
@@ -38,30 +47,47 @@ void main() {
     float cosYaw = cos(radians(u_orbitYaw));
     float sinYaw = sin(radians(u_orbitYaw));
 
-    // Depth-buffer normalization must stay valid for ANY yaw. World X/Z are
-    // always >= 0 (cell-map coords start at the origin), so the un-rotated
-    // rawDepth = x + heightScale*y + z was always in [0, maxRawDepth]. Once
-    // rotated by yaw, rx/rz can go negative (e.g. yaw=90: rz = -x), which
-    // without centering would push rawDepth below 0 — past the far clip
-    // plane, silently culling a wedge of the map. Centering rx/rz on the
-    // map's XZ center and biasing by 2x the (yaw-invariant) half-diagonal
-    // keeps rawDepth providably within [0, maxRawDepth] for any yaw; at
-    // yaw=0 this is just a constant shift of the original formula, so
-    // occlusion ordering (and the visible image) is unchanged.
-    float mapCenterX = u_mapSize.x * u_cellSize.x * 0.5;
-    float mapCenterZ = u_mapSize.z * u_cellSize.z * 0.5;
-    float rotCenterX = mapCenterX * cosYaw + mapCenterZ * sinYaw;
-    float rotCenterZ = -mapCenterX * sinYaw + mapCenterZ * cosYaw;
-    float halfDiag = length(vec2(mapCenterX, mapCenterZ));
+    // Depth-buffer normalization must stay valid for ANY yaw, and now for any
+    // window world-position (not just an origin-anchored map). Two distinct
+    // quantities, kept separate on purpose:
+    //  - windowHalfX/Z: the window's HALF-EXTENT (a magnitude, no offset) --
+    //    bounds how far (rx-rotCenterX)/(rz-rotCenterZ) can range, which
+    //    depends only on window SIZE, not where it sits in the world.
+    //  - windowCenterX/Z: the window's ABSOLUTE world-space center
+    //    (u_worldOffset + half-extent) -- what rx/rz (already absolute,
+    //    post-u_worldOffset) need to be re-centered against so they land
+    //    back in a small bounded range before the yaw-safety argument below
+    //    applies. Conflating these two (reusing the half-extent as if it
+    //    were the absolute center) only happened to work historically
+    //    because the map's origin was always (0,0,0).
+    //
+    // Once re-centered, rx/rz can go negative under rotation (e.g. yaw=90:
+    // rz = -x), which without centering would push rawDepth below 0 — past
+    // the far clip plane, silently culling a wedge of the window. Centering
+    // on the window's own center and biasing by 2x the (yaw-invariant)
+    // half-diagonal keeps rawDepth provably within [0, maxRawDepth] for any
+    // yaw AND any window position; at offset=0, yaw=0 this is bit-for-bit
+    // the original formula, so today's occlusion ordering is unchanged.
+    float windowHalfX = u_windowSize.x * u_cellSize.x * 0.5;
+    float windowHalfZ = u_windowSize.z * u_cellSize.z * 0.5;
+    float windowCenterX = u_worldOffset.x + windowHalfX;
+    float windowCenterZ = u_worldOffset.z + windowHalfZ;
+    float rotCenterX = windowCenterX * cosYaw + windowCenterZ * sinYaw;
+    float rotCenterZ = -windowCenterX * sinYaw + windowCenterZ * cosYaw;
+    float halfDiag = length(vec2(windowHalfX, windowHalfZ));
     float depthBias = 2.0 * halfDiag;
-    float maxRawDepth = 4.0 * halfDiag + heightScale * u_mapSize.y * u_cellSize.y;
+    float maxRawDepth = 4.0 * halfDiag + heightScale * u_windowSize.y * u_cellSize.y;
 
     if(u_renderMode == 0) {
         // ============================================================
         // MODE 0: CELL RENDERING
         // ============================================================
 
-        // Chunk mesh builder provides world-space positions directly
+        // The chunk mesh builder bakes each vertex's absolute world-space
+        // position in at mesh-build time (see mesh-builder.ts's
+        // bakeWorldOffsetInPlace) -- a_position is already true world
+        // position, no per-frame offset needed here. u_worldOffset is still
+        // used below for the depth-bias centering math, just not for this.
         vec3 worldPos = a_position;
 
         // Rotate world X/Z around +Y by orbit yaw before the diamond projection
@@ -94,6 +120,10 @@ void main() {
         v_uv = a_uv;
         v_worldPos = worldPos;
         v_worldNormal = a_normal;
+        // Same reasoning as worldPos above -- a_origPosition is already
+        // baked to true world-space at mesh-build time. The fragment
+        // shader's reveal/AO/shadow sampling depends on this being real
+        // world-space.
         v_origWorldPos = a_origPosition;
         v_emission = a_emission;
 

@@ -18,7 +18,24 @@
 
 use std::collections::BTreeMap;
 
-const CHUNK_SIZE: usize = 16;
+/// Chunk size in cells, per axis. Runtime-configurable (not a compile-time
+/// constant) so a game can tune it without rebuilding this crate — see
+/// `mesh_set_chunk_size`. Not safe to change once chunks have been built from
+/// the current store; JS is responsible for only calling the setter once,
+/// during store setup, before any `mesh_build_chunk*` call.
+static mut CHUNK_SIZE: [usize; 3] = [16, 16, 16];
+/// Whether a face-culling neighbor lookup that falls *entirely outside the
+/// resident store* (not "generated but air" -- genuinely unloaded) should be
+/// treated as occluding (1, cull the face) or empty (0, render it -- the
+/// default, matching this crate's original behavior). Off by default so a
+/// caller that never calls `mesh_set_edge_occludes` -- e.g. a complete,
+/// bounded, never-shifting store, or this crate's own test suite -- sees the
+/// true edge of its data rendered exactly as before. `CellWindow`-backed
+/// callers (a shiftable window into effectively unbounded procedural terrain)
+/// turn this on: for them, "outside the resident window" means "not loaded
+/// yet," not "nothing there," so exposing it as an interior cross-section is
+/// wrong -- see `mesh-builder.ts`.
+static mut EDGE_OCCLUDES: u32 = 0;
 const FLUSH_THRESHOLD: f64 = 0.05;
 
 #[inline]
@@ -417,6 +434,26 @@ pub extern "C" fn mesh_set_cell_size(cx: f64, cy: f64, cz: f64) {
     }
 }
 
+/// Sets the chunk size (cells per axis) used by `mesh_build_chunk` /
+/// `mesh_build_chunk_smoothed`. Intended to be called once, during store
+/// setup, before any chunk is built from the current store — see the
+/// `CHUNK_SIZE` doc comment.
+#[no_mangle]
+pub extern "C" fn mesh_set_chunk_size(x: usize, y: usize, z: usize) {
+    unsafe {
+        *core::ptr::addr_of_mut!(CHUNK_SIZE) = [x, y, z];
+    }
+}
+
+/// Sets `EDGE_OCCLUDES` -- see its doc comment. Cheap; safe to call before
+/// every `mesh_build_chunk*` call.
+#[no_mangle]
+pub extern "C" fn mesh_set_edge_occludes(v: u32) {
+    unsafe {
+        *core::ptr::addr_of_mut!(EDGE_OCCLUDES) = v;
+    }
+}
+
 /// Reserves the smoothing-weights buffer (0–15 per cell) and returns its pointer.
 #[no_mangle]
 pub extern "C" fn mesh_reserve_weights(count: usize) -> *mut u32 {
@@ -562,12 +599,13 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
         let map_x = map_dim[0];
         let map_y = map_dim[1];
         let map_z = map_dim[2];
+        let chunk_size = *core::ptr::addr_of!(CHUNK_SIZE);
 
-        let start = [cx * CHUNK_SIZE, cy * CHUNK_SIZE, cz * CHUNK_SIZE];
+        let start = [cx * chunk_size[0], cy * chunk_size[1], cz * chunk_size[2]];
         let end = [
-            (start[0] + CHUNK_SIZE).min(map_x),
-            (start[1] + CHUNK_SIZE).min(map_y),
-            (start[2] + CHUNK_SIZE).min(map_z),
+            (start[0] + chunk_size[0]).min(map_x),
+            (start[1] + chunk_size[1]).min(map_y),
+            (start[2] + chunk_size[2]).min(map_z),
         ];
         let dims = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
         let stride_y = map_x;
@@ -613,7 +651,12 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                         let nbx = coords[0] as i64 + dir.dx as i64;
                         let nby = coords[1] as i64 + dir.dy as i64;
                         let nbz = coords[2] as i64 + dir.dz as i64;
-                        let mut neighbor_solid = false;
+                        // Out of the resident store entirely: occlude only if
+                        // the caller opted in (EDGE_OCCLUDES) -- see its doc
+                        // comment. Overwritten below whenever the neighbor
+                        // genuinely is in-bounds, so this only affects the
+                        // out-of-bounds case.
+                        let mut neighbor_solid = *core::ptr::addr_of!(EDGE_OCCLUDES) != 0;
                         if nbx >= 0
                             && nbx < map_x as i64
                             && nby >= 0
@@ -811,6 +854,12 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                                             t += 3;
                                             continue;
                                         }
+                                    } else if *core::ptr::addr_of!(EDGE_OCCLUDES) != 0 {
+                                        // Out of the resident store entirely --
+                                        // occlude only if the caller opted in,
+                                        // same reasoning as the default-cube case.
+                                        t += 3;
+                                        continue;
                                     }
                                 }
                             }
@@ -1135,23 +1184,34 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
         let map_x = map_dim[0];
         let map_y = map_dim[1];
         let map_z = map_dim[2];
+        let chunk_size = *core::ptr::addr_of!(CHUNK_SIZE);
 
-        let chunk_start = [cx * CHUNK_SIZE, cy * CHUNK_SIZE, cz * CHUNK_SIZE];
-        let chunk_end = [
-            (chunk_start[0] + CHUNK_SIZE).min(map_x),
-            (chunk_start[1] + CHUNK_SIZE).min(map_y),
-            (chunk_start[2] + CHUNK_SIZE).min(map_z),
+        let chunk_start = [
+            cx * chunk_size[0],
+            cy * chunk_size[1],
+            cz * chunk_size[2],
         ];
-        let overlap = smoothing.min(CHUNK_SIZE);
+        let chunk_end = [
+            (chunk_start[0] + chunk_size[0]).min(map_x),
+            (chunk_start[1] + chunk_size[1]).min(map_y),
+            (chunk_start[2] + chunk_size[2]).min(map_z),
+        ];
+        // Overlap margin is per-axis: each axis's smoothing-driven neighbor read
+        // is bounded by that axis's own chunk size, not a shared scalar.
+        let overlap = [
+            smoothing.min(chunk_size[0]),
+            smoothing.min(chunk_size[1]),
+            smoothing.min(chunk_size[2]),
+        ];
         let o_start = [
-            chunk_start[0].saturating_sub(overlap),
-            chunk_start[1].saturating_sub(overlap),
-            chunk_start[2].saturating_sub(overlap),
+            chunk_start[0].saturating_sub(overlap[0]),
+            chunk_start[1].saturating_sub(overlap[1]),
+            chunk_start[2].saturating_sub(overlap[2]),
         ];
         let o_end = [
-            (chunk_end[0] + overlap).min(map_x),
-            (chunk_end[1] + overlap).min(map_y),
-            (chunk_end[2] + overlap).min(map_z),
+            (chunk_end[0] + overlap[0]).min(map_x),
+            (chunk_end[1] + overlap[1]).min(map_y),
+            (chunk_end[2] + overlap[2]).min(map_z),
         ];
         let stride_y = map_x;
         let stride_z = map_x * map_y;
@@ -1205,7 +1265,11 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                             let nbx = x as i64 + dir.dx as i64;
                             let nby = y as i64 + dir.dy as i64;
                             let nbz = z as i64 + dir.dz as i64;
-                            let mut neighbor_solid = false;
+                            // Out of the resident store entirely -- see the
+                            // greedy mesher's identical EDGE_OCCLUDES reasoning
+                            // above.
+                            let mut neighbor_solid =
+                                *core::ptr::addr_of!(EDGE_OCCLUDES) != 0;
                             if nbx >= 0
                                 && nbx < map_x as i64
                                 && nby >= 0
@@ -1300,6 +1364,12 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                             t += 3;
                                             continue;
                                         }
+                                    } else if *core::ptr::addr_of!(EDGE_OCCLUDES) != 0 {
+                                        // Out of the resident store entirely --
+                                        // occlude only if the caller opted in,
+                                        // same reasoning as the default-cube case.
+                                        t += 3;
+                                        continue;
                                     }
                                 }
                             }

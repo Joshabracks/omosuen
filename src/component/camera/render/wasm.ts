@@ -35,6 +35,8 @@ interface RenderExports {
   solidity_run: () => number;
   // Meshing
   mesh_set_cell_size: (cx: number, cy: number, cz: number) => void;
+  mesh_set_chunk_size: (x: number, y: number, z: number) => void;
+  mesh_set_edge_occludes: (v: number) => void;
   mesh_reserve_weights: (count: number) => number;
   mesh_reserve_material_weights: (count: number) => number;
   mesh_custom_clear: () => void;
@@ -113,9 +115,10 @@ export function loadCellStore(
   const e = ex();
   const ptr = e.store_reserve(total);
   const view = new Uint32Array(e.memory.buffer, ptr, total);
-  for (let i = 0; i < total; i++) {
-    view[i] = packedFlat[i];
-  }
+  // Native bulk copy -- was a manual element-by-element for-loop, which at
+  // full-window scale (millions of cells) is measurably slower than letting
+  // the engine's typed-array set() do it.
+  view.set(packedFlat, 0);
   e.store_load(mapX, mapY, mapZ);
 }
 
@@ -144,7 +147,61 @@ export function cellStoreDump(): Uint32Array {
   const e = ex();
   const len = e.store_expanded_len();
   if (len === 0) return new Uint32Array(0);
-  return new Uint32Array(e.memory.buffer, e.store_expanded_ptr(), len).slice();
+  // store_expanded_ptr() can lazily rebuild the Rust-side expanded buffer
+  // (Vec::resize), which may grow WASM memory and detach any ArrayBuffer
+  // reference captured before it runs — so the pointer must be captured
+  // first, and `.buffer` read fresh afterward (same pattern as solidity()
+  // and loadCellStore() below).
+  const ptr = e.store_expanded_ptr();
+  return new Uint32Array(e.memory.buffer, ptr, len).slice();
+}
+
+/**
+ * Returns a LIVE view straight over the store's current expanded buffer — no
+ * `.slice()`, unlike `cellStoreDump()`. For callers that read it and are done
+ * before anything else touches WASM memory in between (e.g. `CellWindow`'s
+ * per-chunk reuse-copy staging); `cellStoreDump()` remains the right choice
+ * for anything that needs a stable, owned snapshot (e.g. serialization).
+ */
+export function getExpandedStoreView(): Uint32Array {
+  const e = ex();
+  const len = e.store_expanded_len();
+  if (len === 0) return new Uint32Array(0);
+  const ptr = e.store_expanded_ptr();
+  return new Uint32Array(e.memory.buffer, ptr, len);
+}
+
+/**
+ * Returns live views over BOTH the store's current expanded buffer (`source`
+ * — the pre-swap data, for reuse-copying) and a freshly `store_reserve`'d
+ * buffer of `destTotal` cells (`dest` — write the next window's assembled
+ * contents directly into this, then call `commitCellStore`). Fetches BOTH
+ * raw pointers before constructing EITHER view, and reads `memory.buffer`
+ * only once, fresh, after both — calling `store_expanded_ptr()` and
+ * `store_reserve()` independently (each via its own `memory.buffer` read)
+ * would risk the second call's growth detaching a view already constructed
+ * by the first (same hazard `cellStoreDump()`'s doc comment describes).
+ */
+export function getReassembleViews(destTotal: number): {
+  source: Uint32Array;
+  dest: Uint32Array;
+} {
+  const e = ex();
+  const srcLen = e.store_expanded_len();
+  const srcPtr = srcLen > 0 ? e.store_expanded_ptr() : 0;
+  const destPtr = e.store_reserve(destTotal);
+  const buffer = e.memory.buffer;
+  return {
+    source:
+      srcLen > 0 ? new Uint32Array(buffer, srcPtr, srcLen) : new Uint32Array(0),
+    dest: new Uint32Array(buffer, destPtr, destTotal),
+  };
+}
+
+/** Compresses/commits whatever's currently in the `dest` view from a prior
+ *  `getReassembleViews` call as the new live store, at the given dims. */
+export function commitCellStore(mx: number, my: number, mz: number): void {
+  ex().store_load(mx, my, mz);
 }
 
 // ── Visibility ─────────────────────────────────────────────────────────────
@@ -182,6 +239,29 @@ export function solidity(): Uint8Array {
 /** Sets the cell size (world units per cell) used for vertex positions. */
 export function setMeshCellSize(cx: number, cy: number, cz: number): void {
   ex().mesh_set_cell_size(cx, cy, cz);
+}
+
+/**
+ * Sets the chunk size (cells per axis) used by `buildChunkMeshWasm` /
+ * `buildChunkMeshSmoothedWasm`. Intended to be called once per store, during
+ * cell-map construction/deserialization, before any chunk is built — the
+ * store's dims are fixed at load time and chunk boundaries need to agree with
+ * the caller's own chunk grid math for the lifetime of that store.
+ */
+export function setChunkSize(x: number, y: number, z: number): void {
+  ex().mesh_set_chunk_size(x, y, z);
+}
+
+/**
+ * Whether a face-culling neighbor lookup that falls entirely outside the
+ * resident store should be treated as occluding (true, cull the face -- for
+ * a shiftable window into a much larger world, where "outside the store"
+ * means "not loaded yet," not "nothing there") or empty (false, the WASM
+ * default -- render the face, correct for a complete, bounded store where
+ * "outside" genuinely means the map ends there). See `mesh-builder.ts`.
+ */
+export function setMeshEdgeOccludes(occludes: boolean): void {
+  ex().mesh_set_edge_occludes(occludes ? 1 : 0);
 }
 
 /**

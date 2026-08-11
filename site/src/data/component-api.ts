@@ -400,18 +400,27 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
   "cell-map": {
     options: withBaseOptions([
       O("materials", "Material[]", "Material defs with texture-map keys (required).", "[{ albedoTextureKey: 'grass', normalTextureKey: 'grass', emissionTextureKey: 'grass', materialTextureKey: 'grass', albedoFrame: 0, normalFrame: 0, emissionFrame: 0, materialFrame: 0 }]"),
-      O("materialMap", "Array3D<number>", "Per-cell material indices (required).", "new Omosuen.Array3D(new Omosuen.Vector3D(8, 4, 8), 0)"),
+      O("materialMap", "Array3D<number>?", "Per-cell material indices. Hand-authored path: required together with mapSize (omit both for the generative path).", "new Omosuen.Array3D(new Omosuen.Vector3D(8, 4, 8), 0)"),
       O("shapeMap", "Array3D<number>?", "Per-cell shape indices.", "new Omosuen.Array3D(new Omosuen.Vector3D(8, 4, 8), 1)"),
       O("meshes", "Mesh[]?", "Custom mesh table.", "[]"),
       O("emissionMap", "Array3D<number>?", "Per-cell emission 0–31.", "new Omosuen.Array3D(new Omosuen.Vector3D(8, 4, 8), 0)"),
       O("emissionColorMap", "Array3D<number>?", "Per-cell highlight RGB.", "new Omosuen.Array3D(new Omosuen.Vector3D(8, 4, 8), 0)"),
       O("visibilityMap", "Array3D<boolean>?", "Per-cell visibility.", "new Omosuen.Array3D(new Omosuen.Vector3D(8, 4, 8), true)"),
       O("cellSize", "Vector3D", "World size of one cell (required).", "new Omosuen.Vector3D(1, 1, 1)"),
-      O("mapSize", "Vector3D", "Map dimensions in cells (required).", "new Omosuen.Vector3D(8, 4, 8)"),
+      O("mapSize", "Vector3D?", "Map dimensions in cells. Hand-authored path: required together with materialMap (omit both for the generative path).", "new Omosuen.Vector3D(8, 4, 8)"),
+      O("chunkSize", "Vector3D?", "Cells per streaming chunk per axis. Pick once at construction/deserialize time.", "new Omosuen.Vector3D(32, 32, 20)"),
+      O("windowRadius", "{x,y,z}?", "Padding radius in chunks around the focus point. Default auto-covers the whole authored map on the hand-authored path, {1,1,1} on the generative path.", "{ x: 1, y: 1, z: 1 }"),
+      O("generateCell", "((x,y,z) => CellData | undefined) | string?", "Per-cell generator, or a key registered via registerMethod('cell-map-generator', key, fn). Must be a pure function of its coordinates. Registry-keyed generators survive save/load; raw functions don't."),
+      O("generateChunk", "((cx,cy,cz) => CellData[]) | string?", "Bulk per-chunk generator (preferred over generateCell when both supplied). Same live-function-or-registry-key shape, resolved independently."),
       O("smoothing", "number?", "Surface-net smoothing iterations.", "0"),
-      O("smoothingWeights", "number | Array3D<number>?", "Per-cell smoothing weight.", "8"),
+      O("smoothingWeights", "number | Array3D<number>?", "Per-cell smoothing weight. Generative path only accepts a uniform number.", "8"),
       O("normalSmoothing", "number?", "Normal smoothing 0–1.", "0"),
       O("revealExempt", "boolean?", "Exempt from camera reveal clip.", "false"),
+      O("autoFocusFromCamera", "boolean?", "Render loop drives window focus from the camera every frame.", "true"),
+      O("autoResizeFromZoom", "boolean?", "Render loop drives window radius from camera zoom, capped by maxTerrainLoadDimensions.", "mirrors autoFocusFromCamera"),
+      O("maxTerrainLoadDimensions", "{x,y,z}?", "World-unit cap on how far auto-resize/setWindowRadius may grow the window.", "{ x: 512, y: 512, z: 512 }"),
+      O("renderDistance", "{x,y,z}?", "Half-extents (chunks) of the render loop's draw/cull volume.", "{ x: 1, y: 1, z: 1 }"),
+      O("frustumPadding", "{x,y,z}?", "Diagnostic-only additive padding (world units) on the render volume.", "{ x: 0, y: 0, z: 0 }"),
     ]),
     data: [
       O("materials", "Material[]", "Material definitions."),
@@ -419,12 +428,14 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("shapeMap", "Array3D<number>", "Shape index per cell."),
       O("meshes", "Mesh[]", "Mesh geometry table."),
       O("emissionMap", "Array3D<number>", "Emission intensity map."),
-      O("emissionColorMap", "Array3D<number>", "Highlight color map."),
+      O("emissionColorMap", "Array3D<number>", "Highlight color map for the resident window; off-window highlights persist via cold storage, same as primary cell data."),
       O("emissionColorDirty", "boolean", "GPU texture needs rebuild."),
       O("visibilityMap", "Array3D<boolean>", "Visibility per cell."),
       O("cellSize", "Vector3D", "Cell world dimensions."),
-      O("mapSize", "Vector3D", "Map size in cells."),
-      O("packedData", "CellPackedReadView", "Read-only WASM cell store view."),
+      O("mapSize", "Vector3D", "Current resident WINDOW's size in cells -- not the whole authored/generated map. Use getBounds() for world-space placement."),
+      O("chunkSize", "Vector3D", "Cells per streaming chunk per axis."),
+      O("window", "CellWindow", "Owns the resident window's origin/radius and shift orchestration."),
+      O("packedData", "CellPackedReadView", "Read-only WASM cell store view (resident window only)."),
       O("needsGPUUpdate", "boolean", "Mesh needs GPU upload."),
       O("chunks", "ChunkMesh[]", "Chunk mesh segments."),
       O("chunkGridSize", "{x,y,z}", "Chunk grid dimensions."),
@@ -432,6 +443,11 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("smoothingWeights", "Array3Di", "Packed smoothing weights."),
       O("normalSmoothing", "number", "Normal smoothing 0–1."),
       O("revealExempt", "boolean", "Exempt from reveal clipping."),
+      O("autoFocusFromCamera", "boolean", "Render loop drives window focus from the camera."),
+      O("autoResizeFromZoom", "boolean", "Render loop drives window radius from camera zoom."),
+      O("maxTerrainLoadDimensions", "{x,y,z}", "Cap on auto-resize/setWindowRadius growth."),
+      O("renderDistance", "{x,y,z}", "Render loop draw/cull volume half-extents."),
+      O("frustumPadding", "{x,y,z}", "Additive render-volume padding."),
     ],
     methods: [
       M("getCellData", "getCellData(coords)", "Get unpacked cell at coordinates.", [
@@ -453,12 +469,12 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
         A("coords", "Vector3D", "Cell grid coordinates."),
         A("intensity", "number", "Emission intensity 0–31."),
       ]),
-      M("setEmissionColor", "setEmissionColor(coords, color)", "Set highlight color.", [
-        A("coords", "Vector3D", "Cell grid coordinates."),
+      M("setEmissionColor", "setEmissionColor(coords, color)", "Set highlight color at a world cell coordinate; off-window writes persist via cold storage.", [
+        A("coords", "Vector3D", "World cell coordinates."),
         A("color", "Vector3D", "Highlight RGB channels 0–1."),
       ]),
-      M("getEmissionColor", "getEmissionColor(coords)", "Get highlight color.", [
-        A("coords", "Vector3D", "Cell grid coordinates."),
+      M("getEmissionColor", "getEmissionColor(coords)", "Get highlight color at a world cell coordinate.", [
+        A("coords", "Vector3D", "World cell coordinates."),
       ]),
       M("setVisible", "setVisible(coords, visible)", "Set cell visibility.", [
         A("coords", "Vector3D", "Cell grid coordinates."),
@@ -480,7 +496,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       M("cellToWorldCoordinates", "cellToWorldCoordinates(coords)", "Top-face center in world space.", [
         A("coords", "Vector3D", "Cell grid coordinates."),
       ]),
-      M("getBounds", "getBounds()", "World AABB of map."),
+      M("getBounds", "getBounds()", "World AABB of the current resident window."),
       M("raycast", "raycast(origin, dir, opts?)", "Raycast rendered surface.", [
         A("origin", "Vector3D", "Ray origin in world space."),
         A("dir", "Vector3D", "Ray direction (need not be normalized)."),
@@ -490,11 +506,21 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
         A("coords", "Vector3D", "Cell grid coordinates."),
         A("opts", "RaycastOptions?", "Max distance and smooth-normal flag."),
       ]),
-      M("sampleSurfaceHeight", "sampleSurfaceHeight(x, z, opts?)", "Topmost surface at (x,z).", [
+      M("sampleSurfaceHeight", "sampleSurfaceHeight(x, z, opts?)", "Topmost surface at (x,z). Default maxDistance scales off window size.", [
         A("x", "number", "World X coordinate."),
         A("z", "number", "World Z coordinate."),
         A("opts", "RaycastOptions?", "Max distance and smooth-normal flag."),
       ]),
+      M("setFocus", "setFocus(worldX, worldY, worldZ)", "Move the resident window to cover a world position, shifting if needed.", [
+        A("worldX", "number", "World X coordinate."),
+        A("worldY", "number", "World Y coordinate."),
+        A("worldZ", "number", "World Z coordinate."),
+      ]),
+      M("setWindowRadius", "setWindowRadius(radius)", "Grow/shrink the window's padding radius, clamped by maxTerrainLoadDimensions.", [
+        A("radius", "{x,y,z}", "New radius in chunks per axis."),
+      ]),
+      M("advanceWindowGeneration", "advanceWindowGeneration()", "Advance a pending shift/resize's chunk generation by one frame's budget; call every frame."),
+      M("takePendingBufferCleanup", "takePendingBufferCleanup()", "Drain evicted chunk meshes whose GPU buffers still need deleting (renderer-driven)."),
       M("flush", "flush()", "Flush dirty cells to WASM store."),
     ],
   },

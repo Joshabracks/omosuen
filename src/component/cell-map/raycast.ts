@@ -8,7 +8,6 @@
 // these to seat sprites on the real surface of smoothed / ramp / custom cells.
 
 import { Vector3D, rayTriangle } from '../../math';
-import { CHUNK_SIZE } from './types';
 import type { CellMapT } from './data';
 import type { RaycastHit, SurfaceHit, RaycastOptions } from './types';
 
@@ -25,9 +24,9 @@ export function getChunkTrianglesInBounds(
   const triangles: Array<[Vector3D, Vector3D, Vector3D]> = [];
 
   // Determine which chunks overlap the bounds
-  const csX = cellMap.cellSize.x * CHUNK_SIZE;
-  const csY = cellMap.cellSize.y * CHUNK_SIZE;
-  const csZ = cellMap.cellSize.z * CHUNK_SIZE;
+  const csX = cellMap.cellSize.x * cellMap.chunkSize.x;
+  const csY = cellMap.cellSize.y * cellMap.chunkSize.y;
+  const csZ = cellMap.cellSize.z * cellMap.chunkSize.z;
   const minCx = Math.floor(bounds.min.x / csX);
   const minCy = Math.floor(bounds.min.y / csY);
   const minCz = Math.floor(bounds.min.z / csZ);
@@ -145,6 +144,12 @@ export function raycastCellMap(
   const ndir = new Vector3D(dx, dy, dz);
 
   const cs = cellMap.cellSize;
+  // `mapSize` is now the resident WINDOW's size, not the whole world (see
+  // `.design/cell-map-overhaul/08-live-construction-and-ownership.md`), so
+  // this default caps a ray at the window's diagonal rather than the whole
+  // map's — a ray can no longer default-travel further than what's currently
+  // loaded. Callers that need farther reach must pass `maxDistance` explicitly;
+  // see `.design/cell-map-overhaul/12-live-read-write-path-and-bounds.md`.
   const maxDist =
     opts.maxDistance ??
     Math.hypot(
@@ -170,9 +175,9 @@ export function raycastCellMap(
   let ax = 0, ay = 0, az = 0, bx = 0, by = 0, bz = 0, cx2 = 0, cy2 = 0, cz2 = 0;
   let anx = 0, any0 = 0, anz = 0, bnx = 0, bny = 0, bnz = 0, cnx = 0, cny = 0, cnz = 0;
 
-  const chunkW = CHUNK_SIZE * cs.x;
-  const chunkH = CHUNK_SIZE * cs.y;
-  const chunkD = CHUNK_SIZE * cs.z;
+  const chunkW = cellMap.chunkSize.x * cs.x;
+  const chunkH = cellMap.chunkSize.y * cs.y;
+  const chunkD = cellMap.chunkSize.z * cs.z;
   // Pad the chunk AABB by a cell so smoothing displacement at chunk borders is caught.
   const padX = cs.x, padY = cs.y, padZ = cs.z;
 
@@ -301,6 +306,12 @@ export function sampleSurfaceHeight(
   opts: RaycastOptions = {},
 ): SurfaceHit | null {
   const cs = cellMap.cellSize;
+  // Same window-size-vs-world-size heuristic shift as `raycastCellMap` above:
+  // `mapSize.y` is the resident window's height, so this cast starts just
+  // above the window's top and reaches only as far as the window's own
+  // height by default (not the whole world's) — pass `maxDistance` explicitly
+  // for a taller world. See `.design/cell-map-overhaul/12-live-read-write-
+  // path-and-bounds.md`.
   const origin = new Vector3D(worldX, cellMap.mapSize.y * cs.y + cs.y, worldZ);
   const hit = raycastCellMap(cellMap, origin, new Vector3D(0, -1, 0), {
     maxDistance: opts.maxDistance ?? cellMap.mapSize.y * cs.y + 2 * cs.y,

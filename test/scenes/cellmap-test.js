@@ -15,6 +15,15 @@ const Omosuen = window.Omosuen;
  * Register HTML constructor for cell-map test UI
  */
 Omosuen.registerHtmlConstructor('cellmapTest', (overlay) => {
+    const frustumRows = FRUSTUM_SLIDERS.map((s) => `
+        <div class="slider-row">
+            <span class="slider-row-label">${s.label}</span>
+            <input type="range" id="${s.id}" class="slider-horizontal"
+                min="${s.min}" max="${s.max}" step="${s.step}" value="${s.value}">
+            <span id="${s.id}-value" class="slider-row-value">${s.fmt(s.value)}</span>
+        </div>
+    `).join('');
+
     return `
         <div class="sidebar">
             <button id="btn-back" class="sidebar-back-button">← Back</button>
@@ -51,6 +60,19 @@ Omosuen.registerHtmlConstructor('cellmapTest', (overlay) => {
                 <div id="camera-status" class="sidebar-status" style="margin-top: 10px;"></div>
             </div>
 
+            <div class="sidebar-section">
+                <div style="text-align: center; color: #ff6600; font-size: 14px; margin-bottom: 10px; text-transform: uppercase;">
+                    Frustum Tuning (Debug)
+                </div>
+                <div class="sidebar-status" style="font-size: 11px; line-height: 1.4; margin-bottom: 8px;">
+                    Live knobs for the render-distance/view-frustum cull. Render
+                    Distance is in chunks. Max Terrain Load Dimensions and Frustum
+                    Padding are both raw world units (max residency radius, and
+                    padding added directly to the volume, respectively).
+                </div>
+                ${frustumRows}
+            </div>
+
             <div id="render-stats" class="sidebar-section" style="display: none;">
                 <h3 style="color: #ff6600; margin: 10px 0;">Render Stats</h3>
                 <div id="stats-display" class="sidebar-status"></div>
@@ -75,6 +97,52 @@ const ZOOM_ACCELERATION = 0.003; // How much each scroll tick adds to zoom veloc
 const ZOOM_ENTROPY = 10.75;       // Rate at which zoom velocity decays toward zero per frame
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 3.0;
+
+// ── Frustum debug controls ──────────────────────────────────────────────────
+// Live-tunable knobs for diagnosing the render-distance/view-frustum cull
+// (see render-cell-maps.ts). Each slider mutates the cell-map's own public
+// properties directly -- no polling needed, the render loop reads them fresh
+// every frame.
+function getCellMap() {
+    const scene = Omosuen.getActiveScene();
+    if (!scene) return null;
+    return scene.getComponentByType('cell-map', true);
+}
+function setFrustumDebug(fn) {
+    const cellMap = getCellMap();
+    if (cellMap) fn(cellMap);
+}
+
+const FRUSTUM_SLIDERS = [
+    { id: 'render-distance-x', label: 'Render Distance X', min: 0, max: 10, step: 1, value: 1,
+      apply: (v) => setFrustumDebug((cm) => { cm.renderDistance = { ...cm.renderDistance, x: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'render-distance-y', label: 'Render Distance Y', min: 0, max: 10, step: 1, value: 1,
+      apply: (v) => setFrustumDebug((cm) => { cm.renderDistance = { ...cm.renderDistance, y: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'render-distance-z', label: 'Render Distance Z', min: 0, max: 10, step: 1, value: 1,
+      apply: (v) => setFrustumDebug((cm) => { cm.renderDistance = { ...cm.renderDistance, z: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'max-terrain-load-dimensions-x', label: 'Max Terrain Load Dimensions X', min: 0, max: 8000, step: 100, value: 512,
+      apply: (v) => setFrustumDebug((cm) => { cm.maxTerrainLoadDimensions = { ...cm.maxTerrainLoadDimensions, x: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'max-terrain-load-dimensions-y', label: 'Max Terrain Load Dimensions Y', min: 0, max: 8000, step: 100, value: 512,
+      apply: (v) => setFrustumDebug((cm) => { cm.maxTerrainLoadDimensions = { ...cm.maxTerrainLoadDimensions, y: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'max-terrain-load-dimensions-z', label: 'Max Terrain Load Dimensions Z', min: 0, max: 8000, step: 100, value: 512,
+      apply: (v) => setFrustumDebug((cm) => { cm.maxTerrainLoadDimensions = { ...cm.maxTerrainLoadDimensions, z: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'frustum-padding-x', label: 'Frustum Padding X', min: 0, max: 3000, step: 50, value: 0,
+      apply: (v) => setFrustumDebug((cm) => { cm.frustumPadding = { ...cm.frustumPadding, x: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'frustum-padding-y', label: 'Frustum Padding Y', min: 0, max: 3000, step: 50, value: 0,
+      apply: (v) => setFrustumDebug((cm) => { cm.frustumPadding = { ...cm.frustumPadding, y: v }; }), fmt: (v) => v.toFixed(0) },
+    { id: 'frustum-padding-z', label: 'Frustum Padding Z', min: 0, max: 3000, step: 50, value: 0,
+      apply: (v) => setFrustumDebug((cm) => { cm.frustumPadding = { ...cm.frustumPadding, z: v }; }), fmt: (v) => v.toFixed(0) },
+];
+
+// One 'input' handler per slider (reads value → writes the cell-map property).
+FRUSTUM_SLIDERS.forEach((s) => {
+    Omosuen.registerBinding(`set_${s.id}`, (event) => {
+        const v = parseFloat(event.currentTarget.value);
+        s.apply(v);
+        const label = document.getElementById(`${s.id}-value`);
+        if (label) label.textContent = s.fmt(v);
+    });
+});
 
 /**
  * Converts ImageData to a displayable Image element
@@ -428,6 +496,16 @@ function generateStructureMap(width, depth, maxHeight) {
 }
 
 /**
+ * Simple deterministic terrain: rolling hills via sine of distance from the world
+ * origin. Must stay a pure function of (x,z) -- see ChunkGenerator's purity
+ * contract (a chunk has to regenerate identically after being evicted/reloaded).
+ */
+function terrainSurfaceY(x, z) {
+    const dist = Math.sqrt(x * x + z * z);
+    return Math.round(2 + 3 * Math.sin(dist / 6));
+}
+
+/**
  * Create and export the cell-map test scene
  */
 export async function createScene() {
@@ -595,12 +673,11 @@ export async function createScene() {
         name: 'Camera Nexus',
     }, scene);
 
-    // Camera transform (positioned to view flat plane)
-    // 20x20x1 cells at 32x16x32px - single layer for spacing verification
+    // Camera transform (centered on the hand-authored structure)
     // Standard isometric projection (top-down, 30-degree angles)
     await Omosuen.newComponent('transform', {
         name: 'Camera Transform',
-        position: new Omosuen.Vector3D(-800, 0, -300), // iso offset (x=horizontal, y=0, z=vertical)
+        position: new Omosuen.Vector3D(320, 80, 320), // centered on the hand-authored structure
         rotation: new Omosuen.Vector3D(0, 0, 0),
         scale: new Omosuen.Vector3D(1, 1, 1),
     }, cameraNexus)
@@ -783,6 +860,12 @@ export async function createScene() {
     const CELL_WIDTH = 32;  // Standard cell width
     const CELL_DEPTH = 32;  // Standard cell depth
     const CELL_HEIGHT = 16; // Standard cell height
+    // Declared explicitly (matches the engine's own DEFAULT_CHUNK_SIZE, which
+    // isn't part of the public API) so the generateChunk bulk generator below
+    // can loop the same bounds the window actually requests per chunk.
+    const CHUNK_WIDTH = 32;
+    const CHUNK_HEIGHT = 32;
+    const CHUNK_DEPTH = 20;
 
     // Generate flat ground with hollow dirt structure in center
     const { materialMap, shapeMap } = generateStructureMap(MAP_WIDTH, MAP_DEPTH, MAP_HEIGHT);
@@ -927,16 +1010,67 @@ export async function createScene() {
         faceCover: { negZ: false }, // NE side does not occlude the neighbor wall
     };
 
+    // Shared by generateCell (point queries) and generateChunk (bulk, below) so
+    // the two can never drift apart. Returns undefined for air.
+    const computeCellData = (x, y, z) => {
+        if (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT && z >= 0 && z < MAP_DEPTH) {
+            const coord = new Omosuen.Vector3D(x, y, z);
+            const shapeIndex = shapeMap.get(coord); // 0=air, 1=cube, 2=rampSW, 3=rampNE, 4=halfCube, 5=UV cube
+            if (shapeIndex === 0) return undefined; // air within the structure's own footprint
+            return {
+                materialIndex: materialMap.get(coord),
+                shapeIndex,
+                emissionIntensity: 0,
+                visible: true,
+            };
+        }
+        const surfaceY = terrainSurfaceY(x, z);
+        if (y > surfaceY) return undefined; // air
+        return {
+            materialIndex: y === surfaceY ? 0 : 1, // grass-cap on top, dirt below
+            shapeIndex: 1,
+            emissionIntensity: 0,
+            visible: true,
+        };
+    };
+    const AIR_CELL = { materialIndex: 0, shapeIndex: 0, emissionIntensity: 0, visible: false };
+
     const cellMap = await Omosuen.newComponent('cell-map', {
         name: 'Terrain Structure',
         materials: [groundTopMaterial, dirtMaterial, stoneGrassMaterial, dirtHardMaterial, lavaMaterial],
-        materialMap: materialMap,
-        shapeMap: shapeMap, // 0 = air, 1 = cube, 2 = rampSW, 3 = rampNE, 4 = halfCube, 5 = UV cube
         // Index 0 (air) and 1 (default cube) are null so the builder auto-fills them.
         // Index 5 = uvCube(): a cube with per-face 0-1 UVs for crisp per-face frames.
         meshes: [null, null, rampSW, rampNE, halfCube, Omosuen.uvCube()],
         cellSize: new Omosuen.Vector3D(CELL_WIDTH, CELL_HEIGHT, CELL_DEPTH),
-        mapSize: new Omosuen.Vector3D(MAP_WIDTH, MAP_HEIGHT, MAP_DEPTH),
+        chunkSize: new Omosuen.Vector3D(CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH),
+        // Generative path (see .design/completed_tasks/cell-map-overhaul/04-procedural-generation.md
+        // and 08-live-construction-and-ownership.md): the hand-authored structure below stays
+        // exactly where it was, returned as fixed/predetermined data for coordinates inside its
+        // footprint; everywhere else generates simple rolling terrain, unbounded in every
+        // direction. windowRadius left at its default (3x3x3 chunks) so a modest camera pan is
+        // enough to cross a chunk boundary and exercise the shift.
+        generateCell: (x, y, z) => computeCellData(x, y, z),
+        // Bulk variant -- preferred by CellWindow.baselineChunk() over looping
+        // generateCell when both are supplied, avoiding per-cell JS call
+        // overhead for every newly-exposed chunk (matters a lot once a chunk's
+        // worth of cells, CHUNK_WIDTH*CHUNK_HEIGHT*CHUNK_DEPTH, gets generated
+        // on every shift/resize). x-fastest/y/z-slowest order, matching
+        // CellWindow's extractChunk/writeChunk.
+        generateChunk: (cx, cy, cz) => {
+            const cells = new Array(CHUNK_WIDTH * CHUNK_HEIGHT * CHUNK_DEPTH);
+            let idx = 0;
+            for (let lz = 0; lz < CHUNK_DEPTH; lz++) {
+                const wz = cz * CHUNK_DEPTH + lz;
+                for (let ly = 0; ly < CHUNK_HEIGHT; ly++) {
+                    const wy = cy * CHUNK_HEIGHT + ly;
+                    for (let lx = 0; lx < CHUNK_WIDTH; lx++) {
+                        const wx = cx * CHUNK_WIDTH + lx;
+                        cells[idx++] = computeCellData(wx, wy, wz) ?? AIR_CELL;
+                    }
+                }
+            }
+            return cells;
+        },
         smoothing: 4,
         normalSmoothing: 0.75
         // emissionMap: default (no emission)
@@ -1307,6 +1441,11 @@ export async function createScene() {
                 onActions: ['click'],
                 methodKey: 'backToMenuFromCellmap',
             },
+            ...FRUSTUM_SLIDERS.map((s) => ({
+                selector: `#${s.id}`,
+                onActions: ['input'],
+                methodKey: `set_${s.id}`,
+            })),
         ],
     }, scene);
     console.log('[CellMap Test] UI overlay created');

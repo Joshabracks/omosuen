@@ -137,7 +137,7 @@ Create any of these with `Omosuen.newComponent('<type>', options)`. Quick index:
 | `sprite` | Multi-channel billboard (albedo / normal / material / emission) |
 | `camera` | Axonometric renderer (zoom, pixelation, orbit yaw, Y-slice reveal) |
 | `viewport` | WebGL2 canvas + context |
-| `cell-map` | Voxel grid store (WASM-backed, RLE-compressed) (one per engine instance) |
+| `cell-map` | Windowed/streaming voxel grid (WASM-backed, RLE-compressed) (one per engine instance) |
 | `light` | Ambient / point / spot / directional light |
 | `collider` | Box / sphere collision shape + queries |
 | `event-collider` | Trigger volume with enter / exit / while callbacks |
@@ -223,17 +223,31 @@ silhouette, material-driven specular and emission. *Unique: one per parent nexus
 - `emissionIntensity?: number` (default `0`, clamped 0–1) — scales the emission texture (or albedo as a fallback when no emission texture is assigned) into a self-illuminating glow. Set via `setEmissionIntensity(intensity)`.
 - `emissionColor?: Vector3D` (default `(0,0,0)`, no-op) — flat additive RGB highlight, added independent of `emissionIntensity`. Set via `setEmissionColor(r,g,b)`, read via `getEmissionColor()`.
 
-**`cell-map`** — Voxel grid (material/shape/emission/visibility per cell); WASM-backed RLE
-store with greedy/smoothed meshing. *Unique: one per engine instance* — its state lives in
-module-level storage (the underlying WASM cell store is itself a process-wide singleton), so
-constructing a second live `cell-map` while one exists throws (`builder()`) or returns a
+**`cell-map`** — Windowed/streaming voxel grid (material/shape/emission/visibility per cell);
+WASM-backed RLE store with greedy/smoothed meshing. *Unique: one per engine instance* — its state
+lives in module-level storage (the underlying WASM cell store is itself a process-wide singleton),
+so constructing a second live `cell-map` while one exists throws (`builder()`) or returns a
 `LIVE_INSTANCE_EXISTS` error (`deserialize()`) instead of silently corrupting the first. Dispose
 the existing instance before constructing another.
+
+Two construction paths, chosen by which options are supplied: **hand-authored** (`mapSize` +
+`materialMap`, the pre-windowing shape below) or **generative** (`generateCell`/`generateChunk`,
+`mapSize`/`materialMap` omitted — or neither, for a purely empty map authored via `setCellData`
+after construction). Either way, the engine only ever keeps a **resident window** of chunks
+loaded in WASM; everything outside it lives compressed in cold storage and is pulled back in when
+the window shifts there again. A hand-authored map with no explicit `windowRadius` gets one
+auto-sized to keep the whole authored map resident (today's pre-windowing behavior, unchanged);
+supplying `windowRadius` opts even a hand-authored map into windowed streaming.
+
 - `materials: Material[]` (**required**) — each `Material` bundles `{ albedoTextureKey, normalTextureKey, emissionTextureKey, materialTextureKey: string }` and a frame index per channel `{ albedoFrame, normalFrame, emissionFrame, materialFrame?: number (default 0) }`
   - `sides?: { up?, southEast?, southWest?: { albedoFrame?, normalFrame?: number } }` — per-visible-side texture override (`up` = +Y, `southEast` = +X, `southWest` = +Z — the three faces the camera shows at `orbitYaw = 0`). Omitted sides/channels fall back to the base frame, so a material with no `sides` renders unchanged. Per-side frames must be frames of the **same** texture-map as the base (single atlas page); albedo + normal only. These names assume `orbitYaw` near `0`/`90`/`180`/`270`; at other yaws the camera sees faces these overrides don't cover, so authors relying on `sides` should snap orbit to those angles (a yaw-aware per-side remap is a possible follow-up, not implemented here).
   - `smoothness?: number` (0–15) — per-cell-type smoothing weight that overrides `smoothingWeights` for cells of this material; omit to use the map/per-cell weight.
-- `cellSize: Vector3D` (**required**), `mapSize: Vector3D` (**required**)
-- `materialMap: Array3D<number>` (**required**)
+- `cellSize: Vector3D` (**required**)
+- `mapSize?: Vector3D`, `materialMap?: Array3D<number>` — together, the hand-authored path (both or neither; **required** for that path, omit both for the generative path)
+- `chunkSize?: Vector3D` (default `{32,32,20}`) — cells per streaming chunk per axis; pick once at construction/deserialize time, not safe to change on an existing map
+- `windowRadius?: {x,y,z}` (default: auto-computed to cover the whole authored map on the hand-authored path; `{1,1,1}` — a 3×3×3-chunk window — on the generative path) — padding radius in chunks around the focus point
+- `generateCell?: ((worldX, worldY, worldZ) => CellData | undefined) | string` — generates one cell at a world coordinate; returning `undefined` falls back to air. Always used for single-cell point queries. Must be a pure function of its coordinates for a given world/seed — the whole windowing/eviction/caching system relies on that determinism. A `string` instead of a function is a key registered via `registerMethod('cell-map-generator', key, fn)`; a registry-keyed generator survives save/load (`serialize()` emits the key), a raw function does not (that generator simply doesn't come back on reload — a documented, explainable limitation, not a crash).
+- `generateChunk?: ((cx, cy, cz) => CellData[]) | string` — bulk per-chunk variant (a `chunkSize.x*y*z`-length array), preferred over looping `generateCell` when both are supplied; never used for point queries. Same live-function-or-registry-key shape as `generateCell`, resolved independently.
 - `shapeMap?: Array3D<number>` (default all `1`) — per-cell shape index: `0` = air, `1` = default cube, `2+` = a custom mesh from `meshes`
 - `meshes?: Mesh[]` — custom cell shapes (indices `0` air / `1` cube are auto-filled — pass `null`/omit to keep the defaults). Each `Mesh`:
   - `vertices: Float32Array` — local `-0.5..0.5`, scaled to fill the cell footprint; `indices: Uint16Array` — CCW-wound triangles
@@ -241,8 +255,34 @@ the existing instance before constructing another.
   - `faceCover?: { posX?, negX?, posY?, negY?, posZ?, negZ?: boolean }` (each default `true`) — set a side `false` when the mesh doesn't fill that cell face, so the neighbor still renders its adjacent face instead of being culled
   - Custom shapes are meshed in WASM alongside cubes (greedy **and** smoothed), so they dedup/smooth seamlessly with neighbors and round-trip through serialization
 - `emissionMap?: Array3D<number>` (default `0`), `visibilityMap?: Array3D<boolean>` (default `true`)
-- `smoothing?: number` (default `0`) — surface-net smoothing iterations; `smoothingWeights?: number | Array3D<number>` (default `8`, range 0–15) base per-cell weight; `normalSmoothing?: number` (default `0`). At a vertex shared by cells of differing weight the lowest (hardest) weight wins, so softer cells snap to harder neighbors' square corners (no seams). A material's `smoothness` overrides these per cell-type.
+- `smoothing?: number` (default `0`) — surface-net smoothing iterations; `smoothingWeights?: number | Array3D<number>` (default `8`, range 0–15) base per-cell weight (a per-cell `Array3D` on the generative path is validated against the initial window's size, not a whole-map `mapSize`); `normalSmoothing?: number` (default `0`). At a vertex shared by cells of differing weight the lowest (hardest) weight wins, so softer cells snap to harder neighbors' square corners (no seams). A material's `smoothness` overrides these per cell-type.
 - `revealExempt?: boolean` (default `false`) — ignore the camera Y-slice reveal
+- `autoFocusFromCamera?: boolean` (default `true` for the generative path / any map with an explicit `windowRadius`, `false` otherwise) — the render loop drives the window's focus from the camera position every frame. Set `false` for explicit control via `setFocus(cellMap, worldX, worldY, worldZ)`.
+- `autoResizeFromZoom?: boolean` (default: mirrors `autoFocusFromCamera`) — the render loop grows/shrinks the window's radius with camera zoom, capped by `maxTerrainLoadDimensions`. Set `false` for explicit control via `setWindowRadius(cellMap, radius)`.
+- `maxTerrainLoadDimensions?: {x,y,z}` (default `{512,512,512}`, world units) — safety cap on how far auto-resize (or a direct `setWindowRadius` call) may ever grow the window, since a resize's assemble step can call `generateCell` for every newly-exposed chunk synchronously in one frame.
+- `renderDistance?: {x,y,z}` (default `{1,1,1}`, chunks) — half-extents of the render loop's axis-aligned draw/cull volume, independent of viewport/zoom/orbit. `frustumPadding?: {x,y,z}` (default `{0,0,0}`, world units) — diagnostic-only additive padding on top of that.
+
+**Behavior changes from the pre-windowing `cell-map`, relevant if you're upgrading:** `mapSize`
+now means the **current resident window's size**, not the whole authored/generated map — read
+`getBounds(cellMap)` for the window's world-space extent instead if you need absolute placement.
+`raycastCellMap`/`sampleSurfaceHeight`'s default `maxDistance` scales off the window's size for the
+same reason; pass it explicitly for a world taller than one window. `getCellData`'s previous
+out-of-bounds throw is gone — every coordinate now resolves to something (resident window, cold
+storage, generator, or empty) instead of throwing, so code that relied on that throw for bounds
+validation needs its own check now.
+
+An edit outside the resident window (`setCellData` et al.) is fully supported — it's routed
+through cold storage rather than the live WASM store, and comes back exactly as written the next
+time the window shifts there, **including through save/load** (`coldStorageEntries` in the
+serialized scene). A `generateCell`/`generateChunk` **registered via a `'cell-map-generator'`
+key** also survives save/load; a raw function passed directly does not.
+
+`emissionColorMap`/`smoothingWeights` get the same windowed treatment: `setEmissionColor`/
+`getEmissionColor` take a **world** cell coordinate (matching `setCellData`) and fully support an
+off-window highlight — it persists through a shift, a resize, and save/load, the same as primary
+cell data. `smoothingWeights` correctly follows the window through a shift/resize instead of going
+stale or being reset; the common case (a uniform number, the only option on the generative path)
+has no per-cell mutation API and never needs re-uploading to the GPU on an ordinary shift.
 
 **`light`** — Ambient / point / spot / directional light.
 - `lightType: 'ambient' | 'point' | 'spot' | 'directional'` (**required**)

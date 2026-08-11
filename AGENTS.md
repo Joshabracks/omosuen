@@ -135,10 +135,34 @@ package `omosuen-<name>`, vendor their deps under `vendor/`, and ship via the
 - **WASM init ordering.** The render WASM must be initialized before cell/mesh/solidity calls;
   `initRenderWasm()` is awaited in the cell-map builder/deserializer and camera init. There is
   **no JS fallback** — calls before init throw loudly (by design).
+- **cell-map is windowed, not a whole-map buffer.** `CellWindow`/`ChunkColdStorage`
+  (`src/component/cell-map/window.ts`/`cold-storage.ts`) keep only a resident window of chunks in
+  the live WASM store; everything else lives compressed in cold storage. `cellMap.mapSize` means
+  the **current window's size**, not the whole authored/generated map — don't assume it's a fixed,
+  whole-map constant. `generateCell`/`generateChunk` must be a **pure function of their
+  coordinates** for a given seed; the whole eviction/regeneration/cold-storage model relies on
+  that determinism holding.
+- **`registry.ts` pulls in the whole component graph, including camera's raw shader imports.**
+  Any module that imports `MethodRegistry`/`registerMethod` from `component/registry.ts`
+  transitively imports every component builder, including camera's `.vert`/`.frag` raw-string
+  imports (webpack `raw-loader`-only). This means such a module can't be unit-tested via a bare
+  `tsx test/*.test.ts` script the way WASM-only tests (`test:wasm*`) can — verify through the
+  browser test harness instead (`npm run test`, or a throwaway `webpack --entry <file>` build run
+  in a browser) if you need to exercise code that touches the registry.
+- **`emissionColorMap`/`smoothingWeights` are windowed too**, via `AuxiliaryChannel`
+  (`src/component/cell-map/auxiliary-channel.ts`) — a *synchronous* evict/assemble cycle hooked
+  into `CellWindow`'s `onReassemble`, deliberately not integrated with `pendingShift`/`advance()`'s
+  multi-frame staging, since neither channel has a procedural-generation cost. `setEmissionColor`/
+  `getEmissionColor` take a world cell coordinate (not window-local) and fully support off-window
+  writes. See `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`.
 - **Naming conventions.** Module-level / reusable variables are `camelCase` (no underscore
   prefix). Functions `camelCase`, types `PascalCase` (enforced by eslint).
 - **No `any`.** The engine eslint config errors on `@typescript-eslint/no-explicit-any` and
   requires explicit function return types.
+- **No repo-wide release-process doc.** For wrapping up a multi-phase effort before a release,
+  the established pattern is a `.design/<effort>/06-implementation-summary.md`-style doc (see
+  `.design/chunk-buffering/` or `.design/cell-map-overhaul/`) — a plain-language summary of what
+  shipped, what was verified, and what's still a known gap.
 
 ## Commands
 

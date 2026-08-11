@@ -1,7 +1,20 @@
 import { ComponentMethods } from '../types';
 import { Vector3D } from '../../math';
-import { CellMapT, resetCellMapState } from './data';
-import { CellData, Material, Mesh, packCell, unpackCell } from './types';
+import {
+  CellMapT,
+  reassembleChunks,
+  takePendingBufferCleanup,
+  resetCellMapState,
+  cmEmissionColorChannel,
+} from './data';
+import {
+  CellData,
+  Material,
+  Mesh,
+  ChunkMesh,
+  packCell,
+  unpackCell,
+} from './types';
 import type { RaycastHit, SurfaceHit, RaycastOptions } from './types';
 import { markChunksDirty } from './mesh-builder';
 import {
@@ -9,11 +22,24 @@ import {
   cellSurfacePoint,
   sampleSurfaceHeight,
 } from './raycast';
-import {
-  cellStoreGet,
-  cellStoreSet,
-  cellStoreFlush,
-} from '../camera/render/wasm';
+import { cellStoreFlush } from '../camera/render/wasm';
+
+/**
+ * Rejects a malformed coordinate (NaN, ±Infinity, non-numeric) before it
+ * reaches the WASM store or an Array3D. This is a well-formedness check, not
+ * a spatial bounds check — plain range comparisons (`x < 0 || x >= mapSize.x`)
+ * silently let NaN through, since every comparison against NaN is false. A
+ * bad coordinate is a bug regardless of where a shiftable window (once one
+ * exists) happens to be, so this throws unconditionally — see
+ * `.design/completed_tasks/cell-map-overhaul/07-bounds-checking-diagnostics.md`.
+ */
+function assertFiniteCoordinates(x: number, y: number, z: number): void {
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    throw new Error(
+      `[cell-map] Invalid coordinates: (${x}, ${y}, ${z}) — must be finite numbers`,
+    );
+  }
+}
 
 export interface CellMapMethods extends ComponentMethods {
   type: 'cell-map';
@@ -63,6 +89,11 @@ export interface CellMapMethods extends ComponentMethods {
    * Set the per-cell emission (highlight) color. `color` channels are 0-1; (0,0,0)
    * clears the highlight. Independent of `setEmission` (which drives the emissive
    * texture brightness). Updates a GPU texture next frame — no remesh.
+   * `coordinates` is a WORLD cell coordinate (matching `setCellData`) — an
+   * off-window coordinate is fully supported, persisted via cold storage,
+   * and survives a window shift or save/load, the same as primary cell
+   * data. (Previously window-local only, with no off-window support at all —
+   * see `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`.)
    */
   setEmissionColor: (
     component: CellMapT,
@@ -70,7 +101,10 @@ export interface CellMapMethods extends ComponentMethods {
     color: Vector3D,
   ) => void;
 
-  /** Get the per-cell emission (highlight) color as a Vector3D (channels 0-1). */
+  /**
+   * Get the per-cell emission (highlight) color as a Vector3D (channels
+   * 0-1). `coordinates` is a WORLD cell coordinate — see `setEmissionColor`.
+   */
   getEmissionColor: (component: CellMapT, coordinates: Vector3D) => Vector3D;
 
   /**
@@ -124,6 +158,63 @@ export interface CellMapMethods extends ComponentMethods {
   getBounds: (component: CellMapT) => { min: Vector3D; max: Vector3D };
 
   /**
+   * Move the resident window to cover the given world position, shifting the
+   * hot buffer if needed. On a shift, reassembles the chunk-mesh array so
+   * only the newly-exposed slab is marked dirty — chunks whose world
+   * coordinate stays resident keep their existing mesh and GPU buffers, and
+   * chunks that fall out of the window are queued for GPU buffer cleanup
+   * (see `reassembleChunks` in `data.ts`). Called once per frame by the
+   * render loop when `autoFocusFromCamera` is enabled; also public for games
+   * that want explicit control instead.
+   */
+  setFocus: (
+    component: CellMapT,
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+  ) => void;
+
+  /**
+   * Grows or shrinks the resident window's padding radius (in chunks per
+   * axis), clamped to `component.maxTerrainLoadDimensions`, and re-centers
+   * it on the current focus point. Reassembles the chunk-mesh array the same
+   * way a `setFocus` shift does (see `reassembleChunks` in `data.ts`) — only
+   * genuinely new chunks are marked dirty, the rest keep their existing
+   * mesh/GPU buffers. `emissionColorMap`/`smoothingWeights` resync via their
+   * own windowed persistence on the same resize (see `auxiliary-channel.ts`)
+   * rather than being reallocated-to-baseline. Called once per frame by the
+   * render loop when `autoResizeFromZoom` is enabled; also public for games
+   * that want explicit control instead. Returns whether a resize happened.
+   */
+  setWindowRadius: (
+    component: CellMapT,
+    radius: { x: number; y: number; z: number },
+  ) => boolean;
+
+  /**
+   * Advances any pending shift/resize's chunk-*data* generation (see
+   * `CellWindow.advance`) by one frame's budget, committing it (updating the
+   * resident window and reassembling the chunk-mesh array, same as a direct
+   * `setFocus`/`setWindowRadius` commit) once every needed chunk's data is
+   * ready. A target with genuinely-new chunks doesn't move the resident
+   * window until this finishes generating them — spreads that cost across
+   * frames instead of paying it synchronously inside a single shift. Call
+   * once per frame regardless of `autoFocusFromCamera`/`autoResizeFromZoom`,
+   * since a pending target needs driving forward even when neither is being
+   * auto-driven that frame.
+   */
+  advanceWindowGeneration: (component: CellMapT) => void;
+
+  /**
+   * Drains and returns chunk meshes that were evicted from the resident
+   * window since the last call, whose GPU buffers (`glVertexBuffer`/
+   * `glIndexBuffer`) still need `gl.deleteBuffer`ing. This component has no
+   * GL context of its own, so the renderer calls this once per frame and
+   * does the actual deletion. See `reassembleChunks` in `data.ts`.
+   */
+  takePendingBufferCleanup: (component: CellMapT) => ChunkMesh[];
+
+  /**
    * Cast a ray against the cell-map's ACTUAL rendered surface (smoothing + custom
    * meshes accounted for) and return the nearest hit, or null on a miss. `dir` need
    * not be normalized; `distance` is in world units.
@@ -169,18 +260,8 @@ export const CellMap: CellMapMethods = {
 
   getCellData: (component: CellMapT, coordinates: Vector3D): CellData => {
     const { x, y, z } = coordinates;
-    const { mapSize } = component;
-    if (
-      x < 0 ||
-      x >= mapSize.x ||
-      y < 0 ||
-      y >= mapSize.y ||
-      z < 0 ||
-      z >= mapSize.z
-    ) {
-      throw new Error(`Invalid coordinates: (${x}, ${y}, ${z})`);
-    }
-    return unpackCell(cellStoreGet(x, y, z));
+    const packed = component.window.queryCell(x, y, z);
+    return unpackCell(packed);
   },
 
   setCellData: (
@@ -197,7 +278,12 @@ export const CellMap: CellMapMethods = {
     };
 
     const packed = packCell(clamped);
-    cellStoreSet(coordinates.x, coordinates.y, coordinates.z, packed);
+    component.window.setCell(
+      coordinates.x,
+      coordinates.y,
+      coordinates.z,
+      packed,
+    );
     component.needsGPUUpdate = true;
     markChunksDirty(component, coordinates.x, coordinates.y, coordinates.z);
   },
@@ -237,21 +323,52 @@ export const CellMap: CellMapMethods = {
     coordinates: Vector3D,
     color: Vector3D,
   ): void => {
+    assertFiniteCoordinates(coordinates.x, coordinates.y, coordinates.z);
     const to255 = (c: number): number =>
       Math.max(0, Math.min(255, Math.round(c * 255)));
     const packed =
       (to255(color.x) << 16) | (to255(color.y) << 8) | to255(color.z);
-    // Per-cell color is a texture-side channel (not baked into vertices), so this
-    // never triggers a remesh — just flags the GPU texture for re-upload.
-    component.emissionColorMap.set(coordinates, packed);
-    component.emissionColorDirty = true;
+    // Per-cell color is a texture-side channel (not baked into vertices), so
+    // this never triggers a remesh -- just flags the GPU texture for
+    // re-upload when the write is actually visible (in-window). An
+    // off-window write is fully supported -- persisted via the channel's
+    // own cold storage and correctly reappears when the window shifts back,
+    // the same as a primary-channel edit (see `auxiliary-channel.ts`).
+    const local = component.window.worldToLocal(
+      coordinates.x,
+      coordinates.y,
+      coordinates.z,
+    );
+    cmEmissionColorChannel!.set(
+      coordinates.x,
+      coordinates.y,
+      coordinates.z,
+      local,
+      packed,
+    );
+    if (local) {
+      component.emissionColorMap.set(
+        new Vector3D(local.x, local.y, local.z),
+        packed,
+      );
+      component.emissionColorDirty = true;
+    }
   },
 
-  getEmissionColor: (
-    component: CellMapT,
-    coordinates: Vector3D,
-  ): Vector3D => {
-    const packed = component.emissionColorMap.get(coordinates) | 0;
+  getEmissionColor: (component: CellMapT, coordinates: Vector3D): Vector3D => {
+    assertFiniteCoordinates(coordinates.x, coordinates.y, coordinates.z);
+    const local = component.window.worldToLocal(
+      coordinates.x,
+      coordinates.y,
+      coordinates.z,
+    );
+    const packed =
+      cmEmissionColorChannel!.get(
+        coordinates.x,
+        coordinates.y,
+        coordinates.z,
+        local,
+      ) | 0;
     return new Vector3D(
       ((packed >> 16) & 0xff) / 255,
       ((packed >> 8) & 0xff) / 255,
@@ -307,6 +424,10 @@ export const CellMap: CellMapMethods = {
     component.needsGPUUpdate = false;
   },
 
+  takePendingBufferCleanup: (): ChunkMesh[] => {
+    return takePendingBufferCleanup();
+  },
+
   cellToWorldCoordinates: (
     component: CellMapT,
     coordinates: Vector3D,
@@ -320,13 +441,123 @@ export const CellMap: CellMapMethods = {
   },
 
   getBounds: (component: CellMapT): { min: Vector3D; max: Vector3D } => {
-    const min = new Vector3D(0, 0, 0);
+    const origin = component.window.origin;
+    const ox = (origin?.cx ?? 0) * component.chunkSize.x * component.cellSize.x;
+    const oy = (origin?.cy ?? 0) * component.chunkSize.y * component.cellSize.y;
+    const oz = (origin?.cz ?? 0) * component.chunkSize.z * component.cellSize.z;
+    const min = new Vector3D(ox, oy, oz);
     const max = new Vector3D(
-      component.mapSize.x * component.cellSize.x,
-      component.mapSize.y * component.cellSize.y,
-      component.mapSize.z * component.cellSize.z,
+      ox + component.mapSize.x * component.cellSize.x,
+      oy + component.mapSize.y * component.cellSize.y,
+      oz + component.mapSize.z * component.cellSize.z,
     );
     return { min, max };
+  },
+
+  setFocus: (
+    component: CellMapT,
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+  ): void => {
+    const oldOrigin = component.window.origin;
+    const oldChunks = component.chunks;
+    const shifted = component.window.setFocus(
+      Math.floor(worldX / component.cellSize.x),
+      Math.floor(worldY / component.cellSize.y),
+      Math.floor(worldZ / component.cellSize.z),
+    );
+    if (shifted) {
+      // Non-null immediately after a shift -- setFocus just set it.
+      component.chunks = reassembleChunks(
+        oldChunks,
+        oldOrigin,
+        component.window.origin!,
+        component.window.gridDimensions,
+      );
+    }
+  },
+
+  setWindowRadius: (
+    component: CellMapT,
+    radius: { x: number; y: number; z: number },
+  ): boolean => {
+    // maxTerrainLoadDimensions is a world-space radius, not chunks -- convert
+    // to a chunk-radius cap the same way renderDistance/frustumPadding are
+    // converted elsewhere (floor-divide by chunkSize*cellSize per axis).
+    const maxWorld = component.maxTerrainLoadDimensions;
+    const maxChunks = {
+      x: Math.max(
+        0,
+        Math.floor(maxWorld.x / (component.chunkSize.x * component.cellSize.x)),
+      ),
+      y: Math.max(
+        0,
+        Math.floor(maxWorld.y / (component.chunkSize.y * component.cellSize.y)),
+      ),
+      z: Math.max(
+        0,
+        Math.floor(maxWorld.z / (component.chunkSize.z * component.cellSize.z)),
+      ),
+    };
+    const clamped = {
+      x: Math.min(radius.x, maxChunks.x),
+      y: Math.min(radius.y, maxChunks.y),
+      z: Math.min(radius.z, maxChunks.z),
+    };
+    const oldOrigin = component.window.origin;
+    const oldChunks = component.chunks;
+    const resized = component.window.resize(clamped);
+    if (!resized) return false;
+
+    component.mapSize = new Vector3D(
+      component.window.cellDimensions.x,
+      component.window.cellDimensions.y,
+      component.window.cellDimensions.z,
+    );
+    component.chunkGridSize = component.window.gridDimensions;
+    // Non-null immediately after a resize -- window.resize just set it.
+    component.chunks = reassembleChunks(
+      oldChunks,
+      oldOrigin,
+      component.window.origin!,
+      component.window.gridDimensions,
+    );
+
+    return true;
+  },
+
+  advanceWindowGeneration: (component: CellMapT): void => {
+    const oldOrigin = component.window.origin;
+    const oldChunks = component.chunks;
+    const oldGridDims = component.window.gridDimensions;
+    const committed = component.window.advance();
+    if (!committed) return;
+
+    // A committed target's dims may or may not have changed depending on
+    // whether it originated from setFocus (dims unchanged) or
+    // setWindowRadius (dims changed) -- window.advance() doesn't distinguish,
+    // so derive it here instead of threading that through the window API.
+    const dimsChanged =
+      component.window.gridDimensions.x !== oldGridDims.x ||
+      component.window.gridDimensions.y !== oldGridDims.y ||
+      component.window.gridDimensions.z !== oldGridDims.z;
+
+    if (dimsChanged) {
+      component.mapSize = new Vector3D(
+        component.window.cellDimensions.x,
+        component.window.cellDimensions.y,
+        component.window.cellDimensions.z,
+      );
+      component.chunkGridSize = component.window.gridDimensions;
+    }
+
+    component.chunks = reassembleChunks(
+      oldChunks,
+      oldOrigin,
+      component.window.origin!,
+      component.window.gridDimensions,
+    );
   },
 
   raycast: (
@@ -347,8 +578,7 @@ export const CellMap: CellMapMethods = {
     worldX: number,
     worldZ: number,
     opts?: RaycastOptions,
-  ): SurfaceHit | null =>
-    sampleSurfaceHeight(component, worldX, worldZ, opts),
+  ): SurfaceHit | null => sampleSurfaceHeight(component, worldX, worldZ, opts),
 
   flush: (component: CellMapT): void => {
     cellStoreFlush();

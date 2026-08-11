@@ -428,7 +428,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("shapeMap", "Array3D<number>", "Shape index per cell."),
       O("meshes", "Mesh[]", "Mesh geometry table."),
       O("emissionMap", "Array3D<number>", "Emission intensity map."),
-      O("emissionColorMap", "Array3D<number>", "Highlight color map (window-sized; not windowed independently -- see known limitations)."),
+      O("emissionColorMap", "Array3D<number>", "Highlight color map for the resident window; off-window highlights persist via cold storage, same as primary cell data."),
       O("emissionColorDirty", "boolean", "GPU texture needs rebuild."),
       O("visibilityMap", "Array3D<boolean>", "Visibility per cell."),
       O("cellSize", "Vector3D", "Cell world dimensions."),
@@ -469,12 +469,12 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
         A("coords", "Vector3D", "Cell grid coordinates."),
         A("intensity", "number", "Emission intensity 0–31."),
       ]),
-      M("setEmissionColor", "setEmissionColor(coords, color)", "Set highlight color.", [
-        A("coords", "Vector3D", "Cell grid coordinates."),
+      M("setEmissionColor", "setEmissionColor(coords, color)", "Set highlight color at a world cell coordinate; off-window writes persist via cold storage.", [
+        A("coords", "Vector3D", "World cell coordinates."),
         A("color", "Vector3D", "Highlight RGB channels 0–1."),
       ]),
-      M("getEmissionColor", "getEmissionColor(coords)", "Get highlight color.", [
-        A("coords", "Vector3D", "Cell grid coordinates."),
+      M("getEmissionColor", "getEmissionColor(coords)", "Get highlight color at a world cell coordinate.", [
+        A("coords", "Vector3D", "World cell coordinates."),
       ]),
       M("setVisible", "setVisible(coords, visible)", "Set cell visibility.", [
         A("coords", "Vector3D", "Cell grid coordinates."),

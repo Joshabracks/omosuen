@@ -255,7 +255,7 @@ supplying `windowRadius` opts even a hand-authored map into windowed streaming.
   - `faceCover?: { posX?, negX?, posY?, negY?, posZ?, negZ?: boolean }` (each default `true`) — set a side `false` when the mesh doesn't fill that cell face, so the neighbor still renders its adjacent face instead of being culled
   - Custom shapes are meshed in WASM alongside cubes (greedy **and** smoothed), so they dedup/smooth seamlessly with neighbors and round-trip through serialization
 - `emissionMap?: Array3D<number>` (default `0`), `visibilityMap?: Array3D<boolean>` (default `true`)
-- `smoothing?: number` (default `0`) — surface-net smoothing iterations; `smoothingWeights?: number | Array3D<number>` (default `8`, range 0–15) base per-cell weight (the generative path only accepts a uniform `number` — a per-cell `Array3D` needs `mapSize` to validate against); `normalSmoothing?: number` (default `0`). At a vertex shared by cells of differing weight the lowest (hardest) weight wins, so softer cells snap to harder neighbors' square corners (no seams). A material's `smoothness` overrides these per cell-type.
+- `smoothing?: number` (default `0`) — surface-net smoothing iterations; `smoothingWeights?: number | Array3D<number>` (default `8`, range 0–15) base per-cell weight (a per-cell `Array3D` on the generative path is validated against the initial window's size, not a whole-map `mapSize`); `normalSmoothing?: number` (default `0`). At a vertex shared by cells of differing weight the lowest (hardest) weight wins, so softer cells snap to harder neighbors' square corners (no seams). A material's `smoothness` overrides these per cell-type.
 - `revealExempt?: boolean` (default `false`) — ignore the camera Y-slice reveal
 - `autoFocusFromCamera?: boolean` (default `true` for the generative path / any map with an explicit `windowRadius`, `false` otherwise) — the render loop drives the window's focus from the camera position every frame. Set `false` for explicit control via `setFocus(cellMap, worldX, worldY, worldZ)`.
 - `autoResizeFromZoom?: boolean` (default: mirrors `autoFocusFromCamera`) — the render loop grows/shrinks the window's radius with camera zoom, capped by `maxTerrainLoadDimensions`. Set `false` for explicit control via `setWindowRadius(cellMap, radius)`.
@@ -277,10 +277,12 @@ time the window shifts there, **including through save/load** (`coldStorageEntri
 serialized scene). A `generateCell`/`generateChunk` **registered via a `'cell-map-generator'`
 key** also survives save/load; a raw function passed directly does not.
 
-**Known limitation:** `emissionColorMap` (`setEmissionColor`/`getEmissionColor`) and
-`smoothingWeights` are plain window-sized arrays with no per-chunk windowing of their own yet — an
-emission-color highlight painted on a cell that later leaves the resident window is lost on that
-shift, unlike primary cell data (which persists via cold storage as described above).
+`emissionColorMap`/`smoothingWeights` get the same windowed treatment: `setEmissionColor`/
+`getEmissionColor` take a **world** cell coordinate (matching `setCellData`) and fully support an
+off-window highlight — it persists through a shift, a resize, and save/load, the same as primary
+cell data. `smoothingWeights` correctly follows the window through a shift/resize instead of going
+stale or being reset; the common case (a uniform number, the only option on the generative path)
+has no per-cell mutation API and never needs re-uploading to the GPU on an ordinary shift.
 
 **`light`** — Ambient / point / spot / directional light.
 - `lightType: 'ambient' | 'point' | 'spot' | 'directional'` (**required**)

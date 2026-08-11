@@ -1,10 +1,11 @@
 import { ComponentMethods } from '../types';
-import { Array3D, Array3Di, Vector3D } from '../../math';
+import { Vector3D } from '../../math';
 import {
   CellMapT,
   reassembleChunks,
   takePendingBufferCleanup,
   resetCellMapState,
+  cmEmissionColorChannel,
 } from './data';
 import {
   CellData,
@@ -32,30 +33,6 @@ import { cellStoreFlush } from '../camera/render/wasm';
  * exists) happens to be, so this throws unconditionally — see
  * `.design/completed_tasks/cell-map-overhaul/07-bounds-checking-diagnostics.md`.
  */
-/**
- * The secondary dense maps (emissionColorMap/smoothingWeights) are sized to
- * the window and have no per-chunk windowing of their own yet (doc 13,
- * deferred) -- reallocate them to the new size so nothing downstream reads a
- * stale length against the new mapSize. This resets any per-cell
- * emission-color edits made at the old size (a known, accepted limitation);
- * the uniform smoothing weight is preserved by reading it back before
- * reallocating. Shared by `setWindowRadius`'s immediate-commit path and
- * `advanceWindowGeneration`'s deferred-resize-commit path — both need
- * identical post-resize bookkeeping, just triggered from different places.
- */
-function applyResizeSideEffects(component: CellMapT): void {
-  component.needsGPUUpdate = true;
-  component.emissionColorMap = new Array3D<number>(component.mapSize, 0);
-  component.emissionColorDirty = true;
-  const uniformWeight = component.smoothingWeights.expand().value[0] ?? 8;
-  component.smoothingWeights = new Array3Di(
-    new Array3D<number>(component.mapSize, uniformWeight),
-    8,
-    [4, 4],
-    'clamp',
-  );
-}
-
 function assertFiniteCoordinates(x: number, y: number, z: number): void {
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
     throw new Error(
@@ -112,6 +89,11 @@ export interface CellMapMethods extends ComponentMethods {
    * Set the per-cell emission (highlight) color. `color` channels are 0-1; (0,0,0)
    * clears the highlight. Independent of `setEmission` (which drives the emissive
    * texture brightness). Updates a GPU texture next frame — no remesh.
+   * `coordinates` is a WORLD cell coordinate (matching `setCellData`) — an
+   * off-window coordinate is fully supported, persisted via cold storage,
+   * and survives a window shift or save/load, the same as primary cell
+   * data. (Previously window-local only, with no off-window support at all —
+   * see `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`.)
    */
   setEmissionColor: (
     component: CellMapT,
@@ -119,7 +101,10 @@ export interface CellMapMethods extends ComponentMethods {
     color: Vector3D,
   ) => void;
 
-  /** Get the per-cell emission (highlight) color as a Vector3D (channels 0-1). */
+  /**
+   * Get the per-cell emission (highlight) color as a Vector3D (channels
+   * 0-1). `coordinates` is a WORLD cell coordinate — see `setEmissionColor`.
+   */
   getEmissionColor: (component: CellMapT, coordinates: Vector3D) => Vector3D;
 
   /**
@@ -195,10 +180,9 @@ export interface CellMapMethods extends ComponentMethods {
    * it on the current focus point. Reassembles the chunk-mesh array the same
    * way a `setFocus` shift does (see `reassembleChunks` in `data.ts`) — only
    * genuinely new chunks are marked dirty, the rest keep their existing
-   * mesh/GPU buffers. The secondary dense maps sized to the window
-   * (`emissionColorMap`/`smoothingWeights`) are still fully reallocated on
-   * any resize — a separate, pre-existing, accepted limitation (doc 13,
-   * deferred), unrelated to chunk meshes. Called once per frame by the
+   * mesh/GPU buffers. `emissionColorMap`/`smoothingWeights` resync via their
+   * own windowed persistence on the same resize (see `auxiliary-channel.ts`)
+   * rather than being reallocated-to-baseline. Called once per frame by the
    * render loop when `autoResizeFromZoom` is enabled; also public for games
    * that want explicit control instead. Returns whether a resize happened.
    */
@@ -344,15 +328,47 @@ export const CellMap: CellMapMethods = {
       Math.max(0, Math.min(255, Math.round(c * 255)));
     const packed =
       (to255(color.x) << 16) | (to255(color.y) << 8) | to255(color.z);
-    // Per-cell color is a texture-side channel (not baked into vertices), so this
-    // never triggers a remesh — just flags the GPU texture for re-upload.
-    component.emissionColorMap.set(coordinates, packed);
-    component.emissionColorDirty = true;
+    // Per-cell color is a texture-side channel (not baked into vertices), so
+    // this never triggers a remesh -- just flags the GPU texture for
+    // re-upload when the write is actually visible (in-window). An
+    // off-window write is fully supported -- persisted via the channel's
+    // own cold storage and correctly reappears when the window shifts back,
+    // the same as a primary-channel edit (see `auxiliary-channel.ts`).
+    const local = component.window.worldToLocal(
+      coordinates.x,
+      coordinates.y,
+      coordinates.z,
+    );
+    cmEmissionColorChannel!.set(
+      coordinates.x,
+      coordinates.y,
+      coordinates.z,
+      local,
+      packed,
+    );
+    if (local) {
+      component.emissionColorMap.set(
+        new Vector3D(local.x, local.y, local.z),
+        packed,
+      );
+      component.emissionColorDirty = true;
+    }
   },
 
   getEmissionColor: (component: CellMapT, coordinates: Vector3D): Vector3D => {
     assertFiniteCoordinates(coordinates.x, coordinates.y, coordinates.z);
-    const packed = component.emissionColorMap.get(coordinates) | 0;
+    const local = component.window.worldToLocal(
+      coordinates.x,
+      coordinates.y,
+      coordinates.z,
+    );
+    const packed =
+      cmEmissionColorChannel!.get(
+        coordinates.x,
+        coordinates.y,
+        coordinates.z,
+        local,
+      ) | 0;
     return new Vector3D(
       ((packed >> 16) & 0xff) / 255,
       ((packed >> 8) & 0xff) / 255,
@@ -507,7 +523,6 @@ export const CellMap: CellMapMethods = {
       component.window.origin!,
       component.window.gridDimensions,
     );
-    applyResizeSideEffects(component);
 
     return true;
   },
@@ -543,10 +558,6 @@ export const CellMap: CellMapMethods = {
       component.window.origin!,
       component.window.gridDimensions,
     );
-
-    if (dimsChanged) {
-      applyResizeSideEffects(component);
-    }
   },
 
   raycast: (

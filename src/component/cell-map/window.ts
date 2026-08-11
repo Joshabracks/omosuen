@@ -103,6 +103,31 @@ export interface WindowConfig {
    * off-window scripted edits may want to disable it.
    */
   warnOnOutOfWindowWrite?: boolean;
+  /**
+   * Called once at the end of `reassemble()`, right after the window's
+   * committed `origin`/`gridDims`/`cellDims` change — the one point,
+   * regardless of whether the shift committed synchronously or via a staged
+   * `pendingShift`/`advance()` commit, where the window's position actually
+   * moves. Intended for auxiliary per-cell data channels (e.g.
+   * `emissionColorMap`/`smoothingWeights`, see `auxiliary-channel.ts`) that
+   * need to stay in sync with the resident window but have no procedural-
+   * generation cost of their own, so they don't need `pendingShift`'s
+   * multi-frame staging — they can react synchronously here instead. Not
+   * called on a true no-op (`requestTarget` finding the target already
+   * matches committed state).
+   */
+  onReassemble?: (
+    old: {
+      origin: ChunkCoord | null;
+      gridDims: { x: number; y: number; z: number };
+      cellDims: { x: number; y: number; z: number };
+    },
+    next: {
+      origin: ChunkCoord;
+      gridDims: { x: number; y: number; z: number };
+      cellDims: { x: number; y: number; z: number };
+    },
+  ) => void;
 }
 
 export class CellWindow {
@@ -113,6 +138,7 @@ export class CellWindow {
   private readonly generator: ChunkGenerator | undefined;
   private readonly coldStorage: ChunkColdStorage;
   private readonly warnOnOutOfWindowWrite: boolean;
+  private readonly onReassemble: WindowConfig['onReassemble'];
   /**
    * World-chunk-coordinate keys (`chunkKey`) of chunks that might currently
    * differ from their procedural baseline — i.e. have been written to since
@@ -178,6 +204,7 @@ export class CellWindow {
     this.generator = config.generator;
     this.coldStorage = coldStorage;
     this.warnOnOutOfWindowWrite = config.warnOnOutOfWindowWrite ?? true;
+    this.onReassemble = config.onReassemble;
     this.gridDims = {
       x: 2 * this.windowRadius.x + 1,
       y: 2 * this.windowRadius.y + 1,
@@ -856,6 +883,10 @@ export class CellWindow {
     this.originChunk = newOrigin;
     this.gridDims = newGridDims;
     this.cellDims = newCellDims;
+    this.onReassemble?.(
+      { origin: oldOrigin, gridDims: oldGridDims, cellDims: oldCellDims },
+      { origin: newOrigin, gridDims: newGridDims, cellDims: newCellDims },
+    );
   }
 
   /** Stable string key for `editedSinceBaseline`, by world-chunk coordinate. */

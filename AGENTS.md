@@ -149,10 +149,12 @@ package `omosuen-<name>`, vendor their deps under `vendor/`, and ship via the
   `tsx test/*.test.ts` script the way WASM-only tests (`test:wasm*`) can — verify through the
   browser test harness instead (`npm run test`, or a throwaway `webpack --entry <file>` build run
   in a browser) if you need to exercise code that touches the registry.
-- **Secondary dense cell-map channels aren't windowed yet.** `emissionColorMap`/
-  `smoothingWeights` are plain window-sized arrays with no per-chunk cold-storage treatment of
-  their own — an emission-color highlight outside the resident window is lost on a shift, unlike
-  primary cell data. See `.design/cell-map-overhaul/17-secondary-dense-map-windowing-evaluation.md`.
+- **`emissionColorMap`/`smoothingWeights` are windowed too**, via `AuxiliaryChannel`
+  (`src/component/cell-map/auxiliary-channel.ts`) — a *synchronous* evict/assemble cycle hooked
+  into `CellWindow`'s `onReassemble`, deliberately not integrated with `pendingShift`/`advance()`'s
+  multi-frame staging, since neither channel has a procedural-generation cost. `setEmissionColor`/
+  `getEmissionColor` take a world cell coordinate (not window-local) and fully support off-window
+  writes. See `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`.
 - **Naming conventions.** Module-level / reusable variables are `camelCase` (no underscore
   prefix). Functions `camelCase`, types `PascalCase` (enforced by eslint).
 - **No `any`.** The engine eslint config errors on `@typescript-eslint/no-explicit-any` and

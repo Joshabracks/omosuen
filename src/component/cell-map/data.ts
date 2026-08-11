@@ -22,10 +22,11 @@ import {
   setChunkSize,
 } from '../camera/render/wasm';
 import { CellWindow } from './window';
-import type { ChunkGenerator, ChunkCoord } from './window';
+import type { ChunkGenerator, ChunkCoord, WindowConfig } from './window';
 import { ChunkColdStorage } from './cold-storage';
 import type { CellData } from './types';
 import { MethodRegistry } from '../registry';
+import { AuxiliaryChannel } from './auxiliary-channel';
 
 /**
  * Read-only view over the canonical cell store, exposed as `cellMap.packedData`
@@ -172,6 +173,17 @@ export let cmColdStorage: ChunkColdStorage | undefined;
 export let cmGeneratorKey:
   | { generateCell?: string; generateChunk?: string }
   | undefined;
+/**
+ * `emissionColorMap`/`smoothingWeights`' own windowed persistence -- unlike
+ * primary cell data, these have no procedural-generation cost, so they don't
+ * need `CellWindow`'s multi-frame shift staging; they resync synchronously
+ * via `CellWindow`'s `onReassemble` hook instead. See `auxiliary-channel.ts`
+ * and `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`.
+ * Owned jointly with `cmWindow` (constructed together, always non-null
+ * together).
+ */
+export let cmEmissionColorChannel: AuxiliaryChannel | undefined;
+export let cmSmoothingWeightsChannel: AuxiliaryChannel | undefined;
 
 /**
  * Packed value for "nothing here" — material 0, shape 0 (air), no emission,
@@ -247,6 +259,8 @@ export function resetCellMapState(): void {
   cmWindow = undefined;
   cmColdStorage = undefined;
   cmGeneratorKey = undefined;
+  cmEmissionColorChannel = undefined;
+  cmSmoothingWeightsChannel = undefined;
   cmPendingBufferCleanup = [];
   cmMeshCache.clear();
 }
@@ -1238,6 +1252,89 @@ function chunkDenseArrayIntoColdStorage(
 }
 
 /**
+ * Resyncs the public `cmEmissionColorMap`/`cmSmoothingWeights` fields (and
+ * `cmEmissionColorDirty`) from the two auxiliary channels' current resident
+ * content, at the given cell dimensions. Shared by the initial synchronous
+ * call every construction path makes right after constructing the channels
+ * (see `makeAuxiliaryOnReassemble`'s doc comment for why that call is
+ * necessary, not just the hook) and by `onReassemble`'s own per-shift call.
+ *
+ * `forceSmoothingReassign`: `smoothingWeights` has no live per-cell setter,
+ * so when the channel is uniform AND the window's cell dimensions haven't
+ * changed, its resident content is provably byte-identical after the shift
+ * -- skip reassigning `cmSmoothingWeights` in that case. This matters:
+ * `mesh-builder.ts`'s rebuild cache busts on reference-inequality
+ * (`lastSmoothingWeights !== cellMap.smoothingWeights`), so reassigning
+ * unconditionally on every plain shift would force a whole-window WASM
+ * re-upload on ordinary camera movement, re-breaking the exact perf win
+ * that cache exists for. Callers must pass `true` here for the very first
+ * assignment (no prior value to preserve) AND for any commit whose cell
+ * dimensions differ from the previous commit's (a resize) -- even a
+ * *uniform* weight's array must be reallocated to the new size, or
+ * `mesh-builder.ts` hands WASM a buffer sized for the old (smaller) window
+ * while claiming the new cell count, an out-of-bounds read that traps.
+ */
+function syncAuxiliaryFields(
+  emissionChannel: AuxiliaryChannel,
+  smoothingChannel: AuxiliaryChannel,
+  cellDims: { x: number; y: number; z: number },
+  forceSmoothingReassign: boolean,
+): void {
+  const dims = new Vector3D(cellDims.x, cellDims.y, cellDims.z);
+
+  const emissionArr = new Array3D<number>(dims, 0);
+  emissionArr.value = Array.from(emissionChannel.value);
+  cmEmissionColorMap = emissionArr;
+  cmEmissionColorDirty = true;
+
+  if (smoothingChannel.canDiverge || forceSmoothingReassign) {
+    const weightsArr = new Array3D<number>(dims, 8);
+    weightsArr.value = Array.from(smoothingChannel.value);
+    cmSmoothingWeights = new Array3Di(weightsArr, 8, [4, 4], 'clamp');
+  }
+}
+
+/**
+ * Builds the `CellWindow.onReassemble` handler shared by every construction
+ * path (`builder()`'s legacy branch, `builderGenerative()`, `deserialize()`)
+ * -- drives `emissionColorMap`/`smoothingWeights`' own windowed persistence
+ * (see `auxiliary-channel.ts`) and keeps the public fields in sync via
+ * `syncAuxiliaryFields`.
+ *
+ * Fires on every commit -- but NOT necessarily the very first one
+ * synchronously: a window whose initial construction needs staged
+ * generation (any chunk not already resolvable from cold storage, e.g. any
+ * generative-path map with the default `windowRadius`) doesn't commit its
+ * first `reassemble()` inside the constructor's own `setFocus()` call; it
+ * can take several frames of `advanceWindowGeneration` to drain. Each
+ * construction path therefore also calls `syncAuxiliaryFields` directly,
+ * once, synchronously, right after constructing the channels (before
+ * `new CellWindow(...)`) -- so `cmSmoothingWeights` is never left
+ * `undefined` between construction and whenever this hook first actually
+ * fires.
+ */
+function makeAuxiliaryOnReassemble(
+  emissionChannel: AuxiliaryChannel,
+  smoothingChannel: AuxiliaryChannel,
+): NonNullable<WindowConfig['onReassemble']> {
+  return (_old, next) => {
+    emissionChannel.onWindowChange(_old, next);
+    smoothingChannel.onWindowChange(_old, next);
+    cmNeedsGPUUpdate = true;
+    const dimsChanged =
+      _old.cellDims.x !== next.cellDims.x ||
+      _old.cellDims.y !== next.cellDims.y ||
+      _old.cellDims.z !== next.cellDims.z;
+    syncAuxiliaryFields(
+      emissionChannel,
+      smoothingChannel,
+      next.cellDims,
+      _old.origin === null || dimsChanged,
+    );
+  };
+}
+
+/**
  * Builder function for CellMap component
  */
 export async function builder(options: CellMapOptions): Promise<CellMapT> {
@@ -1406,9 +1503,12 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
 
   let weightsArray3D: Array3D<number>;
   const rawWeight = options.smoothingWeights ?? 8;
+  const smoothingIsUniform = typeof rawWeight === 'number';
+  let smoothingBaselineValue = 8;
   if (typeof rawWeight === 'number') {
     const clamped = Math.max(0, Math.min(15, Math.round(rawWeight)));
     weightsArray3D = new Array3D<number>(mapSize, clamped);
+    smoothingBaselineValue = clamped;
   } else {
     if (
       rawWeight.size.x !== mapSize.x ||
@@ -1419,7 +1519,6 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     }
     weightsArray3D = rawWeight;
   }
-  const optSmoothingWeights = new Array3Di(weightsArray3D, 8, [4, 4], 'clamp');
 
   // Legacy chunk grid: how many chunks the AUTHORED map spans. The window's
   // own grid (below) is sized to at least cover this, by default -- not the
@@ -1450,8 +1549,44 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     mapSize,
     optChunkSize,
   );
+
+  // emissionColorMap/smoothingWeights' own windowed persistence -- seeded
+  // from the authored whole-map data before the window's first `setFocus`,
+  // mirroring `chunkDenseArrayIntoColdStorage` above exactly (see
+  // `auxiliary-channel.ts`).
+  const initialCellDims = {
+    x: (2 * radius.x + 1) * optChunkSize.x,
+    y: (2 * radius.y + 1) * optChunkSize.y,
+    z: (2 * radius.z + 1) * optChunkSize.z,
+  };
+  const emissionChannel = new AuxiliaryChannel({
+    chunkSize: optChunkSize,
+    baselineValue: 0,
+    trackDivergence: true,
+    initialCellDims,
+  });
+  emissionChannel.seedFromDense(optEmissionColorMap.value, mapSize);
+  const smoothingChannel = new AuxiliaryChannel({
+    chunkSize: optChunkSize,
+    baselineValue: smoothingBaselineValue,
+    trackDivergence: !smoothingIsUniform,
+    initialCellDims,
+  });
+  smoothingChannel.seedFromDense(weightsArray3D.value, mapSize);
+  // Synchronous initial assignment -- see `makeAuxiliaryOnReassemble`'s doc
+  // comment for why this can't wait for the hook alone.
+  syncAuxiliaryFields(emissionChannel, smoothingChannel, initialCellDims, true);
+
   const window = new CellWindow(
-    { chunkSize: optChunkSize, radius, emptyCell: EMPTY_CELL },
+    {
+      chunkSize: optChunkSize,
+      radius,
+      emptyCell: EMPTY_CELL,
+      onReassemble: makeAuxiliaryOnReassemble(
+        emissionChannel,
+        smoothingChannel,
+      ),
+    },
     coldStorage,
   );
   // Force the initial window origin to (0,0,0): a focus point inside the
@@ -1460,6 +1595,10 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   // resident from the start, world coordinate == window-local coordinate,
   // and every other read/write/render path stays exactly as it behaves
   // today -- see 08-live-construction-and-ownership.md for why this matters.
+  // This first `setFocus` call resolves synchronously (everything's already
+  // in cold storage), so `onReassemble` fires within this call, and
+  // `cmEmissionColorMap`/`cmSmoothingWeights` are already correctly set by
+  // the time the assignments below run.
   window.setFocus(
     radius.x * optChunkSize.x,
     radius.y * optChunkSize.y,
@@ -1472,17 +1611,16 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   cmShapeMap = optShapeMap;
   cmMeshes = optMeshes;
   cmEmissionMap = optEmissionMap;
-  cmEmissionColorMap = optEmissionColorMap;
-  cmEmissionColorDirty = true;
   cmVisibilityMap = optVisibilityMap;
   cmCellSize = options.cellSize;
   cmChunkSize = optChunkSize;
   cmSmoothing = optSmoothing;
-  cmSmoothingWeights = optSmoothingWeights;
   cmNormalSmoothing = optNormalSmoothing;
   cmNeedsGPUUpdate = true;
   cmWindow = window;
   cmColdStorage = coldStorage;
+  cmEmissionColorChannel = emissionChannel;
+  cmSmoothingWeightsChannel = smoothingChannel;
   cmMapSize = new Vector3D(
     window.cellDimensions.x,
     window.cellDimensions.y,
@@ -1542,44 +1680,82 @@ function builderGenerative(options: CellMapOptions): CellMapT {
     Math.min(1, options.normalSmoothing ?? 0),
   );
   const rawWeight = options.smoothingWeights ?? 8;
-  if (typeof rawWeight !== 'number') {
-    // A per-cell Array3D of custom weights has no coordinate space to
-    // validate against without a mapSize -- doc 13 (windowing the secondary
-    // per-cell channels) is where this gets real support; for now the
-    // generative path only accepts a uniform weight.
-    throw new Error(
-      'CellMap: a per-cell smoothingWeights Array3D requires mapSize/' +
-        'materialMap (the legacy path) -- the generative path only supports ' +
-        'a uniform number for now',
-    );
+  const smoothingIsUniform = typeof rawWeight === 'number';
+  let weightsArray3D: Array3D<number>;
+  let smoothingBaselineValue = 8;
+  if (smoothingIsUniform) {
+    const clamped = Math.max(0, Math.min(15, Math.round(rawWeight as number)));
+    weightsArray3D = new Array3D<number>(windowCellDims, clamped);
+    smoothingBaselineValue = clamped;
+  } else {
+    // A per-cell Array3D of custom weights is validated against the initial
+    // window's own size (there's no whole-map mapSize on this path) --
+    // survives future window shifts via the same windowed persistence
+    // emissionColorMap gets, see `auxiliary-channel.ts`.
+    if (
+      rawWeight.size.x !== windowCellDims.x ||
+      rawWeight.size.y !== windowCellDims.y ||
+      rawWeight.size.z !== windowCellDims.z
+    ) {
+      throw new Error(
+        'CellMap: a per-cell smoothingWeights Array3D on the generative path ' +
+          `must match the initial window size (${windowCellDims.x},` +
+          `${windowCellDims.y},${windowCellDims.z}), got (${rawWeight.size.x},` +
+          `${rawWeight.size.y},${rawWeight.size.z})`,
+      );
+    }
+    weightsArray3D = rawWeight;
   }
-  const clampedWeight = Math.max(0, Math.min(15, Math.round(rawWeight)));
-  const optSmoothingWeights = new Array3Di(
-    new Array3D<number>(windowCellDims, clampedWeight),
-    8,
-    [4, 4],
-    'clamp',
-  );
 
   // "Input maps preserved for reference" have no authored input to preserve
   // in the generative path -- sized to the initial window as inert
-  // placeholders (materialMap/shapeMap/visibilityMap have no consumers post-
-  // construction; emissionColorMap IS live via setEmissionColor/
-  // getEmissionColor, and stays a plain dense array — sized to the *initial*
-  // window only — until doc 13 gives it real per-chunk windowing).
+  // placeholders (materialMap/shapeMap/visibilityMap have no consumers
+  // post-construction). emissionColorMap/smoothingWeights get real windowed
+  // persistence via `AuxiliaryChannel` -- see `auxiliary-channel.ts`.
   const coldStorage = new ChunkColdStorage({
     chunkCellCount: optChunkSize.x * optChunkSize.y * optChunkSize.z,
   });
+  const emissionChannel = new AuxiliaryChannel({
+    chunkSize: optChunkSize,
+    baselineValue: 0,
+    trackDivergence: true,
+    initialCellDims: windowCellDims,
+  });
+  const smoothingChannel = new AuxiliaryChannel({
+    chunkSize: optChunkSize,
+    baselineValue: smoothingBaselineValue,
+    trackDivergence: !smoothingIsUniform,
+    initialCellDims: windowCellDims,
+  });
+  if (!smoothingIsUniform) {
+    smoothingChannel.seedFromDense(weightsArray3D.value, windowCellDims);
+  }
+  // Synchronous initial assignment -- see `makeAuxiliaryOnReassemble`'s doc
+  // comment for why this can't wait for the hook alone (the default
+  // windowRadius needs generation for every initial chunk, so the first
+  // `onReassemble` doesn't fire synchronously here the way it does when
+  // everything's cold-storage-resolvable).
+  syncAuxiliaryFields(emissionChannel, smoothingChannel, windowCellDims, true);
   const resolvedGenerator = resolveGeneratorOptions(options);
   const generator = wrapGenerator(
     resolvedGenerator.generateCell,
     resolvedGenerator.generateChunk,
   );
   const window = new CellWindow(
-    { chunkSize: optChunkSize, radius, emptyCell: EMPTY_CELL, generator },
+    {
+      chunkSize: optChunkSize,
+      radius,
+      emptyCell: EMPTY_CELL,
+      generator,
+      onReassemble: makeAuxiliaryOnReassemble(
+        emissionChannel,
+        smoothingChannel,
+      ),
+    },
     coldStorage,
   );
   // Same origin-zeroing trick as the legacy path -- see its comment above.
+  // `onReassemble` fires within this call (see the matching comment there).
   window.setFocus(
     radius.x * optChunkSize.x,
     radius.y * optChunkSize.y,
@@ -1591,17 +1767,16 @@ function builderGenerative(options: CellMapOptions): CellMapT {
   cmShapeMap = new Array3D<number>(windowCellDims, 1);
   cmMeshes = optMeshes;
   cmEmissionMap = new Array3D<number>(windowCellDims, 0);
-  cmEmissionColorMap = new Array3D<number>(windowCellDims, 0);
-  cmEmissionColorDirty = true;
   cmVisibilityMap = new Array3D<boolean>(windowCellDims, true);
   cmCellSize = options.cellSize;
   cmChunkSize = optChunkSize;
   cmSmoothing = optSmoothing;
-  cmSmoothingWeights = optSmoothingWeights;
   cmNormalSmoothing = optNormalSmoothing;
   cmNeedsGPUUpdate = true;
   cmWindow = window;
   cmColdStorage = coldStorage;
+  cmEmissionColorChannel = emissionChannel;
+  cmSmoothingWeightsChannel = smoothingChannel;
   cmGeneratorKey = resolvedGenerator.key;
   cmMapSize = new Vector3D(
     window.cellDimensions.x,
@@ -1695,6 +1870,22 @@ function serialize(component: ComponentData): any {
     emissionColorData: cm.emissionColorMap.value.some((v) => v !== 0)
       ? Array.from(cm.emissionColorMap.value)
       : undefined,
+    // Off-window emission-color highlights that diverge from baseline -- see
+    // `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`.
+    emissionColorStorageEntries: cmEmissionColorChannel!.dumpEntries(),
+    // smoothingWeights: the common case (a uniform number, no live setter)
+    // just persists the configured value; a per-cell-authored map persists
+    // its resident window plus off-window entries, the same shape as the
+    // primary channel/emissionColorMap above.
+    smoothingUniformWeight: cmSmoothingWeightsChannel!.canDiverge
+      ? undefined
+      : (cmSmoothingWeightsChannel!.value[0] ?? 8),
+    smoothingWeightsData: cmSmoothingWeightsChannel!.canDiverge
+      ? Array.from(cmSmoothingWeightsChannel!.value)
+      : undefined,
+    smoothingWeightStorageEntries: cmSmoothingWeightsChannel!.canDiverge
+      ? cmSmoothingWeightsChannel!.dumpEntries()
+      : undefined,
     smoothing: cm.smoothing,
     normalSmoothing: cm.normalSmoothing,
     revealExempt: cm.revealExempt,
@@ -1746,6 +1937,10 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     generatorKey: dataGeneratorKey,
     packedData: dataPackedData,
     emissionColorData: dataEmissionColorData,
+    emissionColorStorageEntries: dataEmissionColorStorageEntries,
+    smoothingUniformWeight: dataSmoothingUniformWeight,
+    smoothingWeightsData: dataSmoothingWeightsData,
+    smoothingWeightStorageEntries: dataSmoothingWeightStorageEntries,
     smoothing: dataSmoothing,
     normalSmoothing: dataNormalSmoothing,
     revealExempt: dataRevealExempt,
@@ -1897,17 +2092,6 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     dResolvedGenerateChunk,
   );
 
-  // Reconstruct the per-cell emission color map (separate texture-side
-  // channel), sized to the resident window -- doesn't get its own windowed
-  // cold-storage treatment yet (see doc 16's "explicitly out of scope").
-  const dEmissionColorMap = new Array3D<number>(windowCellDims, 0);
-  if (Array.isArray(dataEmissionColorData)) {
-    const colors = dataEmissionColorData as number[];
-    for (let i = 0; i < colors.length; i++) {
-      dEmissionColorMap.indexSet(i, colors[i] | 0);
-    }
-  }
-
   // Meshes: air at 0, default cube at 1 (auto-filled); custom shapes at 2+ are
   // reconstructed from the serialized plain arrays.
   const dMeshes: Mesh[] = [
@@ -1935,11 +2119,6 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
       };
     });
   }
-
-  // Smoothing weights (uniform default -- the generative path's only
-  // supported shape, see builderGenerative's matching comment).
-  const weightsArray3D = new Array3D<number>(windowCellDims, 8);
-  const dSmoothingWeights = new Array3Di(weightsArray3D, 8, [4, 4], 'clamp');
 
   // Restore the window's exact saved world-chunk anchor (not re-zeroed) --
   // coldStorageEntries are keyed by absolute world-chunk coordinates, and any
@@ -1969,10 +2148,74 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     originChunk,
     true, // forceStoreAll -- see the parameter's doc comment
   );
+
+  // emissionColorMap/smoothingWeights' own windowed persistence -- same
+  // pattern as the primary channel above (load off-window entries, seed the
+  // resident window's saved snapshot at its actual saved origin). See
+  // `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`.
+  const dEmissionChannel = new AuxiliaryChannel({
+    chunkSize: cks,
+    baselineValue: 0,
+    trackDivergence: true,
+    initialCellDims: windowCellDims,
+  });
+  if (Array.isArray(dataEmissionColorStorageEntries)) {
+    dEmissionChannel.loadEntries(dataEmissionColorStorageEntries);
+  }
+  if (Array.isArray(dataEmissionColorData)) {
+    dEmissionChannel.seedFromDense(
+      dataEmissionColorData as number[],
+      windowCellDims,
+      originChunk,
+    );
+  }
+
+  const dSmoothingIsUniform = dataSmoothingUniformWeight !== undefined;
+  const dSmoothingBaselineValue = dSmoothingIsUniform
+    ? ((dataSmoothingUniformWeight as number) ?? 8)
+    : 8;
+  const dSmoothingChannel = new AuxiliaryChannel({
+    chunkSize: cks,
+    baselineValue: dSmoothingBaselineValue,
+    trackDivergence: !dSmoothingIsUniform,
+    initialCellDims: windowCellDims,
+  });
+  if (!dSmoothingIsUniform) {
+    if (Array.isArray(dataSmoothingWeightStorageEntries)) {
+      dSmoothingChannel.loadEntries(dataSmoothingWeightStorageEntries);
+    }
+    if (Array.isArray(dataSmoothingWeightsData)) {
+      dSmoothingChannel.seedFromDense(
+        dataSmoothingWeightsData as number[],
+        windowCellDims,
+        originChunk,
+      );
+    }
+  }
+  // Synchronous initial assignment -- see `makeAuxiliaryOnReassemble`'s doc
+  // comment for why this can't wait for the hook alone.
+  syncAuxiliaryFields(
+    dEmissionChannel,
+    dSmoothingChannel,
+    windowCellDims,
+    true,
+  );
+
   const dWindow = new CellWindow(
-    { chunkSize: cks, radius, emptyCell: EMPTY_CELL, generator: dGenerator },
+    {
+      chunkSize: cks,
+      radius,
+      emptyCell: EMPTY_CELL,
+      generator: dGenerator,
+      onReassemble: makeAuxiliaryOnReassemble(
+        dEmissionChannel,
+        dSmoothingChannel,
+      ),
+    },
     dColdStorage,
   );
+  // `onReassemble` fires within this call -- see the matching comment in
+  // `builder()`'s legacy path.
   dWindow.setFocus(
     (originChunk.cx + radius.x) * cks.x,
     (originChunk.cy + radius.y) * cks.y,
@@ -2003,13 +2246,10 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   cmShapeMap = new Array3D<number>(windowCellDims, 1);
   cmMeshes = dMeshes;
   cmEmissionMap = new Array3D<number>(windowCellDims, 0);
-  cmEmissionColorMap = dEmissionColorMap;
-  cmEmissionColorDirty = true;
   cmVisibilityMap = new Array3D<boolean>(windowCellDims, true);
   cmCellSize = cs;
   cmChunkSize = cks;
   cmSmoothing = (dataSmoothing as number) ?? 0;
-  cmSmoothingWeights = dSmoothingWeights;
   cmNormalSmoothing = Math.max(
     0,
     Math.min(1, (dataNormalSmoothing as number) ?? 0),
@@ -2017,6 +2257,8 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   cmNeedsGPUUpdate = true;
   cmWindow = dWindow;
   cmColdStorage = dColdStorage;
+  cmEmissionColorChannel = dEmissionChannel;
+  cmSmoothingWeightsChannel = dSmoothingChannel;
   cmGeneratorKey = dGeneratorKey;
   cmMapSize = new Vector3D(
     dWindow.cellDimensions.x,

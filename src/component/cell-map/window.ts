@@ -24,6 +24,7 @@ import {
   commitCellStore,
 } from '../camera/render/wasm';
 import type { ChunkColdStorage } from './cold-storage';
+import { isProfilingEnabled } from '../../loop/profile';
 
 /**
  * Default per-frame time budget, in milliseconds, for generating a pending
@@ -170,8 +171,8 @@ export class CellWindow {
    * fully-staged case. `queue`/`queueIndex` form a cursor over `queue`
    * (nearest-to-target-center first) rather than shifting the array, to
    * avoid O(n) removals for large queues. Cold-storage-resolvable chunks are
-   * NOT staged here — that lookup is already cheap (a `Map.get`), resolved
-   * directly in `reassemble`'s assembly loop same as before.
+   * NOT staged here — that presence check is already cheap (a `Map.has`),
+   * resolved directly in `reassemble`'s assembly loop same as before.
    */
   private pendingShift: {
     origin: ChunkCoord;
@@ -191,6 +192,15 @@ export class CellWindow {
     editedDuringStaging: Map<string, ChunkCoord>;
     targetRadius?: { x: number; y: number; z: number };
   } | null = null;
+  /**
+   * Accumulated `reassemble()` time (ms) since the last `drainReassembleMs()`
+   * call, only tracked while profiling is enabled. `reassemble` can fire
+   * from underneath either `setFocus`/`resize` (the `beginOrRetarget`
+   * immediate-commit path) or `advanceWindowGeneration` (a drained pending
+   * shift's completion) -- this lets the caller attribute its cost to a
+   * dedicated bucket regardless of which of those triggered it.
+   */
+  private reassembleMsAccum = 0;
   /** Window size in chunks. Mutable via `resize()`, otherwise constant for the session. */
   private gridDims: { x: number; y: number; z: number };
   /** Window size in cells. Mutable via `resize()`, otherwise constant for the session. */
@@ -616,8 +626,8 @@ export class CellWindow {
    * `'reuse'` if it's within the *current* (committed) window (its data
    * needs to move, not change -- staged by reading the live store, see
    * `extractLiveChunk`), `'generate'` if it needs `baselineChunk`. Chunks
-   * resolvable from cold storage are omitted entirely -- that lookup is
-   * already cheap (a `Map.get`, no generation/copy), so `reassemble`'s
+   * resolvable from cold storage are omitted entirely -- that presence
+   * check is cheap (a `Map.has`, no decode/copy), so `reassemble`'s
    * assembly loop keeps resolving those directly rather than staging them.
    * No generation or copying happens here; this is the cheap up-front pass
    * `beginOrRetarget` uses to build (or shrink) a pending shift's queue.
@@ -643,7 +653,7 @@ export class CellWindow {
             continue;
           }
           if (
-            this.coldStorage.get(worldChunk.cx, worldChunk.cy, worldChunk.cz)
+            this.coldStorage.has(worldChunk.cx, worldChunk.cy, worldChunk.cz)
           ) {
             continue;
           }
@@ -786,6 +796,27 @@ export class CellWindow {
    * distinguish "shift" from "resize"; it just holds whatever's loaded.
    */
   private reassemble(
+    newOrigin: ChunkCoord,
+    newGridDims: { x: number; y: number; z: number },
+    newCellDims: { x: number; y: number; z: number },
+  ): void {
+    const profiling = isProfilingEnabled();
+    const t0 = profiling ? performance.now() : 0;
+    try {
+      this.reassembleImpl(newOrigin, newGridDims, newCellDims);
+    } finally {
+      if (profiling) this.reassembleMsAccum += performance.now() - t0;
+    }
+  }
+
+  /** Returns and zeros the `reassemble()` time accumulated since the last call. */
+  drainReassembleMs(): number {
+    const ms = this.reassembleMsAccum;
+    this.reassembleMsAccum = 0;
+    return ms;
+  }
+
+  private reassembleImpl(
     newOrigin: ChunkCoord,
     newGridDims: { x: number; y: number; z: number },
     newCellDims: { x: number; y: number; z: number },

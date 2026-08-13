@@ -71,6 +71,8 @@ export let cmEmissionMap: Array3D<number>;
 export let cmEmissionColorMap: Array3D<number>;
 /** Set when cmEmissionColorMap changes so the render pass rebuilds the GPU texture. */
 export let cmEmissionColorDirty: boolean = true;
+/** Set when cmMeshes changes so rebuildDirtyChunks re-uploads the custom-shape buffers. */
+export let cmCustomShapesDirty: boolean = true;
 export let cmVisibilityMap: Array3D<boolean>;
 export let cmCellSize: Vector3D;
 export let cmMapSize: Vector3D;
@@ -240,6 +242,7 @@ export function resetCellMapState(): void {
   cmEmissionMap = undefined!;
   cmEmissionColorMap = undefined!;
   cmEmissionColorDirty = true;
+  cmCustomShapesDirty = true;
   cmVisibilityMap = undefined!;
   cmCellSize = undefined!;
   cmMapSize = undefined!;
@@ -303,6 +306,7 @@ function makeCellMapInstance(name: string): CellMapT {
     },
     set meshes(v) {
       cmMeshes = v;
+      cmCustomShapesDirty = true;
     },
     get emissionMap() {
       return cmEmissionMap;
@@ -321,6 +325,12 @@ function makeCellMapInstance(name: string): CellMapT {
     },
     set emissionColorDirty(v) {
       cmEmissionColorDirty = v;
+    },
+    get customShapesDirty() {
+      return cmCustomShapesDirty;
+    },
+    set customShapesDirty(v) {
+      cmCustomShapesDirty = v;
     },
     get visibilityMap() {
       return cmVisibilityMap;
@@ -635,6 +645,8 @@ export interface CellMapT extends ComponentData {
   emissionColorMap: Array3D<number>;
   /** Dirty flag: emissionColorMap changed → render pass rebuilds the GPU texture. */
   emissionColorDirty: boolean;
+  /** Dirty flag: meshes changed → rebuildDirtyChunks re-uploads the custom-shape buffers. */
+  customShapesDirty: boolean;
   visibilityMap: Array3D<boolean>;
 
   // World configuration
@@ -783,6 +795,7 @@ export const PROPERTY_ALLOWLIST = [
   'emissionMap',
   'emissionColorMap',
   'emissionColorDirty',
+  'customShapesDirty',
   'visibilityMap',
   'cellSize',
   'mapSize',

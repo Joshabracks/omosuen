@@ -23,6 +23,37 @@ import {
   sampleSurfaceHeight,
 } from './raycast';
 import { cellStoreFlush } from '../camera/render/wasm';
+import { isProfilingEnabled, recordComponentUpdate } from '../../loop/profile';
+
+/**
+ * Records a cell-map window-management call's cost under a synthetic
+ * `'cell-map:<phase>'` type so it shows up in the perf-monitor's per-type
+ * breakdown -- `camera.render()` runs entirely outside the update-phase
+ * traversal that normally populates this, so cell-map's window/mesh/GPU
+ * costs are otherwise invisible there. `reassemble()`'s cost (which can fire
+ * from underneath any of setFocus/setWindowRadius/advanceWindowGeneration)
+ * is drained and recorded separately under `'cell-map:reassemble'`, keeping
+ * buckets exclusive rather than double-counted. Only called when profiling
+ * is enabled -- see `isProfilingEnabled`.
+ */
+function recordCellMapPhase(
+  component: CellMapT,
+  type: string,
+  t0: number,
+): void {
+  const id = component.id ?? -1;
+  const reassembleMs = component.window.drainReassembleMs();
+  const ownMs = performance.now() - t0 - reassembleMs;
+  recordComponentUpdate(id, component.name, type, ownMs);
+  if (reassembleMs > 0) {
+    recordComponentUpdate(
+      id,
+      component.name,
+      'cell-map:reassemble',
+      reassembleMs,
+    );
+  }
+}
 
 /**
  * Rejects a malformed coordinate (NaN, ±Infinity, non-numeric) before it
@@ -409,6 +440,7 @@ export const CellMap: CellMapMethods = {
 
   addMesh: (component: CellMapT, mesh: Mesh): number => {
     component.meshes.push(mesh);
+    component.customShapesDirty = true;
     const index = component.meshes.length - 1;
 
     if (index > 0xfff) {
@@ -460,6 +492,8 @@ export const CellMap: CellMapMethods = {
     worldY: number,
     worldZ: number,
   ): void => {
+    const profiling = isProfilingEnabled();
+    const t0 = profiling ? performance.now() : 0;
     const oldOrigin = component.window.origin;
     const oldChunks = component.chunks;
     const shifted = component.window.setFocus(
@@ -476,88 +510,109 @@ export const CellMap: CellMapMethods = {
         component.window.gridDimensions,
       );
     }
+    if (profiling) recordCellMapPhase(component, 'cell-map:setFocus', t0);
   },
 
   setWindowRadius: (
     component: CellMapT,
     radius: { x: number; y: number; z: number },
   ): boolean => {
-    // maxTerrainLoadDimensions is a world-space radius, not chunks -- convert
-    // to a chunk-radius cap the same way renderDistance/frustumPadding are
-    // converted elsewhere (floor-divide by chunkSize*cellSize per axis).
-    const maxWorld = component.maxTerrainLoadDimensions;
-    const maxChunks = {
-      x: Math.max(
-        0,
-        Math.floor(maxWorld.x / (component.chunkSize.x * component.cellSize.x)),
-      ),
-      y: Math.max(
-        0,
-        Math.floor(maxWorld.y / (component.chunkSize.y * component.cellSize.y)),
-      ),
-      z: Math.max(
-        0,
-        Math.floor(maxWorld.z / (component.chunkSize.z * component.cellSize.z)),
-      ),
-    };
-    const clamped = {
-      x: Math.min(radius.x, maxChunks.x),
-      y: Math.min(radius.y, maxChunks.y),
-      z: Math.min(radius.z, maxChunks.z),
-    };
-    const oldOrigin = component.window.origin;
-    const oldChunks = component.chunks;
-    const resized = component.window.resize(clamped);
-    if (!resized) return false;
+    const profiling = isProfilingEnabled();
+    const t0 = profiling ? performance.now() : 0;
+    try {
+      // maxTerrainLoadDimensions is a world-space radius, not chunks -- convert
+      // to a chunk-radius cap the same way renderDistance/frustumPadding are
+      // converted elsewhere (floor-divide by chunkSize*cellSize per axis).
+      const maxWorld = component.maxTerrainLoadDimensions;
+      const maxChunks = {
+        x: Math.max(
+          0,
+          Math.floor(
+            maxWorld.x / (component.chunkSize.x * component.cellSize.x),
+          ),
+        ),
+        y: Math.max(
+          0,
+          Math.floor(
+            maxWorld.y / (component.chunkSize.y * component.cellSize.y),
+          ),
+        ),
+        z: Math.max(
+          0,
+          Math.floor(
+            maxWorld.z / (component.chunkSize.z * component.cellSize.z),
+          ),
+        ),
+      };
+      const clamped = {
+        x: Math.min(radius.x, maxChunks.x),
+        y: Math.min(radius.y, maxChunks.y),
+        z: Math.min(radius.z, maxChunks.z),
+      };
+      const oldOrigin = component.window.origin;
+      const oldChunks = component.chunks;
+      const resized = component.window.resize(clamped);
+      if (!resized) return false;
 
-    component.mapSize = new Vector3D(
-      component.window.cellDimensions.x,
-      component.window.cellDimensions.y,
-      component.window.cellDimensions.z,
-    );
-    component.chunkGridSize = component.window.gridDimensions;
-    // Non-null immediately after a resize -- window.resize just set it.
-    component.chunks = reassembleChunks(
-      oldChunks,
-      oldOrigin,
-      component.window.origin!,
-      component.window.gridDimensions,
-    );
-
-    return true;
-  },
-
-  advanceWindowGeneration: (component: CellMapT): void => {
-    const oldOrigin = component.window.origin;
-    const oldChunks = component.chunks;
-    const oldGridDims = component.window.gridDimensions;
-    const committed = component.window.advance();
-    if (!committed) return;
-
-    // A committed target's dims may or may not have changed depending on
-    // whether it originated from setFocus (dims unchanged) or
-    // setWindowRadius (dims changed) -- window.advance() doesn't distinguish,
-    // so derive it here instead of threading that through the window API.
-    const dimsChanged =
-      component.window.gridDimensions.x !== oldGridDims.x ||
-      component.window.gridDimensions.y !== oldGridDims.y ||
-      component.window.gridDimensions.z !== oldGridDims.z;
-
-    if (dimsChanged) {
       component.mapSize = new Vector3D(
         component.window.cellDimensions.x,
         component.window.cellDimensions.y,
         component.window.cellDimensions.z,
       );
       component.chunkGridSize = component.window.gridDimensions;
-    }
+      // Non-null immediately after a resize -- window.resize just set it.
+      component.chunks = reassembleChunks(
+        oldChunks,
+        oldOrigin,
+        component.window.origin!,
+        component.window.gridDimensions,
+      );
 
-    component.chunks = reassembleChunks(
-      oldChunks,
-      oldOrigin,
-      component.window.origin!,
-      component.window.gridDimensions,
-    );
+      return true;
+    } finally {
+      if (profiling)
+        recordCellMapPhase(component, 'cell-map:setWindowRadius', t0);
+    }
+  },
+
+  advanceWindowGeneration: (component: CellMapT): void => {
+    const profiling = isProfilingEnabled();
+    const t0 = profiling ? performance.now() : 0;
+    try {
+      const oldOrigin = component.window.origin;
+      const oldChunks = component.chunks;
+      const oldGridDims = component.window.gridDimensions;
+      const committed = component.window.advance();
+      if (!committed) return;
+
+      // A committed target's dims may or may not have changed depending on
+      // whether it originated from setFocus (dims unchanged) or
+      // setWindowRadius (dims changed) -- window.advance() doesn't distinguish,
+      // so derive it here instead of threading that through the window API.
+      const dimsChanged =
+        component.window.gridDimensions.x !== oldGridDims.x ||
+        component.window.gridDimensions.y !== oldGridDims.y ||
+        component.window.gridDimensions.z !== oldGridDims.z;
+
+      if (dimsChanged) {
+        component.mapSize = new Vector3D(
+          component.window.cellDimensions.x,
+          component.window.cellDimensions.y,
+          component.window.cellDimensions.z,
+        );
+        component.chunkGridSize = component.window.gridDimensions;
+      }
+
+      component.chunks = reassembleChunks(
+        oldChunks,
+        oldOrigin,
+        component.window.origin!,
+        component.window.gridDimensions,
+      );
+    } finally {
+      if (profiling)
+        recordCellMapPhase(component, 'cell-map:advanceWindowGeneration', t0);
+    }
   },
 
   raycast: (

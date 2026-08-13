@@ -853,6 +853,50 @@ export async function createScene() {
 
     console.log('[CellMap Test] InputController created with mouse pan and zoom');
 
+    // ── Pan-stress test (dev-only benchmark, 'p' key) ───────────────────────────
+    // Drives the camera at a sustained, fixed-high pan velocity for a fixed
+    // duration, then auto-exports a perf snapshot -- a repeatable way to capture
+    // cell-map's window-retarget/reassemble cost under sustained fast panning
+    // (see .design/spike_cell-map-chunk-buffering/overview.md) without manually
+    // timing a drag-then-console-export by hand.
+    const PAN_STRESS_SPEED = 2400;       // same units as camera.pan's args, per second
+    const PAN_STRESS_DURATION_MS = 5000; // ~= profiler's 300-frame history at 60fps
+    let panStressActive = false;
+
+    function runPanStressTest() {
+        if (panStressActive) return;
+        panStressActive = true;
+        console.log(`[CellMap Test] Pan stress test starting: ${PAN_STRESS_DURATION_MS}ms at ${PAN_STRESS_SPEED} units/sec...`);
+
+        const startTime = performance.now();
+        let lastTime = startTime;
+
+        function step() {
+            const now = performance.now();
+            const dt = (now - lastTime) / 1000;
+            lastTime = now;
+
+            // Sustained diagonal pan -- crosses X and Z chunk boundaries repeatedly,
+            // mirroring a fast drag-pan gesture (same offset convention as the
+            // mouseMove handler above: screen-space-style, zoom-adjusted).
+            camera.pan((-PAN_STRESS_SPEED * dt) / camera.zoom, (-PAN_STRESS_SPEED * dt) / camera.zoom);
+            updateCameraStatus();
+
+            if (now - startTime < PAN_STRESS_DURATION_MS) {
+                requestAnimationFrame(step);
+            } else {
+                panStressActive = false;
+                console.log('[CellMap Test] Pan stress test complete, exporting perf snapshot...');
+                window.OmosuenPerfMonitor?.exportPerfSnapshot();
+            }
+        }
+        requestAnimationFrame(step);
+    }
+
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'p' || e.key === 'P') runPanStressTest();
+    });
+
     // 6. Create Cell-Map with hollow structure
     const MAP_WIDTH = 20;   // 20 cells wide
     const MAP_DEPTH = 20;   // 20 cells deep

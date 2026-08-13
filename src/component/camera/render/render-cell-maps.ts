@@ -11,6 +11,10 @@ import {
   setLightUniforms,
 } from './light-uniforms';
 import { computeSolidityMap } from './visibility-mask';
+import {
+  isProfilingEnabled,
+  recordComponentUpdate,
+} from '../../../loop/profile';
 
 /** A resolved atlas frame: normalized UV bounds, pixel size, and atlas page. */
 interface ResolvedFrame {
@@ -608,8 +612,11 @@ export function renderCellMaps(
     return fb;
   };
 
+  const profiling = isProfilingEnabled();
+
   // Render each cell-map
   for (const cellMap of cellMaps) {
+    let gpuUploadMs = 0;
     // Build this frame's render/cull volume in world space: a plain
     // axis-aligned box centered on the camera, with independent half-extents
     // per world axis (halfIsoX/halfIsoY/halfIsoZ). This is deliberately NOT
@@ -914,6 +921,7 @@ export function renderCellMaps(
             gl.bindBuffer(gl.ARRAY_BUFFER, chunk.glVertexBuffer);
             gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, chunk.glIndexBuffer);
             if (chunk.gpuDirty) {
+              const uploadT0 = profiling ? performance.now() : 0;
               gl.bufferData(gl.ARRAY_BUFFER, chunk.vertices, gl.STATIC_DRAW);
               gl.bufferData(
                 gl.ELEMENT_ARRAY_BUFFER,
@@ -922,6 +930,7 @@ export function renderCellMaps(
               );
               chunk.gpuDirty = false;
               uploadedThisFrame++;
+              if (profiling) gpuUploadMs += performance.now() - uploadT0;
             }
 
             // Interleaved layout: pos3+normal3+origPos3+emission1 (stride 10), or +uv2
@@ -1160,6 +1169,15 @@ export function renderCellMaps(
           }
         }
       }
+    }
+
+    if (profiling) {
+      recordComponentUpdate(
+        cellMap.id ?? -1,
+        cellMap.name,
+        'cell-map:gpuUpload',
+        gpuUploadMs,
+      );
     }
   }
 

@@ -284,6 +284,25 @@ cell data. `smoothingWeights` correctly follows the window through a shift/resiz
 stale or being reset; the common case (a uniform number, the only option on the generative path)
 has no per-cell mutation API and never needs re-uploading to the GPU on an ordinary shift.
 
+**Refreshing generated content.** `generateCell`/`generateChunk` are treated as pure, time-invariant
+functions of world coordinates — once a chunk is visited (resident or evicted-and-unedited), its
+answer is cached forever, even if whatever state the generator closes over later changes (e.g. a
+new region becomes generatable in a world that grows over a session). Call
+`refreshChunks(cellMap, min, max)` — or `refreshChunks(cellMap, null)` for the whole resident
+window — to force affected chunks to re-derive from the generator. Resident chunks with a live
+edit are left untouched (edits are tracked per-chunk, not per-cell, so there's no way to know which
+specific cells inside one are real edits vs. generator-original) and reported back via
+`skippedEditedChunks` so callers can detect it. Synchronous, not budgeted — call it when new
+content becomes generatable, not every frame; a refresh over many resident chunks can cost real
+time (one generator call plus one WASM write per cell, per chunk).
+
+**Bulk cell writes.** `setCells(cellMap, entries, opts?)` applies a batch of already-known
+`{x,y,z,data}` cell values a few at a time across frames (budgeted via `opts.budgetMs`, default
+4ms) instead of a tight loop of `setCellData` calls stalling a single frame, batching dirty-marking
+once per touched chunk rather than once per cell. Returns a Promise that resolves once that call's
+entries are applied (rejects if the component is disposed mid-batch); overlapping `setCells` calls
+queue and resolve independently, in order.
+
 **`light`** — Ambient / point / spot / directional light.
 - `lightType: 'ambient' | 'point' | 'spot' | 'directional'` (**required**)
 - `color?: Vector3D` (default `(1,1,1)`), `brightness?: number` (default `1`)

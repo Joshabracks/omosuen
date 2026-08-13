@@ -1,5 +1,6 @@
 import type { CellMapT } from './data';
 import { invalidateCachedChunk } from './data';
+import { isProfilingEnabled, recordComponentUpdate } from '../../loop/profile';
 import type { Mesh } from './types';
 import type { Array3Di } from '../../math';
 import {
@@ -85,6 +86,23 @@ export function rebuildDirtyChunks(
   cellMap: CellMapT,
   budgetMs: number = DEFAULT_CHUNK_GEN_BUDGET_MS,
 ): void {
+  const profiling = isProfilingEnabled();
+  const t0 = profiling ? performance.now() : 0;
+  try {
+    rebuildDirtyChunksImpl(cellMap, budgetMs);
+  } finally {
+    if (profiling) {
+      recordComponentUpdate(
+        cellMap.id ?? -1,
+        cellMap.name,
+        'cell-map:rebuildDirtyChunks',
+        performance.now() - t0,
+      );
+    }
+  }
+}
+
+function rebuildDirtyChunksImpl(cellMap: CellMapT, budgetMs: number): void {
   const dirtyChunks = cellMap.chunks.filter((c) => c.dirty);
   if (dirtyChunks.length === 0) return;
 
@@ -135,19 +153,26 @@ export function rebuildDirtyChunks(
   // into the same vertex pool as cubes (smoothed/deduped together — no seams).
   // Indices 0 (air) and 1 (default cube) are built in; only 2+ are custom.
   // A non-empty mesh.uvs (one uv per vertex) enables UV texturing for that shape;
-  // mesh.faceCover lets a side opt out of occluding its neighbor.
-  clearCustomShapes();
-  for (let i = 2; i < cellMap.meshes.length; i++) {
-    const mesh = cellMap.meshes[i];
-    if (mesh && mesh.indices.length > 0) {
-      setCustomShape(
-        i,
-        mesh.vertices,
-        mesh.indices,
-        mesh.uvs,
-        packFaceCover(mesh),
-      );
+  // mesh.faceCover lets a side opt out of occluding its neighbor. Gated on
+  // customShapesDirty -- cellMap.meshes is a singleton array only ever
+  // appended to (never reassigned), so re-running this unconditionally would
+  // otherwise re-upload every custom shape on every call, whether or not
+  // meshes actually changed.
+  if (cellMap.customShapesDirty) {
+    clearCustomShapes();
+    for (let i = 2; i < cellMap.meshes.length; i++) {
+      const mesh = cellMap.meshes[i];
+      if (mesh && mesh.indices.length > 0) {
+        setCustomShape(
+          i,
+          mesh.vertices,
+          mesh.indices,
+          mesh.uvs,
+          packFaceCover(mesh),
+        );
+      }
     }
+    cellMap.customShapesDirty = false;
   }
 
   const { x: gx, y: gy, z: gz } = cellMap.chunkGridSize;
@@ -313,6 +338,57 @@ export function markChunksDirty(
     markSingleChunkDirty(cellMap, chunkX, chunkY, chunkZ - 1);
   if (localZ === chunkSize.z - 1 && chunkZ < chunkGridSize.z - 1)
     markSingleChunkDirty(cellMap, chunkX, chunkY, chunkZ + 1);
+}
+
+/**
+ * Unconditionally dirties one chunk and all 6 face-adjacent neighbors --
+ * both the mesh cache (via `invalidateCachedChunk`, world-coordinate-based,
+ * safe for off-window/cached chunks) and, if resident, the chunk's `dirty`
+ * flag. Unlike `markChunksDirty` (which only dirties a neighbor when a
+ * specific edited CELL sits on that neighbor's boundary), this dirties every
+ * neighbor unconditionally -- for a whole-chunk refresh/bulk-write, any face
+ * could have changed. Used by `refreshChunks` and `setCells`/`advanceSetCells`.
+ */
+export function markChunkAndNeighborsDirty(
+  cellMap: CellMapT,
+  worldChunk: { cx: number; cy: number; cz: number },
+): void {
+  const { chunkGridSize, window } = cellMap;
+  const { cx, cy, cz } = worldChunk;
+
+  const neighbors: [number, number, number][] = [
+    [cx, cy, cz],
+    [cx - 1, cy, cz],
+    [cx + 1, cy, cz],
+    [cx, cy - 1, cz],
+    [cx, cy + 1, cz],
+    [cx, cy, cz - 1],
+    [cx, cy, cz + 1],
+  ];
+
+  for (const [wx, wy, wz] of neighbors) {
+    invalidateCachedChunk(wx, wy, wz);
+  }
+
+  const origin = window.origin;
+  if (!origin) return; // no window loaded yet -- nothing resident to dirty
+
+  for (const [wx, wy, wz] of neighbors) {
+    const lx = wx - origin.cx;
+    const ly = wy - origin.cy;
+    const lz = wz - origin.cz;
+    if (
+      lx < 0 ||
+      lx >= chunkGridSize.x ||
+      ly < 0 ||
+      ly >= chunkGridSize.y ||
+      lz < 0 ||
+      lz >= chunkGridSize.z
+    ) {
+      continue; // outside the current window
+    }
+    markSingleChunkDirty(cellMap, lx, ly, lz);
+  }
 }
 
 function markSingleChunkDirty(

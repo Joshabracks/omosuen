@@ -24,6 +24,7 @@ import {
   commitCellStore,
 } from '../camera/render/wasm';
 import type { ChunkColdStorage } from './cold-storage';
+import { isProfilingEnabled } from '../../loop/profile';
 
 /**
  * Default per-frame time budget, in milliseconds, for generating a pending
@@ -170,8 +171,8 @@ export class CellWindow {
    * fully-staged case. `queue`/`queueIndex` form a cursor over `queue`
    * (nearest-to-target-center first) rather than shifting the array, to
    * avoid O(n) removals for large queues. Cold-storage-resolvable chunks are
-   * NOT staged here — that lookup is already cheap (a `Map.get`), resolved
-   * directly in `reassemble`'s assembly loop same as before.
+   * NOT staged here — that presence check is already cheap (a `Map.has`),
+   * resolved directly in `reassemble`'s assembly loop same as before.
    */
   private pendingShift: {
     origin: ChunkCoord;
@@ -191,6 +192,15 @@ export class CellWindow {
     editedDuringStaging: Map<string, ChunkCoord>;
     targetRadius?: { x: number; y: number; z: number };
   } | null = null;
+  /**
+   * Accumulated `reassemble()` time (ms) since the last `drainReassembleMs()`
+   * call, only tracked while profiling is enabled. `reassemble` can fire
+   * from underneath either `setFocus`/`resize` (the `beginOrRetarget`
+   * immediate-commit path) or `advanceWindowGeneration` (a drained pending
+   * shift's completion) -- this lets the caller attribute its cost to a
+   * dedicated bucket regardless of which of those triggered it.
+   */
+  private reassembleMsAccum = 0;
   /** Window size in chunks. Mutable via `resize()`, otherwise constant for the session. */
   private gridDims: { x: number; y: number; z: number };
   /** Window size in cells. Mutable via `resize()`, otherwise constant for the session. */
@@ -616,8 +626,8 @@ export class CellWindow {
    * `'reuse'` if it's within the *current* (committed) window (its data
    * needs to move, not change -- staged by reading the live store, see
    * `extractLiveChunk`), `'generate'` if it needs `baselineChunk`. Chunks
-   * resolvable from cold storage are omitted entirely -- that lookup is
-   * already cheap (a `Map.get`, no generation/copy), so `reassemble`'s
+   * resolvable from cold storage are omitted entirely -- that presence
+   * check is cheap (a `Map.has`, no decode/copy), so `reassemble`'s
    * assembly loop keeps resolving those directly rather than staging them.
    * No generation or copying happens here; this is the cheap up-front pass
    * `beginOrRetarget` uses to build (or shrink) a pending shift's queue.
@@ -643,7 +653,7 @@ export class CellWindow {
             continue;
           }
           if (
-            this.coldStorage.get(worldChunk.cx, worldChunk.cy, worldChunk.cz)
+            this.coldStorage.has(worldChunk.cx, worldChunk.cy, worldChunk.cz)
           ) {
             continue;
           }
@@ -779,6 +789,125 @@ export class CellWindow {
   }
 
   /**
+   * Forces chunks in `[minChunk, maxChunk]` (inclusive, world-chunk
+   * coordinates) -- or the entire resident window if `minChunk` is null --
+   * to re-derive from the `ChunkGenerator` instead of continuing to treat
+   * their previously-visited answer as permanent. This is the fix for
+   * generative worlds that grow over time: once a chunk is visited, nothing
+   * else ever re-asks the generator for it (see `baselineChunk`'s only
+   * call sites) -- `neededForTarget` skips regeneration for anything
+   * resident or cold-storage-covered, and `reassembleImpl`'s eviction pass
+   * assumes an unedited chunk still matches its original baseline forever.
+   *
+   * Resident chunks with a tracked edit (`editedSinceBaseline`) are left
+   * untouched and reported separately -- that Set is chunk-granularity, not
+   * cell-granularity (see its declaration), so there's no way to tell which
+   * specific cells in a flagged chunk are real player edits vs.
+   * generator-original; blindly overwriting the whole chunk would silently
+   * destroy live edits.
+   */
+  refreshChunkRange(
+    minChunk: ChunkCoord | null,
+    maxChunk: ChunkCoord | null,
+  ): {
+    refreshed: ChunkCoord[];
+    skippedEdited: ChunkCoord[];
+    clearedEvicted: ChunkCoord[];
+  } {
+    const refreshed: ChunkCoord[] = [];
+    const skippedEdited: ChunkCoord[] = [];
+    const clearedEvicted: ChunkCoord[] = [];
+
+    if (minChunk === null) {
+      if (!this.originChunk) {
+        return { refreshed, skippedEdited, clearedEvicted };
+      }
+      const origin = this.originChunk;
+      for (let cz = 0; cz < this.gridDims.z; cz++) {
+        for (let cy = 0; cy < this.gridDims.y; cy++) {
+          for (let cx = 0; cx < this.gridDims.x; cx++) {
+            this.refreshOneChunk(
+              { cx: origin.cx + cx, cy: origin.cy + cy, cz: origin.cz + cz },
+              refreshed,
+              skippedEdited,
+              clearedEvicted,
+            );
+          }
+        }
+      }
+      return { refreshed, skippedEdited, clearedEvicted };
+    }
+
+    const max = maxChunk!;
+    for (let cz = minChunk.cz; cz <= max.cz; cz++) {
+      for (let cy = minChunk.cy; cy <= max.cy; cy++) {
+        for (let cx = minChunk.cx; cx <= max.cx; cx++) {
+          this.refreshOneChunk(
+            { cx, cy, cz },
+            refreshed,
+            skippedEdited,
+            clearedEvicted,
+          );
+        }
+      }
+    }
+    return { refreshed, skippedEdited, clearedEvicted };
+  }
+
+  /** One coordinate's worth of `refreshChunkRange`'s work -- see its doc comment. */
+  private refreshOneChunk(
+    worldChunk: ChunkCoord,
+    refreshed: ChunkCoord[],
+    skippedEdited: ChunkCoord[],
+    clearedEvicted: ChunkCoord[],
+  ): void {
+    const key = this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz);
+
+    if (
+      this.originChunk &&
+      this.isWithin(worldChunk, this.originChunk, this.gridDims)
+    ) {
+      if (this.editedSinceBaseline.has(key)) {
+        skippedEdited.push(worldChunk);
+        return;
+      }
+      const fresh = this.baselineChunk(worldChunk);
+      const { x: csx, y: csy, z: csz } = this.chunkSize;
+      const baseX = (worldChunk.cx - this.originChunk.cx) * csx;
+      const baseY = (worldChunk.cy - this.originChunk.cy) * csy;
+      const baseZ = (worldChunk.cz - this.originChunk.cz) * csz;
+      // Same x-fastest/y/z-slowest order baselineChunk itself produces.
+      let idx = 0;
+      for (let z = 0; z < csz; z++) {
+        for (let y = 0; y < csy; y++) {
+          for (let x = 0; x < csx; x++) {
+            cellStoreSet(baseX + x, baseY + y, baseZ + z, fresh[idx]);
+            idx++;
+          }
+        }
+      }
+      refreshed.push(worldChunk);
+      return;
+    }
+
+    const hadCold = this.coldStorage.has(
+      worldChunk.cx,
+      worldChunk.cy,
+      worldChunk.cz,
+    );
+    const hadEdited = this.editedSinceBaseline.has(key);
+    if (hadCold) {
+      this.coldStorage.delete(worldChunk.cx, worldChunk.cy, worldChunk.cz);
+    }
+    if (hadEdited) {
+      this.editedSinceBaseline.delete(key);
+    }
+    if (hadCold || hadEdited) {
+      clearedEvicted.push(worldChunk);
+    }
+  }
+
+  /**
    * Evicts/reuses/generates the window's contents for `newOrigin` at
    * `newGridDims`/`newCellDims` (which may differ in size from the current
    * window, for `resize()`, or match it, for a same-size `setFocus` shift)
@@ -786,6 +915,27 @@ export class CellWindow {
    * distinguish "shift" from "resize"; it just holds whatever's loaded.
    */
   private reassemble(
+    newOrigin: ChunkCoord,
+    newGridDims: { x: number; y: number; z: number },
+    newCellDims: { x: number; y: number; z: number },
+  ): void {
+    const profiling = isProfilingEnabled();
+    const t0 = profiling ? performance.now() : 0;
+    try {
+      this.reassembleImpl(newOrigin, newGridDims, newCellDims);
+    } finally {
+      if (profiling) this.reassembleMsAccum += performance.now() - t0;
+    }
+  }
+
+  /** Returns and zeros the `reassemble()` time accumulated since the last call. */
+  drainReassembleMs(): number {
+    const ms = this.reassembleMsAccum;
+    this.reassembleMsAccum = 0;
+    return ms;
+  }
+
+  private reassembleImpl(
     newOrigin: ChunkCoord,
     newGridDims: { x: number; y: number; z: number },
     newCellDims: { x: number; y: number; z: number },

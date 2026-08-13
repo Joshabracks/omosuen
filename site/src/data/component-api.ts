@@ -430,6 +430,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("emissionMap", "Array3D<number>", "Emission intensity map."),
       O("emissionColorMap", "Array3D<number>", "Highlight color map for the resident window; off-window highlights persist via cold storage, same as primary cell data."),
       O("emissionColorDirty", "boolean", "GPU texture needs rebuild."),
+      O("customShapesDirty", "boolean", "Custom shape buffers need re-upload."),
       O("visibilityMap", "Array3D<boolean>", "Visibility per cell."),
       O("cellSize", "Vector3D", "Cell world dimensions."),
       O("mapSize", "Vector3D", "Current resident WINDOW's size in cells -- not the whole authored/generated map. Use getBounds() for world-space placement."),
@@ -520,6 +521,15 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
         A("radius", "{x,y,z}", "New radius in chunks per axis."),
       ]),
       M("advanceWindowGeneration", "advanceWindowGeneration()", "Advance a pending shift/resize's chunk generation by one frame's budget; call every frame."),
+      M("refreshChunks", "refreshChunks(min, max)", "Force chunks to re-derive from the generator instead of treating a previously-visited answer as permanent (fixes generative worlds that grow over time). null min refreshes the whole resident window. Resident chunks with a live edit are skipped, not overwritten.", [
+        A("min", "{x,y,z} | null", "World cell coordinate range start, or null for the whole resident window."),
+        A("max", "{x,y,z}?", "World cell coordinate range end (required unless min is null)."),
+      ]),
+      M("setCells", "setCells(entries, opts?)", "Frame-budgeted bulk write of already-known cell values, batching dirty-marking per chunk. Returns a Promise resolved once applied.", [
+        A("entries", "{x,y,z,data: CellData}[]", "Cell values to write."),
+        A("opts", "{budgetMs?: number}?", "Per-frame time budget (default 4ms)."),
+      ]),
+      M("advanceSetCells", "advanceSetCells()", "Advance a pending setCells batch by one frame's budget; call every frame (renderer-driven)."),
       M("takePendingBufferCleanup", "takePendingBufferCleanup()", "Drain evicted chunk meshes whose GPU buffers still need deleting (renderer-driven)."),
       M("flush", "flush()", "Flush dirty cells to WASM store."),
     ],

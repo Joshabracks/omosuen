@@ -162,6 +162,16 @@ export interface ComponentData {
   _initialized?: boolean;
   _initDefer?: number;
   ready?: Promise<boolean>;
+  /**
+   * Internal traversal optimization: whether this component, or (for a nexus)
+   * anything in its subtree, has update-dispatchable work (a registered
+   * `update()` on its type, or an instance `updateOverride`). `undefined`
+   * means "not yet computed" and is treated as `true` (walk it) everywhere
+   * this is consulted -- only an explicit `false` skips traversal. See
+   * `computeOwnUpdateWork`/`bubbleUpdateWorkTrue`/`recomputeAndBubbleUpdateWork`
+   * below and `traverseAndUpdate` in `src/loop/update.ts`.
+   */
+  _hasUpdateWork?: boolean;
 }
 
 export interface ComponentMethods {
@@ -204,6 +214,62 @@ export type ComponentInstanceMethods<T extends ComponentMethods> = {
 };
 
 /**
+ * Whether `component`'s own type/instance can ever have update-pass work
+ * dispatched to it -- a registered `update()` on its type, or an instance
+ * `updateOverride`. Ignores children (see `computeAggregateUpdateWork` for
+ * the nexus-subtree version).
+ */
+function computeOwnUpdateWork(component: ComponentData): boolean {
+  return !!MethodRegistry[component.type]?.update || !!component.updateOverride;
+}
+
+/**
+ * `component`'s own update work OR'd with all its children's current
+ * `_hasUpdateWork` (non-nexus components have no children, so this reduces
+ * to `computeOwnUpdateWork`). A child counts as "has work" unless explicitly
+ * known `false` -- same conservative default as the field itself.
+ */
+function computeAggregateUpdateWork(component: ComponentData): boolean {
+  if (computeOwnUpdateWork(component)) return true;
+  if (component.type !== 'nexus') return false;
+  const { components } = component as ComponentData & {
+    components?: ComponentData[];
+  };
+  return !!components?.some((c) => c._hasUpdateWork !== false);
+}
+
+/**
+ * Walks from `component` up through `.parent`, setting `_hasUpdateWork = true`
+ * and continuing -- stopping as soon as an ancestor is already `true` (by
+ * invariant, everything further up is already correctly `true` too).
+ */
+export function bubbleUpdateWorkTrue(component: ComponentData): void {
+  let current: ComponentData | null = component;
+  while (current && current._hasUpdateWork !== true) {
+    current._hasUpdateWork = true;
+    current = current.parent;
+  }
+}
+
+/**
+ * Walks from `component` up through `.parent`, recomputing the aggregate at
+ * each level and stopping as soon as a level's recomputed value matches its
+ * current stored value (nothing changed, so nothing further up can have
+ * changed either). Used when work could have been REMOVED (an aggregate can
+ * only safely be blindly forced upward when work is being ADDED -- see
+ * `bubbleUpdateWorkTrue`).
+ */
+function recomputeAndBubbleUpdateWork(component: ComponentData): void {
+  let current: ComponentData | null = component;
+  while (current) {
+    const next = computeAggregateUpdateWork(current);
+    if (current._hasUpdateWork === next) break;
+    current._hasUpdateWork = next;
+    current = current.parent;
+  }
+}
+
+/**
  * Wraps a raw component object in a Proxy that enables method dispatch
  * via MethodRegistry and property access control via PROPERTY_ALLOWLIST.
  * Registers the proxy in PROXY_REGISTRY for later retrieval via castTo().
@@ -214,6 +280,12 @@ export type ComponentInstanceMethods<T extends ComponentMethods> = {
 export function wrapInProxy(component: ComponentData): ComponentData {
   ensureNexusMaps();
   const proxyKeys = Object.keys(MethodRegistry[component.type]);
+
+  // Computed here (not in newComponent/loader.ts) so every construction path
+  // that wraps a component gets this for free -- both newComponent and scene
+  // deserialization already set `updateOverride` on the raw object before
+  // calling this function.
+  component._hasUpdateWork = computeOwnUpdateWork(component);
 
   // Base ComponentData properties (always allowed)
   const baseProperties = [
@@ -231,6 +303,7 @@ export function wrapInProxy(component: ComponentData): ComponentData {
     '_initialized',
     '_initDefer',
     'ready',
+    '_hasUpdateWork',
   ];
 
   // Component-specific properties
@@ -293,6 +366,34 @@ export function wrapInProxy(component: ComponentData): ComponentData {
       );
       // return do nothing func for graceful failure
       return () => {};
+    },
+    // Every other property write already falls through to the target
+    // unchanged (no `set` trap existed before this one) -- that behavior is
+    // preserved exactly below. `updateOverride` is the one property that
+    // also needs to keep `_hasUpdateWork` correct on write, since it can
+    // flip a component from "structurally has no update-pass work" to
+    // "has work" (or back) after construction, not just at construction
+    // time (which `wrapInProxy`'s own initial computation already covers).
+    set: function (c: ComponentData, prop: string, value: unknown): boolean {
+      if (prop === 'updateOverride') {
+        const hadOverride = !!c.updateOverride;
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-expect-error
+        c[prop] = value;
+        const hasOverride = !!value;
+        if (!hadOverride && hasOverride) {
+          bubbleUpdateWorkTrue(c);
+        } else if (hadOverride && !hasOverride) {
+          recomputeAndBubbleUpdateWork(c);
+        }
+        // Overwriting one non-empty override with another doesn't change
+        // presence, so no re-evaluation is needed.
+        return true;
+      }
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-expect-error
+      c[prop] = value;
+      return true;
     },
   };
 

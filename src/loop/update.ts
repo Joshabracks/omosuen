@@ -18,6 +18,7 @@ import { isProfilingEnabled, recordComponentUpdate } from './profile';
  * calling the update() method on each component that meets the following
  * criteria:
  * - Not disposed (_disposed !== true)
+ * - Has update-dispatchable work somewhere in its own subtree (_hasUpdateWork !== false)
  * - Not paused (respects parent nexus pause state)
  * - Either:
  *   - Initialization is complete, OR
@@ -28,13 +29,21 @@ import { isProfilingEnabled, recordComponentUpdate } from './profile';
  * of their individual pause state. This allows entire subtrees to be
  * paused efficiently.
  *
+ * Structural Work Skip:
+ * A component whose type has no registered `update()` and whose instance
+ * has no `updateOverride` -- and, for a nexus, whose whole subtree is the
+ * same -- can never be dispatched to. `_hasUpdateWork` tracks this per
+ * component (see its doc comment in `component/types.ts`) so such subtrees
+ * are skipped without walking them, not just short-circuited once visited.
+ *
  * Loader Mode:
  * During progressive initialization, only components with loader=true
  * are updated. This allows loading screens, progress bars, and other
  * UI elements to continue functioning during large scene loads.
  *
- * Performance: O(n) where n is the number of components in the scene.
- * Uses depth-first traversal for cache-friendly memory access.
+ * Performance: O(n) where n is the number of components with update-pass
+ * work, plus O(1) per structurally-empty subtree skipped. Uses depth-first
+ * traversal for cache-friendly memory access.
  *
  * @param component - The component to update
  * @param deltaTime - Time elapsed since last frame in milliseconds
@@ -53,6 +62,15 @@ function traverseAndUpdate(
 ): void {
   // Skip disposed components
   if (component._disposed) {
+    return;
+  }
+
+  // Skip subtrees that structurally can never have update-dispatchable work
+  // (no registered `update()` anywhere in them, no `updateOverride` set
+  // anywhere in them). `undefined` (not yet computed) is treated as "has
+  // work" -- only an explicit `false` skips. See `_hasUpdateWork`'s doc
+  // comment in `component/types.ts`.
+  if (component._hasUpdateWork === false) {
     return;
   }
 
@@ -130,11 +148,17 @@ function traverseAndUpdate(
     );
   }
 
-  // Recurse into nexus children with the (possibly dial-scaled) dt.
+  // Recurse into nexus children with the (possibly dial-scaled) dt. Children
+  // with no update-dispatchable work anywhere in their own subtree are
+  // skipped before the call, not just on entry to it -- avoids the function-
+  // call overhead entirely for e.g. the many sibling sprites next to one
+  // working animation-controller under the same nexus.
   if (component.type === 'nexus') {
     const n = component as NexusT;
     for (let i = 0; i < n.components.length; i++) {
-      traverseAndUpdate(n.components[i], dt, shouldPause);
+      const child = n.components[i];
+      if (child._hasUpdateWork === false) continue;
+      traverseAndUpdate(child, dt, shouldPause);
     }
   }
 }

@@ -266,6 +266,16 @@ export function resetCellMapState(): void {
   cmSmoothingWeightsChannel = undefined;
   cmPendingBufferCleanup = [];
   cmMeshCache.clear();
+  // A disposed component must never leave a `setCells` caller awaiting
+  // forever -- reject every outstanding waiter before dropping the queue.
+  if (cmPendingSetCells) {
+    for (const waiter of cmPendingSetCells.waiters) {
+      waiter.reject(
+        new Error('[cell-map] setCells cancelled: component disposed'),
+      );
+    }
+    cmPendingSetCells = null;
+  }
 }
 
 /**
@@ -871,6 +881,80 @@ export function takePendingBufferCleanup(): ChunkMesh[] {
   const pending = cmPendingBufferCleanup;
   cmPendingBufferCleanup = [];
   return pending;
+}
+
+/** Default per-frame time budget, in milliseconds, for `CellMap.advanceSetCells`'s write loop. */
+export const DEFAULT_SET_CELLS_BUDGET_MS = 4;
+
+interface PendingSetCellsEntry {
+  x: number;
+  y: number;
+  z: number;
+  data: CellData;
+}
+
+interface PendingSetCellsWaiter {
+  /** `cursor` value at which this call's own entries are fully applied. */
+  targetCursor: number;
+  resolve: () => void;
+  reject: (err: Error) => void;
+}
+
+/**
+ * A `CellMap.setCells` batch in flight, drained a few entries at a time by
+ * `CellMap.advanceSetCells` (called unconditionally every frame from the
+ * render loop, same as `advanceWindowGeneration`). `entries`/`cursor` mirror
+ * `CellWindow`'s own `pendingShift.queue`/`queueIndex` cursor shape -- a
+ * cursor over an array, not a splice, so appending a second in-flight
+ * `setCells` call is just a push. `waiters` lets multiple overlapping
+ * `setCells` calls each resolve at the right point: since draining is
+ * strictly FIFO by `cursor`, a waiter registered at `targetCursor` resolves
+ * exactly when `cursor` reaches it, in registration order, with no separate
+ * per-call queue needed.
+ */
+interface PendingSetCells {
+  entries: PendingSetCellsEntry[];
+  cursor: number;
+  budgetMs: number;
+  waiters: PendingSetCellsWaiter[];
+}
+
+let cmPendingSetCells: PendingSetCells | null = null;
+
+/**
+ * Appends `entries` to the in-flight `setCells` batch (starting one if none
+ * is active) and returns a Promise that resolves once THESE entries (not
+ * necessarily the whole queue, if other calls added more after) have been
+ * applied by `advanceSetCells`.
+ */
+export function enqueuePendingSetCells(
+  entries: PendingSetCellsEntry[],
+  budgetMs: number | undefined,
+): Promise<void> {
+  if (!cmPendingSetCells) {
+    cmPendingSetCells = {
+      entries: [],
+      cursor: 0,
+      budgetMs: DEFAULT_SET_CELLS_BUDGET_MS,
+      waiters: [],
+    };
+  }
+  if (budgetMs !== undefined) cmPendingSetCells.budgetMs = budgetMs;
+  cmPendingSetCells.entries.push(...entries);
+  const targetCursor = cmPendingSetCells.entries.length;
+  return new Promise<void>((resolve, reject) => {
+    cmPendingSetCells!.waiters.push({ targetCursor, resolve, reject });
+  });
+}
+
+/** The in-flight `setCells` batch, or null if none is pending. */
+export function getPendingSetCells(): PendingSetCells | null {
+  return cmPendingSetCells;
+}
+
+/** Drops the in-flight `setCells` batch entirely, without resolving/rejecting its waiters. */
+export function clearPendingSetCells(): void {
+  cmPendingSetCells = null;
 }
 
 /**

@@ -73,6 +73,17 @@ Omosuen.registerHtmlConstructor('cellmapTest', (overlay) => {
                 ${frustumRows}
             </div>
 
+            <div class="sidebar-section">
+                <div style="text-align: center; color: #ff6600; font-size: 14px; margin-bottom: 10px; text-transform: uppercase;">
+                    Bulk Write Test
+                </div>
+                <div class="sidebar-status" style="font-size: 11px; line-height: 1.4; margin-bottom: 8px;">
+                    Replaces a block of cells just west of the structure with
+                    solid dirt via CellMap.setCells (frame-budgeted bulk write).
+                </div>
+                <button id="btn-set-cells-bulk" class="sidebar-button">Set Cells Bulk</button>
+            </div>
+
             <div id="render-stats" class="sidebar-section" style="display: none;">
                 <h3 style="color: #ff6600; margin: 10px 0;">Render Stats</h3>
                 <div id="stats-display" class="sidebar-status"></div>
@@ -142,6 +153,48 @@ FRUSTUM_SLIDERS.forEach((s) => {
         const label = document.getElementById(`${s.id}-value`);
         if (label) label.textContent = s.fmt(v);
     });
+});
+
+// ── Bulk-write test (CellMap.setCells) ──────────────────────────────────────
+// A block of solid dirt just west of the hand-authored structure (x=0..4,
+// z=5..14 matches the structure's own z-span, y=2..9 matches its wall
+// height) -- flat, untouched ground before this runs. Exercises the
+// frame-budgeted setCells path (see
+// .omosuen_requests/007-generative-cell-map-chunk-refresh.md) with a batch
+// large enough (400 cells) to visibly stream in over a few frames rather
+// than resolve in one, same as a real bulk-terraform tool would.
+const DIRT_CELL = {
+    materialIndex: 1, // dirtMaterial -- see the `materials` array below
+    shapeIndex: 1,    // default cube
+    emissionIntensity: 0,
+    visible: true,
+};
+const BULK_WRITE_BOUNDS = { x0: 0, x1: 4, y0: 2, y1: 9, z0: 5, z1: 14 };
+
+Omosuen.registerBinding('setCellsBulk', async (event) => {
+    const cellMap = getCellMap();
+    if (!cellMap) return;
+
+    const entries = [];
+    for (let x = BULK_WRITE_BOUNDS.x0; x <= BULK_WRITE_BOUNDS.x1; x++) {
+        for (let y = BULK_WRITE_BOUNDS.y0; y <= BULK_WRITE_BOUNDS.y1; y++) {
+            for (let z = BULK_WRITE_BOUNDS.z0; z <= BULK_WRITE_BOUNDS.z1; z++) {
+                entries.push({ x, y, z, data: DIRT_CELL });
+            }
+        }
+    }
+
+    const btn = event.currentTarget;
+    const originalLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = `Writing ${entries.length} cells...`;
+    console.log(`[CellMap Test] setCells: writing ${entries.length} dirt cells near the structure...`);
+
+    await cellMap.setCells(entries);
+
+    console.log('[CellMap Test] setCells complete.');
+    btn.disabled = false;
+    btn.textContent = originalLabel;
 });
 
 /**
@@ -1484,6 +1537,11 @@ export async function createScene() {
                 selector: '#btn-back',
                 onActions: ['click'],
                 methodKey: 'backToMenuFromCellmap',
+            },
+            {
+                selector: '#btn-set-cells-bulk',
+                onActions: ['click'],
+                methodKey: 'setCellsBulk',
             },
             ...FRUSTUM_SLIDERS.map((s) => ({
                 selector: `#${s.id}`,

@@ -716,6 +716,12 @@ export function renderCellMaps(
     // since a commit here can also evict chunks.
     CellMap.advanceWindowGeneration(cellMap);
 
+    // Drive forward any in-flight CellMap.setCells batch, same reasoning as
+    // advanceWindowGeneration above -- unconditional, and before the dirty-
+    // chunk rebuild below so chunks it touches this frame get meshed this
+    // frame too, not one frame later.
+    CellMap.advanceSetCells(cellMap);
+
     // A resize or shift above may have evicted chunks from the window --
     // drain and actually delete their GPU buffers here, once per cell-map
     // per frame, regardless of which path produced them (this component has

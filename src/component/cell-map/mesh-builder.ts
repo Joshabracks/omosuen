@@ -340,6 +340,57 @@ export function markChunksDirty(
     markSingleChunkDirty(cellMap, chunkX, chunkY, chunkZ + 1);
 }
 
+/**
+ * Unconditionally dirties one chunk and all 6 face-adjacent neighbors --
+ * both the mesh cache (via `invalidateCachedChunk`, world-coordinate-based,
+ * safe for off-window/cached chunks) and, if resident, the chunk's `dirty`
+ * flag. Unlike `markChunksDirty` (which only dirties a neighbor when a
+ * specific edited CELL sits on that neighbor's boundary), this dirties every
+ * neighbor unconditionally -- for a whole-chunk refresh/bulk-write, any face
+ * could have changed. Used by `refreshChunks` and `setCells`/`advanceSetCells`.
+ */
+export function markChunkAndNeighborsDirty(
+  cellMap: CellMapT,
+  worldChunk: { cx: number; cy: number; cz: number },
+): void {
+  const { chunkGridSize, window } = cellMap;
+  const { cx, cy, cz } = worldChunk;
+
+  const neighbors: [number, number, number][] = [
+    [cx, cy, cz],
+    [cx - 1, cy, cz],
+    [cx + 1, cy, cz],
+    [cx, cy - 1, cz],
+    [cx, cy + 1, cz],
+    [cx, cy, cz - 1],
+    [cx, cy, cz + 1],
+  ];
+
+  for (const [wx, wy, wz] of neighbors) {
+    invalidateCachedChunk(wx, wy, wz);
+  }
+
+  const origin = window.origin;
+  if (!origin) return; // no window loaded yet -- nothing resident to dirty
+
+  for (const [wx, wy, wz] of neighbors) {
+    const lx = wx - origin.cx;
+    const ly = wy - origin.cy;
+    const lz = wz - origin.cz;
+    if (
+      lx < 0 ||
+      lx >= chunkGridSize.x ||
+      ly < 0 ||
+      ly >= chunkGridSize.y ||
+      lz < 0 ||
+      lz >= chunkGridSize.z
+    ) {
+      continue; // outside the current window
+    }
+    markSingleChunkDirty(cellMap, lx, ly, lz);
+  }
+}
+
 function markSingleChunkDirty(
   cellMap: CellMapT,
   cx: number,

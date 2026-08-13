@@ -6,6 +6,10 @@ import {
   takePendingBufferCleanup,
   resetCellMapState,
   cmEmissionColorChannel,
+  enqueuePendingSetCells,
+  getPendingSetCells,
+  clearPendingSetCells,
+  invalidateCachedChunk,
 } from './data';
 import {
   CellData,
@@ -16,7 +20,8 @@ import {
   unpackCell,
 } from './types';
 import type { RaycastHit, SurfaceHit, RaycastOptions } from './types';
-import { markChunksDirty } from './mesh-builder';
+import type { ChunkCoord } from './window';
+import { markChunksDirty, markChunkAndNeighborsDirty } from './mesh-builder';
 import {
   raycastCellMap,
   cellSurfacePoint,
@@ -235,6 +240,60 @@ export interface CellMapMethods extends ComponentMethods {
    * auto-driven that frame.
    */
   advanceWindowGeneration: (component: CellMapT) => void;
+
+  /**
+   * Forces chunks in `[min, max]` (inclusive, WORLD cell coordinates) — or
+   * the entire resident window if `min` is null — to re-derive from the
+   * configured `ChunkGenerator` instead of continuing to treat their
+   * previously-visited answer as permanent. Fixes generative worlds that
+   * grow over time: once a chunk is visited, nothing else ever re-asks the
+   * generator for it, so newly-generatable content at an already-visited
+   * coordinate would otherwise never appear. Resident chunks with a live
+   * edit are left untouched (see `skippedEditedChunks`) — edits are tracked
+   * per-chunk, not per-cell, so there's no way to know which cells inside an
+   * edited chunk are real player changes vs. generator-original; overwriting
+   * the whole chunk would silently destroy them.
+   *
+   * Synchronous, not budgeted — this is an occasional/deliberate operation
+   * (call when new content becomes generatable, not every frame), but a
+   * refresh over many resident chunks (especially `refreshChunks(null)` on a
+   * large window) can cost real time: each refreshed chunk is one generator
+   * call plus one WASM write per cell in the chunk.
+   */
+  refreshChunks: (
+    component: CellMapT,
+    min: { x: number; y: number; z: number } | null,
+    max?: { x: number; y: number; z: number },
+  ) => {
+    refreshedChunks: number;
+    skippedEditedChunks: number;
+    clearedChunks: number;
+  };
+
+  /**
+   * Frame-budgeted bulk write of already-known cell values (as opposed to
+   * `refreshChunks`, which re-derives from the generator). Entries from this
+   * and any other in-flight `setCells` call are applied a few at a time by
+   * `advanceSetCells` (driven every frame by the render loop, same as
+   * `advanceWindowGeneration`) instead of all at once, so a large batch
+   * can't stall a single frame — the caller doesn't need to hand-roll their
+   * own per-frame slicing. `markChunksDirty`-equivalent work is batched once
+   * per touched chunk, not once per cell. Returns a Promise that resolves
+   * once these entries (specifically) have been applied, or rejects if the
+   * component is disposed first.
+   */
+  setCells: (
+    component: CellMapT,
+    entries: { x: number; y: number; z: number; data: CellData }[],
+    opts?: { budgetMs?: number },
+  ) => Promise<void>;
+
+  /**
+   * Advances any in-flight `setCells` batch by one frame's budget. Call once
+   * per frame unconditionally (no-ops cheaply when nothing is pending) —
+   * mirrors `advanceWindowGeneration`'s existing shape exactly.
+   */
+  advanceSetCells: (component: CellMapT) => void;
 
   /**
    * Drains and returns chunk meshes that were evicted from the resident
@@ -612,6 +671,126 @@ export const CellMap: CellMapMethods = {
     } finally {
       if (profiling)
         recordCellMapPhase(component, 'cell-map:advanceWindowGeneration', t0);
+    }
+  },
+
+  refreshChunks: (
+    component: CellMapT,
+    min: { x: number; y: number; z: number } | null,
+    max?: { x: number; y: number; z: number },
+  ): {
+    refreshedChunks: number;
+    skippedEditedChunks: number;
+    clearedChunks: number;
+  } => {
+    const profiling = isProfilingEnabled();
+    const t0 = profiling ? performance.now() : 0;
+    try {
+      let minChunk: ChunkCoord | null = null;
+      let maxChunk: ChunkCoord | null = null;
+      if (min) {
+        assertFiniteCoordinates(min.x, min.y, min.z);
+        if (!max) {
+          throw new Error(
+            '[cell-map] refreshChunks: max is required when min is provided',
+          );
+        }
+        assertFiniteCoordinates(max.x, max.y, max.z);
+        const { x: csx, y: csy, z: csz } = component.chunkSize;
+        minChunk = {
+          cx: Math.floor(min.x / csx),
+          cy: Math.floor(min.y / csy),
+          cz: Math.floor(min.z / csz),
+        };
+        maxChunk = {
+          cx: Math.floor(max.x / csx),
+          cy: Math.floor(max.y / csy),
+          cz: Math.floor(max.z / csz),
+        };
+      }
+
+      const { refreshed, skippedEdited, clearedEvicted } =
+        component.window.refreshChunkRange(minChunk, maxChunk);
+
+      for (const wc of refreshed) markChunkAndNeighborsDirty(component, wc);
+      for (const wc of clearedEvicted)
+        invalidateCachedChunk(wc.cx, wc.cy, wc.cz);
+      if (refreshed.length > 0) component.needsGPUUpdate = true;
+
+      return {
+        refreshedChunks: refreshed.length,
+        skippedEditedChunks: skippedEdited.length,
+        clearedChunks: clearedEvicted.length,
+      };
+    } finally {
+      if (profiling)
+        recordCellMapPhase(component, 'cell-map:refreshChunks', t0);
+    }
+  },
+
+  setCells: (
+    component: CellMapT,
+    entries: { x: number; y: number; z: number; data: CellData }[],
+    opts?: { budgetMs?: number },
+  ): Promise<void> => {
+    for (const entry of entries) {
+      assertFiniteCoordinates(entry.x, entry.y, entry.z);
+    }
+    return enqueuePendingSetCells(entries, opts?.budgetMs);
+  },
+
+  advanceSetCells: (component: CellMapT): void => {
+    const profiling = isProfilingEnabled();
+    const t0 = profiling ? performance.now() : 0;
+    try {
+      const pending = getPendingSetCells();
+      if (!pending) return;
+
+      const deadline = performance.now() + pending.budgetMs;
+      const touchedChunks = new Map<string, ChunkCoord>();
+      let processed = 0;
+      while (pending.cursor < pending.entries.length) {
+        if (processed > 0 && performance.now() > deadline) break;
+        const entry = pending.entries[pending.cursor];
+        const clamped: CellData = {
+          materialIndex: Math.max(0, Math.min(0xfff, entry.data.materialIndex)),
+          shapeIndex: Math.max(0, Math.min(0xfff, entry.data.shapeIndex)),
+          emissionIntensity: Math.max(
+            0,
+            Math.min(0x1f, entry.data.emissionIntensity),
+          ),
+          visible: entry.data.visible,
+        };
+        component.window.setCell(entry.x, entry.y, entry.z, packCell(clamped));
+        const { x: csx, y: csy, z: csz } = component.chunkSize;
+        const cx = Math.floor(entry.x / csx);
+        const cy = Math.floor(entry.y / csy);
+        const cz = Math.floor(entry.z / csz);
+        touchedChunks.set(`${cx},${cy},${cz}`, { cx, cy, cz });
+        pending.cursor++;
+        processed++;
+      }
+
+      if (processed > 0) component.needsGPUUpdate = true;
+      for (const wc of touchedChunks.values()) {
+        markChunkAndNeighborsDirty(component, wc);
+      }
+
+      while (
+        pending.waiters.length &&
+        pending.waiters[0].targetCursor <= pending.cursor
+      ) {
+        pending.waiters.shift()!.resolve();
+      }
+      if (
+        pending.cursor >= pending.entries.length &&
+        pending.waiters.length === 0
+      ) {
+        clearPendingSetCells();
+      }
+    } finally {
+      if (profiling)
+        recordCellMapPhase(component, 'cell-map:advanceSetCells', t0);
     }
   },
 

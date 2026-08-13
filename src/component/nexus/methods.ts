@@ -1,4 +1,9 @@
-import { ComponentData, ComponentMethods, ComponentUnique } from '../types';
+import {
+  ComponentData,
+  ComponentMethods,
+  ComponentUnique,
+  bubbleUpdateWorkTrue,
+} from '../types';
 import { MethodRegistry, unregisterMethod } from '../registry';
 import { NexusT } from './data';
 
@@ -109,6 +114,13 @@ export const Nexus: NexusMethods = {
 
     component.parent = n;
     n.components.push(component);
+    // The new component's own `_hasUpdateWork` was already computed at its
+    // own construction time (wrapInProxy) -- if it has work, its new
+    // ancestors need to reflect that too. If it doesn't, adding it can't
+    // change any ancestor's aggregate, so nothing to do.
+    if (component._hasUpdateWork) {
+      bubbleUpdateWorkTrue(n);
+    }
   },
   addComponents: (
     n: NexusT,

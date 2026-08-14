@@ -30,6 +30,21 @@ export function clearTextureMapCache(cameraId: number): void {
   TEXTURE_MAP_CACHE_DIRTY.delete(cameraId);
 }
 
+// AtlasManager lookup cache — keyed by camera component ID, same shape as
+// TEXTURE_MAP_CACHE above. Unlike texture-maps, this needs no dirty flag:
+// atlas-manager is ComponentUnique.GLOBAL (at most one per scene), so once
+// resolved the reference is reused indefinitely. The only way it goes stale
+// is disposal -- a scene switch (which disposes the whole old tree) or a
+// developer forcing re-init by adding a fresh atlas-manager (GLOBAL
+// uniqueness auto-disposes the old one first) -- so staleness is caught by
+// checking `_disposed` at read time instead of needing an explicit
+// invalidate call from anywhere.
+const ATLAS_MANAGER_CACHE = new Map<number, AtlasManagerT>();
+
+export function clearAtlasManagerCache(cameraId: number): void {
+  ATLAS_MANAGER_CACHE.delete(cameraId);
+}
+
 /**
  * Renders the scene from the camera's perspective.
  * This is called by the main render loop.
@@ -170,10 +185,23 @@ export function render(camera: CameraT, _deltaTime: number): void {
   // upload (e.g. a runtime atlasManager.processTextureMaps()). One int compare
   // per frame; uploads only when the version actually changed. Also covers a
   // camera that initialized before the atlas had compiled.
-  const atlasManager = sceneRoot.getComponentByType(
-    'atlas-manager',
-    true,
-  ) as AtlasManagerT | null;
+  //
+  // Resolved once per camera and reused (see ATLAS_MANAGER_CACHE above) --
+  // re-resolved only if the cached reference was disposed, or if nothing's
+  // cached yet (e.g. no atlas-manager exists yet during early scene setup).
+  let atlasManager: AtlasManagerT | null =
+    ATLAS_MANAGER_CACHE.get(camera.id!) ?? null;
+  if (!atlasManager || atlasManager._disposed) {
+    atlasManager = sceneRoot.getComponentByType(
+      'atlas-manager',
+      true,
+    ) as AtlasManagerT | null;
+    if (atlasManager) {
+      ATLAS_MANAGER_CACHE.set(camera.id!, atlasManager);
+    } else {
+      ATLAS_MANAGER_CACHE.delete(camera.id!);
+    }
+  }
   if (
     atlasManager &&
     atlasManager.compiled &&

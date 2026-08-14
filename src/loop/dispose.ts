@@ -5,9 +5,9 @@
  * mid-update errors when components are removed from the scene.
  */
 
-import type { COMPONENT_TYPE, ComponentData } from '../component/types';
+import type { ComponentData } from '../component/types';
 import type { NexusT } from '../component/nexus/data';
-import { unregisterMethod, MethodRegistry } from '../component/registry';
+import { disposeComponent } from '../component/registry';
 
 /**
  * Component IDs flagged for disposal, mapped to a reference if one was
@@ -112,19 +112,7 @@ export function processDisposeQueue(scene: NexusT): void {
       continue;
     }
 
-    // Clean up custom update method if it exists
-    if (component.updateOverride) {
-      unregisterMethod(component.type, component.updateOverride);
-      component.updateOverride = undefined;
-    }
-
-    const method = MethodRegistry[component.type as COMPONENT_TYPE];
-    if (method.dispose && typeof method.dispose === 'function') {
-      method.dispose(component);
-    } else {
-      // Ensure _disposed flag is set even without custom dispose
-      component._disposed = true;
-    }
+    disposeComponent(component);
   }
 }
 

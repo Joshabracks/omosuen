@@ -4,7 +4,11 @@ import {
   ComponentUnique,
   bubbleUpdateWorkTrue,
 } from '../types';
-import { MethodRegistry, unregisterMethod } from '../registry';
+import {
+  MethodRegistry,
+  unregisterMethod,
+  disposeComponent,
+} from '../registry';
 import { NexusT } from './data';
 
 export interface NexusMethods extends ComponentMethods {
@@ -59,15 +63,7 @@ export const Nexus: NexusMethods = {
     if (component.unique === ComponentUnique.LOCAL) {
       // LOCAL: Dispose existing components of same type in THIS Nexus only
       const existing = n.components.filter((c) => c.type === component.type);
-      existing.forEach((c) => {
-        const C = MethodRegistry[c.type];
-        if (C.dispose && typeof C.dispose === 'function') {
-          C.dispose(c);
-        }
-      });
-
-      // Remove them from the components array
-      n.components = n.components.filter((c) => c.type !== component.type);
+      existing.forEach((c) => disposeComponent(c));
     } else if (component.unique === ComponentUnique.GLOBAL) {
       // GLOBAL: Dispose ALL instances in entire scene hierarchy
       // Find root nexus by traversing up the parent chain
@@ -82,15 +78,7 @@ export const Nexus: NexusMethods = {
         component.type,
         true,
       );
-      allInstances.forEach((c) => {
-        const C = MethodRegistry[c.type];
-        if (C.dispose && typeof C.dispose === 'function') {
-          C.dispose(c);
-        }
-      });
-
-      // Note: Disposed components are automatically removed from their parent Nexus
-      // during the dispose process or will be filtered out as _disposed
+      allInstances.forEach((c) => disposeComponent(c));
     } else if (component.unique === ComponentUnique.NAME) {
       // NAME: Dispose all instances with same type AND same name in entire scene
       let root: ComponentData = n;
@@ -104,12 +92,7 @@ export const Nexus: NexusMethods = {
         component.name,
         true,
       );
-      allInstances.forEach((c) => {
-        const C = MethodRegistry[c.type];
-        if (C.dispose && typeof C.dispose === 'function') {
-          C.dispose(c);
-        }
-      });
+      allInstances.forEach((c) => disposeComponent(c));
     }
 
     component.parent = n;

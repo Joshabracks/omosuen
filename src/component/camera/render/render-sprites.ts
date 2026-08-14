@@ -343,6 +343,14 @@ export function renderSprites(
   );
   const u_cellSolidity = gl.getUniformLocation(program, 'u_cellSolidity');
   const u_revealTarget = gl.getUniformLocation(program, 'u_revealTarget');
+  const u_cellEmissionColor = gl.getUniformLocation(
+    program,
+    'u_cellEmissionColor',
+  );
+  const u_hasCellEmissionColor = gl.getUniformLocation(
+    program,
+    'u_hasCellEmissionColor',
+  );
 
   // Set constant uniforms (same for all sprites)
   // Sprites render at full resolution to screen (not via FBO), so they use
@@ -435,6 +443,26 @@ export function renderSprites(
     gl.uniform1i(u_hasVisibilityMask, 1);
   } else {
     gl.uniform1i(u_hasVisibilityMask, 0);
+  }
+
+  // Same reasoning as u_cellSolidity above -- always pin u_cellEmissionColor
+  // (also sampler2DArray) to unit 6, matching the unit render-cell-maps.ts
+  // uses for it. Scenes with no cell-maps never run renderCellMaps, so
+  // without this the uniform would default to unit 0 and collide with
+  // u_albedoTexture (sampler2D) on every sprite draw.
+  gl.activeTexture(gl.TEXTURE6);
+  gl.bindTexture(
+    gl.TEXTURE_2D_ARRAY,
+    camera.glResources.cellEmissionColorTexture,
+  );
+  gl.uniform1i(u_cellEmissionColor, 6);
+  if (
+    camera.glResources.cellEmissionColorHasAny &&
+    camera.glResources.cellEmissionColorTexture
+  ) {
+    gl.uniform1i(u_hasCellEmissionColor, 1);
+  } else {
+    gl.uniform1i(u_hasCellEmissionColor, 0);
   }
 
   // Disable cell-only attributes that may be left enabled from cell rendering

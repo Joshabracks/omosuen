@@ -120,6 +120,7 @@ import type {
   ComponentMethods,
   ComponentSerializer,
 } from './types';
+import type { NexusT } from './nexus/data';
 
 /**
  * Method type registry for non-component functions.
@@ -295,6 +296,41 @@ export function unregisterMethod(
   }
   delete MethodRegistry[type][key];
   invalidateMethodCache();
+}
+
+/**
+ * Disposes a component and detaches it from its parent Nexus.
+ *
+ * This is the single canonical disposal path -- it unregisters any
+ * `updateOverride` method, calls the component type's own `dispose` (falling
+ * back to just setting `_disposed`), and removes the component from its
+ * parent's `components` array. That last step matters: disposing a
+ * component alone does not remove it from the tree anywhere else in the
+ * engine, so without this, every future tree query
+ * (`getComponentByType`/`getComponentsByType`/`getComponentById`/etc.)
+ * against that parent keeps finding the disposed husk indefinitely.
+ *
+ * @param component - The component to dispose
+ */
+export function disposeComponent(component: ComponentData): void {
+  if (component.updateOverride) {
+    unregisterMethod(component.type, component.updateOverride);
+    component.updateOverride = undefined;
+  }
+
+  const method = MethodRegistry[component.type as COMPONENT_TYPE];
+  if (method.dispose && typeof method.dispose === 'function') {
+    method.dispose(component);
+  } else {
+    component._disposed = true;
+  }
+
+  if (component.parent && component.parent.type === 'nexus') {
+    const parentNexus = component.parent as unknown as NexusT;
+    parentNexus.components = parentNexus.components.filter(
+      (c) => c !== component,
+    );
+  }
 }
 
 /**

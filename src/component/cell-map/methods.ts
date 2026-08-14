@@ -748,6 +748,12 @@ export const CellMap: CellMapMethods = {
 
       const deadline = performance.now() + pending.budgetMs;
       const touchedChunks = new Map<string, ChunkCoord>();
+      const batch: {
+        worldX: number;
+        worldY: number;
+        worldZ: number;
+        value: number;
+      }[] = [];
       let processed = 0;
       while (pending.cursor < pending.entries.length) {
         if (processed > 0 && performance.now() > deadline) break;
@@ -761,7 +767,12 @@ export const CellMap: CellMapMethods = {
           ),
           visible: entry.data.visible,
         };
-        component.window.setCell(entry.x, entry.y, entry.z, packCell(clamped));
+        batch.push({
+          worldX: entry.x,
+          worldY: entry.y,
+          worldZ: entry.z,
+          value: packCell(clamped),
+        });
         const { x: csx, y: csy, z: csz } = component.chunkSize;
         const cx = Math.floor(entry.x / csx);
         const cy = Math.floor(entry.y / csy);
@@ -770,6 +781,11 @@ export const CellMap: CellMapMethods = {
         pending.cursor++;
         processed++;
       }
+
+      // Applies this frame's whole budget-bounded slice in one call --
+      // off-window entries are resolved/compared/stored once per chunk they
+      // land in, not once per entry (see CellWindow.setCellsBatch).
+      if (batch.length > 0) component.window.setCellsBatch(batch);
 
       if (processed > 0) component.needsGPUUpdate = true;
       for (const wc of touchedChunks.values()) {

@@ -772,7 +772,19 @@ export function renderCellMaps(
     const needSolidity =
       reveal || (!!cues && (cues.ao.weight > 0 || cues.shadow.weight > 0));
 
-    if (needSolidity) {
+    // cellMap.mapSize reflects the window's configured target size, set
+    // eagerly at construction/resize -- but a generative window with a large
+    // initial radius doesn't commit its first chunk batch to the WASM store
+    // synchronously (see CellMap.advanceWindowGeneration, staged across
+    // frames). Until that first commit lands, computeSolidityMap() still
+    // reads whatever the WASM store was last loaded with (a different size,
+    // e.g. a previous scene's cell-map), and uploading against mapSize's
+    // size throws "ArrayBufferView not big enough". `window.origin` is null
+    // exactly until the first commit lands (set alongside it), so gate on
+    // that instead of trying to upload early.
+    const windowCommitted = cellMap.window.origin !== null;
+
+    if (needSolidity && windowCommitted) {
       // Recompute every frame — cheap for small maps.
       const solidityMap = computeSolidityMap();
       uploadVisibilityTexture(gl, camera, solidityMap, cellMap.mapSize);
@@ -804,7 +816,10 @@ export function renderCellMaps(
     // Per-cell emission (highlight) color texture (Part A). Rebuild the GPU texture
     // only when the map changed — setEmissionColor sets emissionColorDirty; no remesh
     // is involved. An all-black map skips upload and disables the shader term.
-    if (cellMap.emissionColorDirty) {
+    // Same windowCommitted gate as the solidity texture above -- and left
+    // dirty (not cleared) if the window hasn't committed yet, so it retries
+    // once it has, rather than being silently dropped.
+    if (cellMap.emissionColorDirty && windowCommitted) {
       const { bytes, hasAny } = buildCellEmissionColorBytes(cellMap);
       camera.glResources.cellEmissionColorHasAny = hasAny;
       if (hasAny) {

@@ -28,6 +28,7 @@ import {
   sampleSurfaceHeight,
 } from './raycast';
 import { cellStoreFlush } from '../camera/render/wasm';
+import { bumpRenderableVersion } from '../renderable-version';
 import { isProfilingEnabled, recordComponentUpdate } from '../../loop/profile';
 
 /**
@@ -845,5 +846,6 @@ export const CellMap: CellMapMethods = {
     }
     resetCellMapState();
     cm._disposed = true;
+    bumpRenderableVersion('cell-map');
   },
 };

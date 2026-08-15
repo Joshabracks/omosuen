@@ -9,7 +9,10 @@ import {
   unregisterMethod,
   disposeComponent,
 } from '../registry';
+import { bumpRenderableVersion, RenderableType } from '../renderable-version';
 import { NexusT } from './data';
+
+const RENDERABLE_TYPES = new Set<string>(['sprite', 'cell-map', 'light']);
 
 export interface NexusMethods extends ComponentMethods {
   addComponent: (n: NexusT, component: ComponentData) => void;
@@ -103,6 +106,11 @@ export const Nexus: NexusMethods = {
     // change any ancestor's aggregate, so nothing to do.
     if (component._hasUpdateWork) {
       bubbleUpdateWorkTrue(n);
+    }
+    // See renderable-version.ts -- lets collect-renderables' per-camera cache
+    // detect "did a sprite/cell-map/light get added anywhere" cheaply.
+    if (RENDERABLE_TYPES.has(component.type)) {
+      bumpRenderableVersion(component.type as RenderableType);
     }
   },
   addComponents: (

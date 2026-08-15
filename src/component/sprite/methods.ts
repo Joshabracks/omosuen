@@ -4,6 +4,7 @@ import { getActiveScene } from '../../scene';
 import { Vector3D } from '../../math';
 import type { NexusT } from '../nexus/data';
 import type { TextureMapT } from '../texture-map/data';
+import { bumpRenderableVersion } from '../renderable-version';
 
 export type ChannelType = 'albedo' | 'normal' | 'material' | 'emission';
 
@@ -202,6 +203,7 @@ export const Sprite: SpriteMethods = {
   dispose(c: ComponentData) {
     const s = c as SpriteT;
     s._disposed = true;
+    bumpRenderableVersion('sprite');
   },
 };
 

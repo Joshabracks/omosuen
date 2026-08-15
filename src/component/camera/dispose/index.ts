@@ -8,6 +8,7 @@ import {
   resolveViewportCached,
 } from '../render/index';
 import { clearLightUniformCache } from '../render/light-uniforms';
+import { clearRenderablesCache } from '../collect-renderables/index';
 
 /**
  * Disposes WebGL resources when the camera is removed.
@@ -62,6 +63,7 @@ export function dispose(component: ComponentData): void {
   clearTextureMapCache(camera.id!);
   clearAtlasManagerCache(camera.id!);
   clearViewportCache(camera.id!);
+  clearRenderablesCache(camera.id!);
 
   camera._disposed = true;
 }

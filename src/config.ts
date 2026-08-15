@@ -1,4 +1,5 @@
 import type { ComponentTypeDefinition } from './component/registry';
+import type { COMPONENT_TYPE } from './component/types';
 
 /**
  * Global configuration for Omosuen engine
@@ -19,6 +20,16 @@ export interface OmosuenConfig {
    * Entries that are neither are skipped with a warning.
    */
   plugins?: (ComponentTypeDefinition | string)[];
+
+  /**
+   * Per-type override for the general component lookup registry's opt-in
+   * decision (see `component/component-lookup-registry.ts`). `true` forces a
+   * type into the registry (fast `getComponentByType`/`getComponentsByType`/
+   * `getComponentByTypeAndName`/`getComponentsByTypeAndName` lookups); `false`
+   * forces it out, even if it's in the engine's built-in default list or is
+   * `ComponentUnique.GLOBAL`. Omit a type to use the built-in default.
+   */
+  componentRegistrationOverrideList?: Partial<Record<COMPONENT_TYPE, boolean>>;
 }
 
 /**

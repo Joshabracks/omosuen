@@ -4,18 +4,26 @@ import {
   ComponentUnique,
   bubbleUpdateWorkTrue,
 } from '../types';
-import {
-  MethodRegistry,
-  unregisterMethod,
-  disposeComponent,
-} from '../registry';
+import { unregisterMethod, disposeComponent } from '../registry';
 import { bumpRenderableVersion, RenderableType } from '../renderable-version';
+import {
+  isTypeOptedIn,
+  getTypeRegistrySet,
+  isWithinSubtree,
+  sameComponent,
+  registerByType,
+  registerByName as registerNameEntry,
+} from '../component-lookup-registry';
 import { NexusT } from './data';
 
 const RENDERABLE_TYPES = new Set<string>(['sprite', 'cell-map', 'light']);
 
 export interface NexusMethods extends ComponentMethods {
-  addComponent: (n: NexusT, component: ComponentData) => void;
+  addComponent: (
+    n: NexusT,
+    component: ComponentData,
+    registerByName?: boolean,
+  ) => void;
   addComponents: (
     n: NexusT,
     components: ComponentData[] | { [index: string]: ComponentData },
@@ -62,7 +70,11 @@ export interface NexusMethods extends ComponentMethods {
 
 export const Nexus: NexusMethods = {
   type: 'nexus',
-  addComponent: (n: NexusT, component: ComponentData) => {
+  addComponent: (
+    n: NexusT,
+    component: ComponentData,
+    registerByName?: boolean,
+  ) => {
     if (component.unique === ComponentUnique.LOCAL) {
       // LOCAL: Dispose existing components of same type in THIS Nexus only
       const existing = n.components.filter((c) => c.type === component.type);
@@ -112,6 +124,12 @@ export const Nexus: NexusMethods = {
     if (RENDERABLE_TYPES.has(component.type)) {
       bumpRenderableVersion(component.type as RenderableType);
     }
+    // See component-lookup-registry.ts -- self-checks opt-in internally, so
+    // safe to call unconditionally for every add.
+    registerByType(component);
+    if (registerByName) {
+      registerNameEntry(component);
+    }
   },
   addComponents: (
     n: NexusT,
@@ -138,6 +156,27 @@ export const Nexus: NexusMethods = {
     }
   },
   getComponentByType: (n: NexusT, type: string, recursive: boolean = false) => {
+    // See component-lookup-registry.ts: for an opted-in type, the registry
+    // set is always complete, so it's safe to answer from it alone -- no
+    // fallback tree walk needed either way (registry set empty means truly
+    // zero instances exist; a match means a real one was found).
+    if (isTypeOptedIn(type)) {
+      const set = getTypeRegistrySet(type);
+      if (recursive) {
+        for (const c of set) {
+          if (isWithinSubtree(c, n)) return c;
+        }
+        return null;
+      }
+      if (set.size < n.components.length) {
+        for (const c of set) {
+          if (sameComponent(c.parent, n)) return c;
+        }
+        return null;
+      }
+      // else: registry isn't smaller here, fall through to the plain scan below
+    }
+
     const match = n.components.find((c) => c.type === type);
     if (match || !recursive) return match ?? null;
 
@@ -155,6 +194,25 @@ export const Nexus: NexusMethods = {
     type: string,
     recursive: boolean = false,
   ) => {
+    if (isTypeOptedIn(type)) {
+      const set = getTypeRegistrySet(type);
+      if (recursive) {
+        const matches: ComponentData[] = [];
+        for (const c of set) {
+          if (isWithinSubtree(c, n)) matches.push(c);
+        }
+        return matches;
+      }
+      if (set.size < n.components.length) {
+        const matches: ComponentData[] = [];
+        for (const c of set) {
+          if (sameComponent(c.parent, n)) matches.push(c);
+        }
+        return matches;
+      }
+      // else: registry isn't smaller here, fall through to the plain scan below
+    }
+
     const matches: ComponentData[] = [];
 
     // Collect matches in this nexus (no filter allocation)
@@ -221,6 +279,23 @@ export const Nexus: NexusMethods = {
     name: string,
     recursive: boolean = false,
   ) => {
+    if (isTypeOptedIn(type)) {
+      const set = getTypeRegistrySet(type);
+      if (recursive) {
+        for (const c of set) {
+          if (c.name === name && isWithinSubtree(c, n)) return c;
+        }
+        return null;
+      }
+      if (set.size < n.components.length) {
+        for (const c of set) {
+          if (c.name === name && sameComponent(c.parent, n)) return c;
+        }
+        return null;
+      }
+      // else: registry isn't smaller here, fall through to the plain scan below
+    }
+
     const match = n.components.find((c) => c.type === type && c.name === name);
     if (match || !recursive) return match ?? null;
 
@@ -244,6 +319,25 @@ export const Nexus: NexusMethods = {
     name: string,
     recursive: boolean = false,
   ) => {
+    if (isTypeOptedIn(type)) {
+      const set = getTypeRegistrySet(type);
+      if (recursive) {
+        const matches: ComponentData[] = [];
+        for (const c of set) {
+          if (c.name === name && isWithinSubtree(c, n)) matches.push(c);
+        }
+        return matches;
+      }
+      if (set.size < n.components.length) {
+        const matches: ComponentData[] = [];
+        for (const c of set) {
+          if (c.name === name && sameComponent(c.parent, n)) matches.push(c);
+        }
+        return matches;
+      }
+      // else: registry isn't smaller here, fall through to the plain scan below
+    }
+
     const matches: ComponentData[] = [];
 
     // Collect matches in this nexus (no filter allocation)
@@ -286,14 +380,16 @@ export const Nexus: NexusMethods = {
   },
   dispose: (component: ComponentData) => {
     const n = component as NexusT;
-    // Recursively dispose all child components (depth-first)
+    // Recursively dispose all child components (depth-first). Routed through
+    // disposeComponent (not a direct MethodRegistry[c.type].dispose(c) call)
+    // so every disposal path -- including this whole-subtree cascade --
+    // consistently cleans up the lookup registries (component-lookup-registry.ts)
+    // too. disposeComponent's own parent-array removal is redundant here
+    // (n.components is wiped wholesale right below regardless), an accepted
+    // O(n^2) cost during large-subtree teardown in exchange for one
+    // universal disposal choke point instead of a per-type hook.
     n.components.forEach((c) => {
-      const C = MethodRegistry[c.type];
-      if (C.dispose && typeof C.dispose === 'function') {
-        C.dispose(c);
-      } else {
-        c._disposed = true;
-      }
+      disposeComponent(c);
     });
 
     // Unregister script methods if this nexus had a script

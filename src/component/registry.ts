@@ -121,6 +121,10 @@ import type {
   ComponentSerializer,
 } from './types';
 import type { NexusT } from './nexus/data';
+import {
+  unregisterByType,
+  unregisterByName,
+} from './component-lookup-registry';
 
 /**
  * Method type registry for non-component functions.
@@ -324,6 +328,9 @@ export function disposeComponent(component: ComponentData): void {
   } else {
     component._disposed = true;
   }
+
+  unregisterByType(component);
+  unregisterByName(component);
 
   if (component.parent && component.parent.type === 'nexus') {
     const parentNexus = component.parent as unknown as NexusT;

@@ -410,6 +410,7 @@ export async function newComponent(
   type: COMPONENT_TYPE,
   options: ComponentOptions,
   parent: NexusT | null = null,
+  registerByName?: boolean,
 ): Promise<ComponentData | null> {
   const builder = BUILDERS[type];
   if (!builder) {
@@ -447,7 +448,7 @@ export async function newComponent(
 
   const proxy = wrapInProxy(component);
   if (parent) {
-    Nexus.addComponent(parent, proxy);
+    Nexus.addComponent(parent, proxy, registerByName);
   }
 
   return proxy;

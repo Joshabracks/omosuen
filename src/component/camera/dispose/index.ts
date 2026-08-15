@@ -1,8 +1,12 @@
 import { NexusT } from '../../nexus';
 import { ComponentData, castTo } from '../../types';
-import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
-import { clearTextureMapCache, clearAtlasManagerCache } from '../render/index';
+import {
+  clearTextureMapCache,
+  clearAtlasManagerCache,
+  clearViewportCache,
+  resolveViewportCached,
+} from '../render/index';
 import { clearLightUniformCache } from '../render/light-uniforms';
 
 /**
@@ -15,16 +19,13 @@ export function dispose(component: ComponentData): void {
   const camera = component as CameraT;
   const res = camera.glResources;
 
-  // Obtain the GL context via the same viewport lookup pattern used in init
+  // Obtain the GL context via the same cached viewport lookup used elsewhere
   let gl: WebGL2RenderingContext | null = null;
   if (camera.parent && camera.parent.type === 'nexus') {
     const parentNexus = castTo<NexusT>(camera.parent!);
     if (parentNexus.parent) {
       const sceneRoot = castTo<NexusT>(parentNexus.parent!);
-      const viewport = sceneRoot.getComponentByName(
-        camera.viewportRef,
-        true,
-      ) as ViewportT | null;
+      const viewport = resolveViewportCached(camera, sceneRoot);
       gl = viewport?.gl ?? null;
     }
   }
@@ -60,6 +61,7 @@ export function dispose(component: ComponentData): void {
   clearLightUniformCache(camera.id!);
   clearTextureMapCache(camera.id!);
   clearAtlasManagerCache(camera.id!);
+  clearViewportCache(camera.id!);
 
   camera._disposed = true;
 }

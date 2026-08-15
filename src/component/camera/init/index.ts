@@ -2,7 +2,6 @@ import { AtlasManagerT } from '../../atlas-manager';
 
 import { NexusT } from '../../nexus';
 import { ComponentData, castTo } from '../../types';
-import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { createShaderProgram } from '../shader/create-shader-program';
 import postProcessVertexShader from '../shader/post.vert';
@@ -15,6 +14,7 @@ import {
 } from '../render/light-uniforms';
 import { initRenderWasm } from '../render/wasm';
 import { uploadAtlasTextures } from '../render/atlas-textures';
+import { resolveViewportCached } from '../render/index';
 
 /**
  * Initializes WebGL resources for the camera (shader programs, buffers).
@@ -38,10 +38,7 @@ export async function init(component: ComponentData): Promise<void> {
   const searchRoot = parentNexus.parent
     ? castTo<NexusT>(parentNexus.parent)
     : parentNexus;
-  const viewport = searchRoot.getComponentByName(
-    camera.viewportRef,
-    true,
-  ) as ViewportT | null;
+  const viewport = resolveViewportCached(camera, searchRoot);
 
   if (!viewport || !viewport.gl) {
     console.warn(

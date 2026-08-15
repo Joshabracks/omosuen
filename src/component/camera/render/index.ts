@@ -45,6 +45,58 @@ export function clearAtlasManagerCache(cameraId: number): void {
   ATLAS_MANAGER_CACHE.delete(cameraId);
 }
 
+// Viewport lookup cache — keyed by camera component ID, storing the resolved
+// viewport plus the viewportRef key it was resolved for. camera.viewportRef
+// is a PROPERTY_ALLOWLIST-exposed, genuinely writable field (camera/data.ts)
+// even though nothing in-repo ever reassigns it today, so this isn't a
+// resolve-once-forever cache like ATLAS_MANAGER_CACHE above -- each call
+// compares the cached key against the camera's *current* viewportRef and
+// only re-resolves on mismatch. A miss (no matching viewport) is never
+// cached, matching ATLAS_MANAGER_CACHE's behavior, so a camera whose
+// viewport hasn't been added to the scene yet keeps retrying instead of
+// latching onto a stale null.
+const VIEWPORT_CACHE = new Map<
+  number,
+  { viewportRef: string; viewport: ViewportT }
+>();
+
+export function clearViewportCache(cameraId: number): void {
+  VIEWPORT_CACHE.delete(cameraId);
+}
+
+/**
+ * Resolves camera.viewportRef to a ViewportT, cached per camera id with a
+ * re-resolve-on-mismatch guard. Shared by every call site that needs a
+ * camera's viewport: render's per-frame hot path, plus init/set/dispose's
+ * once-per-lifecycle or user-triggered lookups.
+ *
+ * @param camera - The camera whose viewport to resolve
+ * @param sceneRoot - The nexus to search from (caller-computed, since the
+ *   exact parent-chain walk differs slightly by call site)
+ */
+export function resolveViewportCached(
+  camera: CameraT,
+  sceneRoot: NexusT,
+): ViewportT | null {
+  const cached = VIEWPORT_CACHE.get(camera.id!);
+  if (cached && cached.viewportRef === camera.viewportRef) {
+    return cached.viewport;
+  }
+  const viewport = sceneRoot.getComponentByName(
+    camera.viewportRef,
+    true,
+  ) as ViewportT | null;
+  if (viewport) {
+    VIEWPORT_CACHE.set(camera.id!, {
+      viewportRef: camera.viewportRef,
+      viewport,
+    });
+  } else {
+    VIEWPORT_CACHE.delete(camera.id!);
+  }
+  return viewport;
+}
+
 /**
  * Renders the scene from the camera's perspective.
  * This is called by the main render loop.
@@ -84,10 +136,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
   // Get viewport to render to (search from scene root, not parent)
   // Viewport is typically a sibling of the camera's parent nexus
   const sceneRoot = castTo<NexusT>(parentNexus.parent!);
-  const viewport = sceneRoot.getComponentByName(
-    camera.viewportRef,
-    true,
-  ) as ViewportT | null;
+  const viewport = resolveViewportCached(camera, sceneRoot);
 
   if (!viewport || !viewport.gl) {
     console.warn(

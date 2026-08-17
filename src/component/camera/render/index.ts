@@ -30,73 +30,6 @@ export function clearTextureMapCache(cameraId: number): void {
   TEXTURE_MAP_CACHE_DIRTY.delete(cameraId);
 }
 
-// AtlasManager lookup cache — keyed by camera component ID, same shape as
-// TEXTURE_MAP_CACHE above. Unlike texture-maps, this needs no dirty flag:
-// atlas-manager is ComponentUnique.GLOBAL (at most one per scene), so once
-// resolved the reference is reused indefinitely. The only way it goes stale
-// is disposal -- a scene switch (which disposes the whole old tree) or a
-// developer forcing re-init by adding a fresh atlas-manager (GLOBAL
-// uniqueness auto-disposes the old one first) -- so staleness is caught by
-// checking `_disposed` at read time instead of needing an explicit
-// invalidate call from anywhere.
-const ATLAS_MANAGER_CACHE = new Map<number, AtlasManagerT>();
-
-export function clearAtlasManagerCache(cameraId: number): void {
-  ATLAS_MANAGER_CACHE.delete(cameraId);
-}
-
-// Viewport lookup cache — keyed by camera component ID, storing the resolved
-// viewport plus the viewportRef key it was resolved for. camera.viewportRef
-// is a PROPERTY_ALLOWLIST-exposed, genuinely writable field (camera/data.ts)
-// even though nothing in-repo ever reassigns it today, so this isn't a
-// resolve-once-forever cache like ATLAS_MANAGER_CACHE above -- each call
-// compares the cached key against the camera's *current* viewportRef and
-// only re-resolves on mismatch. A miss (no matching viewport) is never
-// cached, matching ATLAS_MANAGER_CACHE's behavior, so a camera whose
-// viewport hasn't been added to the scene yet keeps retrying instead of
-// latching onto a stale null.
-const VIEWPORT_CACHE = new Map<
-  number,
-  { viewportRef: string; viewport: ViewportT }
->();
-
-export function clearViewportCache(cameraId: number): void {
-  VIEWPORT_CACHE.delete(cameraId);
-}
-
-/**
- * Resolves camera.viewportRef to a ViewportT, cached per camera id with a
- * re-resolve-on-mismatch guard. Shared by every call site that needs a
- * camera's viewport: render's per-frame hot path, plus init/set/dispose's
- * once-per-lifecycle or user-triggered lookups.
- *
- * @param camera - The camera whose viewport to resolve
- * @param sceneRoot - The nexus to search from (caller-computed, since the
- *   exact parent-chain walk differs slightly by call site)
- */
-export function resolveViewportCached(
-  camera: CameraT,
-  sceneRoot: NexusT,
-): ViewportT | null {
-  const cached = VIEWPORT_CACHE.get(camera.id!);
-  if (cached && cached.viewportRef === camera.viewportRef) {
-    return cached.viewport;
-  }
-  const viewport = sceneRoot.getComponentByName(
-    camera.viewportRef,
-    true,
-  ) as ViewportT | null;
-  if (viewport) {
-    VIEWPORT_CACHE.set(camera.id!, {
-      viewportRef: camera.viewportRef,
-      viewport,
-    });
-  } else {
-    VIEWPORT_CACHE.delete(camera.id!);
-  }
-  return viewport;
-}
-
 /**
  * Renders the scene from the camera's perspective.
  * This is called by the main render loop.
@@ -136,7 +69,16 @@ export function render(camera: CameraT, _deltaTime: number): void {
   // Get viewport to render to (search from scene root, not parent)
   // Viewport is typically a sibling of the camera's parent nexus
   const sceneRoot = castTo<NexusT>(parentNexus.parent!);
-  const viewport = resolveViewportCached(camera, sceneRoot);
+  // Registry-backed (see component-lookup-registry.ts): viewport is in the
+  // type registry's default opt-in list, and getComponentByTypeAndName
+  // consults it directly against camera.viewportRef's *current* value on
+  // every call -- always correct even if viewportRef is reassigned, no
+  // re-resolve-on-mismatch guard needed (there's no cached key to go stale).
+  const viewport = sceneRoot.getComponentByTypeAndName(
+    'viewport',
+    camera.viewportRef,
+    true,
+  ) as ViewportT | null;
 
   if (!viewport || !viewport.gl) {
     console.warn(
@@ -235,22 +177,16 @@ export function render(camera: CameraT, _deltaTime: number): void {
   // per frame; uploads only when the version actually changed. Also covers a
   // camera that initialized before the atlas had compiled.
   //
-  // Resolved once per camera and reused (see ATLAS_MANAGER_CACHE above) --
-  // re-resolved only if the cached reference was disposed, or if nothing's
-  // cached yet (e.g. no atlas-manager exists yet during early scene setup).
-  let atlasManager: AtlasManagerT | null =
-    ATLAS_MANAGER_CACHE.get(camera.id!) ?? null;
-  if (!atlasManager || atlasManager._disposed) {
-    atlasManager = sceneRoot.getComponentByType(
-      'atlas-manager',
-      true,
-    ) as AtlasManagerT | null;
-    if (atlasManager) {
-      ATLAS_MANAGER_CACHE.set(camera.id!, atlasManager);
-    } else {
-      ATLAS_MANAGER_CACHE.delete(camera.id!);
-    }
-  }
+  // Registry-backed (see component-lookup-registry.ts) -- atlas-manager is
+  // ComponentUnique.GLOBAL, auto-opted into the type registry, so this is a
+  // fast lookup with no per-camera caching needed: there's exactly one
+  // atlas-manager to find, scene-wide, and disposeComponent() already keeps
+  // the registry itself correct on disposal, so a stale reference is never
+  // handed back here.
+  const atlasManager = sceneRoot.getComponentByType(
+    'atlas-manager',
+    true,
+  ) as AtlasManagerT | null;
   if (
     atlasManager &&
     atlasManager.compiled &&

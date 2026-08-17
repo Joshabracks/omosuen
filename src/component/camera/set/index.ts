@@ -1,9 +1,9 @@
 import { NexusT } from '../../nexus';
 import { TransformT } from '../../transform';
 import { castTo } from '../../types';
+import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { FBO_OVERSCAN_PX } from '../render/light-uniforms';
-import { resolveViewportCached } from '../render/index';
 
 /**
  * Sets the camera zoom level and updates framebuffer resolution.
@@ -24,7 +24,11 @@ export function setZoom(camera: CameraT, zoom: number): void {
     const parentNexus = castTo<NexusT>(camera.parent!);
     const sceneRoot = castTo<NexusT>(parentNexus.parent!);
 
-    const viewport = resolveViewportCached(camera, sceneRoot);
+    const viewport = sceneRoot.getComponentByTypeAndName(
+      'viewport',
+      camera.viewportRef,
+      true,
+    ) as ViewportT | null;
 
     const transform = parentNexus.getComponentByType(
       'transform',
@@ -202,7 +206,11 @@ function updateFramebufferForZoom(camera: CameraT): void {
   const parentNexus = castTo<NexusT>(camera.parent!);
   const sceneRoot = castTo<NexusT>(parentNexus.parent!);
 
-  const viewport = resolveViewportCached(camera, sceneRoot);
+  const viewport = sceneRoot.getComponentByTypeAndName(
+    'viewport',
+    camera.viewportRef,
+    true,
+  ) as ViewportT | null;
 
   if (!viewport || !viewport.gl) {
     return;

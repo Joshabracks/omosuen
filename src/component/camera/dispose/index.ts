@@ -1,12 +1,8 @@
 import { NexusT } from '../../nexus';
 import { ComponentData, castTo } from '../../types';
+import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
-import {
-  clearTextureMapCache,
-  clearAtlasManagerCache,
-  clearViewportCache,
-  resolveViewportCached,
-} from '../render/index';
+import { clearTextureMapCache } from '../render/index';
 import { clearLightUniformCache } from '../render/light-uniforms';
 import { clearRenderablesCache } from '../collect-renderables/index';
 
@@ -26,7 +22,11 @@ export function dispose(component: ComponentData): void {
     const parentNexus = castTo<NexusT>(camera.parent!);
     if (parentNexus.parent) {
       const sceneRoot = castTo<NexusT>(parentNexus.parent!);
-      const viewport = resolveViewportCached(camera, sceneRoot);
+      const viewport = sceneRoot.getComponentByTypeAndName(
+        'viewport',
+        camera.viewportRef,
+        true,
+      ) as ViewportT | null;
       gl = viewport?.gl ?? null;
     }
   }
@@ -61,8 +61,6 @@ export function dispose(component: ComponentData): void {
   // Clear module-level caches for this camera
   clearLightUniformCache(camera.id!);
   clearTextureMapCache(camera.id!);
-  clearAtlasManagerCache(camera.id!);
-  clearViewportCache(camera.id!);
   clearRenderablesCache(camera.id!);
 
   camera._disposed = true;

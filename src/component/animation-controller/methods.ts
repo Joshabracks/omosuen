@@ -404,11 +404,23 @@ export const AnimationController: AnimationControllerMethods = {
     layer.visible = visible;
 
     // Sync all layers' visibility onto their sprites (so a slot-hide applies),
-    // using the resolved-sprite cache (parallel to `layers`).
+    // using the resolved-sprite cache (parallel to `layers`). A layer that's
+    // just become visible gets its sprite stamped with the controller's
+    // current frame immediately -- while hidden, updateSpriteFrames (above)
+    // skips writing to it, so its frame index can be stale by however many
+    // frames elapsed since it was hidden; waiting for the next natural
+    // updateSpriteFrames call would show that stale frame for up to one tick.
+    const currentFrameNumber = currentFrameNumberFor(controller);
     const layerSprites = layerSpritesFor(controller);
     for (let i = 0; i < controller.layers.length; i++) {
       const sprite = layerSprites[i];
-      if (sprite) sprite.visible = controller.layers[i].visible;
+      if (!sprite) continue;
+      const wasVisible = sprite.visible !== false;
+      const nowVisible = controller.layers[i].visible;
+      sprite.visible = nowVisible;
+      if (!wasVisible && nowVisible && currentFrameNumber !== undefined) {
+        sprite.setFrame(currentFrameNumber, controller.channels);
+      }
     }
   },
 
@@ -538,6 +550,18 @@ function layerSpritesFor(controller: AnimationControllerT): (SpriteT | null)[] {
 }
 
 /**
+ * The frame number the controller is currently showing, or `undefined` if
+ * there's no current animation (or it's since been removed).
+ */
+function currentFrameNumberFor(
+  controller: AnimationControllerT,
+): number | undefined {
+  if (!controller.currentAnimation) return undefined;
+  const animation = controller.animations.get(controller.currentAnimation);
+  return animation?.frames[controller.currentFrameIndex];
+}
+
+/**
  * Sets the given frame on EVERY layer sprite driven by this controller, in
  * lockstep, using the resolved-sprite cache (no per-tick nexus walk or name
  * search). All layers share one frame timeline, so a single frame index applies
@@ -549,7 +573,11 @@ function updateSpriteFrames(
 ): void {
   const sprites = layerSpritesFor(controller);
   for (const sprite of sprites) {
-    if (sprite && !sprite._disposed) {
+    // `=== false` (not a truthy check) so a legacy sprite lacking the field
+    // still gets written, matching the fail-open idiom used elsewhere for
+    // this field (e.g. render-sprites.ts's own `sprite.visible === false`
+    // skip).
+    if (sprite && !sprite._disposed && sprite.visible !== false) {
       sprite.setFrame(frameNumber, controller.channels);
     }
   }

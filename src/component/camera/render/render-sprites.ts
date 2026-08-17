@@ -301,7 +301,8 @@ export function renderSprites(
   const u_cameraPosition = gl.getUniformLocation(program, 'u_cameraPosition');
   const u_zoom = gl.getUniformLocation(program, 'u_zoom');
   const u_cellSize = gl.getUniformLocation(program, 'u_cellSize');
-  const u_mapSize = gl.getUniformLocation(program, 'u_mapSize');
+  const u_windowSize = gl.getUniformLocation(program, 'u_windowSize');
+  const u_worldOffset = gl.getUniformLocation(program, 'u_worldOffset');
   const u_spritePosition = gl.getUniformLocation(program, 'u_spritePosition');
   const u_spriteSize = gl.getUniformLocation(program, 'u_spriteSize');
   const u_anchor = gl.getUniformLocation(program, 'u_anchor');
@@ -381,7 +382,10 @@ export function renderSprites(
     unifiedCellSizeY,
     unifiedCellSizeZ,
   );
-  gl.uniform3f(u_mapSize, maxMapWidth, maxMapHeight, maxMapDepth);
+  gl.uniform3f(u_windowSize, maxMapWidth, maxMapHeight, maxMapDepth);
+  // Sprites have no shiftable cell-window origin, so this stays (0,0,0) --
+  // see the depth-bias comment in unified.vert.
+  gl.uniform3f(u_worldOffset, 0, 0, 0);
 
   // Set dynamic light uniforms (same lights as cell-maps)
   setLightUniforms(gl, camera.id!, lights);

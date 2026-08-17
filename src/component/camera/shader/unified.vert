@@ -19,9 +19,14 @@ uniform vec3 u_cellSize;   // Used by both for grid calculations
     // Size of the currently-resident cell-map window, and the window's
     // world-space origin offset (window origin * chunkSize * cellSize) --
     // see .design/cell-map-overhaul/10-vertex-world-offset-and-depth-bias.md.
-    // Both are (0,0,0)-origin/whole-map today until a shiftable window
-    // actually moves; u_windowSize replaces the old u_mapSize for this
-    // shader's depth-bias math (cells only -- sprites don't use either).
+    // Used by the shared depth-bias block below for BOTH render modes: cells
+    // set these from the cell-map's actual window each frame (render-cell-maps.ts),
+    // while sprites set u_windowSize from the scene's max map bounds (falling
+    // back to a default when there are no cell-maps) and u_worldOffset to
+    // (0,0,0), since sprites have no shiftable window of their own
+    // (render-sprites.ts). Leaving either unset zero-initializes it, which
+    // sends maxRawDepth to 0 and every vertex's clip-space depth to
+    // +/-Infinity -- silently clipping all geometry in that render mode.
 uniform vec3 u_windowSize;
 uniform vec3 u_worldOffset;
 

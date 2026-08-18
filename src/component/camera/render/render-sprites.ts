@@ -23,6 +23,17 @@ const DEFAULT_CELL_SIZE_Z = 32;
 /** Default map dimension when no cell-maps provide actual dimensions. */
 const DEFAULT_MAP_DIMENSION = 20;
 
+/**
+ * World-unit padding applied to the camera-relative off-screen reject below,
+ * so a sprite whose transform anchor sits just outside the viewport but
+ * still has visible pixels on-screen isn't dropped. Separate from
+ * transform/on-screen.ts's EDGE_PAD_PX (screen pixels, different consumer) --
+ * a tunable starting default, not derived from real asset data, same status
+ * as that constant. See
+ * .design/spike_scene-graph-traversal/04-presentation-layer-visibility-skip/03-render-collection-visibility-split.md.
+ */
+const EDGE_PAD_WORLD = 64;
+
 // Reused scratch buffers for the per-frame back-to-front depth sort. Parallel arrays
 // (not an array of objects) grown only to the high-water sprite count, so steady-state
 // rendering allocates nothing — no GC churn.
@@ -516,6 +527,23 @@ export function renderSprites(
     const p = t.worldPosition;
     const pRx = p.x * cosYaw + p.z * sinYaw;
     const pRz = -p.x * sinYaw + p.z * cosYaw;
+
+    // Camera-relative off-screen reject. Reuses this frame's already-computed
+    // camIsoX/camIsoY (this camera's own iso-projected position, set above)
+    // instead of routing through transform/on-screen.ts's resolveProjection/
+    // worldToScreen, which would redundantly re-derive the same numbers
+    // inside the hottest per-sprite loop in the renderer. Deliberately not
+    // done in collect-renderables (see that module's comment) -- camera
+    // position isn't tracked by the version-counter cache collection relies
+    // on, so this filter must be re-evaluated fresh every draw, every frame.
+    const isoX = ISO_H * (pRx - pRz);
+    const isoY = sinA * (pRx + pRz) - heightScale * p.y;
+    const halfW = viewport.width / (2 * camera.zoom) + EDGE_PAD_WORLD;
+    const halfH = viewport.height / (2 * camera.zoom) + EDGE_PAD_WORLD;
+    if (Math.abs(isoX - camIsoX) > halfW || Math.abs(isoY - camIsoY) > halfH) {
+      continue;
+    }
+
     _drawSprites[drawCount] = sprite;
     _drawTransforms[drawCount] = t;
     _drawDepths[drawCount] = pRx + heightScale * p.y + pRz;

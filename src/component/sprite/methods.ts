@@ -144,7 +144,17 @@ export const Sprite: SpriteMethods = {
    * @param visible - true to render, false to skip
    */
   setVisible(sprite: SpriteT, visible: boolean) {
+    // Guarded on an actual change so a no-op call doesn't force every camera
+    // to re-walk its sprite collection (see
+    // 04-presentation-layer-visibility-skip/03-render-collection-visibility-split.md).
+    // MethodRegistry dispatch always passes the raw component, not the Proxy,
+    // so this write can't be caught by the Proxy `set` trap (types.ts) --
+    // that trap only covers external code writing `sprite.visible = x`
+    // directly; this explicit bump is what actually covers the documented
+    // setVisible() API.
+    if (sprite.visible === visible) return;
     sprite.visible = visible;
+    bumpRenderableVersion('sprite');
   },
 
   /**

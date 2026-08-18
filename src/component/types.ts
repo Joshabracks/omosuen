@@ -1,6 +1,7 @@
 import { BUILDERS, MethodRegistry, PROPERTY_ALLOWLIST } from './registry';
 import { queueInit, attachReady } from '../loop/init';
 import { Nexus, NexusT } from './nexus';
+import { bumpRenderableVersion } from './renderable-version';
 
 /**
  * Registry mapping raw component objects to their Proxy wrappers.
@@ -388,6 +389,23 @@ export function wrapInProxy(component: ComponentData): ComponentData {
         }
         // Overwriting one non-empty override with another doesn't change
         // presence, so no re-evaluation is needed.
+        return true;
+      }
+      // `sprite.visible` writes (Sprite.setVisible(), and AnimationController's
+      // direct sprite.visible = ... writes in init()/setLayerVisible()) all
+      // flow through here -- one choke point instead of patching three call
+      // sites. Bumping the version lets collect-renderables safely filter by
+      // `visible` at collection time (see
+      // 04-presentation-layer-visibility-skip/03-render-collection-visibility-split.md).
+      // Guarded on an actual change so a no-op write (e.g. setVisible(true) on
+      // an already-visible sprite) doesn't force every camera to re-walk.
+      if (prop === 'visible' && c.type === 'sprite') {
+        const changed =
+          (c as unknown as { visible?: boolean }).visible !== value;
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-expect-error
+        c[prop] = value;
+        if (changed) bumpRenderableVersion('sprite');
         return true;
       }
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment

@@ -53,12 +53,22 @@ export function collectRenderables(camera: CameraT): {
   const cached = RENDERABLES_CACHE.get(camera.id!);
 
   // Recursively collect all sprites from the scene root, unless nothing of
-  // type sprite has changed since this camera last collected them.
+  // type sprite has changed since this camera last collected them. Hidden
+  // sprites (visible === false) are filtered out here -- safe to cache,
+  // since the Proxy `set` trap (types.ts) bumps `spriteVersion` on every
+  // write that can change the answer (Sprite.setVisible(), and
+  // AnimationController's direct visible writes). Camera-relative off-screen
+  // filtering is deliberately NOT done here -- see
+  // 04-presentation-layer-visibility-skip/03-render-collection-visibility-split.md
+  // for why that's a draw-time-only concern (render-sprites.ts), not safe to
+  // fold into this add/remove/visible-toggle-keyed cache.
   const sprites =
     cached && cached.spriteVersion === spriteVersion
       ? cached.sprites
       : segmentedRenderOrderSort(
-          sceneRoot.getComponentsByType('sprite', true) as SpriteT[],
+          (sceneRoot.getComponentsByType('sprite', true) as SpriteT[]).filter(
+            (s) => s.visible !== false,
+          ),
         );
 
   // Recursively collect all cell maps from the scene root, unless nothing of

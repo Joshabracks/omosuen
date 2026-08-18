@@ -106,7 +106,14 @@ export const AnimationController: AnimationControllerMethods = {
     }
 
     // Resolve + cache each layer's sprite once, then apply visibility from it
-    // (cache parallels `layers`).
+    // (cache parallels `layers`). No explicit bumpRenderableVersion call
+    // needed here -- unlike Sprite.setVisible() (which MethodRegistry
+    // dispatches with the RAW component, bypassing the Proxy `set` trap),
+    // `layerSprites[i]` here is the genuine Proxy-wrapped sprite (from
+    // getComponentsByType, reading straight out of the array `addComponent`
+    // pushes proxies into), so this direct `sprite.visible = ...` write
+    // already goes through the trap in types.ts on its own. See
+    // 04-presentation-layer-visibility-skip/03-render-collection-visibility-split.md.
     const layerSprites = resolveLayerSprites(ac);
     for (let i = 0; i < ac.layers.length; i++) {
       const sprite = layerSprites[i];
@@ -446,6 +453,9 @@ export const AnimationController: AnimationControllerMethods = {
     // skips writing to it, so its frame index can be stale by however many
     // frames elapsed since it was hidden; waiting for the next natural
     // updateSpriteFrames call would show that stale frame for up to one tick.
+    // No explicit bumpRenderableVersion call needed for the visibility write
+    // itself -- see init()'s comment above; `sprite` here is the same kind of
+    // genuine Proxy reference, already covered by the `set` trap.
     const currentFrameNumber = currentFrameNumberFor(controller);
     const layerSprites = layerSpritesFor(controller);
     for (let i = 0; i < controller.layers.length; i++) {

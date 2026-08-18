@@ -14,6 +14,7 @@ import { renderScene } from './render';
 import { pollMessages } from './messaging';
 import { pollFlags } from './flags';
 import { updateWorldTransforms } from '../component/transform/world';
+import { updateOnScreenFlags } from '../component/transform/on-screen';
 import { beginFrame, endFrame, isProfilingEnabled, recordPhase } from './profile';
 
 /**
@@ -117,6 +118,12 @@ async function gameLoop(currentTime: number): Promise<void> {
   t0 = profiling ? performance.now() : 0;
   updateWorldTransforms(activeScene);
   if (profiling) recordPhase('transforms', performance.now() - t0);
+
+  // 3.6 Refresh the on-screen signal (needs every worldPosition, including
+  // every camera's own, already fresh -- must run after 3.5).
+  t0 = profiling ? performance.now() : 0;
+  updateOnScreenFlags(activeScene);
+  if (profiling) recordPhase('onscreen', performance.now() - t0);
 
   // 4. Render (stub)
   t0 = profiling ? performance.now() : 0;

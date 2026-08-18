@@ -29,6 +29,7 @@ const PHASE_ORDER: LoopPhase[] = [
   'update',
   'dispose',
   'transforms',
+  'onscreen',
   'render',
   'messages',
 ];

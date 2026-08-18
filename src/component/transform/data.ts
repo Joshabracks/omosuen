@@ -53,6 +53,16 @@ export interface TransformT
   worldPosition: Vector3D;
   worldRotation: Vector3D;
   worldScale: Vector3D;
+
+  /**
+   * Whether this transform's world position is visible to at least one camera
+   * this frame. Derived — not serialized. Refreshed once per frame by
+   * `updateOnScreenFlags` (loop), right after `updateWorldTransforms`. Defaults
+   * `true` (fail-open) until that pass has run at least once for this
+   * transform, so nothing is wrongly treated as off-screen before the first
+   * on-screen pass completes.
+   */
+  onScreen: boolean;
 }
 
 export interface TransformOptions extends ComponentOptions {
@@ -80,6 +90,9 @@ export function builder(options: TransformOptions): TransformT {
     worldPosition: new Vector3D(0, 0, 0),
     worldRotation: new Vector3D(0, 0, 0),
     worldScale: new Vector3D(1, 1, 1),
+
+    // Fail-open until updateOnScreenFlags runs at least once for this transform.
+    onScreen: true,
   };
   transform.worldPosition.x = transform.position.x;
   transform.worldPosition.y = transform.position.y;
@@ -233,4 +246,5 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'worldPosition',
   'worldRotation',
   'worldScale',
+  'onScreen',
 ];

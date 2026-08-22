@@ -158,7 +158,6 @@ export async function importAseprite(
         filePath: `aseprite://${config.packageId}/${build.name}`,
         sourceImage: build.canvas,
         imageType: frameRects,
-        atlasManager: config.atlasManager,
       },
       parent,
     );
@@ -311,7 +310,6 @@ export async function importAsepriteSources(
             filePath: `aseprite://${entry.id}/${buildName}`,
             sourceImage: canvas,
             imageType: frameRects,
-            atlasManager: config.atlasManager,
           },
           config.sharedParent,
         );

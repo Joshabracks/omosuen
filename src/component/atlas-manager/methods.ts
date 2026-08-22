@@ -8,7 +8,6 @@ import { Vector2D } from '../../math';
 import type { PackedFrame } from '../texture-map/types';
 import { Nexus } from '../nexus/methods';
 import { TextureMap } from '../texture-map';
-import { invalidateAllTextureMapCaches } from '../camera/render/index';
 
 export interface AtlasManagerMethods extends ComponentMethods {
   type: 'atlas-manager';
@@ -57,6 +56,17 @@ export interface AtlasManagerMethods extends ComponentMethods {
     textureMap: TextureMapT,
     oldKey: string,
   ) => void;
+
+  /**
+   * Removes a texture-map from the registry (`textureMapsByKey`/`textureMapIds`),
+   * only if it still points at this exact component (mirrors `rekeyTextureMap`'s
+   * same-instance guard). Called from `TextureMap.dispose()` — the sole place a
+   * texture-map ever leaves the registry; compile-time resync only ever adds.
+   *
+   * @param am - AtlasManager component
+   * @param textureMap - TextureMap component being removed
+   */
+  removeTextureMap: (am: AtlasManagerT, textureMap: TextureMapT) => void;
 
   /**
    * Returns the canonical texture-map registered under `key`, or null.
@@ -223,29 +233,29 @@ function getRootNexus(component: ComponentData): NexusT | null {
 }
 
 /**
- * Helper function to get TextureMap components by IDs.
+ * Reconciles `textureMapsByKey`/`textureMapIds` against every `texture-map`
+ * component genuinely live in the scene right now, via the existing
+ * `addTextureMap` (dedup/conflict-detection already built in). Called
+ * unconditionally at the top of every compile (`compileSteps`/
+ * `incrementalSteps`) rather than as a one-shot bootstrap step — `texture-map`
+ * is registry-backed (see 04a-component-lookup-registries.md), so this is
+ * cheap regardless of how many times it runs. This is what makes the registry
+ * complete for every construction path (an explicit `atlasManager` option, a
+ * bare `newComponent` call, or scene deserialization) with no dependency on
+ * component-init timing. Only ever adds — removal happens exclusively via
+ * `removeTextureMap`, called from `TextureMap.dispose()`.
  */
-function getTextureMaps(
-  rootNexus: NexusT,
-  textureMapIds: Set<string>,
-): TextureMapT[] {
-  const textureMaps: TextureMapT[] = [];
-
-  // Get all texture-map components recursively
+function syncTextureMapRegistry(am: AtlasManagerT): void {
+  const rootNexus = getRootNexus(am);
+  if (!rootNexus) return;
   const allTextureMaps = Nexus.getComponentsByType(
     rootNexus,
     'texture-map',
     true,
   ) as TextureMapT[];
-
-  // Filter by textureMapKeys in the set
   for (const tm of allTextureMaps) {
-    if (textureMapIds.has(tm.textureMapKey)) {
-      textureMaps.push(tm);
-    }
+    AtlasManager.addTextureMap(am, tm);
   }
-
-  return textureMaps;
 }
 
 /**
@@ -395,19 +405,23 @@ function* blitFramesYielding(
 }
 
 async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
-  if (am.textureMapIds.size === 0) {
-    console.warn('[atlas-manager] No texture maps to process');
-    return;
-  }
-
-  const rootNexus = getRootNexus(am);
-  if (!rootNexus) {
+  if (!getRootNexus(am)) {
     throw new Error(
       '[atlas-manager] Cannot process texture maps: not attached to a scene',
     );
   }
 
-  const textureMaps = getTextureMaps(rootNexus, am.textureMapIds);
+  // Unconditional resync (see syncTextureMapRegistry's own doc comment) —
+  // replaces the old one-shot, gated auto-discovery that used to live in
+  // initProgressive.
+  syncTextureMapRegistry(am);
+
+  if (am.textureMapIds.size === 0) {
+    console.warn('[atlas-manager] No texture maps to process');
+    return;
+  }
+
+  const textureMaps = Array.from(am.textureMapsByKey.values());
   if (textureMaps.length === 0) {
     console.warn('[atlas-manager] No texture maps found for pending IDs');
     am.textureMapIds.clear();
@@ -547,7 +561,6 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
   // below fullVersion full-upload; the dirty-region log starts fresh from here.
   am.fullVersion = am.atlasVersion;
   am.dirtyRegions = [];
-  invalidateAllTextureMapCaches();
 }
 
 // Cap on the retained dirty-region log; on overflow the log is cleared and
@@ -569,14 +582,16 @@ async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
     return;
   }
 
-  const rootNexus = getRootNexus(am);
-  if (!rootNexus) {
+  if (!getRootNexus(am)) {
     throw new Error(
       '[atlas-manager] Cannot process texture maps: not attached to a scene',
     );
   }
 
-  const textureMaps = getTextureMaps(rootNexus, am.textureMapIds);
+  // Unconditional resync — see syncTextureMapRegistry's own doc comment.
+  syncTextureMapRegistry(am);
+
+  const textureMaps = Array.from(am.textureMapsByKey.values());
   if (textureMaps.length === 0) {
     return;
   }
@@ -686,8 +701,6 @@ async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
     am.dirtyRegions = [];
     am.fullVersion = am.atlasVersion;
   }
-
-  invalidateAllTextureMapCaches();
 }
 
 export const AtlasManager: AtlasManagerMethods = {
@@ -698,21 +711,12 @@ export const AtlasManager: AtlasManagerMethods = {
   ): AsyncGenerator<void> {
     const am = component as AtlasManagerT;
 
-    // Auto-discover texture maps if none were explicitly registered (handles
-    // deserialized scenes where the builder didn't receive the atlasManager option).
-    if (am.textureMapIds.size === 0) {
-      const rootNexus = getRootNexus(am);
-      if (rootNexus) {
-        const allTextureMaps = Nexus.getComponentsByType(
-          rootNexus,
-          'texture-map',
-          true,
-        ) as TextureMapT[];
-        for (const tm of allTextureMaps) {
-          am.textureMapIds.add(tm.textureMapKey);
-        }
-      }
-    }
+    // Resync first (handles deserialized scenes, or any texture-map created
+    // before this atlas-manager's own init ran) so the size check below reads
+    // fresh, correct state — see syncTextureMapRegistry's own doc comment.
+    // compileSteps also resyncs on its own; this second call is cheap and just
+    // lets the gate below avoid warning when a scene genuinely has nothing yet.
+    syncTextureMapRegistry(am);
 
     // Compile (yields between batches → spread across frames by the scheduler).
     if (!am.compiled && am.textureMapIds.size > 0) {
@@ -755,6 +759,19 @@ export const AtlasManager: AtlasManagerMethods = {
     AtlasManager.addTextureMap(am, textureMap);
   },
 
+  removeTextureMap: (am: AtlasManagerT, textureMap: TextureMapT): void => {
+    // Compared by `id`, not `===`: `dispose()` is dispatched with the raw
+    // component (see MethodRegistry dispatch), while the registry stores
+    // whatever reference `addTextureMap` was given (a Proxy, when populated via
+    // `syncTextureMapRegistry`'s `getComponentsByType` walk) -- a reference
+    // check would silently never match and leave the entry dangling.
+    const existing = am.textureMapsByKey.get(textureMap.textureMapKey);
+    if (existing && existing.id === textureMap.id) {
+      am.textureMapsByKey.delete(textureMap.textureMapKey);
+    }
+    am.textureMapIds.delete(textureMap.textureMapKey);
+  },
+
   getTextureMap: (am: AtlasManagerT, key: string): TextureMapT | null => {
     return am.textureMapsByKey.get(key) ?? null;
   },
@@ -767,12 +784,11 @@ export const AtlasManager: AtlasManagerMethods = {
     const existing = am.textureMapsByKey.get(key);
     if (existing) return existing;
     const tm = await factory();
-    if (tm) {
-      // The factory-created map registers itself via addTextureMap only if it was
-      // built with the `atlasManager` option; register here too so the key is
-      // cached regardless of how the factory built it.
-      if (!am.textureMapsByKey.has(key)) am.textureMapsByKey.set(key, tm);
-    }
+    // Register immediately (not just at the next compile) so a second,
+    // synchronous getOrCreateTextureMap call for the same key before any
+    // compile runs still finds it and doesn't re-composite/re-construct.
+    // Reuses addTextureMap's existing conflict-detection.
+    if (tm) AtlasManager.addTextureMap(am, tm);
     return tm;
   },
 
@@ -828,9 +844,10 @@ export const AtlasManager: AtlasManagerMethods = {
 
     // Release mode: re-blit from cached source images + the texture maps'
     // stored packed layout onto fresh canvases, then snapshot to ImageData.
-    const rootNexus = getRootNexus(am);
-    if (!rootNexus) return;
-    const textureMaps = getTextureMaps(rootNexus, am.textureMapIds);
+    // No resync here -- this replays already-known, already-compiled texture
+    // maps (their packedFrames were set by a previous compile), it doesn't
+    // discover new ones.
+    const textureMaps = Array.from(am.textureMapsByKey.values());
     const contexts: CanvasRenderingContext2D[] = [];
     const getCtx = (index: number): CanvasRenderingContext2D | null => {
       let ctx = contexts[index];

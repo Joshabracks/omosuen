@@ -3,6 +3,9 @@ import type { TextureMapT } from './data';
 import { extractOriginalFrames } from './data';
 import type { OriginalFrame, PackedFrame } from './types';
 import type { Vector2D } from '../../math';
+import type { NexusT } from '../nexus/data';
+import type { AtlasManagerT } from '../atlas-manager/data';
+import { Nexus } from '../nexus/methods';
 
 export interface TextureMapMethods extends ComponentMethods {
   type: 'texture-map';
@@ -135,6 +138,23 @@ export const TextureMap: TextureMapMethods = {
 
   dispose: (component: ComponentData): void => {
     const tm = component as unknown as TextureMapT;
+
+    // Remove from whichever atlas-manager registered this texture map, so it
+    // stops being resolvable immediately rather than lingering until the next
+    // compile-time resync happens to notice it's gone.
+    if (tm.parent && tm.parent.type === 'nexus') {
+      let root: NexusT = tm.parent as NexusT;
+      while (root.parent && root.parent.type === 'nexus') {
+        root = root.parent as NexusT;
+      }
+      const atlasManager = Nexus.getComponentByType(
+        root,
+        'atlas-manager',
+        true,
+      ) as AtlasManagerT | null;
+      if (atlasManager) atlasManager.removeTextureMap(tm);
+    }
+
     tm.originalFrames = [];
     tm.packedFrames = [];
     tm.frameIndexMap.clear();

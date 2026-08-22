@@ -11,24 +11,7 @@ import { renderPostProcess } from './post-process';
 import { renderCellMaps, snapCameraPosition } from './render-cell-maps';
 import { uploadAtlasTextures, uploadAtlasDelta } from './atlas-textures';
 
-// TextureMap lookup cache — keyed by camera component ID
-const TEXTURE_MAP_CACHE = new Map<number, Map<string, TextureMapT>>();
-const TEXTURE_MAP_CACHE_DIRTY = new Map<number, boolean>();
-
-export function invalidateTextureMapCache(cameraId: number): void {
-  TEXTURE_MAP_CACHE_DIRTY.set(cameraId, true);
-}
-
-export function invalidateAllTextureMapCaches(): void {
-  for (const key of TEXTURE_MAP_CACHE_DIRTY.keys()) {
-    TEXTURE_MAP_CACHE_DIRTY.set(key, true);
-  }
-}
-
-export function clearTextureMapCache(cameraId: number): void {
-  TEXTURE_MAP_CACHE.delete(cameraId);
-  TEXTURE_MAP_CACHE_DIRTY.delete(cameraId);
-}
+const EMPTY_TEXTURE_MAP_CACHE: Map<string, TextureMapT> = new Map();
 
 /**
  * Renders the scene from the camera's perspective.
@@ -154,29 +137,6 @@ export function render(camera: CameraT, _deltaTime: number): void {
     return;
   }
 
-  // Use cached TextureMap lookup, rebuild only when dirty or missing
-  if (
-    !TEXTURE_MAP_CACHE.has(camera.id!) ||
-    TEXTURE_MAP_CACHE_DIRTY.get(camera.id!)
-  ) {
-    const allTextureMaps = sceneRoot.getComponentsByType(
-      'texture-map',
-      true,
-    ) as TextureMapT[];
-    const cache = new Map<string, TextureMapT>();
-    for (const tm of allTextureMaps) {
-      cache.set(tm.textureMapKey, tm);
-    }
-    TEXTURE_MAP_CACHE.set(camera.id!, cache);
-    TEXTURE_MAP_CACHE_DIRTY.set(camera.id!, false);
-  }
-  const textureMapCache = TEXTURE_MAP_CACHE.get(camera.id!)!;
-
-  // Re-upload atlas GL textures if the atlas was (re)compiled since our last
-  // upload (e.g. a runtime atlasManager.processTextureMaps()). One int compare
-  // per frame; uploads only when the version actually changed. Also covers a
-  // camera that initialized before the atlas had compiled.
-  //
   // Registry-backed (see component-lookup-registry.ts) -- atlas-manager is
   // ComponentUnique.GLOBAL, auto-opted into the type registry, so this is a
   // fast lookup with no per-camera caching needed: there's exactly one
@@ -187,6 +147,18 @@ export function render(camera: CameraT, _deltaTime: number): void {
     'atlas-manager',
     true,
   ) as AtlasManagerT | null;
+
+  // textureMapsByKey is atlas-manager's own always-complete registry (kept in
+  // sync unconditionally on every compile — see syncTextureMapRegistry in
+  // atlas-manager/methods.ts), so it's read directly here rather than
+  // maintained as a separate per-camera copy.
+  const textureMapCache =
+    atlasManager?.textureMapsByKey ?? EMPTY_TEXTURE_MAP_CACHE;
+
+  // Re-upload atlas GL textures if the atlas was (re)compiled since our last
+  // upload (e.g. a runtime atlasManager.processTextureMaps()). One int compare
+  // per frame; uploads only when the version actually changed. Also covers a
+  // camera that initialized before the atlas had compiled.
   if (
     atlasManager &&
     atlasManager.compiled &&

@@ -1,18 +1,20 @@
 /**
- * Aseprite Multi-Source Test Scene — one loader, many .aseprite files, ONE
+ * Aseprite Multi-Source Test Scene — one loader, many .aseprite files, sprites
+ * SHARED BY LAYER NAME across the whole set (horizontal ingestion), ONE
  * animation-controller.
  *
  * Demonstrates the `sources` option on the `aseprite-loader` plugin: a single
- * loader on ONE entity nexus ingests multiple .aseprite files. Each source's
- * sprites/layers/tags are namespaced by its `id` (`swordman:...`, `dryad:...`,
- * animations `swordman-walk`, `dryad-walk`), and they all share a single merged
- * animation-controller and a single atlas pass — replacing the old
- * one-child-nexus-per-file workaround.
+ * loader on ONE entity nexus ingests multiple .aseprite files, but produces only
+ * ONE sprite per unique layer name across the set (not one per source) —
+ * swordman + dryad both have `main`/`hands`/`outline` layers, so those three are
+ * shared sprites; each source's frames are packed into the same texture-map,
+ * side by side. Animation tags stay namespaced (`swordman-walk`, `dryad-walk`).
  *
- * Swapping a variant = show every layer whose name starts with `${id}:` and hide
- * the rest (NOT the engine `slot`, which stays reserved for per-source
- * `layerSlots`). The active source's animation is played in the SAME tick as the
- * reveal so no sprite ever renders a frame index from another source's timeline.
+ * Swapping a variant = (1) play `${id}-idle` (etc.) — this is what actually
+ * selects whose frames show; (2) show/hide the few layers that AREN'T common to
+ * every source (here: swordman's `slash`, dryad's `hands extra` + `Layer 1`) —
+ * most layers (main/hands/outline) never need toggling since every source has
+ * them. Both happen in the SAME tick.
  *
  * Assets: test/assets/aseprite/{MiniSwordMan,MiniDryadDeer}.aseprite
  */
@@ -21,16 +23,24 @@ const Omosuen = window.Omosuen;
 
 const ASE_BASE = './assets/aseprite/';
 
-const SOURCES = [
-  { id: 'swordman', file: 'MiniSwordMan.aseprite' },
-  { id: 'dryad', file: 'MiniDryadDeer.aseprite' },
-];
+const SOURCES = {
+  swordman: 'MiniSwordMan.aseprite',
+  dryad: 'MiniDryadDeer.aseprite',
+};
+
+// Which shared layers each source actually contributes to (known asset
+// structure — see the module doc comment). Layers not listed for a source have
+// no frame data for it and must be hidden while that source's animation plays.
+const SOURCE_LAYERS = {
+  swordman: ['main', 'hands', 'outline', 'slash'],
+  dryad: ['main', 'hands', 'outline', 'hands extra', 'Layer 1'],
+};
 
 // Tags we expose buttons for (only those present on the active source play).
 const TAG_BUTTONS = ['idle', 'walk', 'jump', 'attack', 'attack2', 'hit', 'death'];
 
 let entity = null; // the single entity nexus holding the multi-source loader
-let activeId = SOURCES[0].id;
+let activeId = Object.keys(SOURCES)[0];
 
 function status(text) {
   const el = document.getElementById('asm-status');
@@ -42,15 +52,15 @@ function controllerOf(nexus) {
 }
 
 // ── Source-group visibility ─────────────────────────────────────────────────
-// Show every layer whose name is prefixed `${id}:` (or exactly `${id}` for a
-// flattened source), hide all others. Then play the source's idle in the SAME
-// tick so freshly-revealed sprites don't hold a foreign source's frame index.
+// Hide any shared layer the active source doesn't contribute to (SOURCE_LAYERS),
+// leave the common ones (main/hands/outline) alone. Then play the source's idle
+// in the SAME tick so a freshly-revealed layer doesn't hold a stale frame.
 function applyActiveSource(id) {
   const ac = controllerOf(entity);
   if (!ac) return;
+  const owned = new Set(SOURCE_LAYERS[id] || []);
   for (const layer of ac.getLayers()) {
-    const belongs = layer.name === id || layer.name.startsWith(`${id}:`);
-    ac.setLayerVisible(layer.name, belongs);
+    ac.setLayerVisible(layer.name, owned.has(layer.name));
   }
   activeId = id;
   const idle = `${id}-idle`;
@@ -61,9 +71,9 @@ function applyActiveSource(id) {
 // ── UI ──────────────────────────────────────────────────────────────────────
 
 Omosuen.registerHtmlConstructor('asepriteMultiTest', () => {
-  const srcBtns = SOURCES.map(
-    (s) =>
-      `<button class="sidebar-button src-btn" data-id="${s.id}">Show ${s.id}</button>`,
+  const srcBtns = Object.keys(SOURCES).map(
+    (id) =>
+      `<button class="sidebar-button src-btn" data-id="${id}">Show ${id}</button>`,
   ).join('\n');
   const tagBtns = TAG_BUTTONS.map(
     (t) => `<button class="sidebar-button tag-btn" data-tag="${t}">${t}</button>`,
@@ -114,7 +124,7 @@ Omosuen.registerBinding('asmPlayTag', (event) => {
 
 export async function createScene() {
   entity = null;
-  activeId = SOURCES[0].id;
+  activeId = Object.keys(SOURCES)[0];
 
   const scene = await Omosuen.newComponent('nexus', {
     name: 'Aseprite Multi-Source Scene',
@@ -179,7 +189,9 @@ export async function createScene() {
 
   const loader = await Omosuen.newComponent('aseprite-loader', {
     name: 'unit',
-    sources: SOURCES.map((s) => ({ filePath: ASE_BASE + s.file, id: s.id })),
+    sources: Object.fromEntries(
+      Object.entries(SOURCES).map(([id, file]) => [id, ASE_BASE + file]),
+    ),
     flatten: false,
     visibleOnly: true,
     anchorMode: 'bottom-center',
@@ -193,14 +205,15 @@ export async function createScene() {
     const controllers = nexus.getComponentsByType('animation-controller');
     const ac = controllerOf(nexus);
     const animNames = ac ? [...ac.animations.keys()] : [];
+    const sprites = nexus.getComponentsByType('sprite');
     console.log(
       `[Aseprite Multi] controllers on unit nexus: ${controllers.length} (expect 1)`,
     );
     console.log(`[Aseprite Multi] merged animations: ${animNames.join(', ')}`);
     console.log(
-      `[Aseprite Multi] layers: ${ac ? ac.getLayers().length : 0}, atlases: ${atlasManager.getAtlasCount()}`,
+      `[Aseprite Multi] sprites: ${sprites.length} (shared by layer name, not per-source), layers: ${ac ? ac.getLayers().length : 0}, atlases: ${atlasManager.getAtlasCount()}`,
     );
-    applyActiveSource(SOURCES[0].id);
+    applyActiveSource(Object.keys(SOURCES)[0]);
   });
 
   status('Loading two sources into one controller…');

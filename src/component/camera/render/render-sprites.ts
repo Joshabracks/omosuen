@@ -29,8 +29,7 @@ const DEFAULT_MAP_DIMENSION = 20;
  * still has visible pixels on-screen isn't dropped. Separate from
  * transform/on-screen.ts's EDGE_PAD_PX (screen pixels, different consumer) --
  * a tunable starting default, not derived from real asset data, same status
- * as that constant. See
- * .design/spike_scene-graph-traversal/04-presentation-layer-visibility-skip/03-render-collection-visibility-split.md.
+ * as that constant.
  */
 const EDGE_PAD_WORLD = 64;
 

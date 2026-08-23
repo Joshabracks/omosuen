@@ -6,11 +6,12 @@
  * loop/manager) so every `worldPosition` — including every camera's own — is
  * already fresh. `onScreen` answers "is this world position visible to AT
  * LEAST ONE camera this frame" (an OR across cameras), not "is this visible
- * to a specific camera" — see
- * .design/spike_scene-graph-traversal/04-presentation-layer-visibility-skip/01-onscreen-signal-foundation.md
- * for why a second pass is needed (rather than folding this into
- * `updateWorldTransforms` itself) and why this is deliberately not reused by
- * the render path, which needs exact per-camera precision instead.
+ * to a specific camera" -- a second pass is needed (rather than folding this
+ * into `updateWorldTransforms` itself) because testing a subtree against a
+ * camera requires that camera's own `worldPosition` already resolved too, and
+ * `updateWorldTransforms`'s single top-down walk gives no ordering guarantee
+ * between camera and entity nexuses. This is deliberately not reused by the
+ * render path, which needs exact per-camera precision instead.
  *
  * Reuses the axonometric projection math already built for click/hover
  * picking (camera/screen-pick) rather than inventing new geometry.

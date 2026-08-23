@@ -159,10 +159,8 @@ export const AnimationController: AnimationControllerMethods = {
     // Timing/state-machine logic below always runs, regardless of visibility
     // -- only the sprite-array write is gated on it. Resolved once per call
     // (cheap, cached after the first) rather than per frame-boundary crossing
-    // in the loop below. See
-    // .design/spike_scene-graph-traversal/04-presentation-layer-visibility-skip/02-animation-controller-onscreen-consumption.md
-    // for why: freezing frameTime/currentFrameIndex/onComplete timing would
-    // save nothing (the O(1) state math was never the cost problem) while
+    // in the loop below: freezing frameTime/currentFrameIndex/onComplete timing
+    // would save nothing (the O(1) state math was never the cost problem) while
     // making animation state depend on visibility for every consumer.
     const transform = resolveControllerTransform(ac);
     const shouldWriteSprites = !transform || transform.onScreen !== false;

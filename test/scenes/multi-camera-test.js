@@ -2,8 +2,8 @@
  * Multi-Camera Test Scene
  *
  * Exercises the on-screen signal (`transform.onScreen`, see
- * .design/spike_scene-graph-traversal/04-presentation-layer-visibility-skip/01-onscreen-signal-foundation.md)
- * under a real multi-camera scene — the one case no other test fixture covers,
+ * `src/component/transform/on-screen.ts`) under a real multi-camera scene —
+ * the one case no other test fixture covers,
  * since every other scene has exactly one camera. Two cameras, each with its
  * own viewport, look at two far-apart world regions ("Camera A" / "Camera B").
  * Two entities sit at those two regions ("Entity A" near camera A, "Entity B"

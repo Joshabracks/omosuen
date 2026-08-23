@@ -1,11 +1,10 @@
 /**
  * General-purpose component lookup registries -- by type, and by name -- so
  * low-volume/unique component lookups (atlas-manager, viewport, camera, ...)
- * can be answered in close to O(1) instead of a full scene tree walk. See
- * .design/spike_scene-graph-traversal/03-allocation-overhead-fixes-for-mandatory-walks/04a-component-lookup-registries.md.
+ * can be answered in close to O(1) instead of a full scene tree walk.
  *
- * `04`'s `renderable-version.ts` (sprite/cell-map/light) is a deliberately
- * different mechanism for a different volume regime -- this registry is for
+ * `renderable-version.ts` (sprite/cell-map/light) is a deliberately different
+ * mechanism for a different volume regime -- this registry is for
  * low-volume/unique types only, not superseding that one.
  */
 import type { ComponentData, COMPONENT_TYPE } from './types';

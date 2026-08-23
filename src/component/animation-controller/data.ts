@@ -87,18 +87,16 @@ export interface AnimationControllerT
 
   /**
    * Transient cache of the sibling transform consulted for the on-screen
-   * write-gate (see
-   * .design/spike_scene-graph-traversal/04-presentation-layer-visibility-skip/02-animation-controller-onscreen-consumption.md).
-   * `undefined` = not yet resolved; `null` = resolved, no sibling transform
-   * found. Resolved once and never invalidated post-construction (reparenting
-   * isn't a real, exercised operation in this engine). Never serialized.
+   * write-gate. `undefined` = not yet resolved; `null` = resolved, no sibling
+   * transform found. Resolved once and never invalidated post-construction
+   * (reparenting isn't a real, exercised operation in this engine). Never
+   * serialized.
    */
   _transformRef?: TransformT | null;
 
   /**
    * True while a sprite-frame write has been skipped by the on-screen gate
-   * (see `02-animation-controller-onscreen-consumption.md`) since the last
-   * successful write -- i.e. the sprites' displayed frame may be stale
+   * since the last successful write -- i.e. the sprites' displayed frame may be stale
    * relative to `currentFrameIndex`. Consulted on the next `update()` call
    * where the gate opens again, to write the current frame immediately
    * rather than waiting for the next natural frame-boundary crossing (which

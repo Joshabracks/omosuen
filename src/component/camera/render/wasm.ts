@@ -70,7 +70,7 @@ export interface ChunkMeshResult {
   vertices: Float32Array | null;
   indices: Uint32Array | null;
   ranges: MeshDrawRange[];
-  /** Floats per vertex: 10 (pos3+normal3+origPos3+emission1) or 12 (+uv2 when UV shapes present). */
+  /** Floats per vertex: 13 (pos3+normal3+origPos3+emission1+trueFaceDir3) or 15 (+uv2 when UV shapes present). */
   stride: number;
 }
 

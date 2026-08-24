@@ -135,6 +135,7 @@ in vec2 v_screenPos;
 in vec3 v_worldNormal;
 in vec3 v_origWorldPos;
 in float v_emission;
+flat in vec3 v_trueFaceDir;
 
 // Distance attenuation with hardness control
 float attenuate(float dist, float radius, float hardness) {
@@ -245,12 +246,27 @@ vec3 cellEmissionColorAt(vec3 cell) {
 
 // Map a face fragment to the solid cell that owns it. `a_origPosition` sits on
 // cell corners, so a naive floor(orig/cellSize) lands in the neighbor cell on
-// +X/+Y/+Z faces (and breaks the top row, where y+1 is out of map bounds).
+// +X/+Y/+Z faces. `normal` corrects along its single DOMINANT axis only (same
+// mutually-exclusive relative-magnitude selection as the mesh-UV/triplanar
+// frame picker above) rather than three independent `> 0.5` thresholds -- on
+// a smoothed mesh a face's lighting normal can tilt enough that independent
+// per-axis checks fire zero times or more than once, both landing on the
+// wrong cell. Callers pass v_trueFaceDir (an exact, always-axis-aligned
+// direction baked at mesh-build time, independent of any smoothing), not the
+// lighting normal, so this is provably correct for the common case; the
+// dominant-axis selection stays as defense for the one remaining case where
+// an exact face direction isn't available (a non-axis-aligned custom shape
+// under smoothing, which falls back to its own geometric normal).
 vec3 emissionCellFromFace(vec3 orig, vec3 normal) {
     vec3 cell = floor(orig / u_cellSize);
-    if(normal.x > 0.5) cell.x -= 1.0;
-    if(normal.y > 0.5) cell.y -= 1.0;
-    if(normal.z > 0.5) cell.z -= 1.0;
+    vec3 an = abs(normal);
+    if(an.x >= an.y && an.x >= an.z) {
+        if(normal.x > 0.0) cell.x -= 1.0;
+    } else if(an.y >= an.z) {
+        if(normal.y > 0.0) cell.y -= 1.0;
+    } else {
+        if(normal.z > 0.0) cell.z -= 1.0;
+    }
     return cell;
 }
 
@@ -620,7 +636,7 @@ void main() {
         // `albedo.rgb*lighting + albedo.rgb*v_emission`.
         vec3 emissionSample = u_hasEmissionTexture ? emissionTexColor : albedo.rgb;
         vec3 highlight = u_hasCellEmissionColor
-            ? cellEmissionColorAt(emissionCellFromFace(v_origWorldPos, v_worldNormal))
+            ? cellEmissionColorAt(emissionCellFromFace(v_origWorldPos, v_trueFaceDir))
             : vec3(0.0);
         vec3 cellColor = albedo.rgb * lighting
                        + emissionSample * v_emission

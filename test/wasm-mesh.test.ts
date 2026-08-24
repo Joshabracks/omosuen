@@ -59,17 +59,21 @@ import { buildRenderWasm } from '../build-tools/wasm.mjs';
 
 // Captured from the parity-proven WASM output. Keyed by case name.
 const GOLDENS: Record<string, number> = {
-  'g1-greedy': 4187842706,
-  'g2-greedy-1mat': 2270217368,
-  'g3-greedy-allsolid': 3524738704,
+  // Re-baselined for the new trueFaceDir3 vertex field (stride 10/12 -> 13/15,
+  // see .omosuen_requests/009-cell-highlight-cost.md's follow-up fix for
+  // setEmissionColor's per-face highlight bug) -- content-only shift, no
+  // change to position/topology, hashes just move with the added floats.
+  'g1-greedy': 1672683969,
+  'g2-greedy-1mat': 3713878264,
+  'g3-greedy-allsolid': 1173199007,
   'g4-greedy-allair': 520366341,
-  's1-smooth-flat': 752222795,
-  's2-smooth-fullnorm': 844660720,
+  's1-smooth-flat': 2594956124,
+  's2-smooth-fullnorm': 3864754023,
   // Updated for the min-weight seam rule: shared vertices take the lowest
   // (hardest) contributing cell weight instead of the average, so random-weight
   // cases shift. Uniform-weight cases (s1/s2) are unaffected.
-  's3-smooth-lerp-randw': 3190637875,
-  's4-smooth-multichunk': 758565337,
+  's3-smooth-lerp-randw': 287827551,
+  's4-smooth-multichunk': 2964681758,
 };
 
 function makeRng(seed: number): () => number {
@@ -233,9 +237,10 @@ function seamRuleCheck(): number {
 
   const eps = 1e-4;
   const v = r.vertices;
+  const stride = r.stride;
   let seamCount = 0;
   let movedFarCorner = false;
-  for (let i = 0; i < v.length; i += 9) {
+  for (let i = 0; i < v.length; i += stride) {
     const px = v[i],
       py = v[i + 1],
       pz = v[i + 2];
@@ -405,8 +410,8 @@ function customUvCheck(): number {
 
   let fails = 0;
   const withUv = buildWith(true);
-  if (withUv.stride !== 11) {
-    console.error(`  ✗ custom-uv: expected stride 11 with UVs, got ${withUv.stride}`);
+  if (withUv.stride !== 15) {
+    console.error(`  ✗ custom-uv: expected stride 15 with UVs, got ${withUv.stride}`);
     fails++;
   }
   if (!withUv.ranges.some((r) => r.useMeshUV)) {
@@ -414,8 +419,8 @@ function customUvCheck(): number {
     fails++;
   }
   const noUv = buildWith(false);
-  if (noUv.stride !== 9) {
-    console.error(`  ✗ custom-uv: expected stride 9 without UVs, got ${noUv.stride}`);
+  if (noUv.stride !== 13) {
+    console.error(`  ✗ custom-uv: expected stride 13 without UVs, got ${noUv.stride}`);
     fails++;
   }
   if (noUv.ranges.some((r) => r.useMeshUV)) {
@@ -424,7 +429,7 @@ function customUvCheck(): number {
   }
   clearCustomShapes();
   if (fails === 0) {
-    console.log('  ✓ custom-uv: UVs widen stride to 11 + flag the range; none → stride 9');
+    console.log('  ✓ custom-uv: UVs widen stride to 15 + flag the range; none → stride 13');
   }
   return fails;
 }
@@ -486,8 +491,8 @@ function customUvSmoothedCheck(): number {
   const r = buildChunkMeshSmoothedWasm(0, 0, 0);
 
   let fails = 0;
-  if (r.stride !== 11) {
-    console.error(`  ✗ custom-uv-smoothed: expected stride 11, got ${r.stride}`);
+  if (r.stride !== 15) {
+    console.error(`  ✗ custom-uv-smoothed: expected stride 15, got ${r.stride}`);
     fails++;
   }
   const uvRanges = r.ranges.filter((rr) => rr.useMeshUV);

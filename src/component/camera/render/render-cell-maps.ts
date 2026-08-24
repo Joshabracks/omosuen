@@ -449,6 +449,7 @@ export function renderCellMaps(
   const aUv = gl.getAttribLocation(program, 'a_uv');
   const aOrigPosition = gl.getAttribLocation(program, 'a_origPosition');
   const aEmission = gl.getAttribLocation(program, 'a_emission');
+  const aTrueFaceDir = gl.getAttribLocation(program, 'a_trueFaceDir');
 
   // Get uniform locations
   const uViewportSize = gl.getUniformLocation(program, 'u_viewportSize');
@@ -1056,10 +1057,11 @@ export function renderCellMaps(
               if (profiling) gpuUploadMs += performance.now() - uploadT0;
             }
 
-            // Interleaved layout: pos3+normal3+origPos3+emission1 (stride 10), or +uv2
-            // (stride 12 when the cell-map has UV custom shapes). emission is always
-            // present at float 9 (byte 36); uv, when present, follows at byte 40.
-            // Stride is per-chunk from WASM.
+            // Interleaved layout: pos3+normal3+origPos3+emission1+trueFaceDir3
+            // (stride 13), or +uv2 (stride 15 when the cell-map has UV custom
+            // shapes). emission is always present at float 9 (byte 36);
+            // trueFaceDir always follows at byte 40; uv, when present, follows
+            // that at byte 52. Stride is per-chunk from WASM.
             const strideBytes = chunk.stride * 4;
             gl.enableVertexAttribArray(aPosition);
             gl.vertexAttribPointer(
@@ -1108,9 +1110,24 @@ export function renderCellMaps(
               );
             }
 
-            // UV channel: present only at stride 12 (after emission). Else constant (0,0).
+            // True (always axis-aligned) face direction: always present at byte
+            // 40, independent of smoothing -- used by the fragment shader to
+            // reconstruct which cell a highlight-color fragment belongs to.
+            if (aTrueFaceDir >= 0) {
+              gl.enableVertexAttribArray(aTrueFaceDir);
+              gl.vertexAttribPointer(
+                aTrueFaceDir,
+                3,
+                gl.FLOAT,
+                false,
+                strideBytes,
+                40,
+              );
+            }
+
+            // UV channel: present only at stride 15 (after trueFaceDir). Else constant (0,0).
             if (aUv >= 0) {
-              if (chunk.stride >= 12) {
+              if (chunk.stride >= 15) {
                 gl.enableVertexAttribArray(aUv);
                 gl.vertexAttribPointer(
                   aUv,
@@ -1118,7 +1135,7 @@ export function renderCellMaps(
                   gl.FLOAT,
                   false,
                   strideBytes,
-                  40,
+                  52,
                 );
               } else {
                 gl.disableVertexAttribArray(aUv);

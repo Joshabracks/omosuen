@@ -47,8 +47,9 @@ let lastNormalSmoothing: number | undefined;
  * chunk reused across a later shift never needs its vertices touched or
  * re-uploaded again (see `reassembleChunks` in `data.ts`, which relies on
  * this). Only the position fields need it -- pos3 at offset 0 and origPos3
- * at offset 6 in the stride-10/12 interleaved layout; normal3, emission,
- * and uv are orientation/material data, unaffected.
+ * at offset 6 in the stride-13/15 interleaved layout; normal3, emission,
+ * trueFaceDir, and uv are orientation/material data, unaffected (trueFaceDir
+ * in particular is a direction, not a position -- translation-invariant).
  */
 function bakeWorldOffsetInPlace(
   vertices: Float32Array,

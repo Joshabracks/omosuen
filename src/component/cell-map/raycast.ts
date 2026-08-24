@@ -1,6 +1,6 @@
 // Mesh-accurate surface / collision queries against a cell-map's ACTUAL rendered
 // geometry. The engine keeps each chunk's built mesh on the CPU (`chunk.vertices`,
-// world-space, interleaved stride 10/12, smoothed position at floats 0-2, normal at
+// world-space, interleaved stride 13/15, smoothed position at floats 0-2, normal at
 // 3-5) — smoothing and custom cell meshes are already baked in — so these queries
 // work uniformly whether `smoothing` is 0 or >0, and need no WASM round-trip.
 //
@@ -14,8 +14,8 @@ import type { RaycastHit, SurfaceHit, RaycastOptions } from './types';
 /**
  * Extract world-space triangles from the built chunk buffers within an AABB.
  * Chunk vertices are already world-space, interleaved [pos3, normal3, origPos3,
- * emission1] (stride 10), or [+uv2] (stride 12) when UV custom shapes are present.
- * (Shared with the collider's cell-map overlap tests.)
+ * emission1, trueFaceDir3] (stride 13), or [+uv2] (stride 15) when UV custom
+ * shapes are present. (Shared with the collider's cell-map overlap tests.)
  */
 export function getChunkTrianglesInBounds(
   cellMap: CellMapT,

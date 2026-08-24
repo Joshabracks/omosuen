@@ -553,16 +553,17 @@ pub extern "C" fn mesh_custom_commit(shape_index: usize, cover_mask: u32) {
     }
 }
 
-/// Floats per emitted vertex: 10 (pos3+normal3+origPos3+emission1), or 12 (+uv2)
-/// when any committed custom shape carries UVs. JS reads this to set up vertex
-/// attributes (emission is always present, at float 9; uv, when present, at 10..12).
+/// Floats per emitted vertex: 13 (pos3+normal3+origPos3+emission1+trueFaceDir3),
+/// or 15 (+uv2) when any committed custom shape carries UVs. JS reads this to
+/// set up vertex attributes (emission is always present, at float 9;
+/// trueFaceDir at floats 10..12; uv, when present, at 13..14).
 #[no_mangle]
 pub extern "C" fn mesh_vertex_stride() -> usize {
     unsafe {
         if *core::ptr::addr_of!(CUSTOM_UV_ENABLED) {
-            12
+            15
         } else {
-            10
+            13
         }
     }
 }
@@ -587,7 +588,7 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
         let cell_size = *core::ptr::addr_of!(CELL_SIZE);
         let custom_shapes = &*core::ptr::addr_of!(CUSTOM_SHAPES);
         let uv_enabled = *core::ptr::addr_of!(CUSTOM_UV_ENABLED);
-        let fpv = if uv_enabled { 12 } else { 10 };
+        let fpv = if uv_enabled { 15 } else { 13 };
         let verts_out = &mut *core::ptr::addr_of_mut!(MESH_VERTS);
         let idx_out = &mut *core::ptr::addr_of_mut!(MESH_INDICES);
         let ranges_out = &mut *core::ptr::addr_of_mut!(MESH_RANGES);
@@ -780,6 +781,7 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                     [p[0] as f32, p[1] as f32, p[2] as f32],
                     [0.0, 0.0],
                     q.emission,
+                    n,
                 );
             }
             idx_out.push(base);
@@ -921,6 +923,7 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                     [p[0] as f32, p[1] as f32, p[2] as f32],
                     ct.uv[k],
                     ct.emission,
+                    ct.n,
                 );
             }
             idx_out.push(base);
@@ -971,6 +974,10 @@ struct SmoothFace {
     material: i32,
     interior: bool,
     emission: f32,
+    /// Exact, always-axis-aligned direction of this cube face (FACE_DIRS
+    /// value), independent of any position/normal smoothing -- see
+    /// push_vertex's doc comment.
+    face_dir: [f32; 3],
 }
 
 struct SmoothTri {
@@ -980,11 +987,23 @@ struct SmoothTri {
     uv: [[f32; 2]; 3],
     has_uv: bool,
     emission: f32,
+    /// Some(FACE_DIRS value) when this custom-shape triangle happens to be
+    /// axis-aligned to a cube face (the common case); None for genuinely
+    /// diagonal/interior triangles, which fall back to the computed flat
+    /// geometric normal at emission time.
+    face_dir: Option<[f32; 3]>,
 }
 
-/// Pushes one interleaved output vertex: pos3 + normal3 + origPos3 + emission1,
-/// plus uv2 when `uv_enabled` (stride 12 instead of 10). Emission is always present
-/// (float 9) so default cubes can glow without any custom-UV shapes.
+/// Pushes one interleaved output vertex: pos3 + normal3 + origPos3 + emission1
+/// + trueFaceDir3, plus uv2 when `uv_enabled` (stride 15 instead of 13).
+/// Emission is always present (float 9) so default cubes can glow without any
+/// custom-UV shapes. `true_face_dir` is the exact, always-axis-aligned
+/// direction of the cube face this vertex belongs to (one of
+/// (+/-1,0,0)/(0,+/-1,0)/(0,0,+/-1)) -- independent of `n` (which is the
+/// lighting normal, smoothed/blended when the mesh has smoothing enabled).
+/// Used by the fragment shader to reconstruct which cell a highlight-color
+/// fragment belongs to without relying on the (unreliable under smoothing)
+/// lighting normal -- see unified.frag's emissionCellFromFace.
 #[inline]
 fn push_vertex(
     verts_out: &mut Vec<f32>,
@@ -994,6 +1013,7 @@ fn push_vertex(
     o: [f32; 3],
     uv: [f32; 2],
     emission: f32,
+    true_face_dir: [f32; 3],
 ) {
     verts_out.push(p[0]);
     verts_out.push(p[1]);
@@ -1005,6 +1025,9 @@ fn push_vertex(
     verts_out.push(o[1]);
     verts_out.push(o[2]);
     verts_out.push(emission);
+    verts_out.push(true_face_dir[0]);
+    verts_out.push(true_face_dir[1]);
+    verts_out.push(true_face_dir[2]);
     if uv_enabled {
         verts_out.push(uv[0]);
         verts_out.push(uv[1]);
@@ -1170,7 +1193,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
         let material_weights = &*core::ptr::addr_of!(MATERIAL_WEIGHTS);
         let custom_shapes = &*core::ptr::addr_of!(CUSTOM_SHAPES);
         let uv_enabled = *core::ptr::addr_of!(CUSTOM_UV_ENABLED);
-        let fpv = if uv_enabled { 12 } else { 10 };
+        let fpv = if uv_enabled { 15 } else { 13 };
         let smoothing = *core::ptr::addr_of!(SMOOTHING);
         let normal_smoothing = *core::ptr::addr_of!(NORMAL_SMOOTHING);
         let verts_out = &mut *core::ptr::addr_of_mut!(MESH_VERTS);
@@ -1325,6 +1348,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                 material,
                                 interior,
                                 emission: unpack_emission(p),
+                                face_dir: [dir.nx as f32, dir.ny as f32, dir.nz as f32],
                             });
                         }
                     } else if let Some(cs) = custom_shapes.get(shape as usize) {
@@ -1373,6 +1397,21 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                     }
                                 }
                             }
+                            // Exact face direction when this triangle happens to be
+                            // axis-aligned to a cube face (common for simple slab/
+                            // ramp shapes); None for genuinely diagonal/interior
+                            // triangles, which fall back to the computed flat
+                            // geometric normal at emission time below.
+                            let tri_face_dir = {
+                                let corner = |c: usize| {
+                                    let vi = ind[t + c] as usize * 3;
+                                    [v[vi], v[vi + 1], v[vi + 2]]
+                                };
+                                tri_cell_face(&corner(0), &corner(1), &corner(2)).map(|face| {
+                                    let d = FACE_DIRS[face];
+                                    [d.nx as f32, d.ny as f32, d.nz as f32]
+                                })
+                            };
                             let mut tvidx = [0u32; 3];
                             let mut tuv = [[0.0f32; 2]; 3];
                             for c in 0..3 {
@@ -1406,6 +1445,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                 uv: tuv,
                                 has_uv,
                                 emission: unpack_emission(p),
+                                face_dir: tri_face_dir,
                             });
                             t += 3;
                         }
@@ -1496,6 +1536,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                     [o[0] as f32, o[1] as f32, o[2] as f32],
                     [0.0, 0.0],
                     f.emission,
+                    f.face_dir,
                 );
             }
             idx_out.push(base);
@@ -1581,6 +1622,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                     [o[0] as f32, o[1] as f32, o[2] as f32],
                     t.uv[k],
                     t.emission,
+                    t.face_dir.unwrap_or([fnx as f32, fny as f32, fnz as f32]),
                 );
             }
             idx_out.push(base);

@@ -1,6 +1,9 @@
 // The `state-overlay` plugin component: a reactive DOM overlay backed by a
-// State Street (https://github.com/Joshabracks/State-Street) instance, driven by
-// the Omosuen engine loop instead of State Street's own requestAnimationFrame.
+// State Street (https://github.com/Joshabracks/State-Street) instance. A
+// `state.data` mutation schedules exactly one coalesced render via State
+// Street's own on-demand scheduling (v3.0.0+) -- independent of the Omosuen
+// engine loop; there's no per-frame Omosuen dispatch into this component at
+// all once its State instance is built.
 //
 // State Street is vendored (zero-dependency) under ../vendor/state-street; this
 // plugin owns it, so the Omosuen core stays dependency-free.
@@ -32,12 +35,46 @@ export interface StateBundle {
 
 const bundles: Record<string, StateBundle> = {};
 
+// Callbacks waiting on a bundle key that hasn't registered yet (see
+// onBundleAvailable). Drained and cleared the moment that key registers.
+const bundleWaiters: Record<string, Array<(bundle: StateBundle) => void>> = {};
+
 /**
- * Registers a State Street UI bundle under a key. Call before the scene that
- * uses a state-overlay with this `bundleKey` is loaded.
+ * Registers a State Street UI bundle under a key. May be called before OR
+ * after a state-overlay component with this `bundleKey` is created --
+ * `onBundleAvailable` resolves either ordering.
  */
 export function registerStateBundle(key: string, bundle: StateBundle): void {
   bundles[key] = bundle;
+  const waiters = bundleWaiters[key];
+  if (waiters) {
+    delete bundleWaiters[key];
+    for (const cb of waiters) cb(bundle);
+  }
+}
+
+/**
+ * Resolves a bundle by key: calls `cb` synchronously if it's already
+ * registered, otherwise queues `cb` to run whenever `registerStateBundle`
+ * eventually registers that key. Returns an unsubscribe function that removes
+ * a still-pending `cb` (used at dispose time so a never-arriving bundle
+ * doesn't leak a closure over a disposed component).
+ */
+function onBundleAvailable(
+  key: string,
+  cb: (bundle: StateBundle) => void,
+): () => void {
+  const existing = bundles[key];
+  if (existing) {
+    cb(existing);
+    return () => {};
+  }
+  const list = (bundleWaiters[key] ??= []);
+  list.push(cb);
+  return () => {
+    const idx = list.indexOf(cb);
+    if (idx !== -1) list.splice(idx, 1);
+  };
 }
 
 export interface StateOverlayOptions extends ComponentOptions {
@@ -50,10 +87,14 @@ export interface StateOverlayT extends ComponentData {
   container: HTMLElement;
   bundleKey?: string;
   cssOverrides: Record<string, string>;
-  // The State Street instance; built lazily on first update so a bundle may be
-  // registered after the component is created (matches ui-overlay's deferral).
+  // The State Street instance; built as soon as its bundle is available (see
+  // onBundleAvailable) -- immediately at init() if already registered, or via
+  // a one-shot callback if the bundle registers later.
   state: State | null;
-  _stateBuilt: boolean;
+  // Unsubscribes a still-pending onBundleAvailable callback; set only while
+  // waiting on a bundle that hasn't registered yet. Called at dispose so a
+  // never-arriving bundle doesn't leak a closure over a disposed component.
+  _unsubscribeBundleWait?: () => void;
 }
 
 const PROPERTY_ALLOWLIST: string[] = [
@@ -61,7 +102,7 @@ const PROPERTY_ALLOWLIST: string[] = [
   'bundleKey',
   'cssOverrides',
   'state',
-  '_stateBuilt',
+  '_unsubscribeBundleWait',
 ];
 
 function builder(options: StateOverlayOptions): StateOverlayT {
@@ -82,7 +123,6 @@ function builder(options: StateOverlayOptions): StateOverlayT {
     bundleKey: options.bundleKey,
     cssOverrides: options.cssOverrides ?? {},
     state: null,
-    _stateBuilt: false,
   } as StateOverlayT;
 }
 
@@ -91,52 +131,45 @@ const methods: ComponentMethods = {
 
   async init(component: ComponentData): Promise<void> {
     const s = component as StateOverlayT;
-    // Attach the container so State Street has a live mount target.
+    // Attach the container first -- State's constructor calls mountCheck()
+    // internally and needs a connected element to mount into.
     if (s.container && !s.container.parentNode) {
       document.body.appendChild(s.container);
     }
-  },
 
-  update(component: ComponentData, _deltaTime: number): void {
-    const s = component as StateOverlayT;
+    if (!s.bundleKey) return; // nothing to build
 
-    // Lazily construct the State instance on first update (the bundle may have
-    // been registered after builder ran). renderLoop:false → the Omosuen loop
-    // drives it; mountTarget is this component's container.
-    if (!s._stateBuilt) {
-      if (!s.bundleKey) {
-        s._stateBuilt = true; // nothing to build
-        return;
-      }
-      const bundle = bundles[s.bundleKey];
-      if (!bundle) {
-        console.warn(
-          `[state-overlay] bundle '${s.bundleKey}' not registered for '${s.name}'. ` +
-            `Call registerStateBundle('${s.bundleKey}', ...) before loading this component.`,
-        );
-        s._stateBuilt = true; // don't retry every frame
-        return;
-      }
+    // Resolves immediately if the bundle is already registered (the common
+    // case), or later via a one-shot callback if it registers after this
+    // component was created. Must not await -- a missing/mistyped bundleKey
+    // must not hang scene init.
+    s._unsubscribeBundleWait = onBundleAvailable(s.bundleKey, (bundle) => {
+      if (s.state) return; // already built (defensive; shouldn't recur)
       s.state = new State(
         bundle.template,
         bundle.data ?? {},
         bundle.components ?? {},
         bundle.methods ?? {},
-        { renderLoop: false, mountTarget: s.container },
+        { autoRender: true, mountTarget: s.container, mountOnAvailable: false },
       );
-      s._stateBuilt = true;
-    }
-
-    // Drive State Street from the engine loop (no second rAF): mountCheck()
-    // attaches/repairs the mount, update() applies dep-gated re-renders.
-    if (s.state) {
-      s.state.mountCheck();
-      s.state.update();
+    });
+    if (!bundles[s.bundleKey]) {
+      console.warn(
+        `[state-overlay] bundle '${s.bundleKey}' not registered yet for '${s.name}'. ` +
+          `Will build automatically once registerStateBundle('${s.bundleKey}', ...) is called.`,
+      );
     }
   },
 
+  // No update() -- once built, State Street schedules its own on-demand
+  // renders directly off state.data mutations (see the module doc comment).
+  // Omitting the key entirely (not just a no-op function) means this
+  // component type never has update-pass work dispatched to it.
+
   dispose(component: ComponentData): void {
     const s = component as StateOverlayT;
+    s._unsubscribeBundleWait?.();
+    s._unsubscribeBundleWait = undefined;
     if (s.state) {
       s.state.destroy();
       s.state = null;
@@ -144,7 +177,6 @@ const methods: ComponentMethods = {
     if (s.container && s.container.parentNode) {
       s.container.parentNode.removeChild(s.container);
     }
-    s._stateBuilt = false;
     s._disposed = true;
   },
 };

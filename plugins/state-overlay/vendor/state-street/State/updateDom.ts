@@ -116,8 +116,20 @@ function rebuildComponentRange(rec: any, ssid: string, state: State): boolean {
   // so their value/checked/selection/pixels/playback survive.
   const frag = document.createDocumentFragment();
   for (let i = 0; i < parsedBody.length; i++) {
-    const subElement: any = constructElement(parsedBody[i], `${ssid}${i}`, state, ns);
-    if (subElement) frag.appendChild(subElement);
+    const childSSID = `${ssid}${i}`;
+    // Still constructed unconditionally so a moveTo()'d node's attributes/children keep
+    // updating -- only the natural-position insertion is redirected to a placeholder.
+    const subElement: any = constructElement(parsedBody[i], childSSID, state, ns);
+    if (subElement) {
+      const moved = state.locationMap[childSSID];
+      if (moved) {
+        const marker = document.createComment(`ss-moved:${childSSID}`);
+        moved.placeholder = marker;
+        frag.appendChild(marker);
+      } else {
+        frag.appendChild(subElement);
+      }
+    }
   }
   // Remove the stale leftovers still between the markers, then insert the new nodes.
   while (rec.startMarker.nextSibling && rec.startMarker.nextSibling !== rec.endMarker) {
@@ -214,6 +226,20 @@ function updateDOM(state: State) {
   }
   for (const ssid in state.nodeMap) {
     if (!state.nodeMap[ssid].isConnected) delete state.nodeMap[ssid];
+  }
+  // A moveTo()'d element whose target disappeared snaps back to its natural position
+  // (via the placeholder anchor left there); if the natural position is gone too, it's
+  // left detached -- same as today's orphaned-:preserve behavior. Bounded by the number
+  // of currently-moved elements, not the whole tree.
+  for (const ssid in state.locationMap) {
+    const entry = state.locationMap[ssid];
+    if (entry.target.isConnected) continue;
+    const el = state.idMap[ssid];
+    if (el && entry.placeholder.isConnected) {
+      entry.placeholder.parentNode?.insertBefore(el, entry.placeholder);
+      entry.placeholder.remove();
+    }
+    delete state.locationMap[ssid];
   }
   // Drop component records whose range was removed this frame (and not rebuilt),
   // e.g. a conditional component that stopped rendering. Without the wrapper the

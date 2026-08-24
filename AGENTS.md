@@ -120,12 +120,16 @@ Register it via the `plugins` init option (a `ComponentTypeDefinition`, or a fil
 to a self-registering JS file that calls `Omosuen.registerPluginComponent(def)`), or call
 `registerPluginComponent(def)` directly — **before** loading a scene that uses it.
 
-If the plugin wraps a library with its own `requestAnimationFrame` loop, **disable that loop
-and drive it from the engine loop** in the component's `update(component, dt)` (this is exactly
-what [plugins/state-overlay/](plugins/state-overlay/) does with State Street's `renderLoop:false`
-+ `mountCheck()`/`update()`). Official plugins live in `plugins/<name>/`, are their own npm
-package `omosuen-<name>`, vendor their deps under `vendor/`, and ship via the
-`plugin-release.yml` workflow (release = bump the plugin's `package.json` version + merge).
+If the plugin wraps a library with its own **perpetual polling** `requestAnimationFrame` loop
+(one that ticks forever regardless of whether anything changed), **disable that loop and drive
+it from the engine loop** in the component's `update(component, dt)` instead. This doesn't apply
+to a library with genuinely on-demand/event-driven scheduling (e.g.
+[plugins/state-overlay/](plugins/state-overlay/)'s State Street v3.0.0+, which schedules its own
+render only in direct response to a state mutation and needs no per-frame driving at all —
+`state-overlay`'s component type defines no `update()` method for exactly this reason). Official
+plugins live in `plugins/<name>/`, are their own npm package `omosuen-<name>`, vendor their deps
+under `vendor/`, and ship via the `plugin-release.yml` workflow (release = bump the plugin's
+`package.json` version + merge).
 
 ## Constraints & gotchas
 

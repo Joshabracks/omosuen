@@ -2,27 +2,31 @@ import constructDOM from "./constructDom.js";
 import updateDOM from "./updateDom.js";
 import { parseSST } from "../Template/parseSST.js";
 import { reactive } from "./reactive.js";
-import { setImageMemoryBudget, enqueueWarm, processWarmQueue } from "./imageCache.js";
+import { setImageMemoryBudget, enqueueWarm, setWarmPerFrame } from "./imageCache.js";
 import { SSID, STID } from "./const.js";
 import { register, get as getState, unregister } from "./registry.js";
+import { ensureMountWatcher } from "./mountWatcher.js";
 
 /**
  * Builds, renders and manages the DOM.
  * @param template SST-formatted template string.
- * @param data Reactive state. Mutations trigger dep-gated re-renders (when renderLoop is on).
+ * @param data Reactive state. Mutations trigger dep-gated re-renders (when autoRender is on).
  * @param components Component registry (`<Tag/>` -> function returning a template string).
  * @param methods Method registry (bound to `:event=name()` directives; `:raw=fn` formatters).
  * @param options Rendering + mounting options:
- *  - renderLoop: boolean (default true) — run an internal requestAnimationFrame loop.
+ *  - autoRender: boolean (default true) — auto-render on mutation (batched, throttled to
+ *    targetFPS). When false, nothing renders implicitly; call forceUpdate() yourself.
  *  - targetFPS: number (default 60).
  *  - imgMemoryBudget: number (default 256MB) — image blob cache budget.
  *  - imgWarmPerFrame: number (default 4).
  *  - mountTarget: Element | string (default document.body) — where to mount. A string is
  *    treated as a CSS selector and re-resolved over time.
- *  - mountOnAvailable: boolean (default true) — for non-body targets: while the render loop
- *    runs, auto-mount when the target appears, dismount if it disappears, and re-mount when it
+ *  - mountOnAvailable: boolean (default true) — for non-body targets: while autoRender is on,
+ *    auto-mount when the target appears, dismount if it disappears, and re-mount when it
  *    returns. When false, mounting/dismounting is manual (see mountCheck()).
  */
+type LocationEntry = { target: Element; placeholder: Comment };
+
 export default class State {
   private _data: any;
   template: any;
@@ -31,12 +35,16 @@ export default class State {
   attrMap: any;
   nodeMap: any;
   dataMap: any;
+  // ssid -> where a `:preserve`d element has been moved to via moveTo(), plus the
+  // comment-node placeholder left at its natural position (the anchor resetLocation()
+  // and automatic snap-back reinsert at).
+  locationMap: Record<string, LocationEntry> = {};
   dirty: boolean = true;
   dirtyKeys: Set<string> = new Set();
   components: any;
   componentMap: any;
   methods: any;
-  renderLoop: boolean = true;
+  autoRender: boolean = true;
   elementCount: number = 0;
   tick: number = 0;
   targetFPS: number = 60;
@@ -54,13 +62,15 @@ export default class State {
   // the container's lifecycle (e.g. a router/tabs that mounts/unmounts panels).
   preserveInParent: boolean = true;
   preserveSet: Set<string> = new Set();
-  private looping: boolean = false;
+  private rafHandle: number | null = null;
+  private timeoutHandle: number | null = null;
   private _parentMount: { parent: State; ssid: string } | null = null;
 
   constructor(template: string, data: any = {}, components: any = {}, methods: any = {}, options: any = {}) {
     this._data = reactive(data, (key) => {
       this.dirty = true;
       this.dirtyKeys.add(key);
+      this.scheduleRender();
     });
     this.template = parseSST(template, components);
     this.idMap = {};
@@ -71,17 +81,17 @@ export default class State {
     this.componentMap = {};
     this.methods = methods;
     this.id = register(this);
-    if (options?.renderLoop === false) this.renderLoop = false;
+    if (options?.autoRender === false) this.autoRender = false;
     if (typeof options?.targetFPS === "number" && options.targetFPS > 0) this.targetFPS = options.targetFPS;
     if (typeof options?.imgMemoryBudget === "number" && options.imgMemoryBudget > 0) setImageMemoryBudget(options.imgMemoryBudget);
-    if (typeof options?.imgWarmPerFrame === "number" && options.imgWarmPerFrame > 0) this.imgWarmPerFrame = options.imgWarmPerFrame;
+    if (typeof options?.imgWarmPerFrame === "number" && options.imgWarmPerFrame > 0) { this.imgWarmPerFrame = options.imgWarmPerFrame; setWarmPerFrame(options.imgWarmPerFrame); }
     if (options?.mountTarget != null) this.mountTarget = options.mountTarget;
     if (options?.mountOnAvailable === false) this.mountOnAvailable = false;
     if (options?.preserveInParent === false) this.preserveInParent = false;
     this.updateInterval = 1000 / this.targetFPS;
     this.nextUpdate = this.updateInterval + Date.now();
     this.mountCheck();                                  // initial mount attempt
-    if (this.renderLoop) { this.looping = true; window.requestAnimationFrame(this.loop); }
+    if (this.autoRender && this.mountOnAvailable) ensureMountWatcher();
   }
 
   /**
@@ -103,17 +113,61 @@ export default class State {
     this._data = reactive(next, (key) => {
       this.dirty = true;
       this.dirtyKeys.add(key);
+      this.scheduleRender();
     });
     this.dirty = true;
     for (const k in next) this.dirtyKeys.add(k);
+    this.scheduleRender();
   }
 
   /** True if State.data has no pending changes. */
   sameState = () => !this.dirty;
   private clearDirty = () => { this.dirty = false; this.dirtyKeys.clear(); };
   setNextUpdate = () => { this.nextUpdate = Date.now() + this.updateInterval; };
+
+  /**
+   * Arms a single pending render (rAF, or a delayed timeout while still inside the
+   * FPS throttle window). No-ops if one is already pending -- that's what coalesces
+   * a burst of synchronous mutations into one render -- or if autoRender is off.
+   */
+  private scheduleRender = () => {
+    if (!this.autoRender) return;
+    if (this.rafHandle !== null || this.timeoutHandle !== null) return;
+    const delay = this.nextUpdate - Date.now();
+    if (delay > 0) this.timeoutHandle = window.setTimeout(this.onFrame, delay);
+    else this.rafHandle = window.requestAnimationFrame(this.onFrame);
+  };
+
+  /** The on-demand render entry point: fires once per scheduleRender() call. */
+  private onFrame = () => {
+    this.rafHandle = null;
+    this.timeoutHandle = null;
+    if (!this.autoRender) return;                       // destroyed / turned off mid-flight
+    if (this.mountOnAvailable) this.mountCheck();
+    if (!this.mounted) return;
+    if (this.sameState()) return;
+    const delay = this.nextUpdate - Date.now();
+    if (delay > 0) { this.timeoutHandle = window.setTimeout(this.onFrame, delay); return; }
+    this.setNextUpdate();
+    updateDOM(this);
+    this.clearDirty();
+  };
+
+  /**
+   * True while this instance still needs the shared MutationObserver's help finding
+   * or watching its mountTarget (see mountWatcher.ts). document.body never needs
+   * watching once mounted -- it can't become disconnected.
+   */
+  needsMountWatch = (): boolean => {
+    if (!this.autoRender || !this.mountOnAvailable) return false;
+    if (!this.mounted) return true;
+    const body = typeof document !== "undefined" ? document.body : null;
+    return this.mountTarget !== body;
+  };
+
   private resetMaps = () => {
     this.idMap = {}; this.textMap = {}; this.attrMap = {}; this.nodeMap = {}; this.componentMap = {};
+    this.locationMap = {};
   };
 
   /** Resolve the configured mountTarget to a live element (or null). */
@@ -158,6 +212,14 @@ export default class State {
       this._parentMount.parent.togglePreserve(this._parentMount.ssid, false);
       this._parentMount = null;
     }
+    // A moveTo()'d element often lives outside this.root, so root.innerHTML = ""
+    // below won't reach it -- detach it explicitly or it leaks as an untracked
+    // duplicate once remount rebuilds a fresh element at the natural position.
+    for (const ssid in this.locationMap) {
+      const { target } = this.locationMap[ssid];
+      const el = this.idMap[ssid];
+      if (el && target.contains(el)) target.removeChild(el);
+    }
     if (this.root) this.root.innerHTML = "";
     this.resetMaps();
     this.mounted = false;
@@ -167,8 +229,8 @@ export default class State {
   /**
    * Reconcile mount state with the DOM. Dismounts if the current target is gone (root
    * detached, or a string selector no longer matches the mounted element); mounts if a
-   * target is now available. Called automatically by the render loop (when
-   * mountOnAvailable is on) and manually when renderLoop is off.
+   * target is now available. Called automatically by the shared mount watcher and by
+   * each render (when mountOnAvailable is on); call it manually when autoRender is off.
    */
   mountCheck = () => {
     if (this.mounted) {
@@ -182,33 +244,11 @@ export default class State {
     }
   };
 
-  /** A single render tick (no self-reschedule — the loop drives it). */
-  update = () => {
-    processWarmQueue(this.imgWarmPerFrame);
-    if (this.mountOnAvailable) this.mountCheck();
-    if (!this.mounted) return;
-    if (!this.renderLoop) {
-      updateDOM(this);
-      this.clearDirty();
-      return;
-    }
-    if (this.nextUpdate > Date.now()) return;
-    if (this.sameState()) return;
-    this.setNextUpdate();
-    updateDOM(this);
-    this.clearDirty();
-  };
-
-  /** The requestAnimationFrame driver. Self-stops when renderLoop is turned off. */
-  private loop = () => {
-    if (!this.renderLoop) { this.looping = false; return; }
-    this.update();
-    window.requestAnimationFrame(this.loop);
-  };
-
   forceUpdate = () => {
     this.mountCheck();
     if (this.mounted) { updateDOM(this); this.clearDirty(); }
+    if (this.rafHandle !== null) { window.cancelAnimationFrame(this.rafHandle); this.rafHandle = null; }
+    if (this.timeoutHandle !== null) { window.clearTimeout(this.timeoutHandle); this.timeoutHandle = null; }
   };
 
   /** Toggle preservation of the element at `ssid` (used by nested States). */
@@ -217,18 +257,57 @@ export default class State {
     if (want) this.preserveSet.add(ssid); else this.preserveSet.delete(ssid);
   };
 
+  /**
+   * Move a `:preserve`d element to live under `target` instead of its natural template
+   * position, without destroying it. A comment placeholder is left at the natural position
+   * on first move so resetLocation()/automatic snap-back can restore exact sibling order.
+   * Backs the `moveTo` function stamped onto preserved elements (see constructElement.ts).
+   */
+  moveElement = (ssid: string, element: Element, target: Element) => {
+    if (!this.preserveSet.has(ssid)) {
+      console.warn(`moveTo called on an element that is not :preserve'd (ssid ${ssid}); ignored.`);
+      return;
+    }
+    const existing = this.locationMap[ssid];
+    if (existing) {
+      existing.target = target;
+      target.appendChild(element);
+      return;
+    }
+    const placeholder = document.createComment(`ss-moved:${ssid}`);
+    element.parentNode?.insertBefore(placeholder, element);
+    this.locationMap[ssid] = { target, placeholder };
+    target.appendChild(element);
+  };
+
+  /** Return a moved element to its natural template position. Backs `resetLocation`. */
+  resetElementLocation = (ssid: string, element: Element) => {
+    const entry = this.locationMap[ssid];
+    if (!entry) return;
+    entry.placeholder.parentNode?.insertBefore(element, entry.placeholder);
+    entry.placeholder.remove();
+    delete this.locationMap[ssid];
+  };
+
   /** Change the mount target: dismount, set, and re-mount if the new target is found. */
   setMountTarget = (target: Element | string) => {
     this.dismount();
     this.mountTarget = target;
     this.mountCheck();
+    if (this.autoRender && this.mountOnAvailable) ensureMountWatcher();
   };
 
-  setRenderLoop = (on: boolean) => {
+  setAutoRender = (on: boolean) => {
     const next = !!on;
-    if (next === this.renderLoop) return;
-    this.renderLoop = next;
-    if (next && !this.looping) { this.looping = true; window.requestAnimationFrame(this.loop); }
+    if (next === this.autoRender) return;
+    this.autoRender = next;
+    if (next) {
+      if (this.dirty) this.scheduleRender();
+      if (this.mountOnAvailable) ensureMountWatcher();
+    } else {
+      if (this.rafHandle !== null) { window.cancelAnimationFrame(this.rafHandle); this.rafHandle = null; }
+      if (this.timeoutHandle !== null) { window.clearTimeout(this.timeoutHandle); this.timeoutHandle = null; }
+    }
   };
   setTargetFPS = (fps: number) => {
     if (typeof fps === "number" && fps > 0) { this.targetFPS = fps; this.updateInterval = 1000 / fps; }
@@ -237,7 +316,7 @@ export default class State {
     if (typeof bytes === "number" && bytes > 0) setImageMemoryBudget(bytes);
   };
   setImgWarmPerFrame = (n: number) => {
-    if (typeof n === "number" && n > 0) this.imgWarmPerFrame = n;
+    if (typeof n === "number" && n > 0) { this.imgWarmPerFrame = n; setWarmPerFrame(n); }
   };
 
   /** Queue base64 data URIs for off-screen decode (see Image cache). */
@@ -246,8 +325,9 @@ export default class State {
   /** Tear down: dismount and unregister from the global state registry. */
   destroy = () => {
     this.dismount();
-    this.renderLoop = false;
-    this.looping = false;
+    this.autoRender = false;
+    if (this.rafHandle !== null) { window.cancelAnimationFrame(this.rafHandle); this.rafHandle = null; }
+    if (this.timeoutHandle !== null) { window.clearTimeout(this.timeoutHandle); this.timeoutHandle = null; }
     unregister(this.id);
   };
 }

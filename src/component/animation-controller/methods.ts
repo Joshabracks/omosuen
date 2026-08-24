@@ -4,6 +4,7 @@ import type { Animation, AnimationLayer, AnimationState } from './types';
 import type { ChannelType } from '../sprite/types';
 import type { NexusT } from '../nexus/data';
 import type { SpriteT } from '../sprite/data';
+import type { TransformT } from '../transform';
 import type { AnimationMapT } from '../animation-map/data';
 import { MethodRegistry } from '../registry';
 
@@ -105,7 +106,14 @@ export const AnimationController: AnimationControllerMethods = {
     }
 
     // Resolve + cache each layer's sprite once, then apply visibility from it
-    // (cache parallels `layers`).
+    // (cache parallels `layers`). No explicit bumpRenderableVersion call
+    // needed here -- unlike Sprite.setVisible() (which MethodRegistry
+    // dispatches with the RAW component, bypassing the Proxy `set` trap),
+    // `layerSprites[i]` here is the genuine Proxy-wrapped sprite (from
+    // getComponentsByType, reading straight out of the array `addComponent`
+    // pushes proxies into), so this direct `sprite.visible = ...` write
+    // already goes through the trap in types.ts on its own. See
+    // 04-presentation-layer-visibility-skip/03-render-collection-visibility-split.md.
     const layerSprites = resolveLayerSprites(ac);
     for (let i = 0; i < ac.layers.length; i++) {
       const sprite = layerSprites[i];
@@ -148,6 +156,30 @@ export const AnimationController: AnimationControllerMethods = {
       return;
     }
 
+    // Timing/state-machine logic below always runs, regardless of visibility
+    // -- only the sprite-array write is gated on it. Resolved once per call
+    // (cheap, cached after the first) rather than per frame-boundary crossing
+    // in the loop below: freezing frameTime/currentFrameIndex/onComplete timing
+    // would save nothing (the O(1) state math was never the cost problem) while
+    // making animation state depend on visibility for every consumer.
+    const transform = resolveControllerTransform(ac);
+    const shouldWriteSprites = !transform || transform.onScreen !== false;
+
+    if (shouldWriteSprites) {
+      if (ac._spriteFramesStale) {
+        // Just came back on-screen after the gate skipped one or more
+        // writes -- catch up immediately with the CURRENT frame (from
+        // before this tick's own advancement below) rather than waiting for
+        // the next frame-boundary crossing, which could be up to one full
+        // animation-frame's duration away and would show a stale frame in
+        // the meantime.
+        updateSpriteFrames(ac, animation.frames[ac.currentFrameIndex]);
+        ac._spriteFramesStale = false;
+      }
+    } else {
+      ac._spriteFramesStale = true;
+    }
+
     // Accumulate frame time
     ac.frameTime += deltaTime * ac.speed;
 
@@ -184,14 +216,18 @@ export const AnimationController: AnimationControllerMethods = {
           }
 
           // Update sprites to final frame before exiting
-          updateSpriteFrames(ac, animation.frames[ac.currentFrameIndex]);
+          if (shouldWriteSprites) {
+            updateSpriteFrames(ac, animation.frames[ac.currentFrameIndex]);
+          }
           return;
         }
       }
 
       // Update sprite frame
       const frameNumber = animation.frames[ac.currentFrameIndex];
-      updateSpriteFrames(ac, frameNumber);
+      if (shouldWriteSprites) {
+        updateSpriteFrames(ac, frameNumber);
+      }
 
       if (++guard > 1024) {
         ac.frameTime = 0;
@@ -273,10 +309,13 @@ export const AnimationController: AnimationControllerMethods = {
       controller.currentFrameIndex = 0;
       controller.frameTime = 0;
 
-      // Update sprites to first frame immediately
+      // Update sprites to first frame immediately -- unconditional (not
+      // gated by on-screen), since this is a rare user-triggered call, not
+      // the per-frame hot path the gate exists for.
       const animation = controller.animations.get(name);
       if (animation && animation.frames.length > 0) {
         updateSpriteFrames(controller, animation.frames[0]);
+        controller._spriteFramesStale = false;
       }
     }
 
@@ -310,11 +349,13 @@ export const AnimationController: AnimationControllerMethods = {
     controller.currentFrameIndex = 0;
     controller.frameTime = 0;
 
-    // Set sprites to first frame of current animation
+    // Set sprites to first frame of current animation -- unconditional (not
+    // gated by on-screen), same reasoning as play().
     if (controller.currentAnimation) {
       const animation = controller.animations.get(controller.currentAnimation);
       if (animation && animation.frames.length > 0) {
         updateSpriteFrames(controller, animation.frames[0]);
+        controller._spriteFramesStale = false;
       }
     }
   },
@@ -404,11 +445,26 @@ export const AnimationController: AnimationControllerMethods = {
     layer.visible = visible;
 
     // Sync all layers' visibility onto their sprites (so a slot-hide applies),
-    // using the resolved-sprite cache (parallel to `layers`).
+    // using the resolved-sprite cache (parallel to `layers`). A layer that's
+    // just become visible gets its sprite stamped with the controller's
+    // current frame immediately -- while hidden, updateSpriteFrames (above)
+    // skips writing to it, so its frame index can be stale by however many
+    // frames elapsed since it was hidden; waiting for the next natural
+    // updateSpriteFrames call would show that stale frame for up to one tick.
+    // No explicit bumpRenderableVersion call needed for the visibility write
+    // itself -- see init()'s comment above; `sprite` here is the same kind of
+    // genuine Proxy reference, already covered by the `set` trap.
+    const currentFrameNumber = currentFrameNumberFor(controller);
     const layerSprites = layerSpritesFor(controller);
     for (let i = 0; i < controller.layers.length; i++) {
       const sprite = layerSprites[i];
-      if (sprite) sprite.visible = controller.layers[i].visible;
+      if (!sprite) continue;
+      const wasVisible = sprite.visible !== false;
+      const nowVisible = controller.layers[i].visible;
+      sprite.visible = nowVisible;
+      if (!wasVisible && nowVisible && currentFrameNumber !== undefined) {
+        sprite.setFrame(currentFrameNumber, controller.channels);
+      }
     }
   },
 
@@ -450,6 +506,8 @@ export const AnimationController: AnimationControllerMethods = {
     const ac = c as AnimationControllerT;
     ac.layers = [];
     ac._layerSprites = undefined;
+    ac._transformRef = undefined;
+    ac._spriteFramesStale = undefined;
     ac._disposed = true;
   },
 };
@@ -538,6 +596,44 @@ function layerSpritesFor(controller: AnimationControllerT): (SpriteT | null)[] {
 }
 
 /**
+ * Resolves the sibling transform consulted for the on-screen write-gate,
+ * caching the result on first use (`_transformRef`) -- never re-resolved
+ * afterward, since reparenting isn't a real, exercised operation in this
+ * engine (04a-component-lookup-registries.md's confirmed finding). `null`
+ * (no parent, or no sibling transform found) is cached just as much as a
+ * found transform, so a controller with no transform doesn't pay the lookup
+ * cost every frame either.
+ */
+function resolveControllerTransform(
+  controller: AnimationControllerT,
+): TransformT | null {
+  if (controller._transformRef !== undefined) return controller._transformRef;
+  if (!controller.parent) {
+    controller._transformRef = null;
+    return null;
+  }
+  // parent is stored raw; wrap it to reach the nexus's proxy methods.
+  const parent = castTo<NexusT>(controller.parent);
+  const transform =
+    (parent.getComponentByType('transform', false) as TransformT | null) ??
+    null;
+  controller._transformRef = transform;
+  return transform;
+}
+
+/**
+ * The frame number the controller is currently showing, or `undefined` if
+ * there's no current animation (or it's since been removed).
+ */
+function currentFrameNumberFor(
+  controller: AnimationControllerT,
+): number | undefined {
+  if (!controller.currentAnimation) return undefined;
+  const animation = controller.animations.get(controller.currentAnimation);
+  return animation?.frames[controller.currentFrameIndex];
+}
+
+/**
  * Sets the given frame on EVERY layer sprite driven by this controller, in
  * lockstep, using the resolved-sprite cache (no per-tick nexus walk or name
  * search). All layers share one frame timeline, so a single frame index applies
@@ -549,7 +645,11 @@ function updateSpriteFrames(
 ): void {
   const sprites = layerSpritesFor(controller);
   for (const sprite of sprites) {
-    if (sprite && !sprite._disposed) {
+    // `=== false` (not a truthy check) so a legacy sprite lacking the field
+    // still gets written, matching the fail-open idiom used elsewhere for
+    // this field (e.g. render-sprites.ts's own `sprite.visible === false`
+    // skip).
+    if (sprite && !sprite._disposed && sprite.visible !== false) {
       sprite.setFrame(frameNumber, controller.channels);
     }
   }

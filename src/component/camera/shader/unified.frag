@@ -15,9 +15,9 @@ uniform bool u_hasNormal;
     // Cell-specific uniforms (Mode 0)
 uniform highp vec3 u_cellSize;
     // Size of the currently-resident cell grid (today: the whole map; once the
-    // engine's shiftable hot window lands, the window's size — see
-    // .design/completed_tasks/cell-map-overhaul/06-camera-reveal-fix.md). u_windowOrigin is the
-    // world-cell-space corner that grid starts at (today always (0,0,0)).
+    // engine's shiftable hot window lands, the window's size). u_windowOrigin
+    // is the world-cell-space corner that grid starts at (today always
+    // (0,0,0)).
 uniform highp vec3 u_windowSize;
 uniform highp vec3 u_windowOrigin;
 uniform vec4 u_normalUVBounds;

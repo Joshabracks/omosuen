@@ -47,19 +47,15 @@ export interface AsepriteImportResult {
 }
 
 /**
- * One resolved source for `importAsepriteSources`: a fetched .aseprite buffer
- * plus its namespace `id` and effective (loader-default-resolved) options. The
- * component's `init` builds these from its `sources` array.
+ * One resolved source for `importAsepriteSources`: a fetched .aseprite buffer's
+ * effective (loader-default-resolved) options, keyed externally by its source id
+ * (see `importAsepriteSources`'s `entries` param). The component's `init` builds
+ * these from its `sources` map.
  */
 export interface AsepriteSourceEntry {
   /** Static URL of the .aseprite file. Fetched lazily, ONLY on a full import. */
   filePath: string;
-  /** Namespace prefix for this source's sprites / tags / texture keys. */
-  id: string;
-  flatten: boolean;
   visibleOnly: boolean;
-  /** Within-source mutually-exclusive layers (raw layer name → slot name). */
-  layerSlots?: Record<string, string>;
 }
 
 /** Shared config for the multi-source orchestrator. */
@@ -74,15 +70,20 @@ export interface AsepriteSourcesConfig {
   sharedParent: any;
   /** Atlas-namespace root; also names the transform and controller. */
   packageId: string;
+  /** Composite all layers into one shared sprite (default true) vs one per layer name. Set-level: applies to every source in the set. */
+  flatten?: boolean;
   anchor?: Vector2D;
   anchorMode?: 'center' | 'bottom-center';
   position?: Vector3D;
   scale?: Vector3D;
+  /** Layer-name → slot map; layers sharing a slot are mutually exclusive. Set-level: keyed by the shared layer name, not by source. */
+  layerSlots?: Record<string, string>;
 }
 
 /**
  * Minimal per-instance recipe for one art set, cached after the first import so
  * subsequent entities of the same set are built WITHOUT fetch/parse/composite.
+ * One `builds` entry per unique LAYER NAME across the whole set (not per source).
  */
 interface InstanceBlueprint {
   builds: Array<{
@@ -96,8 +97,9 @@ interface InstanceBlueprint {
 }
 
 /**
- * Per-art-set instance blueprints, keyed by the ordered source ids. Lets repeat
- * spawns skip all the heavy import work (see importAsepriteSources).
+ * Per-art-set instance blueprints, keyed by `artSetKey` (every source key +
+ * filePath in the set, order-sensitive). Lets repeat spawns of the same set
+ * skip all the heavy import work (see importAsepriteSources).
  */
 const BLUEPRINTS = new Map<string, InstanceBlueprint>();
 
@@ -158,7 +160,6 @@ export async function importAseprite(
         filePath: `aseprite://${config.packageId}/${build.name}`,
         sourceImage: build.canvas,
         imageType: frameRects,
-        atlasManager: config.atlasManager,
       },
       parent,
     );
@@ -212,32 +213,76 @@ export async function importAseprite(
   return { controller: controller ?? null, sprites };
 }
 
+/** One successfully-fetched-and-parsed source, plus its allocated frame offset. */
+interface ParsedSource {
+  key: string;
+  ase: AseFile;
+  renderLayers: AseLayer[];
+  /** Starting index of this source's frames within the shared, cross-source frame-index space (see importAsepriteSources doc). */
+  frameOffset: number;
+}
+
+/** One source's contribution of layers into a shared per-layer-name texture-map. */
+interface LayerContribution {
+  source: ParsedSource;
+  /** The layer(s) to composite for this contribution (>1 only in the flatten case, where a whole source's renderLayers count as one contribution). */
+  layers: AseLayer[];
+}
+
+/** One shared layer name across the whole source set, with its contributing sources. */
+interface LayerUnionEntry {
+  name: string;
+  contributions: LayerContribution[];
+}
+
 /**
- * Multi-source variant: ingests several .aseprite files into ONE entity nexus —
- * one merged animation-controller, one atlas pass — with every source's sprites,
- * layers, and tags namespaced by its `id` so nothing collides.
+ * Multi-source variant: ingests several .aseprite files into ONE entity nexus by
+ * "horizontal" ingestion — one sprite (and one texture-map) per unique LAYER
+ * NAME across the whole set, not one per source. A set where every source has
+ * `main`/`outline` layers produces exactly 2 sprites total, however many sources
+ * are in the set. Each layer's texture-map holds every contributing source's
+ * frames concatenated left-to-right in one canvas.
  *
- * Namespacing (vs the single-source `importAseprite`, which stays un-prefixed):
- *   - sprite / layer name : `${id}:${layerName}`  (flattened source: `${id}`)
- *   - texture key         : `aseprite:${id}:${build}`
- *   - synthetic filePath  : `aseprite://${id}/${build}`
- *   - animation name      : `${id}-${tagName}`
+ * Naming (vs the single-source `importAseprite`, which stays un-prefixed):
+ *   - sprite / layer name : `${layerName}`  (flattened set: `${packageId}`) — shared, not per-source
+ *   - texture key         : `aseprite:${artSetKey}:${layerName}`
+ *   - synthetic filePath  : `aseprite://${artSetKey}/${layerName}`
+ *   - animation name      : `${sourceKey}-${tagName}` — still per-source; this is how a caller
+ *     "swaps costumes": play `${key}-walk` on the same small shared sprite set.
  *
- * The engine `slot` is used ONLY for per-source `layerSlots` (mutually-exclusive
- * layers within one source, e.g. hair A/B/C) and its value is itself id-namespaced
- * so two sources' identically-named slots don't become cross-source exclusive.
- * Source-group visibility (show one variant, hide the rest) is the caller's job,
- * done by toggling every layer whose name starts with `${id}:` — NOT via `slot`.
+ * Frame-index allocation: every source is assigned a disjoint block of the
+ * SHARED frame-index space, `[frameOffset, frameOffset + ase.frameCount)`, in
+ * source order. Every layer's texture-map reserves that same block for that
+ * source — the engine's `AnimationController` applies one frame index to every
+ * layer in lockstep (`updateSpriteFrames`), so a source's frames must land at
+ * the same offset in every layer, not just within one. A layer some source
+ * doesn't contribute to simply has no frame data in that source's block —
+ * `originalFrames` is sparse (safe: atlas-manager resolves frames by
+ * position/size key, not array position). If a caller leaves such a layer
+ * visible while that source's animation plays, the renderer warns and skips
+ * drawing that frame rather than crashing — hide layers the active source
+ * doesn't use, same as any other layer-visibility toggle.
+ *
+ * `layerSlots`/`flatten` are set-level (apply to the whole set), not per-source
+ * — a flattened source has no real layer name to union against others', so
+ * mixed flatten states have no clean shared-sprite meaning.
  *
  * The once-per-loader steps (removeGeneratedChildren, ensure transform,
- * processTextureMaps) run exactly once around the per-source loop.
+ * processTextureMaps) run exactly once around the per-layer loop.
  */
 export async function importAsepriteSources(
-  entries: AsepriteSourceEntry[],
+  entries: Record<string, AsepriteSourceEntry>,
   config: AsepriteSourcesConfig,
 ): Promise<AsepriteImportResult> {
   const parent = config.parent;
-  const artSetKey = entries.map((e) => e.id).join('+');
+  // Object.entries preserves insertion order for non-numeric-string keys (the
+  // documented requirement — see AsepriteSourceEntry/component.ts's `sources`
+  // docs); this order drives both frame-offset allocation and canvas x-cursor
+  // placement, so it must be stable across a set's declaration and its cache key.
+  const sourceKeys = Object.keys(entries);
+  const artSetKey = sourceKeys
+    .map((k) => `${k}=${entries[k].filePath}`)
+    .join('+');
 
   // Fast path: another entity already imported this art set and its SHARED
   // resources still exist in the current scene → build only the per-instance
@@ -251,11 +296,12 @@ export async function importAsepriteSources(
   // Full import. Fetch every source's buffer NOW (in parallel) — only reached
   // when there's no cached blueprint, so repeat spawns never hit the network.
   const buffers = await Promise.all(
-    entries.map(async (e) => {
+    sourceKeys.map(async (key) => {
+      const e = entries[key];
       const res = await fetch(e.filePath);
       if (!res.ok) {
         console.error(
-          `[aseprite-loader] failed to fetch source '${e.filePath}': ${res.status} ${res.statusText}`,
+          `[aseprite-loader] failed to fetch source '${key}' ('${e.filePath}'): ${res.status} ${res.statusText}`,
         );
         return null;
       }
@@ -267,74 +313,113 @@ export async function importAsepriteSources(
   removeGeneratedChildren(parent);
   await ensureTransform(parent, config.packageId, config);
 
-  const allSprites: any[] = [];
-  const allLayers: any[] = [];
-  const allAnimations: any[] = [];
-  const bpBuilds: InstanceBlueprint['builds'] = [];
-  let renderOrder = 0;
+  const flatten = config.flatten ?? true;
 
-  for (let ei = 0; ei < entries.length; ei++) {
-    const entry = entries[ei];
-    const buffer = buffers[ei];
+  // Parse every source that fetched successfully; allocate its frame-offset
+  // block in the same pass (source order = allocation order).
+  const parsedSources: ParsedSource[] = [];
+  let runningOffset = 0;
+  for (let i = 0; i < sourceKeys.length; i++) {
+    const buffer = buffers[i];
     if (!buffer) continue; // fetch failed for this source
+    const key = sourceKeys[i];
+    const entry = entries[key];
     const ase = await parseAseprite(buffer);
-    const anchor = resolveAnchor(ase, config);
     const renderLayers = ase.layers.filter(
       (l) => l.type === 0 && (!entry.visibleOnly || l.visible),
     );
+    parsedSources.push({ key, ase, renderLayers, frameOffset: runningOffset });
+    runningOffset += ase.frameCount;
+  }
 
-    // Which builds this source produces (names only; the strip canvas is
-    // composited lazily, only when the texture-map doesn't already exist).
-    const buildNames: string[] = entry.flatten
-      ? [entry.id]
-      : renderLayers.map((layer) => layer.name);
-
-    const frameRects = buildFrameRects(ase);
-
-    for (const buildName of buildNames) {
-      // Flattened source is a single strip → the sprite IS the source (`${id}`);
-      // per-layer builds namespace the layer name (`${id}:${layer}`).
-      const spriteName = entry.flatten ? entry.id : `${entry.id}:${buildName}`;
-      const texKey = `aseprite:${entry.id}:${buildName}`;
-
-      // Shared texture-map: create once per key (composite only on first use),
-      // owned by the scene root so entity dispose never drops shared art.
-      await config.atlasManager.getOrCreateTextureMap(texKey, async () => {
-        const canvas = entry.flatten
-          ? compositeStrip(ase, renderLayers)
-          : compositeStrip(ase, [renderLayers.find((l) => l.name === buildName)!]);
-        const tm = await newComponent(
-          'texture-map',
-          {
-            name: texKey,
-            textureMapKey: texKey,
-            filePath: `aseprite://${entry.id}/${buildName}`,
-            sourceImage: canvas,
-            imageType: frameRects,
-            atlasManager: config.atlasManager,
-          },
-          config.sharedParent,
-        );
-        if (tm) tm._generated = true;
-        return tm ?? null;
-      });
-
-      // `layerSlots` is keyed by the raw aseprite layer name; namespace the slot
-      // VALUE so two sources' "hair" slots stay independent.
-      const rawSlot = entry.layerSlots?.[buildName];
-      const slot = rawSlot ? `${entry.id}:${rawSlot}` : undefined;
-
-      const bp = { spriteName, texKey, anchor, renderOrder: renderOrder++, slot };
-      bpBuilds.push(bp);
-
-      const sprite = await buildInstanceSprite(parent, bp);
-      if (sprite) allSprites.push(sprite);
-      allLayers.push({ name: spriteName, spriteName, visible: true, slot });
+  // Union layer names across every source (first-seen order), or degenerate to
+  // one synthetic flattened entry — either way, EXACTLY one entry per shared sprite.
+  let layerUnion: LayerUnionEntry[];
+  if (flatten) {
+    const contributions: LayerContribution[] = parsedSources
+      .filter((s) => s.renderLayers.length > 0)
+      .map((s) => ({ source: s, layers: s.renderLayers }));
+    layerUnion =
+      contributions.length > 0
+        ? [{ name: config.packageId, contributions }]
+        : [];
+  } else {
+    const order: string[] = [];
+    const byName = new Map<string, LayerContribution[]>();
+    for (const s of parsedSources) {
+      for (const layer of s.renderLayers) {
+        if (!byName.has(layer.name)) {
+          byName.set(layer.name, []);
+          order.push(layer.name);
+        }
+        byName.get(layer.name)!.push({ source: s, layers: [layer] });
+      }
     }
+    layerUnion = order.map((name) => ({ name, contributions: byName.get(name)! }));
+  }
 
-    // Prefix tags: `walk` → `${id}-walk`, so villager-walk / fighter-walk coexist.
-    for (const anim of buildAnimations(ase)) {
-      allAnimations.push({ ...anim, name: `${entry.id}-${anim.name}` });
+  const allSprites: any[] = [];
+  const allLayers: any[] = [];
+  const bpBuilds: InstanceBlueprint['builds'] = [];
+  let renderOrder = 0;
+
+  for (const entry of layerUnion) {
+    const texKey = `aseprite:${artSetKey}:${entry.name}`;
+
+    // Shared texture-map: composited once per key (skipped entirely if another
+    // entity already registered this exact set+layer), owned by the scene root
+    // so entity dispose never drops shared art.
+    await config.atlasManager.getOrCreateTextureMap(texKey, async () => {
+      const { canvas, originalFrames } = compositeLayerAcrossSources(entry);
+      const tm = await newComponent(
+        'texture-map',
+        {
+          name: texKey,
+          textureMapKey: texKey,
+          filePath: `aseprite://${artSetKey}/${entry.name}`,
+          sourceImage: canvas,
+          // Frame rects are sparse/cross-source-offset — set directly below,
+          // bypassing extractOriginalFrames's array-position-tied derivation.
+          imageType: [],
+        },
+        config.sharedParent,
+      );
+      if (tm) {
+        tm._generated = true;
+        tm.originalFrames = originalFrames;
+      }
+      return tm ?? null;
+    });
+
+    // Anchor from the first contributing source (deterministic via source
+    // order) — see the doc comment's mixed-dimension-sources gotcha.
+    const anchor = resolveAnchor(entry.contributions[0].source.ase, config);
+    const slot = config.layerSlots?.[entry.name];
+
+    const bp = {
+      spriteName: entry.name,
+      texKey,
+      anchor,
+      renderOrder: renderOrder++,
+      slot,
+    };
+    bpBuilds.push(bp);
+
+    const sprite = await buildInstanceSprite(parent, bp);
+    if (sprite) allSprites.push(sprite);
+    allLayers.push({ name: entry.name, spriteName: entry.name, visible: true, slot });
+  }
+
+  // Tags stay namespaced per source (`walk` → `${key}-walk`), with every frame
+  // number shifted into that source's allocated block of the shared frame space.
+  const allAnimations: any[] = [];
+  for (const s of parsedSources) {
+    for (const anim of buildAnimations(s.ase)) {
+      allAnimations.push({
+        ...anim,
+        name: `${s.key}-${anim.name}`,
+        frames: (anim.frames as number[]).map((f) => f + s.frameOffset),
+      });
     }
   }
 
@@ -358,12 +443,54 @@ export async function importAsepriteSources(
   );
   if (controller) controller._generated = true;
 
-  // Single atlas pass for the whole loader (all sources' frames at once).
+  // Single atlas pass for the whole loader (all layers' frames at once).
   await config.atlasManager.processTextureMaps();
 
   BLUEPRINTS.set(artSetKey, { builds: bpBuilds, animationMapKey });
 
   return { controller: controller ?? null, sprites: allSprites };
+}
+
+/**
+ * Builds one layer-name's combined canvas: every contributing source's frames,
+ * concatenated left-to-right in source order, each frame tagged with its
+ * `frameIndex` in the SHARED cross-source frame space (`source.frameOffset + f`)
+ * so it lines up with every other layer's texture-map at the same frame index.
+ * Canvas height is the max of contributing sources' heights (top-left aligned;
+ * a shorter source's frames simply don't fill the bottom rows).
+ */
+function compositeLayerAcrossSources(entry: LayerUnionEntry): {
+  canvas: HTMLCanvasElement;
+  originalFrames: any[];
+} {
+  let totalWidth = 0;
+  let maxHeight = 0;
+  for (const c of entry.contributions) {
+    totalWidth += c.source.ase.width * c.source.ase.frameCount;
+    maxHeight = Math.max(maxHeight, c.source.ase.height);
+  }
+  const canvas = createCanvas(totalWidth, maxHeight);
+  const ctx = get2d(canvas);
+  const originalFrames: any[] = [];
+  let xCursor = 0;
+  for (const c of entry.contributions) {
+    const { ase } = c.source;
+    for (let f = 0; f < ase.frameCount; f++) {
+      const frame = ase.frames[f];
+      const destX = xCursor + f * ase.width;
+      for (const layer of c.layers) {
+        const cel = frame.cels.find((cc) => cc.layerIndex === layer.index);
+        if (cel) blitCel(ctx, cel, layer.opacity, destX + cel.x, cel.y);
+      }
+      originalFrames.push({
+        frameIndex: c.source.frameOffset + f,
+        position: new Vector2D(destX, 0),
+        size: new Vector2D(ase.width, ase.height),
+      });
+    }
+    xCursor += ase.frameCount * ase.width;
+  }
+  return { canvas, originalFrames };
 }
 
 /** Creates one per-instance sprite from a blueprint build entry. */

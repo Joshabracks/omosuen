@@ -38,7 +38,8 @@ export async function init(component: ComponentData): Promise<void> {
   const searchRoot = parentNexus.parent
     ? castTo<NexusT>(parentNexus.parent)
     : parentNexus;
-  const viewport = searchRoot.getComponentByName(
+  const viewport = searchRoot.getComponentByTypeAndName(
+    'viewport',
     camera.viewportRef,
     true,
   ) as ViewportT | null;

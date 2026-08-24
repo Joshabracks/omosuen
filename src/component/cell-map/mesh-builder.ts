@@ -255,17 +255,15 @@ function packFaceCover(mesh: Mesh): number {
 /**
  * Marks chunks as dirty that contain or border the given WORLD cell
  * coordinate. Call when a cell is modified so its chunk mesh gets rebuilt.
- * Also purges the mesh cache (`.design/chunk-buffering/05-mesh-cache.md`)
- * for the same coordinates, unconditionally -- a chunk's cell data can
- * change while it's outside the window (`CellWindow.setCell`'s cold-storage
- * path, bypassing the resident chunk array entirely), so a currently-cached
- * chunk needs the same invalidation a resident one gets, or it could later
- * be served as a stale mesh when it re-enters the window. The resident
- * dirty-marking below still no-ops if the coordinate (or its window-local
- * neighbors) are currently outside the window — that part of the edit
- * already went through the cold-storage path instead of the live store, so
- * there's no resident chunk mesh to dirty. See
- * `.design/cell-map-overhaul/09-chunk-grid-and-dirty-marking.md`.
+ * Also purges the mesh cache for the same coordinates, unconditionally -- a
+ * chunk's cell data can change while it's outside the window
+ * (`CellWindow.setCell`'s cold-storage path, bypassing the resident chunk
+ * array entirely), so a currently-cached chunk needs the same invalidation a
+ * resident one gets, or it could later be served as a stale mesh when it
+ * re-enters the window. The resident dirty-marking below still no-ops if the
+ * coordinate (or its window-local neighbors) are currently outside the
+ * window — that part of the edit already went through the cold-storage path
+ * instead of the live store, so there's no resident chunk mesh to dirty.
  */
 export function markChunksDirty(
   cellMap: CellMapT,

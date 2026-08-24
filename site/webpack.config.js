@@ -6,18 +6,24 @@ const CopyPlugin = require("copy-webpack-plugin");
 
 const root = path.resolve(__dirname, "..");
 const siteTilesDir = path.join(__dirname, "assets/tiles");
-const designTilesDir = path.join(
-  root,
-  ".design/website/BaT_v2.0/LapisSin/single_textures",
-);
-const heroTilesDir = fs.existsSync(siteTilesDir) ? siteTilesDir : designTilesDir;
+// Local-only fallback source directory for the raw tile set; not part of the
+// repo. Set HERO_TILES_SOURCE_DIR to point at your own local copy if
+// assets/tiles/ isn't populated yet.
+const heroTilesDir = fs.existsSync(siteTilesDir)
+  ? siteTilesDir
+  : process.env.HERO_TILES_SOURCE_DIR;
 const heroTextureIds = require("./src/scenes/hero-texture-ids.json");
 
-const heroTileCopies = heroTextureIds.map((id) => ({
-  from: path.join(heroTilesDir, `texture${id}.png`),
-  to: `assets/tiles/texture${id}.png`,
-  noErrorOnMissing: true,
-}));
+// noErrorOnMissing below tolerates missing files, but `from` must still be a
+// real string -- skip building copy entries entirely when no source dir is
+// known (siteTilesDir absent and HERO_TILES_SOURCE_DIR unset).
+const heroTileCopies = heroTilesDir
+  ? heroTextureIds.map((id) => ({
+      from: path.join(heroTilesDir, `texture${id}.png`),
+      to: `assets/tiles/texture${id}.png`,
+      noErrorOnMissing: true,
+    }))
+  : [];
 
 module.exports = (_env, argv) => {
   const isProd = argv.mode === "production";

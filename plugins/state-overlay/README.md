@@ -1,11 +1,19 @@
 # omosuen-state-overlay
 
 Official [Omosuen](https://github.com/Joshabracks/omosuen) **plugin component**:
-reactive DOM overlays powered by [State Street](https://github.com/Joshabracks/State-Street),
-driven by the Omosuen engine loop (no second `requestAnimationFrame`).
+reactive DOM overlays powered by [State Street](https://github.com/Joshabracks/State-Street)
+v3.0.0+. A `state.data` mutation schedules exactly one coalesced render via State
+Street's own on-demand scheduling — independent of the Omosuen engine loop; there's
+no per-frame Omosuen dispatch into a `state-overlay` component at all.
 
 State Street is vendored (zero-dependency) under `vendor/`, so this plugin is
 self-contained and the Omosuen core stays dependency-free.
+
+**Note:** because rendering is driven by State Street's own scheduler rather than the
+Omosuen loop, pausing the Omosuen engine loop does **not** pause `state-overlay`
+re-renders — only a `state.data` mutation does (which can still happen from an
+out-of-band DOM event handler, e.g. a `:click=...` bound method, even while the
+engine loop is paused).
 
 ## Install
 
@@ -55,9 +63,12 @@ window.OmosuenStateOverlay.registerStateBundle('counter', { /* ... */ });
 | `bundleKey` | string | Key of a bundle registered via `registerStateBundle`. |
 | `cssOverrides` | Record<string,string> | Inline style overrides for the container. |
 
-Lifecycle: `init` attaches the container; `update` lazily builds the State Street
-instance (so bundles can register late) then ticks `mountCheck()` + `update()`;
-`dispose` calls `state.destroy()` and removes the container.
+Lifecycle: `init` attaches the container, then builds the State Street instance
+immediately if its `bundleKey` is already registered, or via a one-shot callback
+once `registerStateBundle` is called for it (so bundles may still register after
+the component is created). No `update` method — once built, State Street
+schedules its own renders. `dispose` unsubscribes any still-pending bundle wait,
+calls `state.destroy()`, and removes the container.
 
 ## License
 

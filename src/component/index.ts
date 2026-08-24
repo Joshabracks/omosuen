@@ -108,6 +108,11 @@ export { ALL_MESSAGES, ANY_MESSAGES } from './messenger/types';
 
 // Export cell-map utility functions
 export { createDefaultCellData, packCell, unpackCell } from './cell-map';
+
+// Export the general component-name-registry accessor (see
+// component-lookup-registry.ts) -- only returns instances deliberately
+// opted in via registerByName, not a general "does this name exist" search.
+export { getRegisteredByName } from './component-lookup-registry';
 // Ready-made cube mesh with per-face 0-1 UVs (drop into a cell-map `meshes` slot
 // for crisp per-face texturing). Exposed as both names; `uvCube` is the short alias.
 export {

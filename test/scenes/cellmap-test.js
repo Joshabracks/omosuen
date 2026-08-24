@@ -910,8 +910,7 @@ export async function createScene() {
     // Drives the camera at a sustained, fixed-high pan velocity for a fixed
     // duration, then auto-exports a perf snapshot -- a repeatable way to capture
     // cell-map's window-retarget/reassemble cost under sustained fast panning
-    // (see .design/spike_cell-map-chunk-buffering/overview.md) without manually
-    // timing a drag-then-console-export by hand.
+    // without manually timing a drag-then-console-export by hand.
     const PAN_STRESS_SPEED = 2400;       // same units as camera.pan's args, per second
     const PAN_STRESS_DURATION_MS = 5000; // ~= profiler's 300-frame history at 60fps
     let panStressActive = false;
@@ -1140,12 +1139,11 @@ export async function createScene() {
         meshes: [null, null, rampSW, rampNE, halfCube, Omosuen.uvCube()],
         cellSize: new Omosuen.Vector3D(CELL_WIDTH, CELL_HEIGHT, CELL_DEPTH),
         chunkSize: new Omosuen.Vector3D(CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH),
-        // Generative path (see .design/completed_tasks/cell-map-overhaul/04-procedural-generation.md
-        // and 08-live-construction-and-ownership.md): the hand-authored structure below stays
-        // exactly where it was, returned as fixed/predetermined data for coordinates inside its
-        // footprint; everywhere else generates simple rolling terrain, unbounded in every
-        // direction. windowRadius left at its default (3x3x3 chunks) so a modest camera pan is
-        // enough to cross a chunk boundary and exercise the shift.
+        // Generative path: the hand-authored structure below stays exactly where it was,
+        // returned as fixed/predetermined data for coordinates inside its footprint;
+        // everywhere else generates simple rolling terrain, unbounded in every direction.
+        // windowRadius left at its default (3x3x3 chunks) so a modest camera pan is enough
+        // to cross a chunk boundary and exercise the shift.
         generateCell: (x, y, z) => computeCellData(x, y, z),
         // Bulk variant -- preferred by CellWindow.baselineChunk() over looping
         // generateCell when both are supplied, avoiding per-cell JS call

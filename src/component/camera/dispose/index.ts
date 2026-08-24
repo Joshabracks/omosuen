@@ -2,8 +2,8 @@ import { NexusT } from '../../nexus';
 import { ComponentData, castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
-import { clearTextureMapCache } from '../render/index';
 import { clearLightUniformCache } from '../render/light-uniforms';
+import { clearRenderablesCache } from '../collect-renderables/index';
 
 /**
  * Disposes WebGL resources when the camera is removed.
@@ -15,13 +15,14 @@ export function dispose(component: ComponentData): void {
   const camera = component as CameraT;
   const res = camera.glResources;
 
-  // Obtain the GL context via the same viewport lookup pattern used in init
+  // Obtain the GL context via the same cached viewport lookup used elsewhere
   let gl: WebGL2RenderingContext | null = null;
   if (camera.parent && camera.parent.type === 'nexus') {
     const parentNexus = castTo<NexusT>(camera.parent!);
     if (parentNexus.parent) {
       const sceneRoot = castTo<NexusT>(parentNexus.parent!);
-      const viewport = sceneRoot.getComponentByName(
+      const viewport = sceneRoot.getComponentByTypeAndName(
+        'viewport',
         camera.viewportRef,
         true,
       ) as ViewportT | null;
@@ -58,7 +59,7 @@ export function dispose(component: ComponentData): void {
 
   // Clear module-level caches for this camera
   clearLightUniformCache(camera.id!);
-  clearTextureMapCache(camera.id!);
+  clearRenderablesCache(camera.id!);
 
   camera._disposed = true;
 }

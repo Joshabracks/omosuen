@@ -13,8 +13,7 @@
  * (dropping ones that still match baseline — nothing to store), assemble the
  * new window's contents (reusing the still-overlapping region, pulling
  * newly-exposed chunks from cold storage or the empty baseline), then reload
- * the store with the new contents. See
- * `.design/completed_tasks/cell-map-overhaul/02-wasm-windowed-store.md`.
+ * the store with the new contents.
  */
 import {
   cellStoreGet,
@@ -38,8 +37,7 @@ export const DEFAULT_CHUNK_DATA_GEN_BUDGET_MS = 4;
 /**
  * Rejects a malformed coordinate (NaN, ±Infinity, non-numeric) — a bug
  * regardless of where the window happens to be, so this throws
- * unconditionally. See
- * `.design/completed_tasks/cell-map-overhaul/07-bounds-checking-diagnostics.md`.
+ * unconditionally.
  */
 function assertFiniteCoordinates(x: number, y: number, z: number): void {
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
@@ -61,8 +59,7 @@ export interface ChunkCoord {
  * behavior. Must be a pure function of its coordinates for a given
  * world/seed — same input, same output, every time — so re-materializing a
  * never-edited chunk after it's evicted produces the same result it had
- * before. This is a contract on the caller, not something enforced here; see
- * `.design/completed_tasks/cell-map-overhaul/04-procedural-generation.md`.
+ * before. This is a contract on the caller, not something enforced here.
  */
 export interface ChunkGenerator {
   /**
@@ -97,14 +94,6 @@ export interface WindowConfig {
   /** Optional procedural baseline (see `ChunkGenerator`). Omit for a purely hand-authored map. */
   generator?: ChunkGenerator;
   /**
-   * Whether `setCell` logs a diagnostic when a write resolves to the slower
-   * cold-storage path (outside the current window) — visibility for the
-   * common "coordinate-space mixup" bug, not an error (an off-window write is
-   * fully legitimate). Default true; a game that does frequent, intentional
-   * off-window scripted edits may want to disable it.
-   */
-  warnOnOutOfWindowWrite?: boolean;
-  /**
    * Called once at the end of `reassemble()`, right after the window's
    * committed `origin`/`gridDims`/`cellDims` change — the one point,
    * regardless of whether the shift committed synchronously or via a staged
@@ -138,7 +127,6 @@ export class CellWindow {
   private readonly emptyCell: number;
   private readonly generator: ChunkGenerator | undefined;
   private readonly coldStorage: ChunkColdStorage;
-  private readonly warnOnOutOfWindowWrite: boolean;
   private readonly onReassemble: WindowConfig['onReassemble'];
   /**
    * World-chunk-coordinate keys (`chunkKey`) of chunks that might currently
@@ -213,7 +201,6 @@ export class CellWindow {
     this.emptyCell = config.emptyCell;
     this.generator = config.generator;
     this.coldStorage = coldStorage;
-    this.warnOnOutOfWindowWrite = config.warnOnOutOfWindowWrite ?? true;
     this.onReassemble = config.onReassemble;
     this.gridDims = {
       x: 2 * this.windowRadius.x + 1,
@@ -317,14 +304,10 @@ export class CellWindow {
    * (the fast path); otherwise decodes the containing chunk (from cold
    * storage or baseline), patches the cell, and writes the whole chunk back —
    * a fully supported operation (e.g. a scripted edit to an off-window
-   * region), not an error. If the patched chunk ends up matching baseline
-   * again (e.g. an edit reverted by hand), its cold-storage entry is dropped
-   * rather than kept around needlessly.
-   *
-   * When `warnOnOutOfWindowWrite` is enabled (default), the off-window path
-   * logs a diagnostic naming the coordinate and current window bounds, since
-   * it's also the signature of a coordinate-space mixup bug — visibility, not
-   * blocking. See `.design/completed_tasks/cell-map-overhaul/07-bounds-checking-diagnostics.md`.
+   * region, or an AI acting on cells outside the resident window), not an
+   * error. If the patched chunk ends up matching baseline again (e.g. an
+   * edit reverted by hand), its cold-storage entry is dropped rather than
+   * kept around needlessly.
    */
   setCell(worldX: number, worldY: number, worldZ: number, value: number): void {
     assertFiniteCoordinates(worldX, worldY, worldZ);
@@ -347,20 +330,6 @@ export class CellWindow {
         this.pendingShift.editedDuringStaging.set(key, worldChunk);
       }
       return;
-    }
-
-    if (this.warnOnOutOfWindowWrite) {
-      const origin = this.originChunk;
-      const bounds = origin
-        ? `origin chunk (${origin.cx},${origin.cy},${origin.cz}), size ` +
-          `${this.cellDims.x}x${this.cellDims.y}x${this.cellDims.z}`
-        : 'no window loaded yet';
-      console.warn(
-        `[cell-map] setCell(${worldX}, ${worldY}, ${worldZ}) is outside the ` +
-          `current window (${bounds}) — routed through cold storage (slower ` +
-          `path). If this is unexpected, check your coordinate space (world ` +
-          `vs. chunk vs. window-local) or focus point.`,
-      );
     }
 
     const { x: csx, y: csy, z: csz } = this.chunkSize;
@@ -388,6 +357,91 @@ export class CellWindow {
     const key = this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz);
     if (this.pendingShift?.staged.has(key)) {
       this.pendingShift.editedDuringStaging.set(key, worldChunk);
+    }
+  }
+
+  /**
+   * Writes many cells at once, batched by containing chunk for the
+   * off-window path. Equivalent in effect to calling `setCell` once per
+   * entry, but for off-window entries -- the case `CellMap.setCells`/
+   * `advanceSetCells` exist for -- resolves, patches, compares, and stores
+   * each touched chunk exactly once, instead of once per cell landing in it
+   * (see `setCell`'s doc comment for the per-cell cost this avoids repeating
+   * N times for the same chunk). In-window entries still go through the same
+   * cheap direct-write fast path as `setCell`, per-entry -- no batching
+   * needed there.
+   */
+  setCellsBatch(
+    entries: {
+      worldX: number;
+      worldY: number;
+      worldZ: number;
+      value: number;
+    }[],
+  ): void {
+    const { x: csx, y: csy, z: csz } = this.chunkSize;
+    const offWindow = new Map<
+      string,
+      { worldChunk: ChunkCoord; cells: Uint32Array }
+    >();
+
+    for (const entry of entries) {
+      const { worldX, worldY, worldZ, value } = entry;
+      assertFiniteCoordinates(worldX, worldY, worldZ);
+      const local = this.worldToLocal(worldX, worldY, worldZ);
+      if (local) {
+        cellStoreSet(local.x, local.y, local.z, value);
+        const worldChunk: ChunkCoord = {
+          cx: Math.floor(worldX / csx),
+          cy: Math.floor(worldY / csy),
+          cz: Math.floor(worldZ / csz),
+        };
+        const key = this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz);
+        this.editedSinceBaseline.add(key);
+        // Same staged-shift correction as setCell's in-window branch.
+        if (this.pendingShift?.staged.has(key)) {
+          this.pendingShift.editedDuringStaging.set(key, worldChunk);
+        }
+        continue;
+      }
+
+      const worldChunk: ChunkCoord = {
+        cx: Math.floor(worldX / csx),
+        cy: Math.floor(worldY / csy),
+        cz: Math.floor(worldZ / csz),
+      };
+      const key = this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz);
+      let group = offWindow.get(key);
+      if (!group) {
+        const cells =
+          this.coldStorage.get(worldChunk.cx, worldChunk.cy, worldChunk.cz) ??
+          this.baselineChunk(worldChunk);
+        group = { worldChunk, cells };
+        offWindow.set(key, group);
+      }
+      const localX = worldX - worldChunk.cx * csx;
+      const localY = worldY - worldChunk.cy * csy;
+      const localZ = worldZ - worldChunk.cz * csz;
+      group.cells[localZ * csy * csx + localY * csx + localX] = value;
+    }
+
+    // Resolve each touched off-window chunk exactly once, regardless of how
+    // many entries landed in it.
+    for (const [key, { worldChunk, cells }] of offWindow) {
+      if (this.matchesBaseline(worldChunk, cells)) {
+        this.coldStorage.delete(worldChunk.cx, worldChunk.cy, worldChunk.cz);
+      } else {
+        this.coldStorage.set(
+          worldChunk.cx,
+          worldChunk.cy,
+          worldChunk.cz,
+          cells,
+        );
+      }
+      // Same staged-shift correction as setCell's off-window branch.
+      if (this.pendingShift?.staged.has(key)) {
+        this.pendingShift.editedDuringStaging.set(key, worldChunk);
+      }
     }
   }
 
@@ -696,13 +750,12 @@ export class CellWindow {
    * generation. Centralizing this is what makes it impossible for the
    * eviction/assembly loop, `advance`'s per-item staging, and commit-time
    * re-resolution to independently drift on priority order or on whether
-   * cold storage even gets checked -- see
-   * `.design/chunk-buffering/10-unify-chunk-resolution-paths.md`. Live data
-   * always wins over a cold-storage snapshot when both exist for the same
-   * coordinate: the live store reflects every edit up to this instant, cold
-   * storage only reflects whatever was true the last time this chunk was
-   * evicted (and is never deleted on a read, so a chunk that re-entered the
-   * window via cold storage can leave a stale entry behind indefinitely).
+   * cold storage even gets checked. Live data always wins over a
+   * cold-storage snapshot when both exist for the same coordinate: the live
+   * store reflects every edit up to this instant, cold storage only
+   * reflects whatever was true the last time this chunk was evicted (and is
+   * never deleted on a read, so a chunk that re-entered the window via cold
+   * storage can leave a stale entry behind indefinitely).
    */
   private resolveChunk(
     worldChunk: ChunkCoord,

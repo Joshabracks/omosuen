@@ -106,12 +106,6 @@ export interface TextureMapOptions extends ComponentOptions {
    * - undefined: Entire image is a single frame
    */
   imageType?: ImageType;
-
-  /**
-   * Optional atlas manager to auto-register this texture map with.
-   * If provided, automatically calls atlasManager.addTextureMap() during initialization.
-   */
-  atlasManager?: unknown; // Using unknown to avoid circular dependency, will be cast to AtlasManagerT
 }
 
 /**
@@ -177,14 +171,7 @@ export function extractOriginalFrames(
  * Builder function for creating TextureMap components.
  */
 export function builder(options: TextureMapOptions): TextureMapT {
-  const {
-    textureMapKey,
-    filePath,
-    sourceImage,
-    imageType,
-    name,
-    atlasManager,
-  } = options;
+  const { textureMapKey, filePath, sourceImage, imageType, name } = options;
 
   // Extract original frames if imageType is provided
   // If imageType is undefined, frames will be set when image loads
@@ -204,19 +191,6 @@ export function builder(options: TextureMapOptions): TextureMapT {
     packedFrames: [],
     frameIndexMap: new Map(),
   } as unknown as TextureMapT;
-
-  // Auto-register with atlas manager if provided
-  if (atlasManager) {
-    // Cast to any to avoid circular dependency issues
-    const am = atlasManager as any;
-    if (am.type === 'atlas-manager' && typeof am.addTextureMap === 'function') {
-      am.addTextureMap(textureMap);
-    } else {
-      console.warn(
-        '[texture-map] atlasManager option provided but is not a valid AtlasManager component',
-      );
-    }
-  }
 
   return textureMap;
 }

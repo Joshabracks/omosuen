@@ -15,6 +15,7 @@ export type LoopPhase =
   | 'update'
   | 'dispose'
   | 'transforms'
+  | 'onscreen'
   | 'render'
   | 'messages';
 
@@ -55,6 +56,7 @@ function emptyPhases(): Record<LoopPhase, number> {
     update: 0,
     dispose: 0,
     transforms: 0,
+    onscreen: 0,
     render: 0,
     messages: 0,
   };

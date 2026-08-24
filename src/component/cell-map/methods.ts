@@ -28,6 +28,7 @@ import {
   sampleSurfaceHeight,
 } from './raycast';
 import { cellStoreFlush } from '../camera/render/wasm';
+import { bumpRenderableVersion } from '../renderable-version';
 import { isProfilingEnabled, recordComponentUpdate } from '../../loop/profile';
 
 /**
@@ -66,8 +67,7 @@ function recordCellMapPhase(
  * a spatial bounds check — plain range comparisons (`x < 0 || x >= mapSize.x`)
  * silently let NaN through, since every comparison against NaN is false. A
  * bad coordinate is a bug regardless of where a shiftable window (once one
- * exists) happens to be, so this throws unconditionally — see
- * `.design/completed_tasks/cell-map-overhaul/07-bounds-checking-diagnostics.md`.
+ * exists) happens to be, so this throws unconditionally.
  */
 function assertFiniteCoordinates(x: number, y: number, z: number): void {
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
@@ -128,8 +128,7 @@ export interface CellMapMethods extends ComponentMethods {
    * `coordinates` is a WORLD cell coordinate (matching `setCellData`) — an
    * off-window coordinate is fully supported, persisted via cold storage,
    * and survives a window shift or save/load, the same as primary cell
-   * data. (Previously window-local only, with no off-window support at all —
-   * see `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`.)
+   * data. (Previously window-local only, with no off-window support at all.)
    */
   setEmissionColor: (
     component: CellMapT,
@@ -748,6 +747,12 @@ export const CellMap: CellMapMethods = {
 
       const deadline = performance.now() + pending.budgetMs;
       const touchedChunks = new Map<string, ChunkCoord>();
+      const batch: {
+        worldX: number;
+        worldY: number;
+        worldZ: number;
+        value: number;
+      }[] = [];
       let processed = 0;
       while (pending.cursor < pending.entries.length) {
         if (processed > 0 && performance.now() > deadline) break;
@@ -761,7 +766,12 @@ export const CellMap: CellMapMethods = {
           ),
           visible: entry.data.visible,
         };
-        component.window.setCell(entry.x, entry.y, entry.z, packCell(clamped));
+        batch.push({
+          worldX: entry.x,
+          worldY: entry.y,
+          worldZ: entry.z,
+          value: packCell(clamped),
+        });
         const { x: csx, y: csy, z: csz } = component.chunkSize;
         const cx = Math.floor(entry.x / csx);
         const cy = Math.floor(entry.y / csy);
@@ -770,6 +780,11 @@ export const CellMap: CellMapMethods = {
         pending.cursor++;
         processed++;
       }
+
+      // Applies this frame's whole budget-bounded slice in one call --
+      // off-window entries are resolved/compared/stored once per chunk they
+      // land in, not once per entry (see CellWindow.setCellsBatch).
+      if (batch.length > 0) component.window.setCellsBatch(batch);
 
       if (processed > 0) component.needsGPUUpdate = true;
       for (const wc of touchedChunks.values()) {
@@ -829,5 +844,6 @@ export const CellMap: CellMapMethods = {
     }
     resetCellMapState();
     cm._disposed = true;
+    bumpRenderableVersion('cell-map');
   },
 };

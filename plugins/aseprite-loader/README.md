@@ -39,38 +39,51 @@ await Omosuen.newComponent('aseprite-loader', {
 
 ### Multiple files on one entity (`sources`)
 
-One loader can ingest **several** `.aseprite` files into the **same** nexus — one shared
-animation-controller, one atlas pass — instead of a child nexus per file. Give each source an
-`id` (default: the filename without extension); every artifact from that source is namespaced by
-it, so nothing collides:
+One loader can ingest **several** `.aseprite` files into the **same** nexus by **horizontal
+ingestion**: instead of one full sprite set per file, sprites are shared **by layer name** across
+every source in the set. A set where every source has `main`/`outline` layers produces exactly
+**2 sprites total** — however many sources are in the set — because each layer name gets one
+shared texture-map (every contributing source's frames packed into it, concatenated
+left-to-right) and one shared sprite. `sources` is keyed by source id (used to prefix animation
+names — see below); a bare string value is shorthand for `{ filePath }`:
 
 ```js
 await Omosuen.newComponent('aseprite-loader', {
   name: 'unit',
-  sources: [
-    { filePath: './sprites/Villager.aseprite' },                 // id defaults to "Villager"
-    { filePath: './sprites/Fighter.aseprite', id: 'fighter' },   // explicit id
-    { filePath: './sprites/Lumberjack.aseprite',
-      layerSlots: { 'hair-a': 'hair', 'hair-b': 'hair' } },      // per-source slots
-  ],
-  flatten: false,      // loader-level default; each source may override flatten / visibleOnly
+  sources: {
+    villager: './sprites/Villager.aseprite',
+    fighter: './sprites/Fighter.aseprite',
+    lumberjack: './sprites/Lumberjack.aseprite',
+  },
+  flatten: false,       // set-level: applies to every source in the set (no per-source override)
+  layerSlots: { 'hair-a': 'hair', 'hair-b': 'hair' }, // set-level, keyed by layer name
   anchorMode: 'bottom-center',
 });
 ```
 
-| Artifact | Single `filePath` | `sources` (namespaced) |
-|----------|-------------------|------------------------|
-| Sprite / layer name | layer name | `{id}:{layer}` (flattened source: `{id}`) |
-| Animation (tag) name | `walk` | `{id}-walk` |
-| Texture key | `aseprite:{packageId}:{build}` | `aseprite:{id}:{build}` |
+Key order matters — it drives frame-index allocation across the set (see below) — so declare
+`sources` in a stable order and **avoid numeric-string keys** (`"1"`, `"2"`); JavaScript reorders
+those ahead of any other keys regardless of declaration order, which would silently scramble
+frame allocation.
 
-**Swapping variants** (show one source, hide the rest) is done by **name prefix**, not by engine
-`slot` (which is reserved for per-source `layerSlots` and stays *mutually exclusive*). To reveal
-source `fighter`: for every controller layer whose name starts with `fighter:`, call
-`setLayerVisible(name, true)`, and set the others to `false`. Play its animation in the **same
-tick** you reveal it — `controller.play('fighter-walk')` — so no sprite renders a frame index from
-another source's timeline. Duplicate `filePath`s in `sources` are skipped with a warning; use one
-`id` per physical file.
+| Artifact | Single `filePath` | `sources` (shared by layer name) |
+|----------|-------------------|-----------------------------------|
+| Sprite / layer name | layer name | `{layerName}` (flattened set: `{packageId}`) — one sprite total, not per source |
+| Animation (tag) name | `walk` | `{sourceKey}-walk` |
+| Texture key | `aseprite:{packageId}:{build}` | `aseprite:{artSetKey}:{layerName}` |
+
+**Swapping variants** ("costumes") means two things, not one: (1) call
+`controller.play('fighter-walk')` — animation tags stay namespaced per source, so this is how you
+select which source's frames actually play; (2) show/hide whichever layers aren't universal across
+every source in the set (e.g. an accessory-only layer one source has and others don't) — most
+layers are shared and need no toggling at all, but for the few that aren't, call
+`setLayerVisible(name, bool)` in the **same tick** as `play()`. Skip step 2 for a layer the
+newly-active source *does* have — hiding a layer the active source doesn't use only matters to
+avoid a harmless console warning (see Gotchas), not incorrect rendering.
+
+**Gotcha**: if a layer the active source doesn't contribute to is left visible while that source's
+animation plays, the engine logs `[camera] Sprite '...' frame N not found in texture map` every
+frame (not a crash — the sprite is just skipped) — hide layers the active source doesn't use.
 
 ### Programmatic (bundler / TS)
 
@@ -88,18 +101,21 @@ registerAsepriteLoader(); // or: Omosuen.init({ plugins: [asepriteLoaderDefiniti
 const buf = await fetch('./hero.aseprite').then((r) => r.arrayBuffer());
 await importAseprite(buf, { parent, atlasManager, packageId: 'hero', flatten: false });
 
-// Multi-file entity directly (namespaced by each entry's `id`; the importer
+// Multi-file entity directly (shared by layer name across the set; the importer
 // fetches each filePath lazily, skipping the network on cached repeat spawns):
 import { importAsepriteSources } from 'omosuen-aseprite-loader';
 await importAsepriteSources(
-  [
-    { filePath: './sprites/Villager.aseprite', id: 'villager', flatten: false, visibleOnly: true },
-    { filePath: './sprites/Fighter.aseprite', id: 'fighter', flatten: false, visibleOnly: true },
-  ],
+  {
+    villager: { filePath: './sprites/Villager.aseprite', visibleOnly: true },
+    fighter: { filePath: './sprites/Fighter.aseprite', visibleOnly: true },
+  },
   // `sharedParent` (typically the scene root) owns the shared texture-maps +
   // animation-map so they outlive any one entity; `parent` gets the per-instance
-  // sprites + controller.
-  { parent, atlasManager, sharedParent: sceneRoot, packageId: 'unit', anchorMode: 'bottom-center' },
+  // sprites + controller. `flatten`/`layerSlots` are set-level here too.
+  {
+    parent, atlasManager, sharedParent: sceneRoot, packageId: 'unit',
+    flatten: false, anchorMode: 'bottom-center',
+  },
 );
 ```
 
@@ -107,8 +123,10 @@ await importAsepriteSources(
 
 A multi-file loader shares its heavy static data across every entity of the same art set:
 
-- **Texture-maps** are created once per key and owned by the scene root; each entity's sprites
-  reference them by key (the engine resolves texture-maps globally by `textureMapKey`).
+- **Texture-maps** are created once per (art set, layer name) key and owned by the scene root —
+  already shared across every source in the set (not just across entities) by the horizontal
+  ingestion described above; each entity's sprites reference them by key (the engine resolves
+  texture-maps globally by `textureMapKey`).
 - **Animations** live in one shared `animation-map` component; each entity's controller references it
   by key (`animations: '<key>'`) instead of inlining a copy.
 - The **first** entity of an art set pays the full import; **subsequent** entities are built from a

@@ -1,11 +1,14 @@
 /**
  * Aseprite Shared-Data Test — many entities, one copy of the shared data.
  *
- * Spawns a row of units that all import the SAME two-file art set. Each unit
+ * Spawns a row of units that all import the SAME two-file art set, ingested
+ * horizontally (sprites shared by layer name across the set, not per source —
+ * see `aseprite-multi-test.js`'s doc comment for the full model). Each unit
  * shows ONE character variant (swordman or dryad) and has its OWN dropdown to
  * play any of that variant's animations independently. This demonstrates the
  * data-reuse optimization AND that instances stay independent:
- *   - texture-maps are created once per key (owned by the scene root) and shared;
+ *   - texture-maps are created once per (art set, layer name) key, owned by the
+ *     scene root, and shared across every entity of the same art set;
  *   - all controllers of the art set reference ONE `animation-map` by key;
  *   - the first unit pays the full import, the rest are built from a cached
  *     blueprint (no fetch/parse/composite);
@@ -24,10 +27,18 @@ const UNIT_COUNT = POSITIONS.length;
 const SCALE = 2;
 
 // Shared two-file art set every unit imports.
-const SOURCES = [
-  { filePath: ASE_BASE + 'MiniSwordMan.aseprite', id: 'swordman' },
-  { filePath: ASE_BASE + 'MiniDryadDeer.aseprite', id: 'dryad' },
-];
+const SOURCES = {
+  swordman: ASE_BASE + 'MiniSwordMan.aseprite',
+  dryad: ASE_BASE + 'MiniDryadDeer.aseprite',
+};
+
+// Which shared layers each source actually contributes to (known asset
+// structure). Layers not listed for a source have no frame data for it and
+// must be hidden while that source's animation plays.
+const SOURCE_LAYERS = {
+  swordman: ['main', 'hands', 'outline', 'slash'],
+  dryad: ['main', 'hands', 'outline', 'hands extra', 'Layer 1'],
+};
 
 // units[i] = { nexus, loader, variantId }
 const units = [];
@@ -47,12 +58,14 @@ function controllerOf(nexus) {
   return nexus ? nexus.getComponentByType('animation-controller', false) : null;
 }
 
-// Show only the given source's layers (name prefix `${id}:`), hide the rest.
+// Hide any shared layer the given variant doesn't contribute to; leave the
+// common ones (main/hands/outline) alone.
 function applyVariant(nexus, variantId) {
   const ac = controllerOf(nexus);
   if (!ac) return;
+  const owned = new Set(SOURCE_LAYERS[variantId] || []);
   for (const layer of ac.getLayers()) {
-    ac.setLayerVisible(layer.name, layer.name.startsWith(`${variantId}:`));
+    ac.setLayerVisible(layer.name, owned.has(layer.name));
   }
 }
 

@@ -1,6 +1,7 @@
 import { ComponentData, ComponentMethods } from '../types';
 import { Vector3D } from '../../math';
 import { LightT, LightType } from './data';
+import { bumpRenderableVersion } from '../renderable-version';
 
 export interface LightMethods extends ComponentMethods {
   type: 'light';
@@ -30,6 +31,7 @@ export const Light: LightMethods = {
   dispose(component: ComponentData): void {
     const light = component as LightT;
     light._disposed = true;
+    bumpRenderableVersion('light');
   },
 
   setColor(light: LightT, color: Vector3D): void {

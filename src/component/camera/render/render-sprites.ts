@@ -23,6 +23,16 @@ const DEFAULT_CELL_SIZE_Z = 32;
 /** Default map dimension when no cell-maps provide actual dimensions. */
 const DEFAULT_MAP_DIMENSION = 20;
 
+/**
+ * World-unit padding applied to the camera-relative off-screen reject below,
+ * so a sprite whose transform anchor sits just outside the viewport but
+ * still has visible pixels on-screen isn't dropped. Separate from
+ * transform/on-screen.ts's EDGE_PAD_PX (screen pixels, different consumer) --
+ * a tunable starting default, not derived from real asset data, same status
+ * as that constant.
+ */
+const EDGE_PAD_WORLD = 64;
+
 // Reused scratch buffers for the per-frame back-to-front depth sort. Parallel arrays
 // (not an array of objects) grown only to the high-water sprite count, so steady-state
 // rendering allocates nothing — no GC churn.
@@ -301,7 +311,8 @@ export function renderSprites(
   const u_cameraPosition = gl.getUniformLocation(program, 'u_cameraPosition');
   const u_zoom = gl.getUniformLocation(program, 'u_zoom');
   const u_cellSize = gl.getUniformLocation(program, 'u_cellSize');
-  const u_mapSize = gl.getUniformLocation(program, 'u_mapSize');
+  const u_windowSize = gl.getUniformLocation(program, 'u_windowSize');
+  const u_worldOffset = gl.getUniformLocation(program, 'u_worldOffset');
   const u_spritePosition = gl.getUniformLocation(program, 'u_spritePosition');
   const u_spriteSize = gl.getUniformLocation(program, 'u_spriteSize');
   const u_anchor = gl.getUniformLocation(program, 'u_anchor');
@@ -343,6 +354,14 @@ export function renderSprites(
   );
   const u_cellSolidity = gl.getUniformLocation(program, 'u_cellSolidity');
   const u_revealTarget = gl.getUniformLocation(program, 'u_revealTarget');
+  const u_cellEmissionColor = gl.getUniformLocation(
+    program,
+    'u_cellEmissionColor',
+  );
+  const u_hasCellEmissionColor = gl.getUniformLocation(
+    program,
+    'u_hasCellEmissionColor',
+  );
 
   // Set constant uniforms (same for all sprites)
   // Sprites render at full resolution to screen (not via FBO), so they use
@@ -373,7 +392,10 @@ export function renderSprites(
     unifiedCellSizeY,
     unifiedCellSizeZ,
   );
-  gl.uniform3f(u_mapSize, maxMapWidth, maxMapHeight, maxMapDepth);
+  gl.uniform3f(u_windowSize, maxMapWidth, maxMapHeight, maxMapDepth);
+  // Sprites have no shiftable cell-window origin, so this stays (0,0,0) --
+  // see the depth-bias comment in unified.vert.
+  gl.uniform3f(u_worldOffset, 0, 0, 0);
 
   // Set dynamic light uniforms (same lights as cell-maps)
   setLightUniforms(gl, camera.id!, lights);
@@ -437,6 +459,26 @@ export function renderSprites(
     gl.uniform1i(u_hasVisibilityMask, 0);
   }
 
+  // Same reasoning as u_cellSolidity above -- always pin u_cellEmissionColor
+  // (also sampler2DArray) to unit 6, matching the unit render-cell-maps.ts
+  // uses for it. Scenes with no cell-maps never run renderCellMaps, so
+  // without this the uniform would default to unit 0 and collide with
+  // u_albedoTexture (sampler2D) on every sprite draw.
+  gl.activeTexture(gl.TEXTURE6);
+  gl.bindTexture(
+    gl.TEXTURE_2D_ARRAY,
+    camera.glResources.cellEmissionColorTexture,
+  );
+  gl.uniform1i(u_cellEmissionColor, 6);
+  if (
+    camera.glResources.cellEmissionColorHasAny &&
+    camera.glResources.cellEmissionColorTexture
+  ) {
+    gl.uniform1i(u_hasCellEmissionColor, 1);
+  } else {
+    gl.uniform1i(u_hasCellEmissionColor, 0);
+  }
+
   // Disable cell-only attributes that may be left enabled from cell rendering
   const a_origPosition = gl.getAttribLocation(program, 'a_origPosition');
   if (a_origPosition >= 0) {
@@ -484,6 +526,23 @@ export function renderSprites(
     const p = t.worldPosition;
     const pRx = p.x * cosYaw + p.z * sinYaw;
     const pRz = -p.x * sinYaw + p.z * cosYaw;
+
+    // Camera-relative off-screen reject. Reuses this frame's already-computed
+    // camIsoX/camIsoY (this camera's own iso-projected position, set above)
+    // instead of routing through transform/on-screen.ts's resolveProjection/
+    // worldToScreen, which would redundantly re-derive the same numbers
+    // inside the hottest per-sprite loop in the renderer. Deliberately not
+    // done in collect-renderables (see that module's comment) -- camera
+    // position isn't tracked by the version-counter cache collection relies
+    // on, so this filter must be re-evaluated fresh every draw, every frame.
+    const isoX = ISO_H * (pRx - pRz);
+    const isoY = sinA * (pRx + pRz) - heightScale * p.y;
+    const halfW = viewport.width / (2 * camera.zoom) + EDGE_PAD_WORLD;
+    const halfH = viewport.height / (2 * camera.zoom) + EDGE_PAD_WORLD;
+    if (Math.abs(isoX - camIsoX) > halfW || Math.abs(isoY - camIsoY) > halfH) {
+      continue;
+    }
+
     _drawSprites[drawCount] = sprite;
     _drawTransforms[drawCount] = t;
     _drawDepths[drawCount] = pRx + heightScale * p.y + pRz;

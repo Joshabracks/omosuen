@@ -5,6 +5,8 @@ let totalBytes = 0;
 let useTick = 0;
 let budget = 256 * 1024 * 1024; // 256 MB default; override via State options
 const warmQueue: string[] = [];
+let warmLoopActive = false;
+let warmPerFrame = 4;
 
 /**
  * Sets the maximum total size (in bytes) of cached image blobs. When exceeded,
@@ -83,10 +85,32 @@ function evict(): void {
   }
 }
 
-/** Queues base64 data URIs to be converted + pre-decoded during idle frames. */
+/** Sets how many queued images the shared warm loop decodes per frame (default 4). */
+export function setWarmPerFrame(n: number): void {
+  if (typeof n === "number" && n > 0) warmPerFrame = n;
+}
+
+function warmTick(): void {
+  processWarmQueue(warmPerFrame);
+  if (warmQueue.length > 0) {
+    requestAnimationFrame(warmTick);
+  } else {
+    warmLoopActive = false;
+  }
+}
+
+/**
+ * Queues base64 data URIs to be converted + pre-decoded during idle frames. Starts a
+ * self-limiting drain loop (owned here, not by any particular State instance) if one
+ * isn't already running -- it stops itself once the queue is empty.
+ */
 export function enqueueWarm(list: string[]): void {
   for (const uri of list) {
     if (typeof uri === "string" && isBase64DataUri(uri)) warmQueue.push(uri);
+  }
+  if (!warmLoopActive && warmQueue.length > 0 && typeof requestAnimationFrame === "function") {
+    warmLoopActive = true;
+    requestAnimationFrame(warmTick);
   }
 }
 

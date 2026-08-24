@@ -243,11 +243,11 @@ export interface ChunkMesh {
    * Whether this chunk sat at the resident window's own edge (any axis) the
    * last time its mesh was built -- meaning some of its faces may have been
    * culled by `EDGE_OCCLUDES` against an unknown (not-yet-loaded) neighbor,
-   * rather than real data. A chunk restored from the mesh cache
-   * (`.design/chunk-buffering/05-mesh-cache.md`) with this set needs a
-   * remesh before being trusted, since it may now have a real neighbor on
-   * that side. See `reassembleChunks` in `data.ts` and `rebuildDirtyChunks`
-   * in `mesh-builder.ts` (which sets this after every mesh build).
+   * rather than real data. A chunk restored from the mesh cache with this set
+   * needs a remesh before being trusted, since it may now have a real
+   * neighbor on that side. See `reassembleChunks` in `data.ts` and
+   * `rebuildDirtyChunks` in `mesh-builder.ts` (which sets this after every
+   * mesh build).
    */
   meshedAtEdge: boolean;
 

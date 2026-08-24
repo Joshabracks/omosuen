@@ -11,6 +11,7 @@ import type { AnimationControllerMethods } from './methods';
 import type { Animation, AnimationLayer, AnimationState } from './types';
 import type { ChannelType } from '../sprite/types';
 import type { SpriteT } from '../sprite/data';
+import type { TransformT } from '../transform';
 
 /**
  * AnimationController component for managing sprite frame animations.
@@ -83,6 +84,26 @@ export interface AnimationControllerT
    * nexus nor searches by name. Rebuilt on demand; never serialized.
    */
   _layerSprites?: (SpriteT | null)[];
+
+  /**
+   * Transient cache of the sibling transform consulted for the on-screen
+   * write-gate. `undefined` = not yet resolved; `null` = resolved, no sibling
+   * transform found. Resolved once and never invalidated post-construction
+   * (reparenting isn't a real, exercised operation in this engine). Never
+   * serialized.
+   */
+  _transformRef?: TransformT | null;
+
+  /**
+   * True while a sprite-frame write has been skipped by the on-screen gate
+   * since the last successful write -- i.e. the sprites' displayed frame may be stale
+   * relative to `currentFrameIndex`. Consulted on the next `update()` call
+   * where the gate opens again, to write the current frame immediately
+   * rather than waiting for the next natural frame-boundary crossing (which
+   * could be up to one full animation-frame's duration away, showing a
+   * stale/incorrect frame in the meantime). Never serialized.
+   */
+  _spriteFramesStale?: boolean;
 }
 
 export interface AnimationControllerOptions extends ComponentOptions {
@@ -351,4 +372,6 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'channels',
   'layers',
   '_layerSprites',
+  '_transformRef',
+  '_spriteFramesStale',
 ];

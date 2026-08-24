@@ -3,7 +3,28 @@ import { LightT } from '../../light';
 import { NexusT } from '../../nexus';
 import { SpriteT } from '../../sprite';
 import { castTo } from '../../types';
+import { getRenderableVersion } from '../../renderable-version';
 import { CameraT } from '../data';
+
+// Per-camera renderables cache -- each entry remembers the per-type version
+// (see renderable-version.ts) it was collected at, alongside the results.
+// Each of the three arrays is independently re-collected only when its own
+// type's version has changed since this camera last collected it -- a light
+// being added doesn't force sprites/cell-maps to re-walk too.
+interface RenderablesCacheEntry {
+  spriteVersion: number;
+  cellMapVersion: number;
+  lightVersion: number;
+  sprites: SpriteT[];
+  cellMaps: CellMapT[];
+  lights: LightT[];
+}
+
+const RENDERABLES_CACHE = new Map<number, RenderablesCacheEntry>();
+
+export function clearRenderablesCache(cameraId: number): void {
+  RENDERABLES_CACHE.delete(cameraId);
+}
 
 /**
  * Collects all renderable components (sprites, cell maps, and lights) from the render tree.
@@ -26,19 +47,52 @@ export function collectRenderables(camera: CameraT): {
   // This allows the camera to find components in sibling branches, not just children
   const sceneRoot = castTo<NexusT>(parentNexus.parent!);
 
-  // Recursively collect all sprites from the scene root
-  const sprites = segmentedRenderOrderSort(
-    sceneRoot.getComponentsByType('sprite', true) as SpriteT[],
-  );
+  const spriteVersion = getRenderableVersion('sprite');
+  const cellMapVersion = getRenderableVersion('cell-map');
+  const lightVersion = getRenderableVersion('light');
+  const cached = RENDERABLES_CACHE.get(camera.id!);
 
-  // Recursively collect all cell maps from the scene root
-  const cellMaps = sceneRoot.getComponentsByType(
-    'cell-map',
-    true,
-  ) as CellMapT[];
+  // Recursively collect all sprites from the scene root, unless nothing of
+  // type sprite has changed since this camera last collected them. Hidden
+  // sprites (visible === false) are filtered out here -- safe to cache,
+  // since the Proxy `set` trap (types.ts) bumps `spriteVersion` on every
+  // write that can change the answer (Sprite.setVisible(), and
+  // AnimationController's direct visible writes). Camera-relative off-screen
+  // filtering is deliberately NOT done here -- see
+  // 04-presentation-layer-visibility-skip/03-render-collection-visibility-split.md
+  // for why that's a draw-time-only concern (render-sprites.ts), not safe to
+  // fold into this add/remove/visible-toggle-keyed cache.
+  const sprites =
+    cached && cached.spriteVersion === spriteVersion
+      ? cached.sprites
+      : segmentedRenderOrderSort(
+          (sceneRoot.getComponentsByType('sprite', true) as SpriteT[]).filter(
+            (s) => s.visible !== false,
+          ),
+        );
 
-  // Recursively collect all lights from the scene root
-  const lights = sceneRoot.getComponentsByType('light', true) as LightT[];
+  // Recursively collect all cell maps from the scene root, unless nothing of
+  // type cell-map has changed since this camera last collected them.
+  const cellMaps =
+    cached && cached.cellMapVersion === cellMapVersion
+      ? cached.cellMaps
+      : (sceneRoot.getComponentsByType('cell-map', true) as CellMapT[]);
+
+  // Recursively collect all lights from the scene root, unless nothing of
+  // type light has changed since this camera last collected them.
+  const lights =
+    cached && cached.lightVersion === lightVersion
+      ? cached.lights
+      : (sceneRoot.getComponentsByType('light', true) as LightT[]);
+
+  RENDERABLES_CACHE.set(camera.id!, {
+    spriteVersion,
+    cellMapVersion,
+    lightVersion,
+    sprites,
+    cellMaps,
+    lights,
+  });
 
   return { sprites, cellMaps, lights };
 }

@@ -25,3 +25,8 @@ export function get(id: string): State | undefined {
 export function unregister(id: string): void {
   states.delete(id);
 }
+
+/** Iterate every currently-registered (live, non-destroyed) State instance. */
+export function all(): IterableIterator<State> {
+  return states.values();
+}

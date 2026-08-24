@@ -24,7 +24,8 @@ export function setZoom(camera: CameraT, zoom: number): void {
     const parentNexus = castTo<NexusT>(camera.parent!);
     const sceneRoot = castTo<NexusT>(parentNexus.parent!);
 
-    const viewport = sceneRoot.getComponentByName(
+    const viewport = sceneRoot.getComponentByTypeAndName(
+      'viewport',
       camera.viewportRef,
       true,
     ) as ViewportT | null;
@@ -205,7 +206,8 @@ function updateFramebufferForZoom(camera: CameraT): void {
   const parentNexus = castTo<NexusT>(camera.parent!);
   const sceneRoot = castTo<NexusT>(parentNexus.parent!);
 
-  const viewport = sceneRoot.getComponentByName(
+  const viewport = sceneRoot.getComponentByTypeAndName(
+    'viewport',
     camera.viewportRef,
     true,
   ) as ViewportT | null;

@@ -211,6 +211,13 @@ function constructElement(data: any, parentSSID: string, state: State, ns?: stri
     bound.push({ type: event.type, fn });
   });
   (element as any).__sstEvents = bound;
+  // Escape hatch for logical panels that must survive being relocated to a different
+  // template path (e.g. dock/tab rearranging) -- move a :preserve'd element to live
+  // under a different DOM parent while State Street continues to treat it as though
+  // it's still at this ssid. No-ops with a warning on non-:preserve'd elements, since
+  // those are recreated on their own next render regardless of where they were moved.
+  (element as any).moveTo = (target: Element) => state.moveElement(currentSSID, element, target);
+  (element as any).resetLocation = () => state.resetElementLocation(currentSSID, element);
 
   state.idMap[currentSSID] = element;
   element.setAttribute(SSID, currentSSID);
@@ -245,9 +252,19 @@ function constructElement(data: any, parentSSID: string, state: State, ns?: stri
     const type = typeof child;
     const ssid = `${currentSSID}${i}`;
     if (type === "object" && type !== null) {
+      // Still constructed unconditionally -- attribute diffing and nested-children
+      // updates must keep applying to this ssid's live element even when it has been
+      // moved elsewhere via moveTo(). Only the natural-position insertion is redirected.
       const subElement = constructElement(child, ssid, state, childNs);
       if (subElement) {
-        element.appendChild(subElement);
+        const moved = state.locationMap[ssid];
+        if (moved) {
+          const marker = document.createComment(`ss-moved:${ssid}`);
+          moved.placeholder = marker;
+          element.appendChild(marker);
+        } else {
+          element.appendChild(subElement);
+        }
       }
       continue;
     }

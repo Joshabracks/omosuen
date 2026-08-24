@@ -228,8 +228,7 @@ function shouldApplyResize(
 /**
  * Uploads a per-cell visibility mask as a `TEXTURE_2D_ARRAY` R8 texture,
  * sized to whatever's currently resident in the canonical store (today: the
- * whole map; once the shiftable hot window lands, the window — see
- * .design/completed_tasks/cell-map-overhaul/06-camera-reveal-fix.md).
+ * whole map; once the shiftable hot window lands, the window).
  * Texture layout: width = windowX, height = windowY, layers = windowZ.
  * Layer z, texel (x, y) → cell (x, y, z), in window-local coordinates. This
  * is exactly the WASM solidity buffer's own layout (z-outermost, then y,
@@ -389,11 +388,8 @@ export function renderCellMaps(
   const uCellSize = gl.getUniformLocation(program, 'u_cellSize');
   // Size/origin of the currently-resident cell-map window. Used by the
   // fragment shader's reveal/occlusion sampling (u_windowSize/u_windowOrigin,
-  // in cell units — see
-  // .design/completed_tasks/cell-map-overhaul/06-camera-reveal-fix.md) and by
-  // the vertex shader's position offset + depth-bias recentering
-  // (u_windowSize/u_worldOffset, in world/continuous units — see
-  // .design/cell-map-overhaul/10-vertex-world-offset-and-depth-bias.md).
+  // in cell units) and by the vertex shader's position offset + depth-bias
+  // recentering (u_windowSize/u_worldOffset, in world/continuous units).
   // u_windowSize (cell units) is shared between both stages; u_windowOrigin
   // (cell units) and u_worldOffset (world units, cellSize-scaled) are
   // deliberately separate uniforms with different units — do not conflate
@@ -699,9 +695,9 @@ export function renderCellMaps(
       }
     }
 
-    // Drive the window's focus from the camera by default (see
-    // .design/cell-map-overhaul/11-focus-driving.md) -- before rebuilding
-    // dirty chunks, since a shift marks the newly-exposed slab dirty.
+    // Drive the window's focus from the camera by default -- before
+    // rebuilding dirty chunks, since a shift marks the newly-exposed slab
+    // dirty.
     if (cellMap.autoFocusFromCamera) {
       CellMap.setFocus(cellMap, camPos.x, camPos.y, camPos.z);
     }
@@ -772,7 +768,19 @@ export function renderCellMaps(
     const needSolidity =
       reveal || (!!cues && (cues.ao.weight > 0 || cues.shadow.weight > 0));
 
-    if (needSolidity) {
+    // cellMap.mapSize reflects the window's configured target size, set
+    // eagerly at construction/resize -- but a generative window with a large
+    // initial radius doesn't commit its first chunk batch to the WASM store
+    // synchronously (see CellMap.advanceWindowGeneration, staged across
+    // frames). Until that first commit lands, computeSolidityMap() still
+    // reads whatever the WASM store was last loaded with (a different size,
+    // e.g. a previous scene's cell-map), and uploading against mapSize's
+    // size throws "ArrayBufferView not big enough". `window.origin` is null
+    // exactly until the first commit lands (set alongside it), so gate on
+    // that instead of trying to upload early.
+    const windowCommitted = cellMap.window.origin !== null;
+
+    if (needSolidity && windowCommitted) {
       // Recompute every frame — cheap for small maps.
       const solidityMap = computeSolidityMap();
       uploadVisibilityTexture(gl, camera, solidityMap, cellMap.mapSize);
@@ -804,7 +812,10 @@ export function renderCellMaps(
     // Per-cell emission (highlight) color texture (Part A). Rebuild the GPU texture
     // only when the map changed — setEmissionColor sets emissionColorDirty; no remesh
     // is involved. An all-black map skips upload and disables the shader term.
-    if (cellMap.emissionColorDirty) {
+    // Same windowCommitted gate as the solidity texture above -- and left
+    // dirty (not cleared) if the window hasn't committed yet, so it retries
+    // once it has, rather than being silently dropped.
+    if (cellMap.emissionColorDirty && windowCommitted) {
       const { bytes, hasAny } = buildCellEmissionColorBytes(cellMap);
       camera.glResources.cellEmissionColorHasAny = hasAny;
       if (hasAny) {

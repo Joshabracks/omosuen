@@ -2,9 +2,10 @@
  * State Overlay Demo Scene
  *
  * Demonstrates the `state-overlay` PLUGIN component (omosuen-state-overlay):
- * a reactive State Street UI driven by the Omosuen engine loop (renderLoop:false).
- * Clicking +1 mutates `state.data.count`; the {{count}} binding patches in place —
- * proving reactivity ticks off the single engine loop, no second requestAnimationFrame.
+ * a reactive State Street UI, rendered on-demand by State Street's own v3.0.0+
+ * scheduler. Clicking +1 mutates `state.data.count`; the {{count}} binding
+ * patches in place — a mutation schedules exactly one coalesced render,
+ * independent of the Omosuen engine loop; there's no per-frame driving at all.
  */
 
 const Omosuen = window.Omosuen;
@@ -23,7 +24,7 @@ if (window.OmosuenStateOverlay) {
           <button id="ss-reset" :click=reset() style="padding:12px 24px;font-size:18px;cursor:pointer;">reset</button>
         </div>
         <p style="opacity:0.6;max-width:480px;text-align:center;">
-          Reactive State Street overlay, ticked by the Omosuen loop (renderLoop:false).
+          Reactive State Street overlay, self-scheduled on mutation (autoRender:true).
           The heading patches in place on each mutation.
         </p>
       </div>

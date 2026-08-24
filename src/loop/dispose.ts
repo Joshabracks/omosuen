@@ -5,20 +5,30 @@
  * mid-update errors when components are removed from the scene.
  */
 
-import type { COMPONENT_TYPE, ComponentData } from '../component/types';
+import type { ComponentData } from '../component/types';
 import type { NexusT } from '../component/nexus/data';
-import { unregisterMethod, MethodRegistry } from '../component/registry';
+import { disposeComponent } from '../component/registry';
 
 /**
- * Set of component IDs flagged for disposal.
- * Using a Set prevents duplicate disposal attempts.
+ * Component IDs flagged for disposal, mapped to a reference if one was
+ * available at enqueue time (`null` otherwise). Using a `Map` still prevents
+ * duplicate disposal attempts (same dedup-by-id behavior a `Set` gave), but
+ * also lets `processDisposeQueue` skip the recursive `getComponentById`
+ * search for anything queued via `markForDisposal` -- which already has the
+ * live reference in hand and would otherwise pay a full tree search just to
+ * re-find what it already had. Entries queued via the public `queueDispose(id)`
+ * (no reference available) fall back to that search, same as before.
  */
-const DISPOSE_QUEUE = new Set<number>();
+const DISPOSE_QUEUE = new Map<number, ComponentData | null>();
 
 /**
  * Adds a component ID to the disposal queue.
  *
- * The component will be disposed at the end of the current frame.
+ * The component will be disposed at the end of the current frame. Prefer
+ * `markForDisposal(component)` when you have the component reference in
+ * hand -- it avoids a tree search during processing. This id-only entry
+ * point stays available for callers that only have the id (e.g. external
+ * code), at the cost of `processDisposeQueue` needing to look it up.
  *
  * @param id - The ID of the component to dispose
  *
@@ -28,7 +38,11 @@ const DISPOSE_QUEUE = new Set<number>();
  * ```
  */
 export function queueDispose(id: number): void {
-  DISPOSE_QUEUE.add(id);
+  // Don't clobber an existing reference-bearing entry (e.g. if markForDisposal
+  // already queued this same id this frame) with a reference-less one.
+  if (!DISPOSE_QUEUE.has(id)) {
+    DISPOSE_QUEUE.set(id, null);
+  }
 }
 
 /**
@@ -36,7 +50,9 @@ export function queueDispose(id: number): void {
  * and adding it to the disposal queue.
  *
  * This is the recommended way to dispose components during gameplay,
- * as it ensures disposal happens at a safe time (end of frame).
+ * as it ensures disposal happens at a safe time (end of frame). Caches the
+ * component reference in the queue, so `processDisposeQueue` doesn't need
+ * to search the tree for it later.
  *
  * @param component - The component to mark for disposal
  *
@@ -49,7 +65,7 @@ export function queueDispose(id: number): void {
 export function markForDisposal(component: ComponentData): void {
   component._disposed = true;
   if (component.id !== undefined) {
-    queueDispose(component.id);
+    DISPOSE_QUEUE.set(component.id, component);
   }
 }
 
@@ -63,10 +79,12 @@ export function markForDisposal(component: ComponentData): void {
  * 3. Calls the dispose method for each component (if it exists)
  * 4. Ensures _disposed flag is set even if no custom dispose method
  *
- * Performance: O(n) where n is the number of components to dispose.
+ * Performance: O(n) where n is the number of components to dispose, plus a
+ * tree search only for entries that were queued without a reference already
+ * in hand (see `DISPOSE_QUEUE`'s doc comment).
  * Uses batched processing for efficiency.
  *
- * @param scene - The active scene to search for components
+ * @param scene - The active scene to search for components without a cached reference
  *
  * @example
  * ```typescript
@@ -79,32 +97,22 @@ export function processDisposeQueue(scene: NexusT): void {
     return;
   }
 
-  // Convert to array for processing
-  const ids = Array.from(DISPOSE_QUEUE);
+  // Convert to array for processing (same re-entrancy safety as before: a
+  // disposal triggered mid-processing queues into a fresh, now-empty map
+  // instead of the batch already being drained here).
+  const entries = Array.from(DISPOSE_QUEUE);
   DISPOSE_QUEUE.clear();
 
   // Process each disposal
-  for (let i = 0; i < ids.length; i++) {
-    const id = ids[i];
-    const component = scene.getComponentById(id, true);
+  for (let i = 0; i < entries.length; i++) {
+    const [id, ref] = entries[i];
+    const component = ref ?? scene.getComponentById(id, true);
 
     if (!component) {
       continue;
     }
 
-    // Clean up custom update method if it exists
-    if (component.updateOverride) {
-      unregisterMethod(component.type, component.updateOverride);
-      component.updateOverride = undefined;
-    }
-
-    const method = MethodRegistry[component.type as COMPONENT_TYPE];
-    if (method.dispose && typeof method.dispose === 'function') {
-      method.dispose(component);
-    } else {
-      // Ensure _disposed flag is set even without custom dispose
-      component._disposed = true;
-    }
+    disposeComponent(component);
   }
 }
 

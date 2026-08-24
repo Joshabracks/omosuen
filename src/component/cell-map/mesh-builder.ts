@@ -103,20 +103,13 @@ export function rebuildDirtyChunks(
 }
 
 function rebuildDirtyChunksImpl(cellMap: CellMapT, budgetMs: number): void {
-  const dirtyChunks = cellMap.chunks.filter((c) => c.dirty);
-  if (dirtyChunks.length === 0) return;
-
-  // The packed cells are resident in the canonical WASM store (mutated via
-  // setCellData), so there is no upload/expand here — just set the cell size,
-  // and the smoothing inputs when smoothing is enabled.
-  setMeshCellSize(cellMap.cellSize.x, cellMap.cellSize.y, cellMap.cellSize.z);
-  // CellMap always meshes out of CellWindow's shiftable hot window, never a
-  // complete/bounded store -- "outside the resident window" means "not
-  // loaded yet," not "nothing there," so an edge chunk's face-culling should
-  // treat an out-of-window neighbor as occluding rather than exposing an
-  // interior cross-section before the real neighbor streams in.
-  setMeshEdgeOccludes(true);
-
+  // Detect a smoothing-config change and sync pending custom-shape templates
+  // BEFORE computing dirtyChunks / the early return below -- both used to be
+  // gated behind that return, which meant a smoothingWeights reassignment or
+  // an addMesh call landing on an otherwise-quiet frame (no chunk already
+  // dirty for an unrelated reason) silently never reached WASM until some
+  // later, unrelated cell write happened to run this function past the
+  // early return.
   const smoothed = cellMap.smoothing > 0;
   if (smoothed) {
     const smoothingChanged =
@@ -135,30 +128,32 @@ function rebuildDirtyChunksImpl(cellMap: CellMapT, budgetMs: number): void {
       lastSmoothingWeights = cellMap.smoothingWeights;
       lastSmoothing = cellMap.smoothing;
       lastNormalSmoothing = cellMap.normalSmoothing;
+      // The global smoothing config just changed -- every already-meshed
+      // chunk's existing mesh was built under the OLD config and is now
+      // stale. Mark every resident chunk dirty so the loop below (or a
+      // later pass, if this frame's budget doesn't cover all of them)
+      // re-triangulates the whole window under the new weights, not just
+      // whichever chunk(s) happened to already be dirty for an unrelated
+      // reason. Unlike setEmissionColor's per-cell fix, this is a genuinely
+      // global, topology-affecting parameter -- a full-window rebuild is the
+      // correct cost here, not a bug, and it's a rare/deliberate config
+      // change rather than a per-frame hot path.
+      for (const chunk of cellMap.chunks) chunk.dirty = true;
     }
-
-    // Per-material smoothing overrides: a material's `smoothness` (0-15) wins
-    // over the per-cell/map weight; -1 means "no override". Cells of a harder
-    // (lower-weight) type pin shared vertices so softer neighbors snap to them.
-    const materialWeights = new Int32Array(cellMap.materials.length);
-    for (let i = 0; i < cellMap.materials.length; i++) {
-      const s = cellMap.materials[i].smoothness;
-      materialWeights[i] =
-        s === undefined ? -1 : Math.max(0, Math.min(15, Math.round(s)));
-    }
-    setMeshMaterialWeights(materialWeights);
   }
 
   // Upload custom cell meshes (shapeIndex >= 2) so the WASM mesher emits them
   // into the same vertex pool as cubes (smoothed/deduped together — no seams).
   // Indices 0 (air) and 1 (default cube) are built in; only 2+ are custom.
   // A non-empty mesh.uvs (one uv per vertex) enables UV texturing for that shape;
-  // mesh.faceCover lets a side opt out of occluding its neighbor. Gated on
-  // customShapesDirty -- cellMap.meshes is a singleton array only ever
-  // appended to (never reassigned), so re-running this unconditionally would
-  // otherwise re-upload every custom shape on every call, whether or not
-  // meshes actually changed.
-  if (cellMap.customShapesDirty) {
+  // mesh.faceCover lets a side opt out of occluding its neighbor.
+  // customShapesFullResync forces a full clear + re-upload (a wholesale
+  // `meshes` reassignment can't be assumed to be a pure append);
+  // customShapesPendingIndices otherwise carries just the indices appended
+  // since the last pass (via CellMap.addMesh) — meshes is never reordered or
+  // shrunk outside of a full reassignment, so those are the only entries
+  // that can possibly be new.
+  if (cellMap.customShapesFullResync) {
     clearCustomShapes();
     for (let i = 2; i < cellMap.meshes.length; i++) {
       const mesh = cellMap.meshes[i];
@@ -172,7 +167,49 @@ function rebuildDirtyChunksImpl(cellMap: CellMapT, budgetMs: number): void {
         );
       }
     }
-    cellMap.customShapesDirty = false;
+    cellMap.customShapesFullResync = false;
+    cellMap.customShapesPendingIndices = [];
+  } else if (cellMap.customShapesPendingIndices.length > 0) {
+    for (const i of cellMap.customShapesPendingIndices) {
+      const mesh = cellMap.meshes[i];
+      if (mesh && mesh.indices.length > 0) {
+        setCustomShape(
+          i,
+          mesh.vertices,
+          mesh.indices,
+          mesh.uvs,
+          packFaceCover(mesh),
+        );
+      }
+    }
+    cellMap.customShapesPendingIndices = [];
+  }
+
+  const dirtyChunks = cellMap.chunks.filter((c) => c.dirty);
+  if (dirtyChunks.length === 0) return;
+
+  // The packed cells are resident in the canonical WASM store (mutated via
+  // setCellData), so there is no upload/expand here — just set the cell size,
+  // and the smoothing inputs when smoothing is enabled.
+  setMeshCellSize(cellMap.cellSize.x, cellMap.cellSize.y, cellMap.cellSize.z);
+  // CellMap always meshes out of CellWindow's shiftable hot window, never a
+  // complete/bounded store -- "outside the resident window" means "not
+  // loaded yet," not "nothing there," so an edge chunk's face-culling should
+  // treat an out-of-window neighbor as occluding rather than exposing an
+  // interior cross-section before the real neighbor streams in.
+  setMeshEdgeOccludes(true);
+
+  if (smoothed) {
+    // Per-material smoothing overrides: a material's `smoothness` (0-15) wins
+    // over the per-cell/map weight; -1 means "no override". Cells of a harder
+    // (lower-weight) type pin shared vertices so softer neighbors snap to them.
+    const materialWeights = new Int32Array(cellMap.materials.length);
+    for (let i = 0; i < cellMap.materials.length; i++) {
+      const s = cellMap.materials[i].smoothness;
+      materialWeights[i] =
+        s === undefined ? -1 : Math.max(0, Math.min(15, Math.round(s)));
+    }
+    setMeshMaterialWeights(materialWeights);
   }
 
   const { x: gx, y: gy, z: gz } = cellMap.chunkGridSize;

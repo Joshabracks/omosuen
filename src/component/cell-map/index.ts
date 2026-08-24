@@ -25,7 +25,14 @@ export {
 export type { CellMapT, CellMapOptions } from './data';
 export { CellMap } from './methods';
 export type { CellMapMethods } from './methods';
-export type { Material, Mesh, CellData, ChunkMesh, DrawRange } from './types';
+export type {
+  Material,
+  Mesh,
+  CellData,
+  ChunkMesh,
+  DrawRange,
+  CellEmissionColorDirtyRegion,
+} from './types';
 export type { RaycastHit, SurfaceHit, RaycastOptions } from './types';
 export {
   raycastCellMap,

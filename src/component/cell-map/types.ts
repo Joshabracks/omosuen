@@ -226,6 +226,22 @@ export interface DrawRange {
 }
 
 /**
+ * A single dirty cell in `emissionColorMap`, tagged with the
+ * `emissionColorVersion` that produced it. Stored in window-LOCAL
+ * coordinates -- valid only as long as no window shift has happened since it
+ * was logged (a shift bumps `emissionColorFullVersion` past every pre-shift
+ * entry, which is what makes stale local coords safe to ignore rather than
+ * something that has to be actively invalidated). Mirrors `AtlasDirtyRegion`
+ * (atlas-manager/types.ts), one cell instead of one rect.
+ */
+export interface CellEmissionColorDirtyRegion {
+  version: number;
+  x: number;
+  y: number;
+  z: number;
+}
+
+/**
  * Built mesh data for a single chunk, ready for GPU upload.
  * Contains all visible faces after hidden face culling and greedy meshing.
  */

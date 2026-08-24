@@ -208,6 +208,9 @@ export interface CameraT
     // Whether the resident emission-color texture has any non-black cell (gates the
     // shader term + avoids binding an empty texture).
     cellEmissionColorHasAny: boolean;
+    // cellMap.emissionColorVersion last fully applied to cellEmissionColorTexture
+    // (via full rebuild or texSubImage3D deltas). -1 = nothing uploaded yet.
+    cellEmissionColorVersion: number;
   };
 }
 
@@ -302,6 +305,7 @@ export function builder(options: CameraOptions): CameraT {
       visibilityTexture: null,
       cellEmissionColorTexture: null,
       cellEmissionColorHasAny: false,
+      cellEmissionColorVersion: -1,
     },
   };
 

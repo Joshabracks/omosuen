@@ -14,7 +14,14 @@
 const Omosuen = window.Omosuen;
 
 const CELL_W = 32, CELL_H = 16, CELL_D = 32;
-const MAP_W = 16, MAP_DEPTH = 16, MAP_HEIGHT = 16;
+// Deliberately large — this scene doubles as a stress test for cell-map's
+// per-cell highlight primitives (see .omosuen_requests/009-cell-highlight-cost.md):
+// the hand-authored construction path below (mapSize+materialMap/shapeMap) keeps
+// its resident window sized to the ENTIRE map, so a big MAP_W/MAP_DEPTH here
+// directly stresses setEmissionColor's GPU texture upload cost, and a chunkSize
+// closer to Colony Forever's real config stresses chunk-remesh cost for anything
+// still routed through setEmission/setShape/setMaterial.
+const MAP_W = 128, MAP_DEPTH = 128, MAP_HEIGHT = 20;
 
 // 16x16_tiles.png swatches (row 21) — same as the other test scenes.
 const DIRT_FRAME = 21 * 25 + 8;  // 533
@@ -131,6 +138,12 @@ async function makeCollider(scene, name, type, x, y, z, opts) {
 export async function createScene() {
   const scene = await Omosuen.newComponent('nexus', { name: 'Screen Pick Test Scene' });
 
+  // Perf profiler HUD (backtick to toggle) — see the MAP_W/MAP_HEIGHT/MAP_DEPTH
+  // comment above; watch the "by type" table's cell-map:emissionColorGpuUpload
+  // row while sweeping the mouse to verify hover-highlight cost stays flat
+  // (O(cells touched)) instead of scaling with this scene's (large) map size.
+  await Omosuen.newComponent('perf-monitor', { name: 'PerfMonitor' }, scene);
+
   const atlasManager = await Omosuen.newComponent('atlas-manager', {
     name: 'AtlasManager',
     config: { atlasSize: 2048, maxAtlases: 4, padding: 1 },
@@ -193,6 +206,7 @@ export async function createScene() {
     shapeMap,
     cellSize: new Omosuen.Vector3D(CELL_W, CELL_H, CELL_D),
     mapSize: new Omosuen.Vector3D(MAP_W, MAP_HEIGHT, MAP_DEPTH),
+    chunkSize: new Omosuen.Vector3D(32, 20, 32),
     smoothing: 4,
     normalSmoothing: 0,
   }, scene);
@@ -251,24 +265,30 @@ export async function createScene() {
     let dragStart = null; // left-button drag
     let panLast = null;   // right-button drag
 
-    // Glow the hovered cell via per-cell emission (max intensity), restoring the
-    // previously highlighted cell when the hover moves. setEmission re-meshes the
-    // affected chunk; only mutate when the cell actually changes.
+    // Glow the hovered cell via per-cell emission COLOR (not intensity),
+    // restoring the previously highlighted cell when the hover moves. This is
+    // the O(cells touched) path fixed in .omosuen_requests/009-cell-highlight-cost.md
+    // -- setEmissionColor now logs a versioned per-cell dirty region and the
+    // renderer patches just that texel via texSubImage3D, instead of the old
+    // whole-resident-window texImage3D reupload. Only mutate when the cell
+    // actually changes.
     const cellMap = scene.getComponentByName('Terrain', true);
     const emCoord = new Omosuen.Vector3D(0, 0, 0);
+    const HIGHLIGHT_COLOR = new Omosuen.Vector3D(1, 1, 0); // yellow
+    const CLEAR_COLOR = new Omosuen.Vector3D(0, 0, 0);
     let hiX = -1, hiY = -1, hiZ = -1;
-    const setEmissionAt = (x, y, z, val) => {
+    const setColorAt = (x, y, z, color) => {
       emCoord.x = x; emCoord.y = y; emCoord.z = z;
-      cellMap.setEmission(emCoord, val);
+      cellMap.setEmissionColor(emCoord, color);
     };
     const highlightCell = (x, y, z) => {
       if (x === hiX && y === hiY && z === hiZ) return;
-      if (hiX >= 0) setEmissionAt(hiX, hiY, hiZ, 0);
-      setEmissionAt(x, y, z, 31);
+      if (hiX >= 0) setColorAt(hiX, hiY, hiZ, CLEAR_COLOR);
+      setColorAt(x, y, z, HIGHLIGHT_COLOR);
       hiX = x; hiY = y; hiZ = z;
     };
     const clearHighlight = () => {
-      if (hiX >= 0) { setEmissionAt(hiX, hiY, hiZ, 0); hiX = hiY = hiZ = -1; }
+      if (hiX >= 0) { setColorAt(hiX, hiY, hiZ, CLEAR_COLOR); hiX = hiY = hiZ = -1; }
     };
 
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());

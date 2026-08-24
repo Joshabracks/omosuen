@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from PIL import Image
@@ -10,7 +11,9 @@ from PIL import Image
 LAPIS = (0x1E, 0x3A, 0x8A)
 PARCHMENT = (0xF4, 0xE9, 0xD8)
 ROOT = Path(__file__).resolve().parents[1]
-DIR = ROOT.parent / ".design/website/BaT_v2.0/LapisSin/single_textures"
+# Local-only source directory for the raw tile set; not part of the repo.
+# Set HERO_TILES_SOURCE_DIR to point at your own local copy before running.
+DIR = Path(os.environ["HERO_TILES_SOURCE_DIR"])
 OUT = ROOT / "src/scenes/hero-texture-ids.json"
 NEEDED = 55
 

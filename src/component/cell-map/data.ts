@@ -99,7 +99,7 @@ export let cmRevealExempt: boolean = false;
  * When true (default), the render loop drives `CellMap.setFocus` from the
  * camera position every frame, so the window follows the camera with no
  * game code required. Set false for explicit control via `CellMap.setFocus`
- * instead — see `.design/cell-map-overhaul/11-focus-driving.md`.
+ * instead.
  */
 export let cmAutoFocusFromCamera: boolean = true;
 /**
@@ -120,8 +120,7 @@ export let cmAutoResizeFromZoom: boolean = true;
  * converted to a chunk radius internally via `CellMap.setWindowRadius`,
  * floor-divided by `chunkSize * cellSize`). A resize's assemble step can call
  * `generateCell` for every newly-exposed chunk synchronously in one frame,
- * so this is deliberately modest — see `.design/cell-map-overhaul` (runtime
- * window resizing).
+ * so this is deliberately modest.
  */
 export let cmMaxTerrainLoadDimensions: { x: number; y: number; z: number } = {
   x: 512,
@@ -133,8 +132,7 @@ export let cmMaxTerrainLoadDimensions: { x: number; y: number; z: number } = {
  * when `autoResizeFromZoom` computes a residency target and when the render
  * loop's per-chunk draw cull computes its view cuboid — an intentional,
  * developer-facing "how far should the world render" setting, independent of
- * viewport shape/orbit yaw. See `.design/cell-map-overhaul` (render-distance
- * cuboid + per-chunk cull).
+ * viewport shape/orbit yaw.
  */
 export let cmRenderDistance: { x: number; y: number; z: number } = {
   x: 1,
@@ -156,8 +154,7 @@ export let cmFrustumPadding: { x: number; y: number; z: number } = {
 };
 /**
  * Owns the shiftable hot window's origin and orchestrates shifts (evict/
- * assemble/reload). See `.design/cell-map-overhaul/08-live-construction-and-
- * ownership.md`. `undefined` until first construction.
+ * assemble/reload). `undefined` until first construction.
  */
 export let cmWindow: CellWindow | undefined;
 /** Everything outside the current window that diverges from baseline. Owned
@@ -169,8 +166,7 @@ export let cmColdStorage: ChunkColdStorage | undefined;
  * `undefined` per-slot when built with a raw function or no generator at all.
  * `serialize()` emits these so `deserialize()` can re-resolve the same
  * generator(s); a raw-function generator has no key to remember and doesn't
- * survive a round trip (see
- * `.design/cell-map-overhaul/16-off-window-edit-persistence.md`).
+ * survive a round trip.
  */
 export let cmGeneratorKey:
   | { generateCell?: string; generateChunk?: string }
@@ -179,8 +175,7 @@ export let cmGeneratorKey:
  * `emissionColorMap`/`smoothingWeights`' own windowed persistence -- unlike
  * primary cell data, these have no procedural-generation cost, so they don't
  * need `CellWindow`'s multi-frame shift staging; they resync synchronously
- * via `CellWindow`'s `onReassemble` hook instead. See `auxiliary-channel.ts`
- * and `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`.
+ * via `CellWindow`'s `onReassemble` hook instead. See `auxiliary-channel.ts`.
  * Owned jointly with `cmWindow` (constructed together, always non-null
  * together).
  */
@@ -534,11 +529,9 @@ export interface CellMapOptions extends ComponentOptions {
 
   /**
    * Generates a single cell's data at a world cell coordinate (the
-   * generative path's per-cell baseline — see
-   * `.design/cell-map-overhaul/04-procedural-generation.md`, now archived
-   * under `completed_tasks`). Returning `undefined` falls back to empty/air.
-   * Always used for single-cell point queries, regardless of whether
-   * `generateChunk` is also supplied. Must be a pure function of its
+   * generative path's per-cell baseline). Returning `undefined` falls back
+   * to empty/air. Always used for single-cell point queries, regardless of
+   * whether `generateChunk` is also supplied. Must be a pure function of its
    * coordinates for a given world/seed.
    *
    * Accepts either a live function (default; can't be serialized, so a
@@ -589,8 +582,7 @@ export interface CellMapOptions extends ComponentOptions {
    * When true (default), the render loop drives the window's focus from the
    * camera position every frame — the window follows the camera with no game
    * code required. Set false to drive focus explicitly via
-   * `CellMap.setFocus(component, worldX, worldY, worldZ)` instead. See
-   * `.design/cell-map-overhaul/11-focus-driving.md`.
+   * `CellMap.setFocus(component, worldX, worldY, worldZ)` instead.
    */
   autoFocusFromCamera?: boolean;
 
@@ -665,8 +657,7 @@ export interface CellMapT extends ComponentData {
    * Size, in cells, of the currently-resident hot window — *not* the whole
    * world. Constant for the session (window size never changes; only its
    * origin does, once something moves the focus — see `window`). Renamed in
-   * meaning, not in name, from the pre-windowing "whole map" semantics; see
-   * `.design/cell-map-overhaul/08-live-construction-and-ownership.md`.
+   * meaning, not in name, from the pre-windowing "whole map" semantics.
    */
   mapSize: Vector3D;
   /** Chunk size in cells per axis. See `CellMapOptions.chunkSize`. */
@@ -967,7 +958,6 @@ export function clearPendingSetCells(): void {
  * tunables" choice. A plain `Map` doubles as the LRU structure: re-`set`ting
  * an existing key moves it to "most recently used" (end of iteration order),
  * so the oldest entry is always `.keys().next().value`.
- * See `.design/chunk-buffering/05-mesh-cache.md`.
  */
 const MESH_CACHE_CAPACITY = 128;
 const cmMeshCache = new Map<string, ChunkMesh>();
@@ -1049,17 +1039,15 @@ export function invalidateCachedChunk(
  * local slot is pure bookkeeping (`cx/cy/cz` only), no vertex edit, no
  * `gpuDirty`, no re-upload. A chunk that just left the window is handed to
  * the bounded mesh cache (`cacheEvictedChunk`) instead of being discarded
- * immediately -- see `.design/chunk-buffering/05-mesh-cache.md`. A chunk
- * entering a slot with no match in the old window first checks that cache
- * (`takeCachedChunk`) before falling back to a fresh `dirty` entry (same
- * shape `initChunks` produces) -- either way (cache hit or fresh), it
- * re-dirties any REUSED neighbor sharing a face with it, since that
- * neighbor's mesh was built without knowledge of this newly-available data
- * and its cross-chunk face culling at that boundary is now stale (see the
- * face-adjacency pass below). Serves
- * both a same-size shift (`CellMap.setFocus`) and a resize
- * (`CellMap.setWindowRadius`), same as `CellWindow.reassemble` does for
- * cell data.
+ * immediately. A chunk entering a slot with no match in the old window first
+ * checks that cache (`takeCachedChunk`) before falling back to a fresh
+ * `dirty` entry (same shape `initChunks` produces) -- either way (cache hit
+ * or fresh), it re-dirties any REUSED neighbor sharing a face with it, since
+ * that neighbor's mesh was built without knowledge of this newly-available
+ * data and its cross-chunk face culling at that boundary is now stale (see
+ * the face-adjacency pass below). Serves both a same-size shift
+ * (`CellMap.setFocus`) and a resize (`CellMap.setWindowRadius`), same as
+ * `CellWindow.reassemble` does for cell data.
  */
 export function reassembleChunks(
   oldChunks: ChunkMesh[],
@@ -1161,8 +1149,7 @@ export function reassembleChunks(
   }
 
   // Anything left in oldByWorldCoord fell outside the new window -- hand it
-  // to the mesh cache instead of discarding it immediately (see
-  // `.design/chunk-buffering/05-mesh-cache.md`).
+  // to the mesh cache instead of discarding it immediately.
   for (const { chunk, wcx, wcy, wcz } of oldByWorldCoord.values()) {
     cacheEvictedChunk(wcx, wcy, wcz, chunk);
   }
@@ -1956,8 +1943,7 @@ function serialize(component: ComponentData): any {
           cz: cm.window.origin.cz,
         }
       : undefined,
-    // Off-window content that diverges from baseline -- see
-    // `.design/cell-map-overhaul/16-off-window-edit-persistence.md`.
+    // Off-window content that diverges from baseline.
     coldStorageEntries: cmColdStorage!.dumpEntries(),
     generatorKey: cmGeneratorKey,
     packedData: packedFlat,
@@ -1967,8 +1953,7 @@ function serialize(component: ComponentData): any {
     emissionColorData: cm.emissionColorMap.value.some((v) => v !== 0)
       ? Array.from(cm.emissionColorMap.value)
       : undefined,
-    // Off-window emission-color highlights that diverge from baseline -- see
-    // `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`.
+    // Off-window emission-color highlights that diverge from baseline.
     emissionColorStorageEntries: cmEmissionColorChannel!.dumpEntries(),
     // smoothingWeights: the common case (a uniform number, no live setter)
     // just persists the configured value; a per-cell-authored map persists
@@ -2130,10 +2115,9 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   setChunkSize(cks.x, cks.y, cks.z);
 
   // Resolve a registry-keyed generator, if the component was built with one
-  // (a raw-function generator has no key and doesn't survive a round trip --
-  // see `.design/cell-map-overhaul/16-off-window-edit-persistence.md`). A
-  // saved key that's no longer registered degrades gracefully (the map loads
-  // without that generator) rather than failing the whole load.
+  // (a raw-function generator has no key and doesn't survive a round trip).
+  // A saved key that's no longer registered degrades gracefully (the map
+  // loads without that generator) rather than failing the whole load.
   let dGeneratorKey:
     | { generateCell?: string; generateChunk?: string }
     | undefined;
@@ -2248,8 +2232,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
 
   // emissionColorMap/smoothingWeights' own windowed persistence -- same
   // pattern as the primary channel above (load off-window entries, seed the
-  // resident window's saved snapshot at its actual saved origin). See
-  // `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`.
+  // resident window's saved snapshot at its actual saved origin).
   const dEmissionChannel = new AuxiliaryChannel({
     chunkSize: cks,
     baselineValue: 0,

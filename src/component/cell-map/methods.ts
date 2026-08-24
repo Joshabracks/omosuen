@@ -67,8 +67,7 @@ function recordCellMapPhase(
  * a spatial bounds check — plain range comparisons (`x < 0 || x >= mapSize.x`)
  * silently let NaN through, since every comparison against NaN is false. A
  * bad coordinate is a bug regardless of where a shiftable window (once one
- * exists) happens to be, so this throws unconditionally — see
- * `.design/completed_tasks/cell-map-overhaul/07-bounds-checking-diagnostics.md`.
+ * exists) happens to be, so this throws unconditionally.
  */
 function assertFiniteCoordinates(x: number, y: number, z: number): void {
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
@@ -129,8 +128,7 @@ export interface CellMapMethods extends ComponentMethods {
    * `coordinates` is a WORLD cell coordinate (matching `setCellData`) — an
    * off-window coordinate is fully supported, persisted via cold storage,
    * and survives a window shift or save/load, the same as primary cell
-   * data. (Previously window-local only, with no off-window support at all —
-   * see `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`.)
+   * data. (Previously window-local only, with no off-window support at all.)
    */
   setEmissionColor: (
     component: CellMapT,

@@ -158,15 +158,14 @@ under `vendor/`, and ship via the `plugin-release.yml` workflow (release = bump 
   into `CellWindow`'s `onReassemble`, deliberately not integrated with `pendingShift`/`advance()`'s
   multi-frame staging, since neither channel has a procedural-generation cost. `setEmissionColor`/
   `getEmissionColor` take a world cell coordinate (not window-local) and fully support off-window
-  writes. See `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`.
+  writes.
 - **Naming conventions.** Module-level / reusable variables are `camelCase` (no underscore
   prefix). Functions `camelCase`, types `PascalCase` (enforced by eslint).
 - **No `any`.** The engine eslint config errors on `@typescript-eslint/no-explicit-any` and
   requires explicit function return types.
 - **No repo-wide release-process doc.** For wrapping up a multi-phase effort before a release,
-  the established pattern is a `.design/<effort>/06-implementation-summary.md`-style doc (see
-  `.design/chunk-buffering/` or `.design/cell-map-overhaul/`) — a plain-language summary of what
-  shipped, what was verified, and what's still a known gap.
+  the established pattern is a numbered `NN-implementation-summary.md`-style doc — a plain-language
+  summary of what shipped, what was verified, and what's still a known gap.
 
 ## Commands
 

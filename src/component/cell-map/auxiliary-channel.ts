@@ -14,10 +14,6 @@
  * staged `pendingShift` — running its own evict/assemble pass that mirrors
  * `CellWindow.reassemble`'s own logic, just on a plain JS buffer instead of
  * the WASM store.
- *
- * See `.design/cell-map-overhaul/17-secondary-dense-map-windowing-evaluation.md`
- * for the design history and `.design/cell-map-overhaul/18-secondary-dense-map-windowing.md`
- * for this implementation's own design notes.
  */
 import { ChunkColdStorage } from './cold-storage';
 import type { ColdStorageEntrySnapshot } from './cold-storage';

@@ -17,8 +17,7 @@ uniform mediump float u_axonometricAngle;
 uniform mediump float u_orbitYaw;
 uniform vec3 u_cellSize;   // Used by both for grid calculations
     // Size of the currently-resident cell-map window, and the window's
-    // world-space origin offset (window origin * chunkSize * cellSize) --
-    // see .design/cell-map-overhaul/10-vertex-world-offset-and-depth-bias.md.
+    // world-space origin offset (window origin * chunkSize * cellSize).
     // Used by the shared depth-bias block below for BOTH render modes: cells
     // set these from the cell-map's actual window each frame (render-cell-maps.ts),
     // while sprites set u_windowSize from the scene's max map bounds (falling

@@ -12,11 +12,9 @@ import { Vector3D, Array3D } from '../src/math';
 import { packCell } from '../src/component/cell-map/types';
 
 // This test drives the WASM mesher directly (bypassing cell-map's per-instance
-// `chunkSize`, which is now runtime-configurable — see
-// .design/completed_tasks/cell-map-overhaul/01-chunk-size-and-windowing.md),
-// so it pins its own chunk size matching CHUNK_SIZE's Rust-side default
-// ([16,16,16], unset unless mesh_set_chunk_size is called), keeping these
-// golden hashes stable.
+// `chunkSize`, which is now runtime-configurable), so it pins its own chunk
+// size matching CHUNK_SIZE's Rust-side default ([16,16,16], unset unless
+// mesh_set_chunk_size is called), keeping these golden hashes stable.
 const CHUNK_SIZE = 16;
 
 /**

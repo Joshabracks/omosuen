@@ -228,8 +228,7 @@ function shouldApplyResize(
 /**
  * Uploads a per-cell visibility mask as a `TEXTURE_2D_ARRAY` R8 texture,
  * sized to whatever's currently resident in the canonical store (today: the
- * whole map; once the shiftable hot window lands, the window — see
- * .design/completed_tasks/cell-map-overhaul/06-camera-reveal-fix.md).
+ * whole map; once the shiftable hot window lands, the window).
  * Texture layout: width = windowX, height = windowY, layers = windowZ.
  * Layer z, texel (x, y) → cell (x, y, z), in window-local coordinates. This
  * is exactly the WASM solidity buffer's own layout (z-outermost, then y,
@@ -389,11 +388,8 @@ export function renderCellMaps(
   const uCellSize = gl.getUniformLocation(program, 'u_cellSize');
   // Size/origin of the currently-resident cell-map window. Used by the
   // fragment shader's reveal/occlusion sampling (u_windowSize/u_windowOrigin,
-  // in cell units — see
-  // .design/completed_tasks/cell-map-overhaul/06-camera-reveal-fix.md) and by
-  // the vertex shader's position offset + depth-bias recentering
-  // (u_windowSize/u_worldOffset, in world/continuous units — see
-  // .design/cell-map-overhaul/10-vertex-world-offset-and-depth-bias.md).
+  // in cell units) and by the vertex shader's position offset + depth-bias
+  // recentering (u_windowSize/u_worldOffset, in world/continuous units).
   // u_windowSize (cell units) is shared between both stages; u_windowOrigin
   // (cell units) and u_worldOffset (world units, cellSize-scaled) are
   // deliberately separate uniforms with different units — do not conflate
@@ -699,9 +695,9 @@ export function renderCellMaps(
       }
     }
 
-    // Drive the window's focus from the camera by default (see
-    // .design/cell-map-overhaul/11-focus-driving.md) -- before rebuilding
-    // dirty chunks, since a shift marks the newly-exposed slab dirty.
+    // Drive the window's focus from the camera by default -- before
+    // rebuilding dirty chunks, since a shift marks the newly-exposed slab
+    // dirty.
     if (cellMap.autoFocusFromCamera) {
       CellMap.setFocus(cellMap, camPos.x, camPos.y, camPos.z);
     }

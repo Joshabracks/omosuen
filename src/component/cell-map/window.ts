@@ -13,8 +13,7 @@
  * (dropping ones that still match baseline — nothing to store), assemble the
  * new window's contents (reusing the still-overlapping region, pulling
  * newly-exposed chunks from cold storage or the empty baseline), then reload
- * the store with the new contents. See
- * `.design/completed_tasks/cell-map-overhaul/02-wasm-windowed-store.md`.
+ * the store with the new contents.
  */
 import {
   cellStoreGet,
@@ -38,8 +37,7 @@ export const DEFAULT_CHUNK_DATA_GEN_BUDGET_MS = 4;
 /**
  * Rejects a malformed coordinate (NaN, ±Infinity, non-numeric) — a bug
  * regardless of where the window happens to be, so this throws
- * unconditionally. See
- * `.design/completed_tasks/cell-map-overhaul/07-bounds-checking-diagnostics.md`.
+ * unconditionally.
  */
 function assertFiniteCoordinates(x: number, y: number, z: number): void {
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
@@ -61,8 +59,7 @@ export interface ChunkCoord {
  * behavior. Must be a pure function of its coordinates for a given
  * world/seed — same input, same output, every time — so re-materializing a
  * never-edited chunk after it's evicted produces the same result it had
- * before. This is a contract on the caller, not something enforced here; see
- * `.design/completed_tasks/cell-map-overhaul/04-procedural-generation.md`.
+ * before. This is a contract on the caller, not something enforced here.
  */
 export interface ChunkGenerator {
   /**
@@ -753,13 +750,12 @@ export class CellWindow {
    * generation. Centralizing this is what makes it impossible for the
    * eviction/assembly loop, `advance`'s per-item staging, and commit-time
    * re-resolution to independently drift on priority order or on whether
-   * cold storage even gets checked -- see
-   * `.design/chunk-buffering/10-unify-chunk-resolution-paths.md`. Live data
-   * always wins over a cold-storage snapshot when both exist for the same
-   * coordinate: the live store reflects every edit up to this instant, cold
-   * storage only reflects whatever was true the last time this chunk was
-   * evicted (and is never deleted on a read, so a chunk that re-entered the
-   * window via cold storage can leave a stale entry behind indefinitely).
+   * cold storage even gets checked. Live data always wins over a
+   * cold-storage snapshot when both exist for the same coordinate: the live
+   * store reflects every edit up to this instant, cold storage only
+   * reflects whatever was true the last time this chunk was evicted (and is
+   * never deleted on a read, so a chunk that re-entered the window via cold
+   * storage can leave a stale entry behind indefinitely).
    */
   private resolveChunk(
     worldChunk: ChunkCoord,

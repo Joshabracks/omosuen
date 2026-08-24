@@ -15,8 +15,7 @@
  *
  * Both tiers grow (double) only when their free-list empties, never per-chunk
  * — the data that scales with touched-chunk count lives in a handful of
- * long-lived typed-array buffers, not per-chunk objects. See
- * `.design/completed_tasks/cell-map-overhaul/03-js-cold-storage-pool.md`.
+ * long-lived typed-array buffers, not per-chunk objects.
  */
 
 /** A pool of fixed-size typed-array slots, grow-only (doubles on demand). */
@@ -124,9 +123,9 @@ function tryEncodeRLE(
 
 /**
  * A stored chunk's contents in native tier form — the shape used for
- * serialization (see `.design/completed_tasks/cell-map-overhaul/05-chunked-serialization.md`)
- * so a save doesn't have to decode-then-recompress every RLE-tier chunk.
- * Plain numbers/arrays throughout so this round-trips through JSON as-is.
+ * serialization, so a save doesn't have to decode-then-recompress every
+ * RLE-tier chunk. Plain numbers/arrays throughout so this round-trips
+ * through JSON as-is.
  */
 export type ColdStorageEntrySnapshot =
   | {

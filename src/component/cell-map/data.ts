@@ -14,6 +14,7 @@ import {
   packCell,
   createDefaultCellData,
   DEFAULT_CHUNK_SIZE,
+  CellEmissionColorDirtyRegion,
 } from './types';
 import {
   initRenderWasm,
@@ -69,10 +70,40 @@ export let cmEmissionMap: Array3D<number>;
  * so — unlike emissionMap (baked into vertices) — changing it needs no remesh.
  */
 export let cmEmissionColorMap: Array3D<number>;
-/** Set when cmEmissionColorMap changes so the render pass rebuilds the GPU texture. */
-export let cmEmissionColorDirty: boolean = true;
-/** Set when cmMeshes changes so rebuildDirtyChunks re-uploads the custom-shape buffers. */
-export let cmCustomShapesDirty: boolean = true;
+/**
+ * Monotonic counter, bumped on every in-window `setEmissionColor` write and
+ * on every full invalidation (window shift, or dirty-log cap overflow).
+ * Mirrors atlas-manager's `atlasVersion`.
+ */
+export let cmEmissionColorVersion: number = 0;
+/**
+ * Version at/below which a camera must do a full `texImage3D` reupload
+ * instead of trusting `cmEmissionColorDirtyRegions` -- the delta log doesn't
+ * cover anything at or before this version. Bumped alongside
+ * `cmEmissionColorVersion` on every full invalidation. Mirrors atlas-manager's
+ * `fullVersion`.
+ */
+export let cmEmissionColorFullVersion: number = 0;
+/**
+ * Per-cell dirty log (window-local coords + the version that wrote them),
+ * capped at `CELL_EMISSION_COLOR_DIRTY_CAP` (see cell-map/methods.ts).
+ * Mirrors atlas-manager's `dirtyRegions`, one cell per entry instead of one
+ * rect.
+ */
+export let cmEmissionColorDirtyRegions: CellEmissionColorDirtyRegion[] = [];
+/**
+ * Indices into `cmMeshes` (>= 2, custom shapes) added since the last
+ * `rebuildDirtyChunks` pass and not yet pushed to WASM. Ignored (and
+ * cleared) whenever `cmCustomShapesFullResync` is set, since a full resync
+ * covers every index anyway.
+ */
+export let cmCustomShapesPendingIndices: number[] = [];
+/**
+ * Set when `cmMeshes` is reassigned wholesale (not just appended to) so
+ * `rebuildDirtyChunks` re-uploads every custom shape, not just the ones
+ * logged in `cmCustomShapesPendingIndices`.
+ */
+export let cmCustomShapesFullResync: boolean = true;
 export let cmVisibilityMap: Array3D<boolean>;
 export let cmCellSize: Vector3D;
 export let cmMapSize: Vector3D;
@@ -236,8 +267,11 @@ export function resetCellMapState(): void {
   cmMeshes = [];
   cmEmissionMap = undefined!;
   cmEmissionColorMap = undefined!;
-  cmEmissionColorDirty = true;
-  cmCustomShapesDirty = true;
+  cmEmissionColorVersion = 0;
+  cmEmissionColorFullVersion = 0;
+  cmEmissionColorDirtyRegions = [];
+  cmCustomShapesPendingIndices = [];
+  cmCustomShapesFullResync = true;
   cmVisibilityMap = undefined!;
   cmCellSize = undefined!;
   cmMapSize = undefined!;
@@ -311,7 +345,7 @@ function makeCellMapInstance(name: string): CellMapT {
     },
     set meshes(v) {
       cmMeshes = v;
-      cmCustomShapesDirty = true;
+      cmCustomShapesFullResync = true;
     },
     get emissionMap() {
       return cmEmissionMap;
@@ -325,17 +359,35 @@ function makeCellMapInstance(name: string): CellMapT {
     set emissionColorMap(v) {
       cmEmissionColorMap = v;
     },
-    get emissionColorDirty() {
-      return cmEmissionColorDirty;
+    get emissionColorVersion() {
+      return cmEmissionColorVersion;
     },
-    set emissionColorDirty(v) {
-      cmEmissionColorDirty = v;
+    set emissionColorVersion(v) {
+      cmEmissionColorVersion = v;
     },
-    get customShapesDirty() {
-      return cmCustomShapesDirty;
+    get emissionColorFullVersion() {
+      return cmEmissionColorFullVersion;
     },
-    set customShapesDirty(v) {
-      cmCustomShapesDirty = v;
+    set emissionColorFullVersion(v) {
+      cmEmissionColorFullVersion = v;
+    },
+    get emissionColorDirtyRegions() {
+      return cmEmissionColorDirtyRegions;
+    },
+    set emissionColorDirtyRegions(v) {
+      cmEmissionColorDirtyRegions = v;
+    },
+    get customShapesPendingIndices() {
+      return cmCustomShapesPendingIndices;
+    },
+    set customShapesPendingIndices(v) {
+      cmCustomShapesPendingIndices = v;
+    },
+    get customShapesFullResync() {
+      return cmCustomShapesFullResync;
+    },
+    set customShapesFullResync(v) {
+      cmCustomShapesFullResync = v;
     },
     get visibilityMap() {
       return cmVisibilityMap;
@@ -645,10 +697,16 @@ export interface CellMapT extends ComponentData {
   emissionMap: Array3D<number>;
   /** Per-cell emission (highlight) color, packed (r<<16)|(g<<8)|b. 0 = no highlight. */
   emissionColorMap: Array3D<number>;
-  /** Dirty flag: emissionColorMap changed → render pass rebuilds the GPU texture. */
-  emissionColorDirty: boolean;
-  /** Dirty flag: meshes changed → rebuildDirtyChunks re-uploads the custom-shape buffers. */
-  customShapesDirty: boolean;
+  /** Monotonic version; see cmEmissionColorVersion. */
+  emissionColorVersion: number;
+  /** Full-reupload threshold; see cmEmissionColorFullVersion. */
+  emissionColorFullVersion: number;
+  /** Per-cell dirty log for delta GPU uploads; see cmEmissionColorDirtyRegions. */
+  emissionColorDirtyRegions: CellEmissionColorDirtyRegion[];
+  /** Indices into meshes (>= 2) pending upload to WASM; see cmCustomShapesPendingIndices. */
+  customShapesPendingIndices: number[];
+  /** Forces a full custom-shape re-upload on the next rebuild pass; see cmCustomShapesFullResync. */
+  customShapesFullResync: boolean;
   visibilityMap: Array3D<boolean>;
 
   // World configuration
@@ -795,8 +853,11 @@ export const PROPERTY_ALLOWLIST = [
   'meshes',
   'emissionMap',
   'emissionColorMap',
-  'emissionColorDirty',
-  'customShapesDirty',
+  'emissionColorVersion',
+  'emissionColorFullVersion',
+  'emissionColorDirtyRegions',
+  'customShapesPendingIndices',
+  'customShapesFullResync',
   'visibilityMap',
   'cellSize',
   'mapSize',
@@ -1336,12 +1397,23 @@ function chunkDenseArrayIntoColdStorage(
 }
 
 /**
- * Resyncs the public `cmEmissionColorMap`/`cmSmoothingWeights` fields (and
- * `cmEmissionColorDirty`) from the two auxiliary channels' current resident
- * content, at the given cell dimensions. Shared by the initial synchronous
- * call every construction path makes right after constructing the channels
- * (see `makeAuxiliaryOnReassemble`'s doc comment for why that call is
- * necessary, not just the hook) and by `onReassemble`'s own per-shift call.
+ * Resyncs the public `cmEmissionColorMap`/`cmSmoothingWeights` fields from
+ * the two auxiliary channels' current resident content, at the given cell
+ * dimensions. Shared by the initial synchronous call every construction path
+ * makes right after constructing the channels (see `makeAuxiliaryOnReassemble`'s
+ * doc comment for why that call is necessary, not just the hook) and by
+ * `onReassemble`'s own per-shift call.
+ *
+ * Every call is treated as a full invalidation of `cmEmissionColorMap`'s
+ * dirty-region log: `emissionArr` below is a wholesale content swap (a
+ * window shift reallocates and re-copies into new LOCAL coordinates, per
+ * `AuxiliaryChannel.onWindowChange`), so any region logged before this call
+ * means neither the coordinates nor the content it described anymore.
+ * Bumping `cmEmissionColorVersion`/`cmEmissionColorFullVersion` together
+ * (mirroring atlas-manager's own full-invalidate) forces every camera --
+ * even one already caught up to the pre-call version -- through exactly one
+ * full rebuild, and lets the now-stale log simply be dropped rather than
+ * actively reconciled.
  *
  * `forceSmoothingReassign`: `smoothingWeights` has no live per-cell setter,
  * so when the channel is uniform AND the window's cell dimensions haven't
@@ -1369,7 +1441,9 @@ function syncAuxiliaryFields(
   const emissionArr = new Array3D<number>(dims, 0);
   emissionArr.value = Array.from(emissionChannel.value);
   cmEmissionColorMap = emissionArr;
-  cmEmissionColorDirty = true;
+  cmEmissionColorVersion++;
+  cmEmissionColorFullVersion = cmEmissionColorVersion;
+  cmEmissionColorDirtyRegions = [];
 
   if (smoothingChannel.canDiverge || forceSmoothingReassign) {
     const weightsArr = new Array3D<number>(dims, 8);

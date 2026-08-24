@@ -77,6 +77,19 @@ function assertFiniteCoordinates(x: number, y: number, z: number): void {
   }
 }
 
+/**
+ * Cap on the retained per-cell emission-color dirty log; on overflow the log
+ * is cleared and `emissionColorFullVersion` is bumped, forcing one full
+ * `texImage3D` reupload for any straggler camera instead of growing the log
+ * unboundedly. Sized generously above typical usage (a hover highlight is
+ * 1 cell/frame; a selection/zone-glow batch might touch a few hundred) so a
+ * realistic single-frame batch still gets per-cell `texSubImage3D` instead of
+ * falling back -- thousands of tiny `texSubImage3D` calls are still far
+ * cheaper than one full-window `texImage3D` rebuild for any non-trivial
+ * resident window.
+ */
+const CELL_EMISSION_COLOR_DIRTY_CAP = 2048;
+
 export interface CellMapMethods extends ComponentMethods {
   type: 'cell-map';
 
@@ -440,7 +453,31 @@ export const CellMap: CellMapMethods = {
         new Vector3D(local.x, local.y, local.z),
         packed,
       );
-      component.emissionColorDirty = true;
+      // Version-tagged per-cell dirty log (mirrors atlas-manager's
+      // dirtyRegions) instead of a single whole-map dirty flag -- lets the
+      // renderer patch just this texel via texSubImage3D per camera instead
+      // of rebuilding + re-uploading the entire resident window on every
+      // call. Deliberately no value-diffing against the previous color: a
+      // no-op write (same color as before) still bumps the version and logs
+      // a region, trading an occasional redundant 1-texel texSubImage3D for
+      // keeping this hot path a single unconditional write (a read-before-
+      // write compare would itself cost more than the upload it would
+      // occasionally save).
+      component.emissionColorVersion = component.emissionColorVersion + 1;
+      const version = component.emissionColorVersion;
+      component.emissionColorDirtyRegions.push({
+        version,
+        x: local.x,
+        y: local.y,
+        z: local.z,
+      });
+      if (
+        component.emissionColorDirtyRegions.length >
+        CELL_EMISSION_COLOR_DIRTY_CAP
+      ) {
+        component.emissionColorDirtyRegions = [];
+        component.emissionColorFullVersion = version;
+      }
     }
   },
 
@@ -498,8 +535,13 @@ export const CellMap: CellMapMethods = {
 
   addMesh: (component: CellMapT, mesh: Mesh): number => {
     component.meshes.push(mesh);
-    component.customShapesDirty = true;
     const index = component.meshes.length - 1;
+    // Only this one new index needs to reach WASM -- meshes is append-only
+    // via this method, so nothing else has gone stale. If a full resync is
+    // already pending (e.g. a wholesale `meshes` reassignment), the
+    // consumer ignores this list entirely, so pushing unconditionally is
+    // harmless either way.
+    component.customShapesPendingIndices.push(index);
 
     if (index > 0xfff) {
       console.warn(

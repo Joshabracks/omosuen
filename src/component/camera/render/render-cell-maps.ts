@@ -335,6 +335,75 @@ function uploadCellEmissionColorTexture(
 }
 
 /**
+ * Patches only the individual cells changed since `fromVersion` into the
+ * camera's existing per-cell emission-color texture via texSubImage3D — the
+ * delta counterpart to buildCellEmissionColorBytes/uploadCellEmissionColorTexture,
+ * mirroring uploadAtlasDelta's structure (atlas-textures.ts). Reads each
+ * cell's CURRENT value from cellMap.emissionColorMap at upload time (not a
+ * value cached in the dirty-region entry), so multiple writes to the same
+ * cell between two camera uploads correctly collapse to the latest color --
+ * same reasoning as uploadAtlasDelta re-reading pixels from the retained
+ * canvas instead of trusting a stale cached copy. Caller guarantees a
+ * texture already exists and this camera is at/after
+ * cellMap.emissionColorFullVersion; otherwise uploadCellEmissionColorTexture
+ * (full) must be used instead.
+ *
+ * Deliberately NOT batching/merging adjacent dirty cells into larger
+ * sub-boxes: the target usage (a hover highlight, a handful of selection
+ * cells, at most a couple hundred for a zone-glow batch) makes N small
+ * texSubImage3D calls in one frame cheap relative to one full-window
+ * texImage3D rebuild -- coalescing would add real complexity to solve a
+ * problem this cap size doesn't actually have.
+ */
+function uploadCellEmissionColorDelta(
+  gl: WebGL2RenderingContext,
+  camera: CameraT,
+  cellMap: CellMapT,
+  fromVersion: number,
+): void {
+  gl.activeTexture(gl.TEXTURE6);
+  gl.bindTexture(
+    gl.TEXTURE_2D_ARRAY,
+    camera.glResources.cellEmissionColorTexture,
+  );
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  const { x: mx, y: my } = cellMap.mapSize;
+  const packedValues = cellMap.emissionColorMap.value;
+  const texel = new Uint8Array(4);
+  texel[3] = 255;
+  for (const region of cellMap.emissionColorDirtyRegions) {
+    if (region.version <= fromVersion) continue;
+    const packed =
+      packedValues[region.z * my * mx + region.y * mx + region.x] | 0;
+    texel[0] = (packed >> 16) & 0xff;
+    texel[1] = (packed >> 8) & 0xff;
+    texel[2] = packed & 0xff;
+    // hasAny only ever flips false→true here, never back to false -- a
+    // delta write is never allowed to *decrease* what a full rebuild
+    // already established. If every colored cell later reverts to black,
+    // hasAny stays (harmlessly) true until the next full rebuild (a window
+    // shift or a cap overflow) recomputes it exactly. This is the one
+    // deliberate divergence from the old per-write-exact-recompute
+    // behavior -- never wrong (never hides real color), at worst briefly
+    // conservative.
+    if (packed !== 0) camera.glResources.cellEmissionColorHasAny = true;
+    gl.texSubImage3D(
+      gl.TEXTURE_2D_ARRAY,
+      0,
+      region.x,
+      region.y,
+      region.z,
+      1,
+      1,
+      1,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      texel,
+    );
+  }
+}
+
+/**
  * Renders all cell-maps using chunk-based batched rendering.
  * Each chunk has a pre-built mesh with hidden face culling and greedy meshing applied.
  * Indices are grouped by material for efficient multi-material draw calls.
@@ -613,6 +682,7 @@ export function renderCellMaps(
   // Render each cell-map
   for (const cellMap of cellMaps) {
     let gpuUploadMs = 0;
+    let emissionColorGpuUploadMs = 0;
     // Build this frame's render/cull volume in world space: a plain
     // axis-aligned box centered on the camera, with independent half-extents
     // per world axis (halfIsoX/halfIsoY/halfIsoZ). This is deliberately NOT
@@ -809,19 +879,55 @@ export function renderCellMaps(
       gl.uniform1i(uHasVisibilityMask, 0);
     }
 
-    // Per-cell emission (highlight) color texture (Part A). Rebuild the GPU texture
-    // only when the map changed — setEmissionColor sets emissionColorDirty; no remesh
-    // is involved. An all-black map skips upload and disables the shader term.
-    // Same windowCommitted gate as the solidity texture above -- and left
-    // dirty (not cleared) if the window hasn't committed yet, so it retries
-    // once it has, rather than being silently dropped.
-    if (cellMap.emissionColorDirty && windowCommitted) {
-      const { bytes, hasAny } = buildCellEmissionColorBytes(cellMap);
-      camera.glResources.cellEmissionColorHasAny = hasAny;
-      if (hasAny) {
-        uploadCellEmissionColorTexture(gl, camera, bytes, cellMap.mapSize);
+    // Per-cell emission (highlight) color texture (Part A). Versioned delta
+    // tracking (mirrors the atlas-manager's atlasVersion/fullVersion/
+    // dirtyRegions -- see atlas-textures.ts's uploadAtlasDelta) replaces the
+    // old single whole-map dirty flag: a camera already caught up to
+    // cellMap.emissionColorVersion does nothing; one that's behind but
+    // at/after cellMap.emissionColorFullVersion patches only the cells
+    // changed since its own tracked version via texSubImage3D; any other
+    // camera (first-ever upload, or behind a full invalidation -- a window
+    // shift or dirty-log cap overflow, see CellMap.setEmissionColor) falls
+    // back to a full rebuild + texImage3D reupload. Per-camera tracking also
+    // fixes a latent bug the old single-flag design had: with N cameras
+    // rendering the same cell-map in one frame, only the first camera to
+    // observe emissionColorDirty actually got the upload (the flag was
+    // already cleared by the time a second camera checked it) -- each
+    // camera now tracks its own progress independently, so every camera
+    // converges correctly regardless of render order.
+    // Same windowCommitted gate as the solidity texture above -- a camera's
+    // tracked version is deliberately left untouched until the window has
+    // committed, so it naturally retries every frame once it has, rather
+    // than being silently dropped.
+    if (
+      windowCommitted &&
+      camera.glResources.cellEmissionColorVersion !==
+        cellMap.emissionColorVersion
+    ) {
+      const emissionT0 = profiling ? performance.now() : 0;
+      if (
+        camera.glResources.cellEmissionColorTexture &&
+        camera.glResources.cellEmissionColorVersion >=
+          cellMap.emissionColorFullVersion
+      ) {
+        uploadCellEmissionColorDelta(
+          gl,
+          camera,
+          cellMap,
+          camera.glResources.cellEmissionColorVersion,
+        );
+      } else {
+        const { bytes, hasAny } = buildCellEmissionColorBytes(cellMap);
+        camera.glResources.cellEmissionColorHasAny = hasAny;
+        if (hasAny) {
+          uploadCellEmissionColorTexture(gl, camera, bytes, cellMap.mapSize);
+        }
       }
-      cellMap.emissionColorDirty = false;
+      camera.glResources.cellEmissionColorVersion =
+        cellMap.emissionColorVersion;
+      if (profiling) {
+        emissionColorGpuUploadMs += performance.now() - emissionT0;
+      }
     }
     // Same reasoning as u_cellSolidity above -- always pin the unit so this
     // sampler2DArray uniform never falls back to its default (0) and
@@ -1194,6 +1300,12 @@ export function renderCellMaps(
         cellMap.name,
         'cell-map:gpuUpload',
         gpuUploadMs,
+      );
+      recordComponentUpdate(
+        cellMap.id ?? -1,
+        cellMap.name,
+        'cell-map:emissionColorGpuUpload',
+        emissionColorGpuUploadMs,
       );
     }
   }

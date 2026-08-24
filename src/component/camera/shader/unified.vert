@@ -5,6 +5,7 @@ in vec2 a_uv;
 in vec3 a_normal;        // Used by cells
 in vec3 a_origPosition;  // Pre-smoothing position (cells only)
 in float a_emission;     // Per-vertex emission glow 0..1 (cells only)
+in vec3 a_trueFaceDir;   // Exact, always-axis-aligned face direction (cells only)
 
     // Render mode selector
 uniform lowp int u_renderMode;  // 0 = cells, 1 = sprites
@@ -42,6 +43,7 @@ out vec2 v_screenPos;
 out vec3 v_worldNormal;
 out vec3 v_origWorldPos;
 out float v_emission;
+flat out vec3 v_trueFaceDir;
 
 void main() {
     const float ISO_H = 0.8660254; // cos(30deg) — constant horizontal spread
@@ -130,6 +132,7 @@ void main() {
         // world-space.
         v_origWorldPos = a_origPosition;
         v_emission = a_emission;
+        v_trueFaceDir = a_trueFaceDir;
 
     } else {
         // ============================================================
@@ -183,5 +186,6 @@ void main() {
         v_origWorldPos = u_spritePosition;
         v_screenPos = viewPos;
         v_emission = 0.0;  // Sprites have no per-vertex cell emission
+        v_trueFaceDir = vec3(0.0, 1.0, 0.0);  // Unused (cell-highlight-only); kept for interface symmetry
     }
 }

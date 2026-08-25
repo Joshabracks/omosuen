@@ -393,9 +393,36 @@ export function renderSprites(
     unifiedCellSizeZ,
   );
   gl.uniform3f(u_windowSize, maxMapWidth, maxMapHeight, maxMapDepth);
-  // Sprites have no shiftable cell-window origin, so this stays (0,0,0) --
-  // see the depth-bias comment in unified.vert.
-  gl.uniform3f(u_worldOffset, 0, 0, 0);
+  // World-space origin of the resident cell-map window, needed by the shared
+  // depth-bias centering block in unified.vert (u_worldOffset -> rotCenterX/Z)
+  // so cells and sprites agree on the SAME centering point. Previously
+  // hardcoded to (0,0,0) here on the assumption sprites have no window of
+  // their own -- but render-cell-maps.ts sets this to the cell-map's REAL
+  // window origin (windowOrigin * chunkSize * cellSize), and for any
+  // generative/windowed map whose window has recentered away from world
+  // origin (i.e. any camera position other than very near (0,0,0), which is
+  // the common case), that mismatch corrupted rotCenterX/Z between the two
+  // passes by roughly half the window's own extent -- an error easily two-
+  // plus orders of magnitude larger than a sprite's own height, silently
+  // swamping the per-sprite depth math and causing sprites to render fully
+  // occluded by open terrain that shouldn't be occluding them at all.
+  // Mirrors render-cell-maps.ts's own computation exactly, from the first
+  // cell-map (same "assume all maps share this" precedent as
+  // unifiedCellSizeX/Y/Z above).
+  const originCellMap = cellMaps[0];
+  const windowOrigin = originCellMap?.window.origin;
+  gl.uniform3f(
+    u_worldOffset,
+    originCellMap && windowOrigin
+      ? windowOrigin.cx * originCellMap.chunkSize.x * originCellMap.cellSize.x
+      : 0,
+    originCellMap && windowOrigin
+      ? windowOrigin.cy * originCellMap.chunkSize.y * originCellMap.cellSize.y
+      : 0,
+    originCellMap && windowOrigin
+      ? windowOrigin.cz * originCellMap.chunkSize.z * originCellMap.cellSize.z
+      : 0,
+  );
 
   // Set dynamic light uniforms (same lights as cell-maps)
   setLightUniforms(gl, camera.id!, lights);

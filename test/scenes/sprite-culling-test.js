@@ -503,17 +503,6 @@ export async function createScene() {
                 anchor: new Omosuen.Vector2D(8, 32), // bottom-center of the 16x32 frame
                 tint: new Omosuen.Vector4D(1, 1, 1, 1),
                 opacity: 1.0,
-                // Diagnostic, not a fix: a sprite's depth (unified.vert MODE 1) is a
-                // single value from its anchor world position, tested per-fragment
-                // against the cell-map's rendered depth texture (unified.frag ~line
-                // 674, `cellDepth < gl_FragCoord.z`). Without showSilhouette a failed
-                // test just discards the fragment (invisible); with it, it draws
-                // silhouetteColor instead. If trees show up as solid green blobs
-                // instead of vanishing, that CONFIRMS this occlusion test is firing
-                // against the flat ground itself, not a bad Y offset (cellToWorldCoordinates
-                // already returns the exact top-face height -- see methods.ts:563-573).
-                showSilhouette: true,
-                silhouetteColor: new Omosuen.Vector4D(0.15, 0.55, 0.2, 0.65),
             }, treeNexus);
             treeCount++;
         }

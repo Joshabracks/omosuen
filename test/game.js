@@ -61,6 +61,7 @@ async function initGame() {
     Omosuen.registerSceneModule('audio-test', '/scenes/audio-test.js');
     Omosuen.registerSceneModule('speed-dial-test', '/scenes/speed-dial-test.js');
     Omosuen.registerSceneModule('multi-camera-test', '/scenes/multi-camera-test.js');
+    Omosuen.registerSceneModule('sprite-culling-test', '/scenes/sprite-culling-test.js');
 
     // Switch to main menu
     await Omosuen.switchScene('main-menu');

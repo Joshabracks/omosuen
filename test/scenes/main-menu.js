@@ -27,6 +27,7 @@ Omosuen.registerHtmlConstructor('mainMenu', (overlay) => {
                 <button id="btn-audio-test" class="menu-button">Audio Test Scene</button>
                 <button id="btn-speed-dial-test" class="menu-button">Speed-Dial Test</button>
                 <button id="btn-multi-camera-test" class="menu-button">Multi-Camera Test</button>
+                <button id="btn-sprite-culling-test" class="menu-button">Sprite Culling Test</button>
             </div>
             <p class="text center margin-top">
                 Press a button to load a test scene
@@ -101,6 +102,11 @@ Omosuen.registerBinding('loadSpeedDialTest', async (event) => {
 Omosuen.registerBinding('loadMultiCameraTest', async (event) => {
     console.log('Loading Multi-Camera Test scene...');
     await Omosuen.switchScene('multi-camera-test');
+});
+
+Omosuen.registerBinding('loadSpriteCullingTest', async (event) => {
+    console.log('Loading Sprite Culling Test scene...');
+    await Omosuen.switchScene('sprite-culling-test');
 });
 
 /**
@@ -181,6 +187,11 @@ export async function createScene() {
                 selector: '#btn-multi-camera-test',
                 onActions: ['click'],
                 methodKey: 'loadMultiCameraTest'
+            },
+            {
+                selector: '#btn-sprite-culling-test',
+                onActions: ['click'],
+                methodKey: 'loadSpriteCullingTest'
             }
         ]
     });

@@ -535,10 +535,22 @@ export function renderSprites(
     // done in collect-renderables (see that module's comment) -- camera
     // position isn't tracked by the version-counter cache collection relies
     // on, so this filter must be re-evaluated fresh every draw, every frame.
+    //
+    // Threshold uses zoom², matching the shader's real clip-space scale: this
+    // file sets u_viewportSize = viewport/zoom (below), and unified.vert
+    // applies another `* u_zoom` to isoPos/viewPos before dividing by that --
+    // net zoom² relationship, already documented as `projScale = zoom * zoom`
+    // in screen-pick/projection-math.ts and screen-pick/ray.ts. NOT zoom --
+    // that was this reject's bug (see the Colony Forever bug report
+    // 010-sprite-edge-cull-zoom-formula-mismatch.md: at zoom < 1 the old
+    // linear formula wrongly culled a zoom-proportional ring of sprites near
+    // the screen edges that the shader would have actually placed on-screen).
     const isoX = ISO_H * (pRx - pRz);
     const isoY = sinA * (pRx + pRz) - heightScale * p.y;
-    const halfW = viewport.width / (2 * camera.zoom) + EDGE_PAD_WORLD;
-    const halfH = viewport.height / (2 * camera.zoom) + EDGE_PAD_WORLD;
+    const halfW =
+      viewport.width / (2 * camera.zoom * camera.zoom) + EDGE_PAD_WORLD;
+    const halfH =
+      viewport.height / (2 * camera.zoom * camera.zoom) + EDGE_PAD_WORLD;
     if (Math.abs(isoX - camIsoX) > halfW || Math.abs(isoY - camIsoY) > halfH) {
       continue;
     }

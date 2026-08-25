@@ -173,9 +173,56 @@ void main() {
         // Convert to clip space
         vec2 clipSpace = (viewPos / u_viewportSize) * 2.0;
 
+        // Per-vertex depth compensation: without this, gl_Position.z depends only on
+        // u_spritePosition (the anchor), so the WHOLE quad -- feet and canopy alike --
+        // shares one depth, even though canopy pixels land on different screen pixels
+        // than the feet (via scaledVertex, a pure clip-space XY offset above). The
+        // fragment shader's occlusion test (unified.frag) then compares that single
+        // anchor depth against terrain's real per-pixel depth at each pixel's OWN
+        // screen location -- over flat/open terrain this frequently misfires (a
+        // canopy pixel gets compared against a neighboring ground cell's depth, not
+        // the one under the sprite's own feet), silently discarding sprites that
+        // should render normally.
+        //
+        // Fix: convert localVertex.y (this vertex's offset from the anchor, PRE-
+        // rotation -- see below) into its equivalent world-Y contribution to
+        // rawDepth, using the same heightScale relationship MODE 0 uses to turn a
+        // world-Y delta into screen offset (isoY = worldPos.y * vec2(0.0,
+        // -heightScale) above, then * u_zoom to enter view space -- localVertex.y *
+        // u_spriteSize.y * u_zoom is already in that same view-space unit, matching
+        // scaledVertex's own construction below). Equating the two and solving for
+        // the equivalent world-Y delta gives effectiveYDelta = -(localVertex.y *
+        // u_spriteSize.y) / heightScale; multiplying back by heightScale for
+        // rawDepth cancels the division exactly, so it's written directly below
+        // rather than ever dividing by heightScale (which -> 0 at a near-90-degree/
+        // top-down axonometric angle -- avoiding the division avoids any Inf/NaN
+        // risk on gl_Position.z entirely, not just approximately).
+        //
+        // At the anchor itself (localVertex == (0,0) by construction) this collapses
+        // to the original heightScale * u_spritePosition.y bit-for-bit: no change to
+        // where a sprite sits relative to the cell it's standing on. For a bottom-
+        // center-anchored sprite (the common case), canopy vertices get
+        // localVertex.y = -1, adding +u_spriteSize.y -- correctly reading as nearer
+        // the camera than the feet, matching how a real MODE-0 vertex at that height
+        // would behave. The adjustment is bounded by the sprite's own visual size
+        // (|localVertex.y| <= ~1), so genuinely taller/nearer geometry (e.g. a wall
+        // many cells tall) still correctly out-competes and occludes the whole
+        // sprite -- this only corrects a sprite's depth against terrain at roughly
+        // its own scale, it doesn't make it depth-cheat-proof.
+        //
+        // Uses PRE-rotation localVertex.y, not the rotated `rotated.y`/
+        // `scaledVertex.y`: u_rotation is a cosmetic screen-plane billboard spin (see
+        // this mode's header comment -- "the billboard quad itself stays screen-space
+        // via u_rotation"), not a 3D lean, so it has no real height semantics to
+        // preserve; keying depth to the image's own up/down axis keeps the depth
+        // gradient stable (no flicker against nearby terrain) as a sprite spins in
+        // place, at the cost that a rotated sprite's depth-boosted edge won't
+        // visually track whichever edge currently reads as "top" on screen.
+        float depthYTerm = heightScale * u_spritePosition.y - localVertex.y * u_spriteSize.y;
+
         // Same depth formula as cells (centered + biased for yaw safety), with
         // +1.0 so the sprite renders just in front of the cell surface at its position.
-        float rawDepth = (rx - rotCenterX) + heightScale * u_spritePosition.y + (rz - rotCenterZ) + depthBias + 1.0;
+        float rawDepth = (rx - rotCenterX) + depthYTerm + (rz - rotCenterZ) + depthBias + 1.0;
         float clipDepth = 1.0 - rawDepth / maxRawDepth;
 
         gl_Position = vec4(clipSpace * vec2(1, -1), clipDepth, 1.0);

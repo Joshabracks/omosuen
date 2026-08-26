@@ -1,6 +1,8 @@
 import { AtlasManagerT } from '../../atlas-manager';
 import { CellMapT } from '../../cell-map';
 import { LightT } from '../../light';
+import { VisionSourceT } from '../../vision-source';
+import { FogOfWarT } from '../../fog-of-war';
 import { NexusT } from '../../nexus';
 import type { SpriteT } from '../../sprite';
 import { TextureMapT } from '../../texture-map';
@@ -14,6 +16,7 @@ import {
   setOrbitYawUniform,
   setLightUniforms,
 } from './light-uniforms';
+import { setVisionUniforms } from './vision-uniforms';
 
 /** Default cell dimensions when no cell-maps are in the scene. */
 const DEFAULT_CELL_SIZE_X = 32;
@@ -39,6 +42,12 @@ const EDGE_PAD_WORLD = 64;
 const _drawSprites: SpriteT[] = [];
 const _drawTransforms: TransformT[] = [];
 const _drawDepths: number[] = [];
+// Parallel to the three arrays above: true when the entry at this index is a
+// fog-of-war phantom sprite (`_fowStatus === 'phantom'`, spawned by
+// fog-of-war/methods.ts's update() as a last-seen stand-in for a real sprite
+// that's currently obscured) -- the second loop must set
+// u_spriteFogMemory=true for that draw call.
+const _drawIsMemory: boolean[] = [];
 
 /**
  * Attempts to bind a sprite's normal texture to TEXTURE1.
@@ -239,6 +248,7 @@ export function renderSprites(
   gl: WebGL2RenderingContext,
   textureMapCache: Map<string, TextureMapT>,
   lights: LightT[],
+  visionSources: VisionSourceT[],
   subPixelOffset: { remainderX: number; remainderY: number },
   sinA: number,
   heightScale: number,
@@ -348,12 +358,11 @@ export function renderSprites(
   const u_screenSize = gl.getUniformLocation(program, 'u_screenSize');
   const u_showSilhouette = gl.getUniformLocation(program, 'u_showSilhouette');
   const u_silhouetteColor = gl.getUniformLocation(program, 'u_silhouetteColor');
-  const u_hasVisibilityMask = gl.getUniformLocation(
-    program,
-    'u_hasVisibilityMask',
-  );
   const u_cellSolidity = gl.getUniformLocation(program, 'u_cellSolidity');
-  const u_revealTarget = gl.getUniformLocation(program, 'u_revealTarget');
+  const u_fogLightInfluence = gl.getUniformLocation(
+    program,
+    'u_fogLightInfluence',
+  );
   const u_cellEmissionColor = gl.getUniformLocation(
     program,
     'u_cellEmissionColor',
@@ -362,6 +371,7 @@ export function renderSprites(
     program,
     'u_hasCellEmissionColor',
   );
+  const u_spriteFogMemory = gl.getUniformLocation(program, 'u_spriteFogMemory');
 
   // Set constant uniforms (same for all sprites)
   // Sprites render at full resolution to screen (not via FBO), so they use
@@ -427,6 +437,19 @@ export function renderSprites(
   // Set dynamic light uniforms (same lights as cell-maps)
   setLightUniforms(gl, camera.id!, lights);
 
+  // Set fog-of-war vision-source uniforms (same sources as cell-maps)
+  setVisionUniforms(gl, camera.id!, visionSources);
+  // u_fogLightInfluence feeds computeVisibility (used by both cell and
+  // sprite fragment paths) -- uploaded independently here too, not just in
+  // renderCellMaps, since a scene with sprites but no cell-maps never runs
+  // that pass at all (see the u_cellSolidity pinning comment below for the
+  // same "don't rely on the other draw call having run this frame" reasoning).
+  const fogOfWar = sceneRoot.getComponentByType(
+    'fog-of-war',
+    true,
+  ) as FogOfWarT | null;
+  gl.uniform1f(u_fogLightInfluence, fogOfWar?.lightInfluence ?? 0);
+
   // Set axonometric angle + orbit yaw uniforms (GPU computes cos/sin)
   setAngleUniform(gl, camera.id!, camera.axonometricAngle);
   setOrbitYawUniform(gl, camera.id!, camera.orbitYaw);
@@ -474,17 +497,6 @@ export function renderSprites(
   gl.activeTexture(gl.TEXTURE3);
   gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.visibilityTexture);
   gl.uniform1i(u_cellSolidity, 3);
-  if (camera.revealTarget && camera.glResources.visibilityTexture) {
-    gl.uniform3f(
-      u_revealTarget,
-      camera.revealTarget.x,
-      camera.revealTarget.y,
-      camera.revealTarget.z,
-    );
-    gl.uniform1i(u_hasVisibilityMask, 1);
-  } else {
-    gl.uniform1i(u_hasVisibilityMask, 0);
-  }
 
   // Same reasoning as u_cellSolidity above -- always pin u_cellEmissionColor
   // (also sampler2DArray) to unit 6, matching the unit render-cell-maps.ts
@@ -543,13 +555,29 @@ export function renderSprites(
     // Use `=== false` so any legacy sprite lacking the field still renders.
     if (sprite.visible === false) continue;
     if (!sprite.parent || sprite.parent.type !== 'nexus') continue;
-    const t = castTo<NexusT>(sprite.parent).getComponentByType(
-      'transform',
-      false,
-    ) as TransformT | null;
+    const nexus = castTo<NexusT>(sprite.parent);
+    const t = nexus.getComponentByType('transform', false) as TransformT | null;
     if (!t) continue;
-    // World position (cached) so a sprite under a transformed parent nexus is
-    // placed/sorted by its composed world transform.
+
+    // Fog-of-war: an 'obscured' sprite's own phantom (a separate sprite,
+    // spawned and disposed by fog-of-war's update(), see
+    // src/component/fog-of-war/methods.ts) renders in its place, so the real
+    // entity itself is skipped here -- its own update/gameplay logic keeps
+    // running normally regardless, only its render draw call is skipped. A
+    // sprite carrying its own vision-source always sees itself (defensive:
+    // fog-of-war's update() already never obscures/phantoms such a sprite,
+    // this is the render-time half of that same guarantee).
+    const hasOwnVisionSource = !!nexus.getComponentByType(
+      'vision-source',
+      false,
+    );
+    if (sprite._fowStatus === 'obscured' && !hasOwnVisionSource) continue;
+    const isMemory = sprite._fowStatus === 'phantom' && !hasOwnVisionSource;
+
+    // World position so a sprite under a transformed parent nexus is
+    // placed/sorted by its composed world transform. A phantom sprite's own
+    // transform is a frozen clone (see fog-of-war/methods.ts), so this is
+    // its last-seen position without any extra handling needed here.
     const p = t.worldPosition;
     const pRx = p.x * cosYaw + p.z * sinYaw;
     const pRz = -p.x * sinYaw + p.z * cosYaw;
@@ -585,6 +613,7 @@ export function renderSprites(
     _drawSprites[drawCount] = sprite;
     _drawTransforms[drawCount] = t;
     _drawDepths[drawCount] = pRx + heightScale * p.y + pRz;
+    _drawIsMemory[drawCount] = isMemory;
     drawCount++;
   }
 
@@ -601,22 +630,32 @@ export function renderSprites(
     const s = _drawSprites[i];
     const st = _drawTransforms[i];
     const sd = _drawDepths[i];
+    const sm = _drawIsMemory[i];
     let j = i - 1;
     while (j >= 0 && _drawDepths[j] > sd) {
       _drawSprites[j + 1] = _drawSprites[j];
       _drawTransforms[j + 1] = _drawTransforms[j];
       _drawDepths[j + 1] = _drawDepths[j];
+      _drawIsMemory[j + 1] = _drawIsMemory[j];
       j--;
     }
     _drawSprites[j + 1] = s;
     _drawTransforms[j + 1] = st;
     _drawDepths[j + 1] = sd;
+    _drawIsMemory[j + 1] = sm;
   }
 
   // Render each sprite (back-to-front)
   for (let di = 0; di < drawCount; di++) {
     const sprite = _drawSprites[di];
     const spriteTransform = _drawTransforms[di];
+
+    // u_spriteFogMemory is a shared-program uniform that persists across
+    // draw calls -- set explicitly on EVERY sprite draw (both true and
+    // false), not just tracked ones, so a stale `true` left over from a
+    // previous tracked-sprite draw this frame can never leak into an
+    // unrelated untracked sprite's draw call.
+    gl.uniform1i(u_spriteFogMemory, _drawIsMemory[di] ? 1 : 0);
 
     // Get albedo texture map (required)
     if (!sprite.textureMapKeys.albedo) {

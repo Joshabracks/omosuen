@@ -17,7 +17,11 @@ type RGB = { x: number; y: number; z: number };
  * pixelation); `soft-grain` = smooth low-frequency noise; `smooth-fade` = a noiseless
  * gradient/penumbra (best under pixelation); `retro-dither` = ordered Bayer crosshatch.
  */
-export type ScatterType = 'dither' | 'soft-grain' | 'smooth-fade' | 'retro-dither';
+export type ScatterType =
+  | 'dither'
+  | 'soft-grain'
+  | 'smooth-fade'
+  | 'retro-dither';
 
 /**
  * Resolved developer-configurable depth-readability cues for cell rendering. Each
@@ -44,7 +48,12 @@ export interface DepthCues {
 
 /** Partial form accepted in CameraOptions; missing fields fall back to defaults. */
 export interface DepthCuesOptions {
-  outline?: { weight?: number; threshold?: number; width?: number; color?: Partial<RGB> };
+  outline?: {
+    weight?: number;
+    threshold?: number;
+    width?: number;
+    color?: Partial<RGB>;
+  };
   ao?: { weight?: number; radius?: number; scatter?: number };
   shadow?: { weight?: number; distance?: number; scatter?: number };
   heightRamp?: {
@@ -57,7 +66,12 @@ export interface DepthCuesOptions {
   scatterType?: ScatterType;
 }
 
-const rgb = (v: Partial<RGB> | undefined, dx: number, dy: number, dz: number): RGB => ({
+const rgb = (
+  v: Partial<RGB> | undefined,
+  dx: number,
+  dy: number,
+  dz: number,
+): RGB => ({
   x: v?.x ?? dx,
   y: v?.y ?? dy,
   z: v?.z ?? dz,
@@ -148,32 +162,6 @@ export interface CameraT
   zoomTarget: { x: number; y: number } | null;
 
   /**
-   * Y-slice reveal target in world-space coordinates.
-   * When set, cell geometry above target.y + revealYOffset is clipped
-   * within the reveal region (radius or volume).
-   * null = disabled, all geometry renders normally.
-   */
-  revealTarget: { x: number; y: number; z: number } | null;
-
-  /** World-space offset above revealTarget.y where clipping begins. Default: 16.0 */
-  revealYOffset: number;
-
-  /** Height of dither fade zone below clip plane. 0 = hard cut. Default: 8.0 */
-  revealFadeHeight: number;
-
-  /** Cylindrical reveal radius in world units (used when no volume is set). Default: 256.0 */
-  revealRadius: number;
-
-  /**
-   * Optional AABB volume override. When set, only cells inside this box are
-   * clipped (instead of the cylindrical radius). null = use radius mode.
-   */
-  revealVolume: {
-    min: { x: number; y: number; z: number };
-    max: { x: number; y: number; z: number };
-  } | null;
-
-  /**
    * Developer-configurable depth-readability cues (outline, AO, cast shadows,
    * height ramp). null = all off (default). See DepthCues.
    */
@@ -211,6 +199,21 @@ export interface CameraT
     // cellMap.emissionColorVersion last fully applied to cellEmissionColorTexture
     // (via full rebuild or texSubImage3D deltas). -1 = nothing uploaded yet.
     cellEmissionColorVersion: number;
+
+    // Per-chunk fog-of-war "explored" texture (R8, chunk-grid resolution).
+    exploredTexture: WebGLTexture | null;
+    // cellMap's explored-channel version last fully applied to exploredTexture
+    // (via full rebuild or texSubImage3D deltas). -1 = nothing uploaded yet.
+    exploredVersion: number;
+
+    // Terrain-memory LOD: near tier (R8, per-cell, window-cell resolution)
+    // and far tier (R8, per-chunk, chunk-grid resolution) captured material
+    // indices (255 = not captured). Same version-tracking convention as
+    // exploredTexture above.
+    nearMaterialTexture: WebGLTexture | null;
+    nearMaterialVersion: number;
+    farMaterialTexture: WebGLTexture | null;
+    farMaterialVersion: number;
   };
 }
 
@@ -240,15 +243,6 @@ export interface CameraOptions extends ComponentOptions {
    * Name of the viewport component to render to (required)
    */
   viewportRef: string;
-
-  /** World-space offset above revealTarget.y where clipping begins (default: 16.0) */
-  revealYOffset?: number;
-
-  /** Height of dither fade zone below clip plane (default: 8.0) */
-  revealFadeHeight?: number;
-
-  /** Cylindrical reveal radius in world units (default: 256.0) */
-  revealRadius?: number;
 
   /**
    * Depth-readability cues for cell rendering. Omit to disable all (default).
@@ -281,11 +275,6 @@ export function builder(options: CameraOptions): CameraT {
     viewportRef: options.viewportRef,
     zoomTarget: null,
 
-    revealTarget: null,
-    revealYOffset: options.revealYOffset ?? 16.0,
-    revealFadeHeight: options.revealFadeHeight ?? 8.0,
-    revealRadius: options.revealRadius ?? 256.0,
-    revealVolume: null,
     depthCues: resolveDepthCues(options.depthCues),
 
     glResources: {
@@ -306,6 +295,12 @@ export function builder(options: CameraOptions): CameraT {
       cellEmissionColorTexture: null,
       cellEmissionColorHasAny: false,
       cellEmissionColorVersion: -1,
+      exploredTexture: null,
+      exploredVersion: -1,
+      nearMaterialTexture: null,
+      nearMaterialVersion: -1,
+      farMaterialTexture: null,
+      farMaterialVersion: -1,
     },
   };
 
@@ -329,9 +324,6 @@ function serialize(component: ComponentData): any {
     axonometricAngle: c.axonometricAngle,
     orbitYaw: c.orbitYaw,
     viewportRef: c.viewportRef,
-    revealYOffset: c.revealYOffset,
-    revealFadeHeight: c.revealFadeHeight,
-    revealRadius: c.revealRadius,
     depthCues: c.depthCues,
   };
 }
@@ -365,16 +357,13 @@ function deserialize(data: any): DeserializeResult<CameraT> {
     axonometricAngle,
     orbitYaw,
     viewportRef,
-    revealYOffset,
-    revealFadeHeight,
-    revealRadius,
     depthCues,
   } = data;
 
   if (type !== 'camera') {
     errors.push({
       code: 'TYPE_MISMATCH',
-      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+
       message: `type ${type} does not match "camera"`,
     });
   }
@@ -402,9 +391,6 @@ function deserialize(data: any): DeserializeResult<CameraT> {
       axonometricAngle: axonometricAngle as number,
       orbitYaw: orbitYaw as number | undefined,
       viewportRef: viewportRef as string,
-      revealYOffset: revealYOffset as number | undefined,
-      revealFadeHeight: revealFadeHeight as number | undefined,
-      revealRadius: revealRadius as number | undefined,
       depthCues: depthCues as DepthCuesOptions | undefined,
     }),
     errors,
@@ -427,10 +413,5 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'viewportRef',
   'zoomTarget',
   'glResources',
-  'revealTarget',
-  'revealYOffset',
-  'revealFadeHeight',
-  'revealRadius',
-  'revealVolume',
   'depthCues',
 ];

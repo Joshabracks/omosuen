@@ -13,6 +13,7 @@ import {
   FBO_OVERSCAN_PX,
   cacheLightUniformLocations,
 } from '../render/light-uniforms';
+import { cacheVisionUniformLocations } from '../render/vision-uniforms';
 import { initRenderWasm } from '../render/wasm';
 import { uploadAtlasTextures } from '../render/atlas-textures';
 
@@ -84,6 +85,8 @@ export async function init(component: ComponentData): Promise<void> {
 
   // Cache all light uniform locations for this camera
   cacheLightUniformLocations(gl, unifiedProgram, camera.id!);
+  // Cache all vision-source (fog-of-war) uniform locations for this camera
+  cacheVisionUniformLocations(gl, unifiedProgram, camera.id!);
 
   // 3. Create quad geometry buffers
   // Vertex positions (centered quad -0.5 to 0.5)

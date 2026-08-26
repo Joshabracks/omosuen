@@ -114,6 +114,7 @@ export type COMPONENT_TYPE =
   | 'ui-overlay'
   | 'data-layer'
   | 'flag-manager'
+  | 'fog-of-war'
   | 'messenger'
   | 'viewport'
   | 'texture-map'
@@ -130,6 +131,7 @@ export type COMPONENT_TYPE =
   | 'timer'
   | 'speed-dial'
   | 'light'
+  | 'vision-source'
   | 'audio-track'
   | 'audio-effect'
   | 'audio-player';

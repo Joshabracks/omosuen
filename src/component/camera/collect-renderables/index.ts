@@ -1,5 +1,6 @@
 import { CellMapT } from '../../cell-map';
 import { LightT } from '../../light';
+import { VisionSourceT } from '../../vision-source';
 import { NexusT } from '../../nexus';
 import { SpriteT } from '../../sprite';
 import { castTo } from '../../types';
@@ -8,16 +9,18 @@ import { CameraT } from '../data';
 
 // Per-camera renderables cache -- each entry remembers the per-type version
 // (see renderable-version.ts) it was collected at, alongside the results.
-// Each of the three arrays is independently re-collected only when its own
+// Each of the four arrays is independently re-collected only when its own
 // type's version has changed since this camera last collected it -- a light
 // being added doesn't force sprites/cell-maps to re-walk too.
 interface RenderablesCacheEntry {
   spriteVersion: number;
   cellMapVersion: number;
   lightVersion: number;
+  visionSourceVersion: number;
   sprites: SpriteT[];
   cellMaps: CellMapT[];
   lights: LightT[];
+  visionSources: VisionSourceT[];
 }
 
 const RENDERABLES_CACHE = new Map<number, RenderablesCacheEntry>();
@@ -36,9 +39,10 @@ export function collectRenderables(camera: CameraT): {
   sprites: SpriteT[];
   cellMaps: CellMapT[];
   lights: LightT[];
+  visionSources: VisionSourceT[];
 } {
   if (!camera.parent || camera.parent.type !== 'nexus') {
-    return { sprites: [], cellMaps: [], lights: [] };
+    return { sprites: [], cellMaps: [], lights: [], visionSources: [] };
   }
 
   const parentNexus = castTo<NexusT>(camera.parent!);
@@ -50,6 +54,7 @@ export function collectRenderables(camera: CameraT): {
   const spriteVersion = getRenderableVersion('sprite');
   const cellMapVersion = getRenderableVersion('cell-map');
   const lightVersion = getRenderableVersion('light');
+  const visionSourceVersion = getRenderableVersion('vision-source');
   const cached = RENDERABLES_CACHE.get(camera.id!);
 
   // Recursively collect all sprites from the scene root, unless nothing of
@@ -85,16 +90,29 @@ export function collectRenderables(camera: CameraT): {
       ? cached.lights
       : (sceneRoot.getComponentsByType('light', true) as LightT[]);
 
+  // Recursively collect all vision sources from the scene root, unless
+  // nothing of type vision-source has changed since this camera last
+  // collected them.
+  const visionSources =
+    cached && cached.visionSourceVersion === visionSourceVersion
+      ? cached.visionSources
+      : (sceneRoot.getComponentsByType(
+          'vision-source',
+          true,
+        ) as VisionSourceT[]);
+
   RENDERABLES_CACHE.set(camera.id!, {
     spriteVersion,
     cellMapVersion,
     lightVersion,
+    visionSourceVersion,
     sprites,
     cellMaps,
     lights,
+    visionSources,
   });
 
-  return { sprites, cellMaps, lights };
+  return { sprites, cellMaps, lights, visionSources };
 }
 
 /**

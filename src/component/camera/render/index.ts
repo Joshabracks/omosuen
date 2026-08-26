@@ -71,7 +71,8 @@ export function render(camera: CameraT, _deltaTime: number): void {
   }
 
   // Collect all renderable components from the tree
-  const { sprites, cellMaps, lights } = Camera.collectRenderables(camera);
+  const { sprites, cellMaps, lights, visionSources } =
+    Camera.collectRenderables(camera);
 
   const gl = viewport.gl;
 
@@ -217,6 +218,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
       gl,
       textureMapCache,
       lights,
+      visionSources,
       sinA,
       heightScale,
       cosYaw,
@@ -239,6 +241,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
       gl,
       textureMapCache,
       lights,
+      visionSources,
       subPixelOffset,
       sinA,
       heightScale,

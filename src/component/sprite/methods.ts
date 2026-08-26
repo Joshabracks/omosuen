@@ -28,6 +28,7 @@ export interface SpriteMethods extends ComponentMethods {
   setEmissionIntensity: (sprite: SpriteT, intensity: number) => void;
   setEmissionColor: (sprite: SpriteT, r: number, g: number, b: number) => void;
   getEmissionColor: (sprite: SpriteT) => Vector3D;
+  setTrackedByFog: (sprite: SpriteT, tracked: boolean) => void;
 }
 
 export const Sprite: SpriteMethods = {
@@ -205,6 +206,17 @@ export const Sprite: SpriteMethods = {
       sprite.emissionColor.y,
       sprite.emissionColor.z,
     );
+  },
+
+  /**
+   * Opts this sprite in (or out) of fog-of-war tracking -- see
+   * `SpriteT.trackedByFog`'s doc comment.
+   *
+   * @param sprite - The sprite component
+   * @param tracked - true to freeze/remember this sprite outside live vision
+   */
+  setTrackedByFog(sprite: SpriteT, tracked: boolean) {
+    sprite.trackedByFog = tracked;
   },
 
   /**

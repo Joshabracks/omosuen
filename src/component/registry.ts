@@ -99,6 +99,16 @@ import {
   PROPERTY_ALLOWLIST as LightPropertyAllowlist,
 } from './light';
 import {
+  VisionSource,
+  builder as visionSourceBuilder,
+  PROPERTY_ALLOWLIST as VisionSourcePropertyAllowlist,
+} from './vision-source';
+import {
+  FogOfWar,
+  builder as fogOfWarBuilder,
+  PROPERTY_ALLOWLIST as FogOfWarPropertyAllowlist,
+} from './fog-of-war';
+import {
   AudioTrack,
   builder as audioTrackBuilder,
   PROPERTY_ALLOWLIST as AudioTrackPropertyAllowlist,
@@ -158,6 +168,8 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   timer: timerBuilder,
   'speed-dial': speedDialBuilder,
   light: lightBuilder,
+  'vision-source': visionSourceBuilder,
+  'fog-of-war': fogOfWarBuilder,
   'audio-track': audioTrackBuilder,
   'audio-effect': audioEffectBuilder,
   'audio-player': audioPlayerBuilder,
@@ -193,6 +205,8 @@ export const MethodRegistry: Record<
   timer: Timer,
   'speed-dial': SpeedDial,
   light: Light,
+  'vision-source': VisionSource,
+  'fog-of-war': FogOfWar,
   'audio-track': AudioTrack,
   'audio-effect': AudioEffect,
   'audio-player': AudioPlayer,
@@ -227,6 +241,8 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   timer: TimerPropertyAllowlist,
   'speed-dial': SpeedDialPropertyAllowlist,
   light: LightPropertyAllowlist,
+  'vision-source': VisionSourcePropertyAllowlist,
+  'fog-of-war': FogOfWarPropertyAllowlist,
   'audio-track': AudioTrackPropertyAllowlist,
   'audio-effect': AudioEffectPropertyAllowlist,
   'audio-player': AudioPlayerPropertyAllowlist,

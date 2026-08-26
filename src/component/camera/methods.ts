@@ -4,6 +4,7 @@ import { CameraT } from './data';
 import { SpriteT } from '../sprite/data';
 import { CellMapT } from '../cell-map/data';
 import { LightT } from '../light/data';
+import { VisionSourceT } from '../vision-source/data';
 import { render } from './render';
 import { collectRenderables } from './collect-renderables';
 import { pan } from './pan';
@@ -15,10 +16,6 @@ import {
   resetZoomTarget,
   setOrbitYaw,
   orbitBy,
-  setRevealTarget,
-  clearRevealTarget,
-  setRevealVolume,
-  clearRevealVolume,
   resize,
 } from './set';
 import { init } from './init';
@@ -30,6 +27,7 @@ export interface CameraMethods extends ComponentMethods {
     sprites: SpriteT[];
     cellMaps: CellMapT[];
     lights: LightT[];
+    visionSources: VisionSourceT[];
   };
   pan: (camera: CameraT, offsetX: number, offsetY: number) => void;
   setZoom: (camera: CameraT, zoom: number) => void;
@@ -42,14 +40,6 @@ export interface CameraMethods extends ComponentMethods {
   setPixelScale: (camera: CameraT, pixelScale: number) => void;
   /** Re-syncs the offscreen framebuffer to the current viewport size. */
   resize: (camera: CameraT) => void;
-  setRevealTarget: (camera: CameraT, x: number, y: number, z: number) => void;
-  clearRevealTarget: (camera: CameraT) => void;
-  setRevealVolume: (
-    camera: CameraT,
-    min: { x: number; y: number; z: number },
-    max: { x: number; y: number; z: number },
-  ) => void;
-  clearRevealVolume: (camera: CameraT) => void;
   /**
    * Casts a screen shape into the world and fills `out` (near→far) with the
    * sprites / colliders / event-colliders / non-empty cells it intersects.
@@ -91,10 +81,6 @@ export const Camera: CameraMethods = {
   orbitBy,
   setPixelScale,
   resize,
-  setRevealTarget,
-  clearRevealTarget,
-  setRevealVolume,
-  clearRevealVolume,
   screenPick,
   screenToWorldRay,
   init,

@@ -16,7 +16,12 @@ import {
 } from '../component-lookup-registry';
 import { NexusT } from './data';
 
-const RENDERABLE_TYPES = new Set<string>(['sprite', 'cell-map', 'light']);
+const RENDERABLE_TYPES = new Set<string>([
+  'sprite',
+  'cell-map',
+  'light',
+  'vision-source',
+]);
 
 export interface NexusMethods extends ComponentMethods {
   addComponent: (

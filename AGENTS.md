@@ -159,6 +159,17 @@ under `vendor/`, and ship via the `plugin-release.yml` workflow (release = bump 
   multi-frame staging, since neither channel has a procedural-generation cost. `setEmissionColor`/
   `getEmissionColor` take a world cell coordinate (not window-local) and fully support off-window
   writes.
+- **Fog-of-war's persistent state reuses the exact same `AuxiliaryChannel` pattern**, one channel
+  per tier: `cmExploredChannel`/`cmFarMaterialChannel` (chunk-granular, via the `chunkSize:{1,1,1}`
+  trick — chunk-grid coordinates become the channel's own "cell" coordinates) and
+  `cmMemoryMaterialChannel` (real chunk-granular, per-cell, like `emissionColorMap`). **Don't pack
+  a material index (or any non-interpolatable value) into the same texture as a value that relies
+  on GPU linear filtering** — `u_exploredTexture` is deliberately `LINEAR`-filtered so the
+  never-viewed/memory boundary blends smoothly across chunk edges; bit-packing a material index
+  into it would make bilinear sampling blend two different materials' index bits into garbage.
+  This is why the far-tier material color lives in its own separate `cmFarMaterialChannel`
+  (`NEAREST`-filtered) rather than sharing `cmExploredChannel`'s texture — a real mistake made and
+  caught mid-implementation, not a hypothetical.
 - **Naming conventions.** Module-level / reusable variables are `camelCase` (no underscore
   prefix). Functions `camelCase`, types `PascalCase` (enforced by eslint).
 - **No `any`.** The engine eslint config errors on `@typescript-eslint/no-explicit-any` and

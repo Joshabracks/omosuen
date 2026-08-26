@@ -532,7 +532,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("renderOrder", "number?", "Sibling draw order.", "0"),
       O("emissionIntensity", "number?", "Self-illumination dial (clamped 0–1); scales the emission texture, or albedo as a fallback when no emission texture is assigned.", "0"),
       O("emissionColor", "Vector3D?", "Flat additive RGB highlight, added independent of emissionIntensity.", "new Omosuen.Vector3D(0, 0, 0)"),
-      O("trackedByFog", "boolean?", "Opt in to fog-of-war memory: freeze at last-seen pose instead of vanishing outside live vision.", "false"),
+      O("trackedByFog", "boolean?", "Fog-of-war tracking gate. When true, fog-of-war's own update() spawns a frozen \"phantom\" stand-in sprite once this sprite leaves live vision, while this sprite's own update/gameplay logic keeps running unaffected. false opts out entirely (hidden outright outside live vision).", "true"),
     ]),
     data: [
       O("textureMapKeys", "object", "Texture-map key per channel."),
@@ -546,7 +546,8 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("renderOrder", "number", "Draw order among siblings."),
       O("emissionIntensity", "number", "Self-illumination dial, 0–1."),
       O("emissionColor", "Vector3D", "Additive RGB highlight."),
-      O("trackedByFog", "boolean", "Fog-of-war tracking opt-in."),
+      O("trackedByFog", "boolean", "Fog-of-war tracking gate."),
+      O("_fowStatus", "'visible'|'obscured'|'phantom'", "Read-only, driven by fog-of-war's update() — never set directly. 'obscured' means this sprite's draw is skipped this frame (its phantom stands in); 'phantom' means this sprite IS one of those stand-ins."),
     ],
     methods: [
       M("init", "init()", "Validate texture-map references."),
@@ -578,8 +579,8 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
         A("b", "number", "Blue channel 0–1."),
       ]),
       M("getEmissionColor", "getEmissionColor()", "Returns a copy of the current emission color (Vector3D)."),
-      M("setTrackedByFog", "setTrackedByFog(tracked)", "Opt in/out of fog-of-war memory.", [
-        A("tracked", "boolean", "true to freeze/remember this sprite outside live vision."),
+      M("setTrackedByFog", "setTrackedByFog(tracked)", "Opt in/out of fog-of-war tracking (see the trackedByFog option).", [
+        A("tracked", "boolean", "true to let fog-of-war spawn a phantom stand-in for this sprite outside live vision."),
       ]),
     ],
   },
@@ -726,7 +727,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
 
   "vision-source": {
     options: withBaseOptions([
-      O("radius", "number?", "Live vision range (world units).", "256"),
+      O("radius", "number?", "Live vision range (world units). A sprite sharing a nexus with a vision-source always sees itself, regardless of that sprite's trackedByFog.", "256"),
       O("fadeWidth", "number?", "Soft-edge width beyond radius (world units).", "32"),
       O("enabled", "boolean?", "Whether this source currently contributes to fog-of-war.", "true"),
     ]),
@@ -755,7 +756,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
 
   "fog-of-war": {
     options: withBaseOptions([
-      O("memoryStyle", "{saturation?,opacity?,tint?}?", "Style for seen-but-not-currently-visible terrain/tracked sprites.", "{ saturation: 0, opacity: 1, tint: new Omosuen.Vector3D(1, 1, 1) }"),
+      O("memoryStyle", "{saturation?,opacity?,tint?}?", "Style for seen-but-not-currently-visible terrain and fog-of-war \"phantom\" sprite stand-ins.", "{ saturation: 0, opacity: 1, tint: new Omosuen.Vector3D(1, 1, 1) }"),
       O("neverViewedStyle", "{saturation?,opacity?,tint?}?", "Style for never-seen terrain/sprites.", "{ saturation: 0, opacity: 0, tint: new Omosuen.Vector3D(0, 0, 0) }"),
       O("lightInfluence", "number?", "How much nearby lights extend live vision (additive only).", "0"),
       O("nearBufferCells", "number?", "Extra cells beyond one chunk-width that still count as \"near\" for fine-detail terrain memory.", "0"),
@@ -767,6 +768,9 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("nearBufferCells", "number", "Near/far terrain-memory LOD buffer, in cells."),
     ],
     methods: [
+      M("update", "update(dt)", "Per-frame driver (engine-invoked, GLOBAL/unique so it runs once): resolves every active vision-source and every trackedByFog sprite, transitions each sprite's _fowStatus, and spawns/disposes phantom stand-in sprites accordingly. Never touches a tracked sprite's own nexus.", [
+        A("dt", "number", "Frame delta time from engine loop (ms)."),
+      ]),
       M("dispose", "dispose()", "Mark disposed."),
       M("getMemoryStyle", "getMemoryStyle()", "Get the memory-tier style."),
       M("setMemoryStyle", "setMemoryStyle(style)", "Set the memory-tier style.", [

@@ -108,7 +108,7 @@ export const ENGINE_COMPONENTS: ComponentDocEntry[] = [
     id: "fog-of-war",
     title: "fog-of-war",
     category: "Rendering",
-    blurb: "Scene-wide memory/never-viewed styling for terrain and tracked sprites.",
+    blurb: "Scene-wide memory/never-viewed styling, and the per-frame driver for tracked-sprite phantom stand-ins.",
   },
   {
     id: "animation-controller",

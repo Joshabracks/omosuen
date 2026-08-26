@@ -150,49 +150,6 @@ export function resize(camera: CameraT): void {
 }
 
 /**
- * Sets the Y-slice reveal target in world-space coordinates.
- * Cell geometry above target.y + revealYOffset will be clipped.
- */
-export function setRevealTarget(
-  camera: CameraT,
-  x: number,
-  y: number,
-  z: number,
-): void {
-  camera.revealTarget = { x, y, z };
-}
-
-/**
- * Clears the reveal target, disabling Y-slice clipping.
- */
-export function clearRevealTarget(camera: CameraT): void {
-  camera.revealTarget = null;
-}
-
-/**
- * Sets an AABB volume override for the reveal region.
- * Only cells inside this box will be clipped (instead of cylindrical radius).
- * Copies values to avoid shared-reference mutation.
- */
-export function setRevealVolume(
-  camera: CameraT,
-  min: { x: number; y: number; z: number },
-  max: { x: number; y: number; z: number },
-): void {
-  camera.revealVolume = {
-    min: { x: min.x, y: min.y, z: min.z },
-    max: { x: max.x, y: max.y, z: max.z },
-  };
-}
-
-/**
- * Clears the reveal volume, falling back to cylindrical radius mode.
- */
-export function clearRevealVolume(camera: CameraT): void {
-  camera.revealVolume = null;
-}
-
-/**
  * Updates framebuffer resolution when zoom or pixel scale changes.
  * At higher zoom levels, renders to a smaller framebuffer for pixel-perfect effect.
  *

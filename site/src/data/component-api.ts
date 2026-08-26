@@ -322,9 +322,6 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("axonometricAngle", "number?", "Projection angle / pitch (degrees). Default 30.", "30"),
       O("orbitYaw", "number?", "Orbit yaw (degrees), rotates world X/Z around +Y before projection. Default 0.", "0"),
       O("viewportRef", "string", "Viewport component name (required).", "'MainViewport'"),
-      O("revealYOffset", "number?", "Reveal clip offset above target.", "16"),
-      O("revealFadeHeight", "number?", "Dither fade height below clip.", "8"),
-      O("revealRadius", "number?", "Cylindrical reveal radius.", "256"),
       O("depthCues", "DepthCuesOptions?", "Partial depth-cue weights."),
     ]),
     data: [
@@ -335,11 +332,6 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("viewportRef", "string", "Referenced viewport name."),
       O("zoomTarget", "{x,y} | null", "Viewport-local zoom anchor."),
       O("glResources", "object", "WebGL programs, buffers, FBOs."),
-      O("revealTarget", "{x,y,z} | null", "Y-slice reveal world point."),
-      O("revealYOffset", "number", "Clip offset above reveal target."),
-      O("revealFadeHeight", "number", "Dither fade height."),
-      O("revealRadius", "number", "Cylindrical reveal radius."),
-      O("revealVolume", "AABB | null", "Box reveal override."),
       O("depthCues", "DepthCues | null", "Resolved depth-cue weights."),
     ],
     methods: [
@@ -369,17 +361,6 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
         A("scale", "number", "Pixelation scale factor."),
       ]),
       M("resize", "resize()", "Re-sync the offscreen framebuffer to the current viewport size. Call after resizing the viewport."),
-      M("setRevealTarget", "setRevealTarget(x,y,z)", "Enable Y-slice reveal.", [
-        A("x", "number", "World reveal point X."),
-        A("y", "number", "World reveal point Y."),
-        A("z", "number", "World reveal point Z."),
-      ]),
-      M("clearRevealTarget", "clearRevealTarget()", "Disable Y-slice reveal."),
-      M("setRevealVolume", "setRevealVolume(min, max)", "Set box reveal volume.", [
-        A("min", "{x,y,z}", "AABB minimum corner in world space."),
-        A("max", "{x,y,z}", "AABB maximum corner in world space."),
-      ]),
-      M("clearRevealVolume", "clearRevealVolume()", "Revert to cylindrical reveal."),
       M("screenPick", "screenPick(points, count, out, opts?)", "Screen shape to world hits.", [
         A("points", "number[]", "Flat [x0,y0,...] viewport pixel coordinates."),
         A("count", "number", "Point count: 1 point, 2 line, 3 triangle, 4 quad."),
@@ -415,7 +396,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("smoothing", "number?", "Surface-net smoothing iterations.", "0"),
       O("smoothingWeights", "number | Array3D<number>?", "Per-cell smoothing weight. Generative path only accepts a uniform number.", "8"),
       O("normalSmoothing", "number?", "Normal smoothing 0–1.", "0"),
-      O("revealExempt", "boolean?", "Exempt from camera reveal clip.", "false"),
+      O("revealExempt", "boolean?", "Exempt this cell-map from fog-of-war entirely (always renders fully live).", "false"),
       O("autoFocusFromCamera", "boolean?", "Render loop drives window focus from the camera every frame.", "true"),
       O("autoResizeFromZoom", "boolean?", "Render loop drives window radius from camera zoom, capped by maxTerrainLoadDimensions.", "mirrors autoFocusFromCamera"),
       O("maxTerrainLoadDimensions", "{x,y,z}?", "World-unit cap on how far auto-resize/setWindowRadius may grow the window.", "{ x: 512, y: 512, z: 512 }"),
@@ -446,7 +427,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("smoothing", "number", "Smoothing iteration count."),
       O("smoothingWeights", "Array3Di", "Packed smoothing weights."),
       O("normalSmoothing", "number", "Normal smoothing 0–1."),
-      O("revealExempt", "boolean", "Exempt from reveal clipping."),
+      O("revealExempt", "boolean", "Exempt from fog-of-war entirely."),
       O("autoFocusFromCamera", "boolean", "Render loop drives window focus from the camera."),
       O("autoResizeFromZoom", "boolean", "Render loop drives window radius from camera zoom."),
       O("maxTerrainLoadDimensions", "{x,y,z}", "Cap on auto-resize/setWindowRadius growth."),
@@ -551,6 +532,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("renderOrder", "number?", "Sibling draw order.", "0"),
       O("emissionIntensity", "number?", "Self-illumination dial (clamped 0–1); scales the emission texture, or albedo as a fallback when no emission texture is assigned.", "0"),
       O("emissionColor", "Vector3D?", "Flat additive RGB highlight, added independent of emissionIntensity.", "new Omosuen.Vector3D(0, 0, 0)"),
+      O("trackedByFog", "boolean?", "Fog-of-war tracking gate. When true, fog-of-war's own update() spawns a frozen \"phantom\" stand-in sprite once this sprite leaves live vision, while this sprite's own update/gameplay logic keeps running unaffected. false opts out entirely (hidden outright outside live vision).", "true"),
     ]),
     data: [
       O("textureMapKeys", "object", "Texture-map key per channel."),
@@ -564,6 +546,8 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("renderOrder", "number", "Draw order among siblings."),
       O("emissionIntensity", "number", "Self-illumination dial, 0–1."),
       O("emissionColor", "Vector3D", "Additive RGB highlight."),
+      O("trackedByFog", "boolean", "Fog-of-war tracking gate."),
+      O("_fowStatus", "'visible'|'obscured'|'phantom'", "Read-only, driven by fog-of-war's update() — never set directly. 'obscured' means this sprite's draw is skipped this frame (its phantom stands in); 'phantom' means this sprite IS one of those stand-ins."),
     ],
     methods: [
       M("init", "init()", "Validate texture-map references."),
@@ -595,6 +579,9 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
         A("b", "number", "Blue channel 0–1."),
       ]),
       M("getEmissionColor", "getEmissionColor()", "Returns a copy of the current emission color (Vector3D)."),
+      M("setTrackedByFog", "setTrackedByFog(tracked)", "Opt in/out of fog-of-war tracking (see the trackedByFog option).", [
+        A("tracked", "boolean", "true to let fog-of-war spawn a phantom stand-in for this sprite outside live vision."),
+      ]),
     ],
   },
 
@@ -735,6 +722,72 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
         A("t", "LightType", "ambient | point | spot | directional."),
       ]),
       M("getLightType", "getLightType()", "Get light type."),
+    ],
+  },
+
+  "vision-source": {
+    options: withBaseOptions([
+      O("radius", "number?", "Live vision range (world units). A sprite sharing a nexus with a vision-source always sees itself, regardless of that sprite's trackedByFog.", "256"),
+      O("fadeWidth", "number?", "Soft-edge width beyond radius (world units).", "32"),
+      O("enabled", "boolean?", "Whether this source currently contributes to fog-of-war.", "true"),
+    ]),
+    data: [
+      O("radius", "number", "Live vision range."),
+      O("fadeWidth", "number", "Soft-edge width beyond radius."),
+      O("enabled", "boolean", "Whether currently contributing to fog-of-war."),
+    ],
+    methods: [
+      M("init", "init()", "No-op init."),
+      M("dispose", "dispose()", "Mark disposed."),
+      M("setRadius", "setRadius(radius)", "Set live vision range.", [
+        A("radius", "number", "World-unit vision range."),
+      ]),
+      M("getRadius", "getRadius()", "Get live vision range."),
+      M("setFadeWidth", "setFadeWidth(width)", "Set soft-edge width.", [
+        A("width", "number", "World-unit fade width beyond radius."),
+      ]),
+      M("getFadeWidth", "getFadeWidth()", "Get soft-edge width."),
+      M("setEnabled", "setEnabled(enabled)", "Toggle whether this source contributes to fog-of-war.", [
+        A("enabled", "boolean", "true to contribute, false to disable."),
+      ]),
+      M("getEnabled", "getEnabled()", "Get whether currently enabled."),
+    ],
+  },
+
+  "fog-of-war": {
+    options: withBaseOptions([
+      O("memoryStyle", "{saturation?,opacity?,tint?}?", "Style for seen-but-not-currently-visible terrain and fog-of-war \"phantom\" sprite stand-ins.", "{ saturation: 0, opacity: 1, tint: new Omosuen.Vector3D(1, 1, 1) }"),
+      O("neverViewedStyle", "{saturation?,opacity?,tint?}?", "Style for never-seen terrain/sprites.", "{ saturation: 0, opacity: 0, tint: new Omosuen.Vector3D(0, 0, 0) }"),
+      O("lightInfluence", "number?", "How much nearby lights extend live vision (additive only).", "0"),
+      O("nearBufferCells", "number?", "Extra cells beyond one chunk-width that still count as \"near\" for fine-detail terrain memory.", "0"),
+    ]),
+    data: [
+      O("memoryStyle", "{saturation,opacity,tint}", "Resolved memory-tier style."),
+      O("neverViewedStyle", "{saturation,opacity,tint}", "Resolved never-viewed-tier style."),
+      O("lightInfluence", "number", "Light contribution to live vision, 0–1."),
+      O("nearBufferCells", "number", "Near/far terrain-memory LOD buffer, in cells."),
+    ],
+    methods: [
+      M("update", "update(dt)", "Per-frame driver (engine-invoked, GLOBAL/unique so it runs once): resolves every active vision-source and every trackedByFog sprite, transitions each sprite's _fowStatus, and spawns/disposes phantom stand-in sprites accordingly. Never touches a tracked sprite's own nexus.", [
+        A("dt", "number", "Frame delta time from engine loop (ms)."),
+      ]),
+      M("dispose", "dispose()", "Mark disposed."),
+      M("getMemoryStyle", "getMemoryStyle()", "Get the memory-tier style."),
+      M("setMemoryStyle", "setMemoryStyle(style)", "Set the memory-tier style.", [
+        A("style", "{saturation,opacity,tint}", "Desaturation, opacity, and RGB tint."),
+      ]),
+      M("getNeverViewedStyle", "getNeverViewedStyle()", "Get the never-viewed-tier style."),
+      M("setNeverViewedStyle", "setNeverViewedStyle(style)", "Set the never-viewed-tier style.", [
+        A("style", "{saturation,opacity,tint}", "Desaturation, opacity, and RGB tint."),
+      ]),
+      M("getLightInfluence", "getLightInfluence()", "Get the light-vision contribution."),
+      M("setLightInfluence", "setLightInfluence(influence)", "Set the light-vision contribution.", [
+        A("influence", "number", "0–1; how much nearby lights extend live vision."),
+      ]),
+      M("getNearBufferCells", "getNearBufferCells()", "Get the near/far terrain-memory LOD buffer."),
+      M("setNearBufferCells", "setNearBufferCells(cells)", "Set the near/far terrain-memory LOD buffer.", [
+        A("cells", "number", "Extra cells beyond one chunk-width counted as \"near\"."),
+      ]),
     ],
   },
 

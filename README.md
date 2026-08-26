@@ -123,8 +123,21 @@ the active scene. `stop()`, `pause()`, `resume()`, and timing getters (`getFPS()
 `getFrameTime()`) are available.
 
 **Rendering.** A `viewport` owns a WebGL2 canvas; a `camera` renders the scene into it
-(axonometric, with zoom, pixelation, and a Y-slice reveal for fog-of-war). Sprites draw
-from atlas-packed `texture-map`s; `cell-map` is a WASM-backed voxel grid.
+(axonometric, with zoom and pixelation). Sprites draw from atlas-packed `texture-map`s;
+`cell-map` is a WASM-backed voxel grid.
+
+**Fog of war.** One or more `vision-source` components (attached to any entity — typically
+a player or party member) reveal terrain and sprites via real per-pixel line-of-sight, with
+a soft radial + occlusion edge (no voxelized hard cuts). A scene-wide `fog-of-war` component
+configures how previously-seen-but-not-currently-visible terrain and sprites render:
+desaturated/tinted "memory" by default, fully hidden if never seen. Terrain memory is
+itself two-tier — fine per-cell detail near a vision source, a coarser per-chunk color
+farther away — and survives save/load. Sprites are tracked by default (`sprite.trackedByFog`):
+`fog-of-war` itself drives the tracking every frame, and once a tracked sprite leaves every
+vision source's sight it spawns a separate "phantom" sprite — a frozen last-seen stand-in,
+memory-styled like terrain — in its place; the real sprite's own entity is never touched, so
+its update/gameplay logic (patrols, AI, timers) keeps running normally while off-screen, and
+the phantom disposes itself the instant vision returns to its position.
 
 ## Component catalog
 
@@ -135,10 +148,12 @@ Create any of these with `Omosuen.newComponent('<type>', options)`. Quick index:
 | `nexus` | Scene container / component-tree node |
 | `transform` | Position / rotation / scale (hierarchical) |
 | `sprite` | Multi-channel billboard (albedo / normal / material / emission) |
-| `camera` | Axonometric renderer (zoom, pixelation, orbit yaw, Y-slice reveal) |
+| `camera` | Axonometric renderer (zoom, pixelation, orbit yaw) |
 | `viewport` | WebGL2 canvas + context |
 | `cell-map` | Windowed/streaming voxel grid (WASM-backed, RLE-compressed) (one per engine instance) |
 | `light` | Ambient / point / spot / directional light |
+| `vision-source` | Fog-of-war reveal source (soft radial + line-of-sight) |
+| `fog-of-war` | Fog-of-war memory/never-viewed styling + per-frame sprite-tracking driver (one per scene) |
 | `collider` | Box / sphere collision shape + queries |
 | `event-collider` | Trigger volume with enter / exit / while callbacks |
 | `animation-controller` | Sprite frame animation playback |
@@ -198,8 +213,8 @@ colliders overlap it. Same geometry options as `collider`:
 - `offsetX?: number` (default `0`), `offsetY?: number` (default `0`) — placement on screen
 - `backgroundColor?: Vector4D` (default `(0,0,0,1)`)
 
-**`camera`** — Axonometric renderer into a viewport; pixel-perfect zoom, orbit yaw, and a
-Y-slice reveal for fog-of-war/occlusion. *Unique: one per parent nexus.*
+**`camera`** — Axonometric renderer into a viewport; pixel-perfect zoom and orbit yaw.
+*Unique: one per parent nexus.*
 - `viewportRef: string` (**required**) — name of the viewport to render into
 - `zoom?: number` (default `1.0`), `pixelScale?: number` (default `2.0`)
 - `axonometricAngle?: number` (default `30`) — pitch, degrees
@@ -207,7 +222,6 @@ Y-slice reveal for fog-of-war/occlusion. *Unique: one per parent nexus.*
   orthographic projection; `0` matches the original fixed-azimuth view. Set via
   `setOrbitYaw(degrees)` or `orbitBy(deltaDegrees)`. Still no perspective/FOV or free
   6DOF — the projection stays orthographic-axonometric, only the azimuth moves.
-- `revealYOffset?: number` (default `16.0`), `revealFadeHeight?: number` (default `8.0`), `revealRadius?: number` (default `256.0`) — Y-slice reveal tuning
 - The camera's offscreen framebuffer (used for pixel-perfect zoom) is only recomputed on
   `setZoom`/`setPixelScale`, not automatically when the viewport resizes. Call
   `resize()` after resizing the viewport (e.g. from a `window.resize` listener) to
@@ -222,6 +236,19 @@ silhouette, material-driven specular and emission. *Unique: one per parent nexus
 - `showSilhouette?: boolean` (default `false`), `silhouetteColor?: Vector4D` (default `(0.2,0.4,0.8,0.5)`)
 - `emissionIntensity?: number` (default `0`, clamped 0–1) — scales the emission texture (or albedo as a fallback when no emission texture is assigned) into a self-illuminating glow. Set via `setEmissionIntensity(intensity)`.
 - `emissionColor?: Vector3D` (default `(0,0,0)`, no-op) — flat additive RGB highlight, added independent of `emissionIntensity`. Set via `setEmissionColor(r,g,b)`, read via `getEmissionColor()`.
+- `trackedByFog?: boolean` (default `true`) — fog-of-war tracking gate. When true,
+  `fog-of-war`'s own per-frame update drives this sprite: once it leaves every vision
+  source's live sight, a separate "phantom" sprite spawns as a frozen last-seen stand-in
+  (styled like `fog-of-war`'s `memoryStyle`), while this sprite itself keeps running its own
+  update/gameplay logic completely unaffected, off-screen or not — fog-of-war never pauses or
+  otherwise touches the real entity. The phantom disposes itself once vision returns to its
+  position. Set `false` to opt a sprite out entirely (hidden outright outside live vision, no
+  memory tier) — there's rarely a reason to, since UI sprites don't go through this render path
+  at all. Set via `setTrackedByFog(tracked)`.
+- `_fowStatus: 'visible' | 'obscured' | 'phantom'` — read-only, engine-managed by
+  `fog-of-war`'s update (never set directly). `'obscured'` means this sprite's own draw call is
+  skipped this frame because its phantom is standing in for it; `'phantom'` means this sprite
+  *is* one of those stand-ins.
 
 **`cell-map`** — Windowed/streaming voxel grid (material/shape/emission/visibility per cell);
 WASM-backed RLE store with greedy/smoothed meshing. *Unique: one per engine instance* — its state
@@ -256,7 +283,7 @@ supplying `windowRadius` opts even a hand-authored map into windowed streaming.
   - Custom shapes are meshed in WASM alongside cubes (greedy **and** smoothed), so they dedup/smooth seamlessly with neighbors and round-trip through serialization
 - `emissionMap?: Array3D<number>` (default `0`), `visibilityMap?: Array3D<boolean>` (default `true`)
 - `smoothing?: number` (default `0`) — surface-net smoothing iterations; `smoothingWeights?: number | Array3D<number>` (default `8`, range 0–15) base per-cell weight (a per-cell `Array3D` on the generative path is validated against the initial window's size, not a whole-map `mapSize`); `normalSmoothing?: number` (default `0`). At a vertex shared by cells of differing weight the lowest (hardest) weight wins, so softer cells snap to harder neighbors' square corners (no seams). A material's `smoothness` overrides these per cell-type.
-- `revealExempt?: boolean` (default `false`) — ignore the camera Y-slice reveal
+- `revealExempt?: boolean` (default `false`) — opt this cell-map out of fog-of-war entirely (always renders fully live, regardless of any `vision-source`)
 - `autoFocusFromCamera?: boolean` (default `true` for the generative path / any map with an explicit `windowRadius`, `false` otherwise) — the render loop drives the window's focus from the camera position every frame. Set `false` for explicit control via `setFocus(cellMap, worldX, worldY, worldZ)`.
 - `autoResizeFromZoom?: boolean` (default: mirrors `autoFocusFromCamera`) — the render loop grows/shrinks the window's radius with camera zoom, capped by `maxTerrainLoadDimensions`. Set `false` for explicit control via `setWindowRadius(cellMap, radius)`.
 - `maxTerrainLoadDimensions?: {x,y,z}` (default `{512,512,512}`, world units) — safety cap on how far auto-resize (or a direct `setWindowRadius` call) may ever grow the window, since a resize's assemble step can call `generateCell` for every newly-exposed chunk synchronously in one frame.
@@ -308,6 +335,33 @@ queue and resolve independently, in order.
 - `color?: Vector3D` (default `(1,1,1)`), `brightness?: number` (default `1`)
 - `radius?: number` (default `100`), `hardness?: number` (default `0`)
 - `direction?: Vector3D` (default `(0,-1,0)`) — for spot/directional
+
+**`vision-source`** — Fog-of-war reveal source: real per-pixel line-of-sight raycasting with
+a soft radial + occlusion edge (not a coarse voxel grid). Attach to any entity — a player, a
+party member, a scouted watchtower. Multiple simultaneous sources union together. Position is
+read from a sibling `transform`, same as point/spot lights. *Unique: many per parent nexus.*
+A sprite sharing a nexus with a `vision-source` (e.g. the player) always sees itself — `fog-of-war`
+never transitions it to `'obscured'`/`'phantom'` regardless of `trackedByFog`.
+- `radius?: number` (default `256.0`) — world units, live vision range
+- `fadeWidth?: number` (default `32.0`) — world units, soft-edge width beyond `radius`
+- `enabled?: boolean` (default `true`)
+
+**`fog-of-war`** — Scene-wide fog-of-war styling config. *Unique: one per scene.* With no
+`fog-of-war` component present, the documented defaults below still apply (it's optional —
+add one only to customize the styling).
+- `memoryStyle?: { saturation?, opacity?, tint?: Vector3D }` (default `{ saturation: 0, opacity: 1, tint: (1,1,1) }`) — terrain/sprites seen before but not currently visible. Default: fully opaque, desaturated, untinted.
+- `neverViewedStyle?: { saturation?, opacity?, tint?: Vector3D }` (default `{ saturation: 0, opacity: 0, tint: (0,0,0) }`) — never seen. Default: fully hidden.
+- `lightInfluence?: number` (default `0`) — how much nearby lights extend live vision beyond geometry/line-of-sight alone; additive only (can only extend, never shrink, vision), so `0` is a true no-op.
+- `nearBufferCells?: number` (default `0`) — terrain memory renders at two levels of detail: fine per-cell color near a vision source, a coarser per-chunk color farther away. This adds extra cells, beyond the usual one chunk-width, that still count as "near" (fine detail).
+
+Terrain memory persists through save/load (part of the owning `cell-map`'s serialized data,
+alongside primary cell data). Sprites get memory styling by default via `sprite.trackedByFog`
+(see the `sprite` entry above) — each frame, `fog-of-war` itself resolves every active vision
+source and every tracked sprite's visibility, and drives the obscured/phantom transitions; there
+is no separate per-vision-source or per-sprite update loop to configure. A sprite opted out
+(`trackedByFog: false`) is simply hidden outright outside live vision — matching "memory shows
+what the terrain looked like, not current entity state." Sprite memory (the phantom stand-ins)
+is session-only and does **not** persist through save/load, unlike terrain memory.
 
 **`texture-map`** — Maps a source image into frame definitions for atlas packing.
 - `textureMapKey: string` (**required**), `filePath: string` (**required**)

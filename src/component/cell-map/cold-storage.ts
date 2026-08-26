@@ -69,7 +69,7 @@ class SlabPool {
 const AXIS_SPAN = 1 << 17;
 const AXIS_BIAS = 1 << 16;
 
-function packChunkKey(cx: number, cy: number, cz: number): number {
+export function packChunkKey(cx: number, cy: number, cz: number): number {
   const mask = AXIS_SPAN - 1;
   const bx = (cx + AXIS_BIAS) & mask;
   const by = (cy + AXIS_BIAS) & mask;
@@ -78,7 +78,7 @@ function packChunkKey(cx: number, cy: number, cz: number): number {
 }
 
 /** Inverse of `packChunkKey`. */
-function unpackChunkKey(key: number): {
+export function unpackChunkKey(key: number): {
   cx: number;
   cy: number;
   cz: number;

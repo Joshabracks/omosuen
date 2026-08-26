@@ -1442,12 +1442,29 @@ export async function createScene() {
         'playerControl',  // WASD movement
     );
     indoorChar.animator.play('walk-down');
-    const playerCollider = await Omosuen.newComponent('collider', {
-        name: 'Player Collider',
-        shape: 'box',
-        size: new Omosuen.Vector3D(8, 8, 8),
+    // Fog-of-war scene config: default memory/never-viewed styling, but a
+    // couple extra cells of "near" buffer beyond the usual one chunk-width
+    // so the fine per-cell terrain-memory tier has a little breathing room
+    // in this small demo map.
+    await Omosuen.newComponent('fog-of-war', {
+        name: 'Fog Of War',
+        nearBufferCells: 4,
+    }, scene);
+    console.log('[CellMap Test] fog-of-war component created (nearBufferCells: 4)');
+    // Fog-of-war vision source: attached permanently to the player, so
+    // line-of-sight visibility (walls/roof occluding what's behind them) is
+    // handled by real per-fragment raycasting rather than an EventCollider
+    // toggling a single reveal target on/off at the structure's threshold.
+    // Kept deliberately smaller than the whole map (unlike an earlier build)
+    // so a second vision source (Walker A, below) is visibly independent —
+    // two separate bubbles that merge/separate as they approach/part.
+    await Omosuen.newComponent('vision-source', {
+        name: 'Player Vision',
+        radius: 96,
+        fadeWidth: 32,
     }, indoorChar.nexus);
     console.log('[CellMap Test] Created indoor sprite at structure center with silhouette always on');
+    console.log('[CellMap Test] Attached fog-of-war vision-source to player (radius 96, fadeWidth 32)');
 
     // Sprite B: outdoor walker, starts at north corner
     const walkerA = await createCharacter(
@@ -1457,6 +1474,15 @@ export async function createScene() {
         'patrolA',
     );
     console.log('[CellMap Test] Created Walker A at north (112, 32, 112)');
+    // Second fog-of-war vision source: a moving NPC, to exercise the
+    // multi-source union path (up to MAX_VISION_SOURCES simultaneous
+    // sources) rather than just a single stationary/player-driven one.
+    await Omosuen.newComponent('vision-source', {
+        name: 'Walker A Vision',
+        radius: 80,
+        fadeWidth: 24,
+    }, walkerA.nexus);
+    console.log('[CellMap Test] Attached fog-of-war vision-source to Walker A (radius 80, fadeWidth 24)');
 
     // Sprite C: outdoor walker, starts at south corner (opposite side)
     const walkerB = await createCharacter(
@@ -1466,6 +1492,17 @@ export async function createScene() {
         'patrolB',
     );
     console.log('[CellMap Test] Created Walker B at south (528, 32, 528)');
+    // Fog-of-war contrast: Walker A carries its own vision-source (above),
+    // so it's exempt from the obscure/phantom state machine entirely --
+    // always drawn live, hidden only by the ordinary per-fragment
+    // live-visibility discard when truly out of every source's sight (same
+    // as before this feature existed). Walker B has no vision-source of its
+    // own and IS tracked (trackedByFog defaults true) -- once seen, going
+    // out of sight spawns a frozen "last seen here" phantom sprite in its
+    // place (memory-styled, no further movement/animation) while Walker B's
+    // own entity keeps patrolling off-screen uninterrupted, and the phantom
+    // disposes the moment vision returns to its resting spot.
+    console.log('[CellMap Test] Walker B tracked by fog-of-war (trackedByFog defaults true); Walker A exempt via its own vision-source');
 
     console.log('[CellMap Test] All character sprites created (1 indoor + 2 patrolling around structure)');
 
@@ -1497,34 +1534,6 @@ export async function createScene() {
     }, fireNexus);
     fireAnimator.play('burn');
     console.log('[CellMap Test] Fire sprite created at room center (9, 9)');
-
-    // 7b. Create EventCollider trigger zone covering the structure interior
-    const triggerNexus = await Omosuen.newComponent('nexus', {
-        name: 'Interior Trigger Nexus',
-    }, scene);
-    await Omosuen.newComponent('transform', {
-        name: 'Interior Trigger Transform',
-        position: new Omosuen.Vector3D(320, 88 + CELL_HEIGHT, 320), // raised 1 cell with the structure
-    }, triggerNexus);
-    const interiorTrigger = await Omosuen.newComponent('event-collider', {
-        name: 'Interior Trigger',
-        shape: 'box',
-        size: new Omosuen.Vector3D(160, 72, 160),
-    }, triggerNexus);
-
-    interiorTrigger.addTrigger(playerCollider);
-    interiorTrigger.setOnEnter((collider) => {
-        const t = collider.parent.getComponentByType('transform', false);
-        if (t) camera.setRevealTarget(t.position.x, t.position.y, t.position.z + CELL_HEIGHT);
-    });
-    interiorTrigger.setOnExit(() => {
-        camera.clearRevealTarget();
-    });
-    interiorTrigger.setWhile((collider) => {
-        const t = collider.parent.getComponentByType('transform', false);
-        if (t) camera.setRevealTarget(t.position.x, t.position.y, t.position.z + CELL_HEIGHT);
-    });
-    console.log('[CellMap Test] Interior EventCollider trigger zone created — reveal target tracks player on enter/exit');
 
     // 8. Create UI overlay
     const ui = await Omosuen.newComponent('ui-overlay', {

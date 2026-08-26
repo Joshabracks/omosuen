@@ -100,6 +100,31 @@ export interface SpriteT
    * emissionIntensity. Default (0, 0, 0) is a no-op.
    */
   emissionColor: Vector3D;
+
+  /**
+   * Fog-of-war tracking gate. When true (the default), fog-of-war's own
+   * update() drives this sprite's `_fowStatus` — it goes 'obscured' once it
+   * leaves every vision source's live line of sight (a separate phantom
+   * sprite renders a frozen "last seen here" stand-in in its place; this
+   * sprite's own update/gameplay logic keeps running unaffected) and back to
+   * 'visible' once seen again. Set false to opt a sprite out entirely (hard-
+   * hidden outside live vision, no memory tier, `_fowStatus` untouched) —
+   * there's rarely a reason to, since UI sprites don't go through this
+   * render path at all (DOM-native via ui-overlay/state-overlay).
+   */
+  trackedByFog: boolean;
+
+  /**
+   * Runtime-only fog-of-war state, driven entirely by fog-of-war's update()
+   * (src/component/fog-of-war/methods.ts) — never set by application code,
+   * never serialized. 'visible': render normally. 'obscured': out of every
+   * vision source's sight; this sprite's own draw call is skipped (its
+   * phantom stand-in renders instead) but its update/gameplay logic keeps
+   * running. 'phantom': this sprite *is* a frozen stand-in spawned by
+   * fog-of-war for some other (obscured) sprite — renders with the
+   * fog-of-war memory style, disposed once vision returns to its position.
+   */
+  _fowStatus: 'visible' | 'obscured' | 'phantom';
 }
 
 export interface SpriteOptions extends ComponentOptions {
@@ -124,6 +149,9 @@ export interface SpriteOptions extends ComponentOptions {
   renderOrder?: number;
   emissionIntensity?: number;
   emissionColor?: Vector3D;
+  trackedByFog?: boolean;
+  /** Runtime-only; see `SpriteT._fowStatus`. Only fog-of-war's own update() should ever pass this. */
+  _fowStatus?: 'visible' | 'obscured' | 'phantom';
 }
 
 /**
@@ -161,6 +189,8 @@ export function builder(options: SpriteOptions): SpriteT {
     renderOrder: options.renderOrder ?? 0,
     emissionIntensity: Math.max(0, Math.min(1, options.emissionIntensity ?? 0)),
     emissionColor: options.emissionColor ?? new Vector3D(0, 0, 0),
+    trackedByFog: options.trackedByFog ?? true,
+    _fowStatus: options._fowStatus ?? 'visible',
   };
 
   return sprite as unknown as SpriteT;
@@ -219,6 +249,7 @@ function serialize(component: ComponentData): any {
       y: s.emissionColor.y,
       z: s.emissionColor.z,
     },
+    trackedByFog: s.trackedByFog,
   };
 }
 
@@ -256,6 +287,7 @@ function deserialize(data: any): DeserializeResult<SpriteT> {
     renderOrder,
     emissionIntensity,
     emissionColor,
+    trackedByFog,
   } = data;
 
   if (type !== 'sprite') {
@@ -376,6 +408,7 @@ function deserialize(data: any): DeserializeResult<SpriteT> {
       renderOrder: renderOrder as number | undefined,
       emissionIntensity: emissionIntensity as number | undefined,
       emissionColor: emissionColorVec,
+      trackedByFog: trackedByFog as boolean | undefined,
     }),
     errors,
   };
@@ -401,4 +434,6 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'renderOrder',
   'emissionIntensity',
   'emissionColor',
+  'trackedByFog',
+  '_fowStatus',
 ];

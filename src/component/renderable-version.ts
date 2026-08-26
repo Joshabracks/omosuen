@@ -13,12 +13,13 @@
  * disposal-queue hook, since `Nexus.dispose()`'s cascade disposes
  * descendants directly without going through the queue.
  */
-export type RenderableType = 'sprite' | 'cell-map' | 'light';
+export type RenderableType = 'sprite' | 'cell-map' | 'light' | 'vision-source';
 
 const VERSIONS: Record<RenderableType, number> = {
   sprite: 0,
   'cell-map': 0,
   light: 0,
+  'vision-source': 0,
 };
 
 export function bumpRenderableVersion(type: RenderableType): void {

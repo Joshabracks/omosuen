@@ -159,6 +159,32 @@ under `vendor/`, and ship via the `plugin-release.yml` workflow (release = bump 
   multi-frame staging, since neither channel has a procedural-generation cost. `setEmissionColor`/
   `getEmissionColor` take a world cell coordinate (not window-local) and fully support off-window
   writes.
+- **Fog-of-war's persistent state reuses the exact same `AuxiliaryChannel` pattern**, one channel
+  per tier: `cmExploredChannel`/`cmFarMaterialChannel` (chunk-granular, via the `chunkSize:{1,1,1}`
+  trick — chunk-grid coordinates become the channel's own "cell" coordinates) and
+  `cmMemoryMaterialChannel` (real chunk-granular, per-cell, like `emissionColorMap`). **Don't pack
+  a material index (or any non-interpolatable value) into the same texture as a value that relies
+  on GPU linear filtering** — `u_exploredTexture` is deliberately `LINEAR`-filtered so the
+  never-viewed/memory boundary blends smoothly across chunk edges; bit-packing a material index
+  into it would make bilinear sampling blend two different materials' index bits into garbage.
+  This is why the far-tier material color lives in its own separate `cmFarMaterialChannel`
+  (`NEAREST`-filtered) rather than sharing `cmExploredChannel`'s texture — a real mistake made and
+  caught mid-implementation, not a hypothetical.
+- **Never pause a real entity's nexus to "freeze" it for rendering.** An earlier fog-of-war
+  sprite-tracking build stopped a tracked sprite's stale ghost from drifting by setting
+  `nexus.paused = true` on the tracked sprite's own nexus while it was out of sight — which
+  doesn't just stop its rendering, it halts `traverseAndUpdate`'s (`src/loop/update.ts`) entire
+  dispatch for that subtree, silently freezing any *other* gameplay logic (AI, timers, anything)
+  attached to that same entity too. The fix: `fog-of-war`'s own `update()`
+  (`src/component/fog-of-war/methods.ts`) drives `sprite._fowStatus` (`'visible' | 'obscured' |
+  'phantom'`) every frame and, on the visible→obscured transition, spawns a completely separate
+  "phantom" nexus (`newComponent('nexus'/'transform'/'sprite', ...)`, marked `_generated = true`
+  so it's excluded from serialization) as a frozen last-seen stand-in — the real sprite's own
+  nexus/pause state is never touched, so its own update logic keeps running normally while
+  off-screen. The phantom disposes itself (`markForDisposal`) the instant vision returns to its
+  own (frozen) position, independent of wherever the real entity has since moved. General lesson:
+  rendering-driven state (visibility, styling) belongs on a field the render path reads
+  (`_fowStatus`), never on a mechanism (`nexus.paused`) that also gates unrelated simulation.
 - **Naming conventions.** Module-level / reusable variables are `camelCase` (no underscore
   prefix). Functions `camelCase`, types `PascalCase` (enforced by eslint).
 - **No `any`.** The engine eslint config errors on `@typescript-eslint/no-explicit-any` and

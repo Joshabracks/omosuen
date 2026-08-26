@@ -10,6 +10,8 @@ import { SpriteSerializer } from '../component/sprite/data';
 import { ColliderSerializer } from '../component/collider/data';
 import { EventColliderSerializer } from '../component/event-collider/data';
 import { LightSerializer } from '../component/light/data';
+import { VisionSourceSerializer } from '../component/vision-source/data';
+import { FogOfWarSerializer } from '../component/fog-of-war/data';
 import { TimerSerializer } from '../component/timer/data';
 import { SpeedDialSerializer } from '../component/speed-dial/data';
 import { MessengerSerializer } from '../component/messenger/data';
@@ -54,6 +56,8 @@ const SERIALIZERS: Partial<Record<COMPONENT_TYPE, ComponentSerializer>> = {
   collider: ColliderSerializer,
   'event-collider': EventColliderSerializer,
   light: LightSerializer,
+  'vision-source': VisionSourceSerializer,
+  'fog-of-war': FogOfWarSerializer,
   timer: TimerSerializer,
   'speed-dial': SpeedDialSerializer,
   messenger: MessengerSerializer,

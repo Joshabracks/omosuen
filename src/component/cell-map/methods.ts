@@ -6,6 +6,9 @@ import {
   takePendingBufferCleanup,
   resetCellMapState,
   cmEmissionColorChannel,
+  cmExploredChannel,
+  cmFarMaterialChannel,
+  cmMemoryMaterialChannel,
   enqueuePendingSetCells,
   getPendingSetCells,
   clearPendingSetCells,
@@ -78,6 +81,42 @@ function assertFiniteCoordinates(x: number, y: number, z: number): void {
 }
 
 /**
+ * Resolves a WORLD chunk coordinate to the resident window's local chunk-grid
+ * coordinate, or `null` if the window hasn't committed a focus yet
+ * (`component.window.origin === null`) or the chunk currently falls outside
+ * the resident window -- mirroring `CellWindow.worldToLocal`'s CELL-level
+ * local lookup (used by `setEmissionColor`/`getEmissionColor`), but at chunk
+ * granularity: there is no chunk-level `worldToLocal` helper on
+ * `CellWindow` itself, so it's computed inline here from
+ * `component.window.origin` and `component.chunkGridSize` (the window's
+ * size in chunks).
+ */
+function chunkLocalCoords(
+  component: CellMapT,
+  worldCx: number,
+  worldCy: number,
+  worldCz: number,
+): { x: number; y: number; z: number } | null {
+  const origin = component.window.origin;
+  if (!origin) return null;
+  const lx = worldCx - origin.cx;
+  const ly = worldCy - origin.cy;
+  const lz = worldCz - origin.cz;
+  const dims = component.chunkGridSize;
+  if (
+    lx < 0 ||
+    lx >= dims.x ||
+    ly < 0 ||
+    ly >= dims.y ||
+    lz < 0 ||
+    lz >= dims.z
+  ) {
+    return null;
+  }
+  return { x: lx, y: ly, z: lz };
+}
+
+/**
  * Cap on the retained per-cell emission-color dirty log; on overflow the log
  * is cleared and `emissionColorFullVersion` is bumped, forcing one full
  * `texImage3D` reupload for any straggler camera instead of growing the log
@@ -89,6 +128,26 @@ function assertFiniteCoordinates(x: number, y: number, z: number): void {
  * resident window.
  */
 const CELL_EMISSION_COLOR_DIRTY_CAP = 2048;
+
+/**
+ * Cap on the retained per-chunk fog-of-war "explored" dirty log; on overflow
+ * the log is cleared and `exploredFullVersion` is bumped, forcing one full
+ * reupload instead of growing the log unboundedly. Mirrors
+ * `CELL_EMISSION_COLOR_DIRTY_CAP` -- reuses the same value since explored
+ * writes are chunk-granular (far fewer chunks than cells in a window), so
+ * this cap is comparatively even more generous in practice.
+ */
+const CELL_EXPLORED_DIRTY_CAP = 2048;
+
+/**
+ * Cap on the retained per-cell near-tier "captured material" dirty log; on
+ * overflow the log is cleared and `memoryMaterialFullVersion` is bumped,
+ * forcing one full reupload instead of growing the log unboundedly. Mirrors
+ * `CELL_EMISSION_COLOR_DIRTY_CAP` -- same reasoning (a single throttled
+ * vision-sweep pass over nearby cells is comparable in size to an
+ * emission-color highlight batch).
+ */
+const CELL_MEMORY_MATERIAL_DIRTY_CAP = 2048;
 
 export interface CellMapMethods extends ComponentMethods {
   type: 'cell-map';
@@ -154,6 +213,104 @@ export interface CellMapMethods extends ComponentMethods {
    * 0-1). `coordinates` is a WORLD cell coordinate — see `setEmissionColor`.
    */
   getEmissionColor: (component: CellMapT, coordinates: Vector3D) => Vector3D;
+
+  /**
+   * Marks a chunk as explored for fog-of-war purposes (idempotent -- a
+   * no-op if the chunk is already explored, so repeated per-frame vision
+   * updates don't flood the dirty log). `worldCx`/`worldCy`/`worldCz` are
+   * WORLD CHUNK coordinates (not cell coordinates, and not window-local) --
+   * an off-window chunk is fully supported, persisted via the explored
+   * channel's own cold storage, and survives a window shift or save/load,
+   * the same as `setEmissionColor`'s off-window support for cells.
+   */
+  setChunkExplored: (
+    component: CellMapT,
+    worldCx: number,
+    worldCy: number,
+    worldCz: number,
+  ) => void;
+
+  /**
+   * Whether the given WORLD CHUNK coordinate has ever been explored (see
+   * `setChunkExplored`).
+   */
+  isChunkExplored: (
+    component: CellMapT,
+    worldCx: number,
+    worldCy: number,
+    worldCz: number,
+  ) => boolean;
+
+  /**
+   * Far-tier representative material index for a whole CHUNK -- a separate
+   * channel from `setChunkExplored`'s binary flag (kept separate rather than
+   * packed into the same payload, since `exploredMap` is sampled with linear
+   * GPU filtering to blend the never-viewed/memory-tier boundary smoothly
+   * across chunk edges, and bit-packing a material index into that same
+   * texture would make bilinear filtering blend garbage bit patterns at
+   * chunk boundaries). Skips the write entirely (no channel write, no
+   * version bump, no dirty region) when the stored value already equals
+   * `materialIndex`, so a throttled vision sweep re-confirming the same
+   * chunk's already-unchanged material every pass doesn't flood the dirty
+   * log. `worldCx`/`worldCy`/`worldCz` are WORLD CHUNK coordinates -- an
+   * off-window chunk is fully supported, persisted via this channel's own
+   * cold storage, and survives a window shift or save/load.
+   */
+  setChunkFarMaterial: (
+    component: CellMapT,
+    worldCx: number,
+    worldCy: number,
+    worldCz: number,
+    materialIndex: number,
+  ) => void;
+
+  /**
+   * Reads the far-tier representative material for a WORLD CHUNK coordinate
+   * (see `setChunkFarMaterial`). Returns the raw stored value: `0xFFFF` if
+   * this chunk has never had a material captured, otherwise a real material
+   * index (0-4095).
+   */
+  getChunkFarMaterial: (
+    component: CellMapT,
+    worldCx: number,
+    worldCy: number,
+    worldCz: number,
+  ) => number;
+
+  /**
+   * Captures a real material index for a single CELL (near-tier fog-of-war
+   * "what did this cell look like last time it was seen" snapshot, for cells
+   * near an active vision source) -- the fine-grained counterpart to
+   * `setChunkExplored`'s coarse per-chunk representative material.
+   * `worldCellX`/`worldCellY`/`worldCellZ` is a WORLD CELL coordinate
+   * (matching `setCellData`/`setEmissionColor`) -- an off-window coordinate
+   * is fully supported, persisted via the channel's own cold storage, and
+   * survives a window shift or save/load. Skips the write entirely (no
+   * version bump, no dirty region, and no channel write at all) when the
+   * stored value already equals `materialIndex`, so a throttled vision sweep
+   * re-capturing the same nearby cells every pass doesn't flood the dirty
+   * log.
+   */
+  setCellMemoryMaterial: (
+    component: CellMapT,
+    worldCellX: number,
+    worldCellY: number,
+    worldCellZ: number,
+    materialIndex: number,
+  ) => void;
+
+  /**
+   * Reads the near-tier captured-material snapshot for a WORLD CELL
+   * coordinate (see `setCellMemoryMaterial`). Returns the raw stored value:
+   * `0xFFFF` if this cell has never been captured, otherwise a real material
+   * index (0-4095).
+   */
+  getCellMemoryMaterial: (
+    component: CellMapT,
+    worldCellX: number,
+    worldCellY: number,
+    worldCellZ: number,
+  ) => number;
 
   /**
    * Set only the visibility flag for a cell
@@ -499,6 +656,171 @@ export const CellMap: CellMapMethods = {
       ((packed >> 16) & 0xff) / 255,
       ((packed >> 8) & 0xff) / 255,
       (packed & 0xff) / 255,
+    );
+  },
+
+  setChunkExplored: (
+    component: CellMapT,
+    worldCx: number,
+    worldCy: number,
+    worldCz: number,
+  ): void => {
+    assertFiniteCoordinates(worldCx, worldCy, worldCz);
+    const local = chunkLocalCoords(component, worldCx, worldCy, worldCz);
+    // Idempotent no-op once already explored -- avoids flooding the dirty
+    // log on repeated per-frame vision updates over already-explored ground.
+    if (cmExploredChannel!.get(worldCx, worldCy, worldCz, local) === 1) {
+      return;
+    }
+    cmExploredChannel!.set(worldCx, worldCy, worldCz, local, 1);
+    if (local) {
+      component.exploredMap.set(new Vector3D(local.x, local.y, local.z), 1);
+      component.exploredVersion = component.exploredVersion + 1;
+      const version = component.exploredVersion;
+      component.exploredDirtyRegions.push({
+        version,
+        x: local.x,
+        y: local.y,
+        z: local.z,
+      });
+      if (component.exploredDirtyRegions.length > CELL_EXPLORED_DIRTY_CAP) {
+        component.exploredDirtyRegions = [];
+        component.exploredFullVersion = version;
+      }
+    }
+  },
+
+  isChunkExplored: (
+    component: CellMapT,
+    worldCx: number,
+    worldCy: number,
+    worldCz: number,
+  ): boolean => {
+    assertFiniteCoordinates(worldCx, worldCy, worldCz);
+    const local = chunkLocalCoords(component, worldCx, worldCy, worldCz);
+    return cmExploredChannel!.get(worldCx, worldCy, worldCz, local) === 1;
+  },
+
+  setChunkFarMaterial: (
+    component: CellMapT,
+    worldCx: number,
+    worldCy: number,
+    worldCz: number,
+    materialIndex: number,
+  ): void => {
+    assertFiniteCoordinates(worldCx, worldCy, worldCz);
+    const local = chunkLocalCoords(component, worldCx, worldCy, worldCz);
+    // Skip the write entirely (no channel write, no version bump, no dirty
+    // region) when the stored value already matches -- same idempotent
+    // "skip if unchanged" shape as setCellMemoryMaterial, avoids flooding the
+    // dirty log when a throttled vision sweep re-confirms the same chunk's
+    // already-unchanged representative material every pass.
+    const current = cmFarMaterialChannel!.get(worldCx, worldCy, worldCz, local);
+    if (current === materialIndex) return;
+    cmFarMaterialChannel!.set(worldCx, worldCy, worldCz, local, materialIndex);
+    if (local) {
+      component.farMaterialMap.set(
+        new Vector3D(local.x, local.y, local.z),
+        materialIndex,
+      );
+      component.farMaterialVersion = component.farMaterialVersion + 1;
+      const version = component.farMaterialVersion;
+      component.farMaterialDirtyRegions.push({
+        version,
+        x: local.x,
+        y: local.y,
+        z: local.z,
+      });
+      if (component.farMaterialDirtyRegions.length > CELL_EXPLORED_DIRTY_CAP) {
+        component.farMaterialDirtyRegions = [];
+        component.farMaterialFullVersion = version;
+      }
+    }
+  },
+
+  getChunkFarMaterial: (
+    component: CellMapT,
+    worldCx: number,
+    worldCy: number,
+    worldCz: number,
+  ): number => {
+    assertFiniteCoordinates(worldCx, worldCy, worldCz);
+    const local = chunkLocalCoords(component, worldCx, worldCy, worldCz);
+    return cmFarMaterialChannel!.get(worldCx, worldCy, worldCz, local);
+  },
+
+  setCellMemoryMaterial: (
+    component: CellMapT,
+    worldCellX: number,
+    worldCellY: number,
+    worldCellZ: number,
+    materialIndex: number,
+  ): void => {
+    assertFiniteCoordinates(worldCellX, worldCellY, worldCellZ);
+    const local = component.window.worldToLocal(
+      worldCellX,
+      worldCellY,
+      worldCellZ,
+    );
+    // Read-before-write: unlike setEmissionColor (which never diffs), this
+    // one skips the write entirely (no channel write, no version bump, no
+    // dirty region) when the stored value already matches -- avoids flooding
+    // the dirty log when a throttled vision sweep re-captures the same
+    // nearby cells' already-unchanged material every pass.
+    const current = cmMemoryMaterialChannel!.get(
+      worldCellX,
+      worldCellY,
+      worldCellZ,
+      local,
+    );
+    if (current === materialIndex) return;
+    cmMemoryMaterialChannel!.set(
+      worldCellX,
+      worldCellY,
+      worldCellZ,
+      local,
+      materialIndex,
+    );
+    if (local) {
+      component.memoryMaterialMap.set(
+        new Vector3D(local.x, local.y, local.z),
+        materialIndex,
+      );
+      component.memoryMaterialVersion = component.memoryMaterialVersion + 1;
+      const version = component.memoryMaterialVersion;
+      component.memoryMaterialDirtyRegions.push({
+        version,
+        x: local.x,
+        y: local.y,
+        z: local.z,
+      });
+      if (
+        component.memoryMaterialDirtyRegions.length >
+        CELL_MEMORY_MATERIAL_DIRTY_CAP
+      ) {
+        component.memoryMaterialDirtyRegions = [];
+        component.memoryMaterialFullVersion = version;
+      }
+    }
+  },
+
+  getCellMemoryMaterial: (
+    component: CellMapT,
+    worldCellX: number,
+    worldCellY: number,
+    worldCellZ: number,
+  ): number => {
+    assertFiniteCoordinates(worldCellX, worldCellY, worldCellZ);
+    const local = component.window.worldToLocal(
+      worldCellX,
+      worldCellY,
+      worldCellZ,
+    );
+    return cmMemoryMaterialChannel!.get(
+      worldCellX,
+      worldCellY,
+      worldCellZ,
+      local,
     );
   },
 

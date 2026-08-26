@@ -99,6 +99,18 @@ export const ENGINE_COMPONENTS: ComponentDocEntry[] = [
     blurb: "Ambient, directional, point, and spot lights for unified shading.",
   },
   {
+    id: "vision-source",
+    title: "vision-source",
+    category: "Rendering",
+    blurb: "Fog-of-war reveal source: soft radial + real line-of-sight raycasting.",
+  },
+  {
+    id: "fog-of-war",
+    title: "fog-of-war",
+    category: "Rendering",
+    blurb: "Scene-wide memory/never-viewed styling, and the per-frame driver for tracked-sprite phantom stand-ins.",
+  },
+  {
     id: "animation-controller",
     title: "animation-controller",
     category: "Animation",

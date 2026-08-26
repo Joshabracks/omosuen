@@ -117,14 +117,20 @@ export interface SpriteT
   /**
    * Runtime-only fog-of-war state, driven entirely by fog-of-war's update()
    * (src/component/fog-of-war/methods.ts) — never set by application code,
-   * never serialized. 'visible': render normally. 'obscured': out of every
+   * never serialized. 'unseen' (the default): never yet confirmed live-
+   * visible — renders normally, exactly like 'visible' (the GPU's own
+   * live-visibility discard is what actually hides it, same as before this
+   * feature existed); fog-of-war never spawns a phantom for an 'unseen'
+   * sprite, only for one that's genuinely gone OUT of sight after having
+   * been seen. 'visible': confirmed live-visible at least once, currently
+   * in sight — render normally. 'obscured': was 'visible', now out of every
    * vision source's sight; this sprite's own draw call is skipped (its
    * phantom stand-in renders instead) but its update/gameplay logic keeps
    * running. 'phantom': this sprite *is* a frozen stand-in spawned by
    * fog-of-war for some other (obscured) sprite — renders with the
    * fog-of-war memory style, disposed once vision returns to its position.
    */
-  _fowStatus: 'visible' | 'obscured' | 'phantom';
+  _fowStatus: 'unseen' | 'visible' | 'obscured' | 'phantom';
 }
 
 export interface SpriteOptions extends ComponentOptions {
@@ -151,7 +157,7 @@ export interface SpriteOptions extends ComponentOptions {
   emissionColor?: Vector3D;
   trackedByFog?: boolean;
   /** Runtime-only; see `SpriteT._fowStatus`. Only fog-of-war's own update() should ever pass this. */
-  _fowStatus?: 'visible' | 'obscured' | 'phantom';
+  _fowStatus?: 'unseen' | 'visible' | 'obscured' | 'phantom';
 }
 
 /**
@@ -190,7 +196,7 @@ export function builder(options: SpriteOptions): SpriteT {
     emissionIntensity: Math.max(0, Math.min(1, options.emissionIntensity ?? 0)),
     emissionColor: options.emissionColor ?? new Vector3D(0, 0, 0),
     trackedByFog: options.trackedByFog ?? true,
-    _fowStatus: options._fowStatus ?? 'visible',
+    _fowStatus: options._fowStatus ?? 'unseen',
   };
 
   return sprite as unknown as SpriteT;

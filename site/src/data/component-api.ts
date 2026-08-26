@@ -547,7 +547,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("emissionIntensity", "number", "Self-illumination dial, 0–1."),
       O("emissionColor", "Vector3D", "Additive RGB highlight."),
       O("trackedByFog", "boolean", "Fog-of-war tracking gate."),
-      O("_fowStatus", "'visible'|'obscured'|'phantom'", "Read-only, driven by fog-of-war's update() — never set directly. 'obscured' means this sprite's draw is skipped this frame (its phantom stands in); 'phantom' means this sprite IS one of those stand-ins."),
+      O("_fowStatus", "'unseen'|'visible'|'obscured'|'phantom'", "Read-only, driven by fog-of-war's update() — never set directly. 'unseen' (default) renders normally until actually seen once; fog-of-war never phantoms a never-seen sprite. 'obscured' means this sprite's draw is skipped this frame (its phantom stands in); 'phantom' means this sprite IS one of those stand-ins."),
     ],
     methods: [
       M("init", "init()", "Validate texture-map references."),

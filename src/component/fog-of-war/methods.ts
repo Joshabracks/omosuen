@@ -7,6 +7,7 @@ import {
 import { FogOfWarT, FogOfWarStyle } from './data';
 import { Vector2D, Vector3D, Vector4D } from '../../math';
 import { getActiveScene } from '../../scene';
+import { getRenderableVersion } from '../renderable-version';
 import type { NexusT } from '../nexus/data';
 import type { SpriteT, SpriteOptions } from '../sprite/data';
 import type { TransformT, TransformOptions } from '../transform/data';
@@ -23,11 +24,15 @@ interface ResolvedSource {
   fadeWidth: number;
 }
 
-function resolveActiveVisionSources(scene: NexusT): ResolvedSource[] {
-  const sources = scene.getComponentsByType(
-    'vision-source',
-    true,
-  ) as VisionSourceT[];
+/**
+ * Resolves each source's CURRENT world position from its sibling transform --
+ * called fresh every frame regardless of whether `sources` itself came from
+ * the gather cache below, since a source's position (unlike the component
+ * list) moves every frame even when nothing was added/removed.
+ */
+function resolveActiveVisionSources(
+  sources: VisionSourceT[],
+): ResolvedSource[] {
   const resolved: ResolvedSource[] = [];
   for (const source of sources) {
     if (!source.enabled) continue;
@@ -45,6 +50,50 @@ function resolveActiveVisionSources(scene: NexusT): ResolvedSource[] {
     });
   }
   return resolved;
+}
+
+/**
+ * Caches the raw sprite/vision-source COMPONENT LISTS (which entities exist),
+ * not any per-frame derived state -- mirrors camera/collect-renderables's
+ * `RENDERABLES_CACHE` pattern exactly, keyed on the same per-type version
+ * counters (bumped on every add/remove, `renderable-version.ts`), so a
+ * `getComponentsByType` tree walk only re-runs when something was actually
+ * added or removed since last frame instead of on every single frame. Global
+ * (not per-camera) since fog-of-war is scene-unique. Positions/`_fowStatus`
+ * are still read fresh off each cached component every frame -- only the
+ * "which components exist" walk is skipped when nothing changed.
+ */
+let _gatherCache: {
+  spriteVersion: number;
+  sprites: SpriteT[];
+  visionSourceVersion: number;
+  visionSourceComponents: VisionSourceT[];
+} | null = null;
+
+function gatherSpritesAndVisionSources(scene: NexusT): {
+  sprites: SpriteT[];
+  visionSourceComponents: VisionSourceT[];
+} {
+  const spriteVersion = getRenderableVersion('sprite');
+  const visionSourceVersion = getRenderableVersion('vision-source');
+
+  const sprites =
+    _gatherCache && _gatherCache.spriteVersion === spriteVersion
+      ? _gatherCache.sprites
+      : (scene.getComponentsByType('sprite', true) as SpriteT[]);
+  const visionSourceComponents =
+    _gatherCache && _gatherCache.visionSourceVersion === visionSourceVersion
+      ? _gatherCache.visionSourceComponents
+      : (scene.getComponentsByType('vision-source', true) as VisionSourceT[]);
+
+  _gatherCache = {
+    spriteVersion,
+    sprites,
+    visionSourceVersion,
+    visionSourceComponents,
+  };
+
+  return { sprites, visionSourceComponents };
 }
 
 /**
@@ -301,8 +350,9 @@ export const FogOfWar: FogOfWarMethods = {
         z: windowOrigin.cz * originCellMap.chunkSize.z,
       };
 
-      const sources = resolveActiveVisionSources(scene);
-      const sprites = scene.getComponentsByType('sprite', true) as SpriteT[];
+      const { sprites, visionSourceComponents } =
+        gatherSpritesAndVisionSources(scene);
+      const sources = resolveActiveVisionSources(visionSourceComponents);
 
       for (const sprite of sprites) {
         if (!sprite.parent || sprite.parent.type !== 'nexus') continue;
@@ -345,9 +395,19 @@ export const FogOfWar: FogOfWarMethods = {
         );
 
         if (visible) {
-          if (sprite._fowStatus === 'obscured') sprite._fowStatus = 'visible';
+          // Covers both 'unseen' -> 'visible' (first-ever sighting) and
+          // 'obscured' -> 'visible' (seen again after going out of sight).
+          if (sprite._fowStatus !== 'visible') sprite._fowStatus = 'visible';
           continue;
         }
+        // Phantom-spawning is gated strictly on the 'visible' -> not-visible
+        // edge -- an 'unseen' sprite that's simply never been seen stays
+        // 'unseen' forever here, exactly like terrain's "never explored"
+        // stays hidden. Spawning a phantom for a never-seen sprite was the
+        // actual bug: every off-screen sprite (trackedByFog defaults true)
+        // would otherwise get a permanent phantom the instant fog-of-war
+        // first evaluated it, regardless of whether it had ever really been
+        // observed -- see the Colony Forever perf report this fixed.
         if (sprite._fowStatus === 'visible') {
           sprite._fowStatus = 'obscured';
           await spawnPhantom(scene, sprite, transform);

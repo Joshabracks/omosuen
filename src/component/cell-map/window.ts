@@ -189,6 +189,15 @@ export class CellWindow {
    * dedicated bucket regardless of which of those triggered it.
    */
   private reassembleMsAccum = 0;
+  /**
+   * The `onReassemble` hook's share of the above, tracked separately and
+   * subtracted out so `reassembleMsAccum` measures only this class's own
+   * store work (evict + assemble + `commitCellStore`). The hook runs the five
+   * auxiliary channels' window change plus the public-field resync, which is
+   * comparable in cost to the store pass and was previously indistinguishable
+   * from it inside one lumped `cell-map:reassemble` bucket.
+   */
+  private auxReassembleMsAccum = 0;
   /** Window size in chunks. Mutable via `resize()`, otherwise constant for the session. */
   private gridDims: { x: number; y: number; z: number };
   /** Window size in cells. Mutable via `resize()`, otherwise constant for the session. */
@@ -974,17 +983,35 @@ export class CellWindow {
   ): void {
     const profiling = isProfilingEnabled();
     const t0 = profiling ? performance.now() : 0;
+    const auxBefore = this.auxReassembleMsAccum;
     try {
       this.reassembleImpl(newOrigin, newGridDims, newCellDims);
     } finally {
-      if (profiling) this.reassembleMsAccum += performance.now() - t0;
+      if (profiling) {
+        // Subtract whatever the onReassemble hook charged to the aux bucket
+        // during this call, so the two stay exclusive rather than nested.
+        const total = performance.now() - t0;
+        this.reassembleMsAccum +=
+          total - (this.auxReassembleMsAccum - auxBefore);
+      }
     }
   }
 
-  /** Returns and zeros the `reassemble()` time accumulated since the last call. */
+  /**
+   * Returns and zeros the store-side `reassemble()` time accumulated since the
+   * last call -- eviction, assembly and `commitCellStore`, EXCLUDING the
+   * `onReassemble` hook (see `drainAuxReassembleMs`).
+   */
   drainReassembleMs(): number {
     const ms = this.reassembleMsAccum;
     this.reassembleMsAccum = 0;
+    return ms;
+  }
+
+  /** Returns and zeros the `onReassemble` hook time accumulated since the last call. */
+  drainAuxReassembleMs(): number {
+    const ms = this.auxReassembleMsAccum;
+    this.auxReassembleMsAccum = 0;
     return ms;
   }
 
@@ -1086,10 +1113,15 @@ export class CellWindow {
     this.originChunk = newOrigin;
     this.gridDims = newGridDims;
     this.cellDims = newCellDims;
+    const hookProfiling = isProfilingEnabled();
+    const hookT0 = hookProfiling ? performance.now() : 0;
     this.onReassemble?.(
       { origin: oldOrigin, gridDims: oldGridDims, cellDims: oldCellDims },
       { origin: newOrigin, gridDims: newGridDims, cellDims: newCellDims },
     );
+    if (hookProfiling) {
+      this.auxReassembleMsAccum += performance.now() - hookT0;
+    }
   }
 
   /** Stable string key for `editedSinceBaseline`, by world-chunk coordinate. */

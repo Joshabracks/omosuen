@@ -43,6 +43,15 @@ let deltaTime = 0;
 let currentFPS = 0;
 
 /**
+ * Monotonic frame counter, incremented once at the top of every `gameLoop`
+ * tick. Lets code that runs multiple times per frame (anything iterating
+ * cameras, for instance) tell "same frame" from "next frame" -- something
+ * neither `deltaTime` nor `currentFPS` can answer. Never reset by
+ * pause/resume, only by `stop()`, so it stays monotonic across a pause.
+ */
+let frameCount = 0;
+
+/**
  * Target frames per second (used for init time budget)
  */
 let targetFPS = 60;
@@ -81,6 +90,7 @@ async function gameLoop(currentTime: number): Promise<void> {
 
   // Calculate FPS
   currentFPS = deltaTime > 0 ? 1000 / deltaTime : 0;
+  frameCount++;
 
   const profiling = isProfilingEnabled();
   if (profiling) beginFrame();
@@ -215,6 +225,7 @@ export function stop(): void {
   loopPaused = false;
   lastFrameTime = 0;
   deltaTime = 0;
+  frameCount = 0;
 
   console.info('[GAME LOOP] Game loop stopped');
 }
@@ -360,6 +371,16 @@ export function getFrameTime(): number {
  */
 export function getFPS(): number {
   return currentFPS;
+}
+
+/**
+ * Gets the monotonic frame counter -- the number of `gameLoop` ticks since
+ * `start()`. Useful for "has a new frame begun since I last looked", which
+ * per-camera render code needs in order to do a piece of work at most once
+ * per frame rather than once per camera.
+ */
+export function getFrameCount(): number {
+  return frameCount;
 }
 
 /**

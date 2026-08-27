@@ -16,6 +16,7 @@ export {
   isPaused,
   getFrameTime,
   getFPS,
+  getFrameCount,
   getTargetFPS,
 } from './manager';
 

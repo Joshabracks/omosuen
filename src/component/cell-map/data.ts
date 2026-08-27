@@ -32,6 +32,34 @@ import type { ColdStorageEntrySnapshot } from './cold-storage';
 import type { CellData } from './types';
 import { MethodRegistry } from '../registry';
 import { AuxiliaryChannel } from './auxiliary-channel';
+import { isProfilingEnabled } from '../../loop/profile';
+
+/**
+ * The `onReassemble` hook's two halves, accumulated while profiling is enabled
+ * and drained by `recordCellMapPhase` (cell-map/methods.ts) into their own
+ * buckets. Split because they fail for different reasons and have different
+ * fixes: `auxWindowChange` is the five channels' evict/assemble passes, while
+ * `auxFieldSync` is the public-field resync plus the texture version bumps it
+ * triggers. Module-level to match the rest of this file's singleton storage --
+ * the hook is a closure built before the component exists, so it has no
+ * component id to record against directly.
+ */
+let cmAuxWindowChangeMsAccum = 0;
+let cmAuxFieldSyncMsAccum = 0;
+
+/** Returns and zeros the channel-side `onReassemble` time since the last call. */
+export function drainAuxWindowChangeMs(): number {
+  const ms = cmAuxWindowChangeMsAccum;
+  cmAuxWindowChangeMsAccum = 0;
+  return ms;
+}
+
+/** Returns and zeros the field-sync `onReassemble` time since the last call. */
+export function drainAuxFieldSyncMs(): number {
+  const ms = cmAuxFieldSyncMsAccum;
+  cmAuxFieldSyncMsAccum = 0;
+  return ms;
+}
 
 /**
  * Read-only view over the canonical cell store, exposed as `cellMap.packedData`
@@ -412,6 +440,9 @@ export function resetCellMapState(): void {
   cmEmissionColorDirtyRegions = [];
   cmEmissionColorSyncedBaseline = false;
   cmEmissionColorSyncedCellCount = -1;
+  cmMeshCacheCapacity = MESH_CACHE_MIN_CAPACITY;
+  cmAuxWindowChangeMsAccum = 0;
+  cmAuxFieldSyncMsAccum = 0;
   cmExploredMap = undefined!;
   cmExploredVersion = 0;
   cmExploredFullVersion = 0;
@@ -1279,17 +1310,67 @@ export function clearPendingSetCells(): void {
  * coordinate -- sits between "evicted from the resident window" and
  * "actually discarded," so revisiting recently-seen terrain can reuse an
  * already-built mesh (and its already-uploaded GPU buffers) instead of
- * re-running WASM meshing from scratch. A fixed internal constant, not a
- * tunable field, matching this effort's established "no unnecessary
- * tunables" choice. A plain `Map` doubles as the LRU structure: re-`set`ting
- * an existing key moves it to "most recently used" (end of iteration order),
- * so the oldest entry is always `.keys().next().value`.
+ * re-running WASM meshing from scratch. A plain `Map` doubles as the LRU
+ * structure: re-`set`ting an existing key moves it to "most recently used"
+ * (end of iteration order), so the oldest entry is always
+ * `.keys().next().value`.
+ *
+ * Capacity is DERIVED from the window's dimensions rather than being a fixed
+ * constant (still not a tunable field -- see `updateMeshCacheCapacity`). A
+ * fixed 128 was actively harmful for any window bigger than a few chunks per
+ * side: a one-chunk shift evicts a whole boundary slab at once, and when that
+ * slab is larger than the cache, `cacheEvictedChunk` overflows *within its own
+ * batch* -- throwing away entries inserted microseconds earlier and deleting
+ * their GPU buffers, so the cache retained nothing and every pan re-meshed
+ * from scratch.
  */
-const MESH_CACHE_CAPACITY = 128;
 const cmMeshCache = new Map<string, ChunkMesh>();
+/**
+ * Floor for the derived capacity, so a very small window still caches a useful
+ * amount of history rather than a handful of chunks.
+ */
+const MESH_CACHE_MIN_CAPACITY = 128;
+let cmMeshCacheCapacity = MESH_CACHE_MIN_CAPACITY;
 
 function meshCacheKey(cx: number, cy: number, cz: number): string {
   return `${cx},${cy},${cz}`;
+}
+
+/**
+ * Re-derives the cache's capacity from the window's size in chunks, and trims
+ * immediately if the new capacity is smaller (a shrinking resize).
+ *
+ * Two boundary slabs' worth, where a slab is the largest face of the window's
+ * chunk grid. One slab is the exact number of chunks a single one-chunk shift
+ * evicts, so one slab guarantees a shift's evictions all survive being
+ * inserted; two guarantees that panning across a boundary and back -- the
+ * motion that most obviously should be free -- finds everything still cached.
+ * Derived rather than configurable: it's a direct consequence of the window
+ * geometry, so there's no meaningful value a caller could pick better.
+ */
+function updateMeshCacheCapacity(gridDims: {
+  x: number;
+  y: number;
+  z: number;
+}): void {
+  const slab = Math.max(
+    gridDims.y * gridDims.z,
+    gridDims.x * gridDims.z,
+    gridDims.x * gridDims.y,
+  );
+  cmMeshCacheCapacity = Math.max(MESH_CACHE_MIN_CAPACITY, slab * 2);
+  trimMeshCache();
+}
+
+/** Evicts least-recently-used entries until the cache is within capacity. */
+function trimMeshCache(): void {
+  while (cmMeshCache.size > cmMeshCacheCapacity) {
+    const oldestKey = cmMeshCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const overflow = cmMeshCache.get(oldestKey);
+    cmMeshCache.delete(oldestKey);
+    if (overflow) queueBufferCleanup([overflow]);
+  }
 }
 
 /**
@@ -1306,14 +1387,7 @@ function cacheEvictedChunk(
   const key = meshCacheKey(wcx, wcy, wcz);
   cmMeshCache.delete(key);
   cmMeshCache.set(key, chunk);
-  if (cmMeshCache.size > MESH_CACHE_CAPACITY) {
-    const oldestKey = cmMeshCache.keys().next().value;
-    if (oldestKey !== undefined) {
-      const overflow = cmMeshCache.get(oldestKey);
-      cmMeshCache.delete(oldestKey);
-      if (overflow) queueBufferCleanup([overflow]);
-    }
-  }
+  trimMeshCache();
 }
 
 /**
@@ -1381,6 +1455,10 @@ export function reassembleChunks(
   newOrigin: ChunkCoord,
   newGridDims: { x: number; y: number; z: number },
 ): ChunkMesh[] {
+  // Before any lookup or insertion below: the cache's capacity tracks the
+  // window's chunk dimensions, and this is the one place those can change.
+  updateMeshCacheCapacity(newGridDims);
+
   interface OldEntry {
     chunk: ChunkMesh;
     wcx: number;
@@ -1839,6 +1917,8 @@ function makeAuxiliaryOnReassemble(
   farMaterialChannel: AuxiliaryChannel,
 ): NonNullable<WindowConfig['onReassemble']> {
   return (_old, next) => {
+    const profiling = isProfilingEnabled();
+    const channelsT0 = profiling ? performance.now() : 0;
     emissionChannel.onWindowChange(_old, next);
     smoothingChannel.onWindowChange(_old, next);
     memoryMaterialChannel.onWindowChange(_old, next);
@@ -1868,7 +1948,11 @@ function makeAuxiliaryOnReassemble(
         cellDims: next.gridDims,
       },
     );
+    if (profiling) {
+      cmAuxWindowChangeMsAccum += performance.now() - channelsT0;
+    }
     cmNeedsGPUUpdate = true;
+    const syncT0 = profiling ? performance.now() : 0;
     const dimsChanged =
       _old.cellDims.x !== next.cellDims.x ||
       _old.cellDims.y !== next.cellDims.y ||
@@ -1881,6 +1965,9 @@ function makeAuxiliaryOnReassemble(
       _old.origin === null || dimsChanged,
     );
     syncExploredField(exploredChannel, farMaterialChannel, next.gridDims);
+    if (profiling) {
+      cmAuxFieldSyncMsAccum += performance.now() - syncT0;
+    }
   };
 }
 

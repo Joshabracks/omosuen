@@ -13,6 +13,8 @@ import {
   getPendingSetCells,
   clearPendingSetCells,
   invalidateCachedChunk,
+  drainAuxWindowChangeMs,
+  drainAuxFieldSyncMs,
 } from './data';
 import {
   CellData,
@@ -51,15 +53,39 @@ function recordCellMapPhase(
   t0: number,
 ): void {
   const id = component.id ?? -1;
+  // Three exclusive slices of what used to be one 'cell-map:reassemble' lump:
+  // the store's own evict/assemble/commit, the auxiliary channels' window
+  // change, and the public-field resync. They're separated because they have
+  // independent causes and independent fixes -- a single number couldn't say
+  // which of them a commit-frame spike actually came from.
   const reassembleMs = component.window.drainReassembleMs();
-  const ownMs = performance.now() - t0 - reassembleMs;
+  const auxMs = component.window.drainAuxReassembleMs();
+  const auxWindowChangeMs = drainAuxWindowChangeMs();
+  const auxFieldSyncMs = drainAuxFieldSyncMs();
+  const ownMs = performance.now() - t0 - reassembleMs - auxMs;
   recordComponentUpdate(id, component.name, type, ownMs);
   if (reassembleMs > 0) {
     recordComponentUpdate(
       id,
       component.name,
-      'cell-map:reassemble',
+      'cell-map:reassembleStore',
       reassembleMs,
+    );
+  }
+  if (auxWindowChangeMs > 0) {
+    recordComponentUpdate(
+      id,
+      component.name,
+      'cell-map:auxWindowChange',
+      auxWindowChangeMs,
+    );
+  }
+  if (auxFieldSyncMs > 0) {
+    recordComponentUpdate(
+      id,
+      component.name,
+      'cell-map:auxFieldSync',
+      auxFieldSyncMs,
     );
   }
 }
@@ -408,7 +434,15 @@ export interface CellMapMethods extends ComponentMethods {
    * since a pending target needs driving forward even when neither is being
    * auto-driven that frame.
    */
-  advanceWindowGeneration: (component: CellMapT) => void;
+  /**
+   * Drives a pending window shift/resize forward by one frame's budget.
+   * Returns whether the shift COMMITTED this call -- the commit frame is by
+   * far the most expensive one (store reassembly, five auxiliary channels,
+   * full texture invalidation, chunk-array rebuild), so callers can use this
+   * to hold other heavy optional work off that frame. See the fog-of-war
+   * sweep's use of it in render-cell-maps.ts.
+   */
+  advanceWindowGeneration: (component: CellMapT) => boolean;
 
   /**
    * Forces chunks in `[min, max]` (inclusive, WORLD cell coordinates) — or
@@ -997,7 +1031,7 @@ export const CellMap: CellMapMethods = {
     }
   },
 
-  advanceWindowGeneration: (component: CellMapT): void => {
+  advanceWindowGeneration: (component: CellMapT): boolean => {
     const profiling = isProfilingEnabled();
     const t0 = profiling ? performance.now() : 0;
     try {
@@ -1005,7 +1039,7 @@ export const CellMap: CellMapMethods = {
       const oldChunks = component.chunks;
       const oldGridDims = component.window.gridDimensions;
       const committed = component.window.advance();
-      if (!committed) return;
+      if (!committed) return false;
 
       // A committed target's dims may or may not have changed depending on
       // whether it originated from setFocus (dims unchanged) or
@@ -1031,6 +1065,7 @@ export const CellMap: CellMapMethods = {
         component.window.origin!,
         component.window.gridDimensions,
       );
+      return true;
     } finally {
       if (profiling)
         recordCellMapPhase(component, 'cell-map:advanceWindowGeneration', t0);

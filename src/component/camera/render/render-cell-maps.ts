@@ -21,6 +21,7 @@ import {
   isProfilingEnabled,
   recordComponentUpdate,
 } from '../../../loop/profile';
+import { getFrameCount } from '../../../loop/manager';
 
 /** A resolved atlas frame: normalized UV bounds, pixel size, and atlas page. */
 interface ResolvedFrame {
@@ -196,6 +197,17 @@ const RESIZE_SETTLE_FRAMES = 10;
  * resident but not drawn until the camera actually reaches it.
  */
 const CHUNK_GENERATION_BUFFER = 1;
+
+/**
+ * Frame on which each cell-map's window last committed a shift, so the
+ * fog-of-war sweep can be held off that frame (see its skip below). Keyed per
+ * cell-map and stamped with the frame counter rather than tracked as a local,
+ * because `renderCellMaps` runs once per CAMERA: only the first camera's
+ * `advanceWindowGeneration` call observes the commit, so a local flag would
+ * let a second camera run the sweep on the commit frame anyway. A `WeakMap`
+ * so it never leaks if a cell-map is disposed.
+ */
+const lastCommitFrame = new WeakMap<CellMapT, number>();
 
 /**
  * `computeVisibleWindowRadius`'s target is continuous (zoom/tilt/yaw all feed
@@ -1135,7 +1147,11 @@ export function renderCellMaps(
     // autoResizeFromZoom) so a pending target still gets driven forward for
     // manually-driven windows too, and before the buffer-cleanup drain below
     // since a commit here can also evict chunks.
-    CellMap.advanceWindowGeneration(cellMap);
+    const frame = getFrameCount();
+    if (CellMap.advanceWindowGeneration(cellMap)) {
+      lastCommitFrame.set(cellMap, frame);
+    }
+    const windowJustCommitted = lastCommitFrame.get(cellMap) === frame;
 
     // Drive forward any in-flight CellMap.setCells batch, same reasoning as
     // advanceWindowGeneration above -- unconditional, and before the dirty-
@@ -1243,7 +1259,18 @@ export function renderCellMaps(
       // Fog-of-war "explored" persistence: throttled per-source (a no-op
       // for sources that haven't crossed into a new chunk since last frame)
       // -- reuses this same solidity buffer, no extra WASM call.
-      if (fogActive) {
+      //
+      // Deliberately skipped on a frame the window just committed. The sweep's
+      // trigger (a vision source crossing into a new world chunk) and the
+      // commit's trigger (the camera crossing one) almost always fire on the
+      // SAME frame, since the camera follows the player -- so the sweep's
+      // per-cell raycast + material capture, which is substantial the first
+      // time through an area, lands squarely on the frame that's already the
+      // most expensive one. Deferring costs one frame of fog latency (~16ms,
+      // imperceptible) and is self-healing: the per-source `_lastChunk`
+      // throttle is only updated when the sweep actually runs, so skipping
+      // here leaves the source still "moved" and it sweeps next frame.
+      if (fogActive && !windowJustCommitted) {
         sweepExploredChunks(
           cellMap,
           visionSources,

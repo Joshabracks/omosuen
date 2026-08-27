@@ -364,6 +364,122 @@ export class Array3D<T> {
   };
 }
 
+/**
+ * The surface `Array3D<number>` and `Array3Du32` have in common — a size, flat
+ * indexed numeric storage, and coordinate get/set. Consumers take this instead
+ * of a concrete class so either backing works without a conversion copy;
+ * `Array3D<number>` satisfies it structurally, so widening a consumer from
+ * `Array3D<number>` to this is non-breaking.
+ *
+ * `value` is `ArrayLike<number>` — the common denominator of `Array<number>`
+ * and `Uint32Array`. It has `length` and indexed access but none of `Array`'s
+ * methods, so consumers that reached for `.some`/`.map` need an explicit loop.
+ */
+export interface NumericArray3D {
+  size: Vector3D;
+  value: ArrayLike<number>;
+  set(coordinates: Vector3D, v: number): void;
+  indexSet(i: number, v: number): void;
+  get(coordinates: Vector3D): number;
+}
+
+/**
+ * `Array3D<number>` with a `Uint32Array` backing instead of a boxed
+ * `Array<number>`. Same coordinate math and method surface, but the
+ * constructor ADOPTS the buffer it's handed by reference rather than copying —
+ * so a caller that already holds the data in a typed array (cell-map's
+ * `AuxiliaryChannel`, whose `value` is exactly this shape) can hand it over
+ * for free. `Array.from()`-ing such a buffer into a boxed array was costing a
+ * whole-window allocation per window shift.
+ *
+ * Adoption means writes through this object land in the adopted buffer, and
+ * vice versa. That's intentional for the channel case (both sides write the
+ * same value to the same slot), but callers that need an independent copy must
+ * pass one: `new Array3Du32(size, new Uint32Array(source))`.
+ */
+export class Array3Du32 implements NumericArray3D {
+  size: Vector3D;
+  value: Uint32Array;
+  get width(): number {
+    return this.size.x;
+  }
+  get depth(): number {
+    return this.size.y;
+  }
+  get height(): number {
+    return this.size.z;
+  }
+  constructor(size: Vector3D, value: Uint32Array) {
+    const length = size.x * size.y * size.z;
+    if (value.length !== length) {
+      throw new Error(
+        `Array3Du32: buffer length (${value.length}) does not match size ` +
+          `${size.x}x${size.y}x${size.z} (${length})`,
+      );
+    }
+    this.size = size;
+    this.value = value;
+  }
+  /** Allocates a zero-filled (or `defaultValue`-filled) buffer of the given size. */
+  static allocate(size: Vector3D, defaultValue = 0): Array3Du32 {
+    const buffer = new Uint32Array(size.x * size.y * size.z);
+    if (defaultValue !== 0) buffer.fill(defaultValue);
+    return new Array3Du32(size, buffer);
+  }
+  set = (coordinates: Vector3D, v: number): void => {
+    this.value[
+      coordinates.z * this.size.y * this.size.x +
+        coordinates.y * this.size.x +
+        coordinates.x
+    ] = v;
+  };
+  indexSet = (i: number, v: number): void => {
+    this.value[i] = v;
+  };
+  get = (coordinates: Vector3D): number =>
+    this.value[
+      coordinates.z * this.size.y * this.size.x +
+        coordinates.y * this.size.x +
+        coordinates.x
+    ];
+  forEach = (
+    callback: (
+      cell: number,
+      x: number,
+      y: number,
+      z: number,
+      index: number,
+    ) => void,
+  ): void => {
+    const width = this.size.x;
+    const height = this.size.y;
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    let i = 0;
+    while (i < this.value.length) {
+      callback(this.value[i], x, y, z, i);
+      x += 1;
+      if (x >= width) {
+        y += 1;
+        x = 0;
+      }
+      if (y >= height) {
+        z += 1;
+        y = 0;
+      }
+      i += 1;
+    }
+  };
+  indexForEach = (callback: (cell: number, index: number) => void): void => {
+    let i = 0;
+    while (i < this.value.length) {
+      callback(this.value[i], i);
+      i += 1;
+    }
+  };
+}
+
 export class Array3Dc<T> {
   size: Vector3D;
   values: T[];
@@ -621,7 +737,10 @@ export class Array3Di {
   }
 
   constructor(
-    data: Array3D<number>,
+    // NumericArray3D, not Array3D<number>: only `size`, `value.length` and
+    // `value[i]` are read below, so a typed-array-backed source works as-is
+    // and doesn't have to be unpacked into a boxed array first.
+    data: NumericArray3D,
     bitWidth: 8 | 16 | 32 = 8,
     bitPackingConfig?: Array<1 | 2 | 4 | 8 | 16>,
     overflow: 'mod' | 'clamp' | 'fail' = 'mod',
@@ -985,7 +1104,10 @@ export class Array3Dic {
   }
 
   constructor(
-    data: Array3D<number>,
+    // NumericArray3D, not Array3D<number>: only `size`, `value.length` and
+    // `value[i]` are read below, so a typed-array-backed source works as-is
+    // and doesn't have to be unpacked into a boxed array first.
+    data: NumericArray3D,
     bitWidth: 8 | 16 | 32 = 8,
     bitPackingConfig?: Array<1 | 2 | 4 | 8 | 16>,
     overflow: 'mod' | 'clamp' | 'fail' = 'mod',

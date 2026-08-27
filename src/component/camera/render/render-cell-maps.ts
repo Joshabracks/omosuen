@@ -15,6 +15,7 @@ import {
 import { setVisionUniforms } from './vision-uniforms';
 import { sweepExploredChunks } from './explored-sweep';
 import { computeSolidityMap } from './visibility-mask';
+import { cellStoreGeneration } from './wasm';
 import { buildMaterialColorTable } from './material-color-table';
 import {
   isProfilingEnabled,
@@ -1036,6 +1037,7 @@ export function renderCellMaps(
   for (const cellMap of cellMaps) {
     let gpuUploadMs = 0;
     let emissionColorGpuUploadMs = 0;
+    let solidityGpuUploadMs = 0;
     // Build this frame's render/cull volume in world space: a plain
     // axis-aligned box centered on the camera, with independent half-extents
     // per world axis (halfIsoX/halfIsoY/halfIsoZ). This is deliberately NOT
@@ -1213,7 +1215,31 @@ export function renderCellMaps(
       // full mapX*mapY*mapZ pass per call: ~22ms each on a 224x140x224 window,
       // twice a frame.)
       const solidityMap = computeSolidityMap();
-      uploadVisibilityTexture(gl, camera, solidityMap, cellMap.mapSize);
+      // The upload -- a whole-window texImage3D, reallocating and re-sending
+      // the entire R8 array texture -- used to run unconditionally every
+      // frame, making it the only one of this pass's five window textures with
+      // no version gate. computeSolidityMap() itself stays unconditional: it's
+      // a flag read when nothing changed, and sweepExploredChunks below
+      // consumes the same buffer.
+      const generation = cellStoreGeneration();
+      const dims = camera.glResources.solidityDims;
+      if (
+        camera.glResources.solidityGeneration !== generation ||
+        !dims ||
+        dims.x !== cellMap.mapSize.x ||
+        dims.y !== cellMap.mapSize.y ||
+        dims.z !== cellMap.mapSize.z
+      ) {
+        const solidityT0 = profiling ? performance.now() : 0;
+        uploadVisibilityTexture(gl, camera, solidityMap, cellMap.mapSize);
+        camera.glResources.solidityGeneration = generation;
+        camera.glResources.solidityDims = {
+          x: cellMap.mapSize.x,
+          y: cellMap.mapSize.y,
+          z: cellMap.mapSize.z,
+        };
+        if (profiling) solidityGpuUploadMs += performance.now() - solidityT0;
+      }
       // Fog-of-war "explored" persistence: throttled per-source (a no-op
       // for sources that haven't crossed into a new chunk since last frame)
       // -- reuses this same solidity buffer, no extra WASM call.
@@ -1789,6 +1815,12 @@ export function renderCellMaps(
         cellMap.name,
         'cell-map:emissionColorGpuUpload',
         emissionColorGpuUploadMs,
+      );
+      recordComponentUpdate(
+        cellMap.id ?? -1,
+        cellMap.name,
+        'cell-map:solidityGpuUpload',
+        solidityGpuUploadMs,
       );
     }
   }

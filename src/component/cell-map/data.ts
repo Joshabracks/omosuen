@@ -6,7 +6,8 @@ import {
   DeserializationError,
   DeserializeResult,
 } from '../types';
-import { Array3D, Array3Di, Vector3D } from '../../math';
+import { Array3D, Array3Di, Array3Du32, Vector3D } from '../../math';
+import type { NumericArray3D } from '../../math';
 import {
   Material,
   Mesh,
@@ -72,7 +73,7 @@ export let cmEmissionMap: Array3D<number>;
  * 0 = black = no highlight). Sampled GPU-side as a texture keyed by cell coordinate,
  * so — unlike emissionMap (baked into vertices) — changing it needs no remesh.
  */
-export let cmEmissionColorMap: Array3D<number>;
+export let cmEmissionColorMap: NumericArray3D;
 /**
  * Monotonic counter, bumped on every in-window `setEmissionColor` write and
  * on every full invalidation (window shift, or dirty-log cap overflow).
@@ -95,6 +96,17 @@ export let cmEmissionColorFullVersion: number = 0;
  */
 export let cmEmissionColorDirtyRegions: CellEmissionColorDirtyRegion[] = [];
 /**
+ * Whether the emission channel was entirely at baseline (all black) the last
+ * time `syncAuxiliaryFields` ran, plus the window cell count at that point.
+ * Together these let a sync skip the version bump when the map is provably
+ * bit-identical to what cameras already hold -- see the skip's reasoning in
+ * `syncAuxiliaryFields`. Module-level rather than `CellMapT` fields
+ * deliberately: they're internal sync bookkeeping with no consumer outside
+ * this file, so they stay out of `PROPERTY_ALLOWLIST`.
+ */
+let cmEmissionColorSyncedBaseline = false;
+let cmEmissionColorSyncedCellCount = -1;
+/**
  * Chunk-level fog-of-war "explored" state: one flag per chunk (has any
  * vision source ever seen into this chunk), backed by `cmExploredChannel`
  * (an `AuxiliaryChannel` constructed with `chunkSize: {x:1,y:1,z:1}` so its
@@ -102,7 +114,7 @@ export let cmEmissionColorDirtyRegions: CellEmissionColorDirtyRegion[] = [];
  * `syncExploredField`/`makeAuxiliaryOnReassemble`). Sized to the resident
  * window's CHUNK-GRID dims (`cmChunkGridSize`), not cell dims.
  */
-export let cmExploredMap: Array3D<number>;
+export let cmExploredMap: NumericArray3D;
 /**
  * Monotonic counter, bumped on every in-window `setChunkExplored` write and
  * on every full invalidation (window shift, or dirty-log cap overflow).
@@ -137,7 +149,7 @@ export let cmExploredDirtyRegions: ChunkExploredDirtyRegion[] = [];
  * index 0 is itself a legitimate captured value, same reasoning as
  * `cmMemoryMaterialMap`'s sentinel.
  */
-export let cmFarMaterialMap: Array3D<number>;
+export let cmFarMaterialMap: NumericArray3D;
 /**
  * Monotonic counter, bumped on every in-window `setChunkFarMaterial` write
  * (that actually changes the stored value) and on every full invalidation
@@ -171,7 +183,7 @@ export let cmFarMaterialDirtyRegions: ChunkExploredDirtyRegion[] = [];
  * sentinel the way `cmEmissionColorMap`'s baseline `0` (= black = no
  * highlight) can.
  */
-export let cmMemoryMaterialMap: Array3D<number>;
+export let cmMemoryMaterialMap: NumericArray3D;
 /**
  * Monotonic counter, bumped on every in-window `setCellMemoryMaterial` write
  * (that actually changes the stored value) and on every full invalidation
@@ -398,6 +410,8 @@ export function resetCellMapState(): void {
   cmEmissionColorVersion = 0;
   cmEmissionColorFullVersion = 0;
   cmEmissionColorDirtyRegions = [];
+  cmEmissionColorSyncedBaseline = false;
+  cmEmissionColorSyncedCellCount = -1;
   cmExploredMap = undefined!;
   cmExploredVersion = 0;
   cmExploredFullVersion = 0;
@@ -911,7 +925,7 @@ export interface CellMapT extends ComponentData {
   meshes: Mesh[];
   emissionMap: Array3D<number>;
   /** Per-cell emission (highlight) color, packed (r<<16)|(g<<8)|b. 0 = no highlight. */
-  emissionColorMap: Array3D<number>;
+  emissionColorMap: NumericArray3D;
   /** Monotonic version; see cmEmissionColorVersion. */
   emissionColorVersion: number;
   /** Full-reupload threshold; see cmEmissionColorFullVersion. */
@@ -919,7 +933,7 @@ export interface CellMapT extends ComponentData {
   /** Per-cell dirty log for delta GPU uploads; see cmEmissionColorDirtyRegions. */
   emissionColorDirtyRegions: CellEmissionColorDirtyRegion[];
   /** Chunk-level fog-of-war "explored" state (one flag per chunk); see cmExploredMap. */
-  exploredMap: Array3D<number>;
+  exploredMap: NumericArray3D;
   /** Monotonic version; see cmExploredVersion. */
   exploredVersion: number;
   /** Full-reupload threshold; see cmExploredFullVersion. */
@@ -927,7 +941,7 @@ export interface CellMapT extends ComponentData {
   /** Per-chunk dirty log for delta GPU uploads; see cmExploredDirtyRegions. */
   exploredDirtyRegions: ChunkExploredDirtyRegion[];
   /** Far-tier per-chunk representative material (separate from exploredMap's binary flag); see cmFarMaterialMap. */
-  farMaterialMap: Array3D<number>;
+  farMaterialMap: NumericArray3D;
   /** Monotonic version; see cmFarMaterialVersion. */
   farMaterialVersion: number;
   /** Full-reupload threshold; see cmFarMaterialFullVersion. */
@@ -935,7 +949,7 @@ export interface CellMapT extends ComponentData {
   /** Per-chunk dirty log for delta GPU uploads; see cmFarMaterialDirtyRegions. */
   farMaterialDirtyRegions: ChunkExploredDirtyRegion[];
   /** Near-tier per-cell captured-material snapshot; see cmMemoryMaterialMap. */
-  memoryMaterialMap: Array3D<number>;
+  memoryMaterialMap: NumericArray3D;
   /** Monotonic version; see cmMemoryMaterialVersion. */
   memoryMaterialVersion: number;
   /** Full-reupload threshold; see cmMemoryMaterialFullVersion. */
@@ -1681,6 +1695,14 @@ function chunkDenseArrayIntoColdStorage(
  * `mesh-builder.ts` hands WASM a buffer sized for the old (smaller) window
  * while claiming the new cell count, an out-of-bounds read that traps.
  */
+/** `Array.prototype.some(v => v !== 0)` over an `ArrayLike`. */
+function hasNonZero(values: ArrayLike<number>): boolean {
+  for (let i = 0; i < values.length; i++) {
+    if (values[i] !== 0) return true;
+  }
+  return false;
+}
+
 function syncAuxiliaryFields(
   emissionChannel: AuxiliaryChannel,
   smoothingChannel: AuxiliaryChannel,
@@ -1690,24 +1712,58 @@ function syncAuxiliaryFields(
 ): void {
   const dims = new Vector3D(cellDims.x, cellDims.y, cellDims.z);
 
-  const emissionArr = new Array3D<number>(dims, 0);
-  emissionArr.value = Array.from(emissionChannel.value);
-  cmEmissionColorMap = emissionArr;
-  cmEmissionColorVersion++;
-  cmEmissionColorFullVersion = cmEmissionColorVersion;
-  cmEmissionColorDirtyRegions = [];
+  // Adopts each channel's resident buffer by reference rather than copying it
+  // out -- `Array.from(channel.value)` used to unbox a whole-window
+  // `Uint32Array` into a plain `Array<number>` here, which on a shift commit
+  // was the single largest allocation of the frame. `AuxiliaryChannel.set`
+  // and the map's own `set` write the same value to the same slot (see
+  // `setEmissionColor` in methods.ts), so sharing the buffer is what the two
+  // copies already meant.
+  //
+  // Must be re-wrapped on EVERY sync, never cached: `onWindowChange` replaces
+  // the channel's `resident` array outright, so a wrapper held across a shift
+  // would silently keep writing into the pre-shift buffer.
+  cmEmissionColorMap = new Array3Du32(dims, emissionChannel.value);
+  // An all-baseline channel at unchanged dims is bit-identical to what every
+  // camera already holds, so bumping here would force each one through a full
+  // whole-window rebuild + texImage3D for no content change. Skipping the bump
+  // is only safe when the channel was ALSO entirely baseline at the previous
+  // sync -- otherwise a camera still holds pre-shift content that has to be
+  // replaced. `isEntirelyBaseline` is conservative (any write marks the chunk
+  // touched, even one that writes the baseline value itself), so it never
+  // returns a false positive here.
+  const emissionBaseline = emissionChannel.isEntirelyBaseline;
+  const emissionUnchanged =
+    emissionBaseline &&
+    cmEmissionColorSyncedBaseline &&
+    cmEmissionColorSyncedCellCount === emissionChannel.value.length;
+  cmEmissionColorSyncedBaseline = emissionBaseline;
+  cmEmissionColorSyncedCellCount = emissionChannel.value.length;
+  if (!emissionUnchanged) {
+    cmEmissionColorVersion++;
+    cmEmissionColorFullVersion = cmEmissionColorVersion;
+    cmEmissionColorDirtyRegions = [];
+  }
 
-  const memoryMaterialArr = new Array3D<number>(dims, 0xffff);
-  memoryMaterialArr.value = Array.from(memoryMaterialChannel.value);
-  cmMemoryMaterialMap = memoryMaterialArr;
+  // Deliberately NOT given the same baseline skip as emission above. Emission
+  // has an explicit `u_hasCellEmissionColor` shader gate, so a camera that
+  // never uploads simply doesn't sample it; memory-material has no such gate
+  // and its baseline is a sentinel (0xffff = "nothing captured"), so a camera
+  // left with a null/never-uploaded texture would sample 0 and read it as
+  // material 0 instead. It also diverges almost immediately under active
+  // fog-of-war, so the skip would rarely fire anyway.
+  cmMemoryMaterialMap = new Array3Du32(dims, memoryMaterialChannel.value);
   cmMemoryMaterialVersion++;
   cmMemoryMaterialFullVersion = cmMemoryMaterialVersion;
   cmMemoryMaterialDirtyRegions = [];
 
   if (smoothingChannel.canDiverge || forceSmoothingReassign) {
-    const weightsArr = new Array3D<number>(dims, 8);
-    weightsArr.value = Array.from(smoothingChannel.value);
-    cmSmoothingWeights = new Array3Di(weightsArr, 8, [4, 4], 'clamp');
+    cmSmoothingWeights = new Array3Di(
+      new Array3Du32(dims, smoothingChannel.value),
+      8,
+      [4, 4],
+      'clamp',
+    );
   }
 }
 
@@ -1731,16 +1787,18 @@ function syncExploredField(
   chunkGridDims: { x: number; y: number; z: number },
 ): void {
   const dims = new Vector3D(chunkGridDims.x, chunkGridDims.y, chunkGridDims.z);
-  const exploredArr = new Array3D<number>(dims, 0);
-  exploredArr.value = Array.from(exploredChannel.value);
-  cmExploredMap = exploredArr;
+  // Zero-copy adoption, same as `syncAuxiliaryFields` -- see its comment for
+  // why the wrapper must be rebuilt on every sync rather than cached. These
+  // two channels are chunk-granular (one entry per CHUNK, not per cell), so
+  // the buffers here are ~1/20000th the size of the cell-granular ones and
+  // the copy was never the expensive part; adopting keeps the two sync paths
+  // written the same way rather than leaving one on the old idiom.
+  cmExploredMap = new Array3Du32(dims, exploredChannel.value);
   cmExploredVersion++;
   cmExploredFullVersion = cmExploredVersion;
   cmExploredDirtyRegions = [];
 
-  const farMaterialArr = new Array3D<number>(dims, 0xffff);
-  farMaterialArr.value = Array.from(farMaterialChannel.value);
-  cmFarMaterialMap = farMaterialArr;
+  cmFarMaterialMap = new Array3Du32(dims, farMaterialChannel.value);
   cmFarMaterialVersion++;
   cmFarMaterialFullVersion = cmFarMaterialVersion;
   cmFarMaterialDirtyRegions = [];
@@ -2457,7 +2515,9 @@ function serialize(component: ComponentData): any {
     // Per-cell emission color lives outside the packed WASM cell store (it's a
     // separate texture-side channel), so persist it as its own flat RGB-int array.
     // Omitted when entirely black (0) to keep legacy scenes byte-identical.
-    emissionColorData: cm.emissionColorMap.value.some((v) => v !== 0)
+    // `.value` is ArrayLike (it may be a typed array now, see NumericArray3D),
+    // so this is an explicit loop rather than `.some()`.
+    emissionColorData: hasNonZero(cm.emissionColorMap.value)
       ? Array.from(cm.emissionColorMap.value)
       : undefined,
     // Off-window emission-color highlights that diverge from baseline.

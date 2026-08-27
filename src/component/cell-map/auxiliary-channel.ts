@@ -299,6 +299,30 @@ export class AuxiliaryChannel {
     },
   ): void {
     const newTotal = next.cellDims.x * next.cellDims.y * next.cellDims.z;
+
+    // Fast path: a channel with nothing in cold storage and nothing touched
+    // since baseline is uniformly `baselineValue` everywhere, so the window's
+    // new contents are that same constant no matter how it moved -- there is
+    // nothing to evict and nothing to carry across. Skips the assembly loop
+    // below, which otherwise allocates a fresh `Uint32Array` per chunk (via
+    // `extractChunk`) for every chunk in the window on every shift. This is
+    // the normal state of the smoothing channel (no live per-cell setter at
+    // all) and of the emission channel until something is actually
+    // highlighted. `isEntirelyBaseline` is conservative -- `set` records a
+    // touch even when writing the baseline value itself -- so it can't
+    // wrongly claim a diverged channel is clean.
+    if (this.isEntirelyBaseline) {
+      if (this.resident.length !== newTotal) {
+        this.resident = new Uint32Array(newTotal).fill(this.baselineValue);
+      } else {
+        this.resident.fill(this.baselineValue);
+      }
+      this.currentOrigin = next.origin;
+      this.currentGridDims = next.gridDims;
+      this.currentCellDims = next.cellDims;
+      return;
+    }
+
     const newResident = new Uint32Array(newTotal);
 
     if (old.origin && this.touchedSinceBaseline) {

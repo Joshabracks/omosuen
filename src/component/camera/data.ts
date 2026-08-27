@@ -190,6 +190,15 @@ export interface CameraT
 
     // Cell solidity texture for per-fragment line-of-sight raycasting
     visibilityTexture: WebGLTexture | null;
+    // cellStoreGeneration() as of the last visibilityTexture upload, plus the
+    // window dims it was sized to. Terrain changes far less often than once a
+    // frame, so comparing these lets the whole-window texImage3D be skipped on
+    // most frames. -1 = nothing uploaded yet. The dims are part of the key
+    // because a window RESIZE needs a fresh allocation even when contents are
+    // untouched -- uploading new dims into the old allocation is exactly the
+    // "ArrayBufferView not big enough" hazard the windowCommitted gate guards.
+    solidityGeneration: number;
+    solidityDims: { x: number; y: number; z: number } | null;
 
     // Per-cell emission (highlight) color texture (RGBA8, flattened cell grid).
     cellEmissionColorTexture: WebGLTexture | null;
@@ -292,6 +301,8 @@ export function builder(options: CameraOptions): CameraT {
       fullscreenQuadBuffer: null,
       baseResolution: { width: 800, height: 600 }, // Default, will be updated in init()
       visibilityTexture: null,
+      solidityGeneration: -1,
+      solidityDims: null,
       cellEmissionColorTexture: null,
       cellEmissionColorHasAny: false,
       cellEmissionColorVersion: -1,

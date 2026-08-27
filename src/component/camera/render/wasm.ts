@@ -31,6 +31,7 @@ interface RenderExports {
   store_flush: () => void;
   store_expanded_ptr: () => number;
   store_expanded_len: () => number;
+  store_generation: () => number;
   // Visibility
   solidity_run: () => number;
   // Meshing
@@ -210,6 +211,17 @@ let solidityView: Uint8Array | null = null;
 let solidityPtr = -1;
 let solidityBuffer: ArrayBufferLike | null = null;
 let solidityLen = -1;
+
+/**
+ * Monotonic counter over changes to cell CONTENTS (single-cell writes and bulk
+ * loads), for callers holding something derived from the store that they'd
+ * rather not rebuild when nothing changed. Deliberately unaffected by
+ * `cellStoreFlush()`, which re-encodes identical contents. Wraps on overflow;
+ * only ever compare for inequality, never ordering.
+ */
+export function cellStoreGeneration(): number {
+  return ex().store_generation();
+}
 
 /**
  * Computes the solidity map (0/255 per cell) from the resident store and returns

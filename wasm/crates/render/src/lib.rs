@@ -135,6 +135,14 @@ struct CellStore {
     /// same data, so anything that invalidates one invalidates the other.
     solidity: Vec<u8>,
     solidity_valid: bool,
+    /// Monotonic counter bumped on every change to cell CONTENTS -- single-cell
+    /// writes (`set`) and bulk loads (`store_load`). Deliberately NOT bumped by
+    /// `flush`/`compress_from`, which re-encode the same contents into different
+    /// RLE runs; a consumer keyed on this must not be forced to re-read for a
+    /// pure encoding change. Lets JS skip re-uploading the whole-window solidity
+    /// texture on frames where terrain didn't change, which is nearly all of
+    /// them (see `uploadVisibilityTexture` in render-cell-maps.ts).
+    generation: u32,
 }
 
 impl CellStore {
@@ -150,6 +158,7 @@ impl CellStore {
             expanded_valid: false,
             solidity: Vec::new(),
             solidity_valid: false,
+            generation: 0,
         }
     }
 
@@ -216,6 +225,7 @@ impl CellStore {
     }
 
     fn set(&mut self, idx: usize, packed: u32) {
+        self.generation = self.generation.wrapping_add(1);
         self.dirty.insert(idx, packed);
         // `expanded` and `solidity` are per-cell derived views, so a single-cell
         // write can be applied to them directly. Dropping them instead would
@@ -334,6 +344,18 @@ pub extern "C" fn store_load(mx: usize, my: usize, mz: usize) {
         store.dims = [mx, my, mz];
         store.total = total;
         store.compress_from(&input[..total]);
+        // `input` IS the expanded form of what was just compressed, so seed the
+        // expanded cache from it instead of letting compress_from's blanket
+        // invalidation force a full RLE decompress on the very next read. That
+        // read happens later in the SAME frame on a window shift (the render
+        // pass calls solidity_run/store_expanded_ptr right after committing),
+        // so this trades a memcpy for a whole-window decompress loop.
+        // `solidity_valid` stays false -- rebuilding it is lazy, and a frame
+        // that never asks for solidity shouldn't pay for it.
+        store.expanded.clear();
+        store.expanded.extend_from_slice(&input[..total]);
+        store.expanded_valid = true;
+        store.generation = store.generation.wrapping_add(1);
     }
 }
 
@@ -375,6 +397,16 @@ pub extern "C" fn store_expanded_ptr() -> *const u32 {
 #[no_mangle]
 pub extern "C" fn store_expanded_len() -> usize {
     unsafe { (*core::ptr::addr_of!(STORE)).total }
+}
+
+/// Monotonic counter over changes to cell CONTENTS -- see `CellStore::generation`.
+/// A caller that cached anything derived from the store (JS caches the uploaded
+/// solidity texture) can compare this against the value it last saw to decide
+/// whether the derived copy is still current. Wraps on overflow, which is
+/// harmless: consumers only ever test for inequality.
+#[no_mangle]
+pub extern "C" fn store_generation() -> u32 {
+    unsafe { (*core::ptr::addr_of!(STORE)).generation }
 }
 
 // ── Visibility (solidity) ──────────────────────────────────────────────────

@@ -804,13 +804,6 @@ function refillNearMaterialSlab(
   return endZ;
 }
 
-function buildNearMaterialBytes(cellMap: CellMapT): Uint8Array {
-  const values = cellMap.memoryMaterialMap.value;
-  const bytes = new Uint8Array(values.length);
-  for (let i = 0; i < values.length; i++) bytes[i] = materialTexel(values[i]);
-  return bytes;
-}
-
 function uploadNearMaterialTexture(
   gl: WebGL2RenderingContext,
   camera: CameraT,
@@ -1331,6 +1324,8 @@ export function renderCellMaps(
     let emissionColorGpuUploadMs = 0;
     let solidityGpuUploadMs = 0;
     let memoryTexUploadMs = 0;
+    let bufferCleanupMs = 0;
+    let drawLoopMs = 0;
     // Build this frame's render/cull volume in world space: a plain
     // axis-aligned box centered on the camera, with independent half-extents
     // per world axis (halfIsoX/halfIsoY/halfIsoZ). This is deliberately NOT
@@ -1444,9 +1439,23 @@ export function renderCellMaps(
     // drain and actually delete their GPU buffers here, once per cell-map
     // per frame, regardless of which path produced them (this component has
     // no GL context of its own, see reassembleChunks in cell-map/data.ts).
+    // Timed separately: a commit evicts a whole chunk slab at once, so this
+    // can be hundreds of gl.deleteBuffer calls on exactly the frame that can
+    // least afford them -- and it sat unattributed inside the render phase.
+    const cleanupT0 = profiling ? performance.now() : 0;
+    let deletedBuffers = 0;
     for (const chunk of CellMap.takePendingBufferCleanup(cellMap)) {
-      if (chunk.glVertexBuffer) gl.deleteBuffer(chunk.glVertexBuffer);
-      if (chunk.glIndexBuffer) gl.deleteBuffer(chunk.glIndexBuffer);
+      if (chunk.glVertexBuffer) {
+        gl.deleteBuffer(chunk.glVertexBuffer);
+        deletedBuffers++;
+      }
+      if (chunk.glIndexBuffer) {
+        gl.deleteBuffer(chunk.glIndexBuffer);
+        deletedBuffers++;
+      }
+    }
+    if (profiling && deletedBuffers > 0) {
+      bufferCleanupMs += performance.now() - cleanupT0;
     }
 
     // Rebuild any dirty chunks -- but not on the frame a window shift just
@@ -1825,6 +1834,7 @@ export function renderCellMaps(
     // exact bounds via a plain AABB-vs-AABB overlap test (the volume is
     // axis-aligned, so this is exact, not an approximation).
     const origin = cellMap.window.origin;
+    const drawLoopT0 = profiling ? performance.now() : 0;
     if (origin) {
       const gridDims = cellMap.chunkGridSize;
       const candidateRange = chunkCandidateRange(
@@ -2168,6 +2178,7 @@ export function renderCellMaps(
         }
       }
     }
+    if (profiling) drawLoopMs = performance.now() - drawLoopT0;
 
     if (profiling) {
       recordComponentUpdate(
@@ -2193,6 +2204,18 @@ export function renderCellMaps(
         cellMap.name,
         'cell-map:memoryTexUpload',
         memoryTexUploadMs,
+      );
+      recordComponentUpdate(
+        cellMap.id ?? -1,
+        cellMap.name,
+        'cell-map:bufferCleanup',
+        bufferCleanupMs,
+      );
+      recordComponentUpdate(
+        cellMap.id ?? -1,
+        cellMap.name,
+        'cell-map:drawLoop',
+        drawLoopMs,
       );
     }
   }

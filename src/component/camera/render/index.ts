@@ -10,6 +10,10 @@ import { renderSprites } from './render-sprites';
 import { renderPostProcess } from './post-process';
 import { renderCellMaps, snapCameraPosition } from './render-cell-maps';
 import { uploadAtlasTextures, uploadAtlasDelta } from './atlas-textures';
+import {
+  isProfilingEnabled,
+  recordComponentUpdate,
+} from '../../../loop/profile';
 
 const EMPTY_TEXTURE_MAP_CACHE: Map<string, TextureMapT> = new Map();
 
@@ -207,9 +211,18 @@ export function render(camera: CameraT, _deltaTime: number): void {
     });
   }
 
+  // The loop's `render` phase is one opaque bucket, and the cell-map sub-
+  // timings inside renderCellMaps only cover its streaming/upload work -- not
+  // the draw loop, and nothing in post-process or sprites at all. Timing the
+  // three stages here closes that gap, so a spike frame's `render` total can
+  // be fully accounted for rather than leaving a large unattributed remainder.
+  const profiling = isProfilingEnabled();
+  const cameraId = camera.id ?? -1;
+
   // Render cell-maps FIRST (before sprites) with depth writes enabled
   // This populates the depth buffer with solid geometry
   if (cellMaps.length > 0) {
+    const t0 = profiling ? performance.now() : 0;
     renderCellMaps(
       camera,
       cellMaps,
@@ -224,12 +237,30 @@ export function render(camera: CameraT, _deltaTime: number): void {
       cosYaw,
       sinYaw,
     );
+    if (profiling) {
+      recordComponentUpdate(
+        cameraId,
+        camera.name,
+        'camera:renderCellMaps',
+        performance.now() - t0,
+      );
+    }
   }
 
   // PHASE 2: Post-process cells to screen with pixel-perfect upscaling
+  const postT0 = profiling ? performance.now() : 0;
   renderPostProcess(camera, viewport, gl, subPixelOffset);
+  if (profiling) {
+    recordComponentUpdate(
+      cameraId,
+      camera.name,
+      'camera:postProcess',
+      performance.now() - postT0,
+    );
+  }
 
   // PHASE 3: Render sprites directly to screen at full resolution (no pixelation)
+  const spritesT0 = profiling ? performance.now() : 0;
   if (sprites.length > 0) {
     renderSprites(
       camera,
@@ -247,6 +278,14 @@ export function render(camera: CameraT, _deltaTime: number): void {
       heightScale,
       cosYaw,
       sinYaw,
+    );
+  }
+  if (profiling) {
+    recordComponentUpdate(
+      cameraId,
+      camera.name,
+      'camera:renderSprites',
+      performance.now() - spritesT0,
     );
   }
 }

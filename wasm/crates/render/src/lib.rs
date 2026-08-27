@@ -135,6 +135,18 @@ struct CellStore {
     /// same data, so anything that invalidates one invalidates the other.
     solidity: Vec<u8>,
     solidity_valid: bool,
+    /// Whether `values`/`counts`/`cumulative` currently describe the store's
+    /// contents.
+    ///
+    /// The RLE is no longer rebuilt on every bulk load: `store_load` is handed
+    /// an already-expanded buffer, and reads are served from `expanded`, so
+    /// compressing on the spot walked every cell to build runs nobody was going
+    /// to look at. It is now produced on demand by `ensure_rle`.
+    ///
+    /// INVARIANT: `expanded_valid || rle_valid` is always true. One of the two
+    /// must be able to answer a read. Every site that clears one is responsible
+    /// for establishing the other first.
+    rle_valid: bool,
     /// Monotonic counter bumped on every change to cell CONTENTS -- single-cell
     /// writes (`set`) and bulk loads (`store_load`). Deliberately NOT bumped by
     /// `flush`/`compress_from`, which re-encode the same contents into different
@@ -158,6 +170,9 @@ impl CellStore {
             expanded_valid: false,
             solidity: Vec::new(),
             solidity_valid: false,
+            // An empty store has an empty (and therefore trivially accurate)
+            // RLE, which satisfies the invariant before anything is loaded.
+            rle_valid: true,
             generation: 0,
         }
     }
@@ -196,6 +211,29 @@ impl CellStore {
         self.dirty.clear();
         self.expanded_valid = false;
         self.solidity_valid = false;
+        self.rle_valid = true;
+    }
+
+    /// Rebuilds the RLE from `expanded` if it has gone stale, preserving the
+    /// other derived views' validity across `compress_from`'s blanket
+    /// invalidation (same trick `flush` uses).
+    ///
+    /// Clearing `dirty` is correct here for the same reason it is in `flush`:
+    /// `expanded` already has every dirty write applied (`ensure_expanded`
+    /// folds them in, and `set` patches it directly), so the freshly built runs
+    /// encode them too.
+    fn ensure_rle(&mut self) {
+        if self.rle_valid {
+            return;
+        }
+        self.ensure_expanded();
+        let expanded_was_valid = self.expanded_valid;
+        let solidity_was_valid = self.solidity_valid;
+        let flat = core::mem::take(&mut self.expanded);
+        self.compress_from(&flat);
+        self.expanded = flat;
+        self.expanded_valid = expanded_was_valid;
+        self.solidity_valid = solidity_was_valid;
     }
 
     fn coord_index(&self, x: usize, y: usize, z: usize) -> usize {
@@ -206,6 +244,19 @@ impl CellStore {
         if let Some(&v) = self.dirty.get(&idx) {
             return v;
         }
+        // Serve from the expanded cache whenever it is current: O(1) instead of
+        // the binary search below, and after a bulk load it is always current.
+        // Out-of-range reads return 0, matching what the search does when it
+        // finds no run covering the index.
+        if self.expanded_valid {
+            return if idx < self.expanded.len() {
+                self.expanded[idx]
+            } else {
+                0
+            };
+        }
+        // Only reachable when `expanded` has been dropped, which the invariant
+        // guarantees leaves a valid RLE behind.
         let target = idx as u32;
         let mut left: i64 = 0;
         let mut right: i64 = self.values.len() as i64 - 1;
@@ -226,12 +277,12 @@ impl CellStore {
 
     fn set(&mut self, idx: usize, packed: u32) {
         self.generation = self.generation.wrapping_add(1);
-        self.dirty.insert(idx, packed);
         // `expanded` and `solidity` are per-cell derived views, so a single-cell
         // write can be applied to them directly. Dropping them instead would
         // make one edited cell cost a full mapX*mapY*mapZ rebuild on the next
         // read -- 7M cells for a typical windowed map.
         if idx < self.total {
+            self.dirty.insert(idx, packed);
             if self.expanded_valid {
                 self.expanded[idx] = packed;
             }
@@ -239,10 +290,17 @@ impl CellStore {
                 self.solidity[idx] = solid_byte(packed);
             }
         } else {
-            // Out-of-range index: can't patch, so fall back to invalidation
-            // (the write still lands in `dirty` exactly as before).
+            // Out-of-range index: can't patch the derived views, so drop them.
+            // The RLE has to be rebuilt FIRST -- since `store_load` now leaves
+            // it stale, dropping `expanded` without it would leave no valid
+            // source for any later read, breaking the invariant. `ensure_rle`
+            // clears `dirty`, so the write is recorded after it rather than
+            // before, keeping the pre-existing behaviour that an out-of-range
+            // write still lands in `dirty`.
+            self.ensure_rle();
             self.expanded_valid = false;
             self.solidity_valid = false;
+            self.dirty.insert(idx, packed);
         }
         if self.total > 0
             && (self.dirty.len() as f64) / (self.total as f64) >= FLUSH_THRESHOLD
@@ -272,6 +330,11 @@ impl CellStore {
         if self.expanded_valid {
             return;
         }
+        // The RLE is the only other source, so the invariant must hold here.
+        debug_assert!(
+            self.rle_valid,
+            "ensure_expanded with neither expanded nor RLE valid",
+        );
         self.expanded.clear();
         self.expanded.resize(self.total, 0);
         let mut idx = 0usize;
@@ -284,7 +347,14 @@ impl CellStore {
             }
         }
         for (&i, &val) in &self.dirty {
-            self.expanded[i] = val;
+            // `set` deliberately keeps out-of-range writes in `dirty` so
+            // `get_index` can still return them, but they have no slot in the
+            // expanded buffer -- indexing blindly here panics (an `unreachable`
+            // trap in wasm, surfacing as an opaque RuntimeError at whatever
+            // JS call happened to trigger the rebuild).
+            if i < self.expanded.len() {
+                self.expanded[i] = val;
+            }
         }
         self.expanded_valid = true;
     }
@@ -343,18 +413,29 @@ pub extern "C" fn store_load(mx: usize, my: usize, mz: usize) {
         let store = &mut *core::ptr::addr_of_mut!(STORE);
         store.dims = [mx, my, mz];
         store.total = total;
-        store.compress_from(&input[..total]);
-        // `input` IS the expanded form of what was just compressed, so seed the
-        // expanded cache from it instead of letting compress_from's blanket
-        // invalidation force a full RLE decompress on the very next read. That
-        // read happens later in the SAME frame on a window shift (the render
-        // pass calls solidity_run/store_expanded_ptr right after committing),
-        // so this trades a memcpy for a whole-window decompress loop.
-        // `solidity_valid` stays false -- rebuilding it is lazy, and a frame
-        // that never asks for solidity shouldn't pay for it.
+        // `input` already IS the expanded form, so seed the cache from it and
+        // DEFER the RLE. Compressing here walked every cell building runs that
+        // reads never consult -- `get_index` answers from `expanded`, and the
+        // only consumer of the compact form is `ensure_rle`'s rare fallback. On
+        // a window-shift commit this was a whole-window pass on the frame least
+        // able to afford one.
+        //
+        // The stale runs are dropped rather than left lying around: nothing may
+        // read them while `rle_valid` is false, and freeing them keeps the
+        // store from holding both representations at full size.
         store.expanded.clear();
         store.expanded.extend_from_slice(&input[..total]);
         store.expanded_valid = true;
+        store.values.clear();
+        store.counts.clear();
+        store.cumulative.clear();
+        store.rle_valid = false;
+        // Everything compress_from used to reset on our behalf. `dirty` in
+        // particular MUST be cleared -- entries from the previous contents
+        // would otherwise shadow the newly loaded cells in `get_index`.
+        store.dirty.clear();
+        // Lazy, as before: a frame that never asks for solidity shouldn't pay.
+        store.solidity_valid = false;
         store.generation = store.generation.wrapping_add(1);
     }
 }

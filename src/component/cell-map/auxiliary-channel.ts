@@ -24,36 +24,28 @@ function chunkKey(cx: number, cy: number, cz: number): string {
   return `${cx},${cy},${cz}`;
 }
 
-/** Whether `worldChunk` falls inside the `gridDims`-sized window starting at `origin`. */
-function isWithin(
-  worldChunk: ChunkCoord,
-  origin: ChunkCoord,
-  gridDims: { x: number; y: number; z: number },
-): boolean {
-  return (
-    worldChunk.cx >= origin.cx &&
-    worldChunk.cx < origin.cx + gridDims.x &&
-    worldChunk.cy >= origin.cy &&
-    worldChunk.cy < origin.cy + gridDims.y &&
-    worldChunk.cz >= origin.cz &&
-    worldChunk.cz < origin.cz + gridDims.z
-  );
-}
-
-/** Extracts one chunk's cells (at chunk-grid position cx,cy,cz) from a dense
- *  flat array of the given cell dims, in chunk-local (0..chunkSize) order.
- *  Mirrors `CellWindow`'s private `extractChunk` exactly. */
-function extractChunk(
+/**
+ * Extracts one chunk's cells (at chunk-grid position cx,cy,cz) from a dense
+ * flat array of the given cell dims, into a caller-owned buffer, in chunk-local
+ * (0..chunkSize) order. Mirrors `CellWindow`'s private `extractChunk`, except
+ * that the destination is supplied rather than allocated: the eviction pass
+ * runs this for a whole boundary slab per channel per commit, so allocating a
+ * result each time meant thousands of short-lived typed arrays on the frame
+ * least able to afford the garbage.
+ *
+ * `out` must be at least `chunkSize.x*y*z` long; only that prefix is written.
+ */
+function extractChunkInto(
+  out: Uint32Array,
   flat: Uint32Array,
   cx: number,
   cy: number,
   cz: number,
   dims: { x: number; y: number },
   chunkSize: { x: number; y: number; z: number },
-): Uint32Array {
+): void {
   const { x: csx, y: csy, z: csz } = chunkSize;
   const { x: dimX, y: dimY } = dims;
-  const out = new Uint32Array(csx * csy * csz);
   const baseX = cx * csx;
   const baseY = cy * csy;
   const baseZ = cz * csz;
@@ -65,7 +57,23 @@ function extractChunk(
       idx += csx;
     }
   }
-  return out;
+}
+
+/**
+ * Shared scratch for the eviction pass's chunk extraction. Module-scope rather
+ * than per-channel: `onWindowChange` runs the channels one after another and
+ * never holds the buffer across calls, so one is enough for all of them.
+ */
+let evictionScratchBuffer: Uint32Array | null = null;
+
+function evictionScratch(length: number): Uint32Array {
+  if (
+    evictionScratchBuffer === null ||
+    evictionScratchBuffer.length !== length
+  ) {
+    evictionScratchBuffer = new Uint32Array(length);
+  }
+  return evictionScratchBuffer;
 }
 
 /** Writes one chunk's cells into a dense flat array of the given cell dims
@@ -383,19 +391,74 @@ export class AuxiliaryChannel {
       newResident = new Uint32Array(newTotal);
     }
 
+    const { x: csx, y: csy, z: csz } = this.chunkSize;
+
+    // The overlap in WORLD chunk coordinates, half-open. Computed once and used
+    // by both chunk loops below and by the cell-space memcpy further down --
+    // `cellDims === gridDims * chunkSize` holds on every construction and
+    // resize path, so the chunk-space and cell-space overlaps describe the same
+    // region and the cell bounds are just these scaled by chunkSize.
+    const ovMinCx = old.origin
+      ? Math.max(old.origin.cx, next.origin.cx)
+      : next.origin.cx;
+    const ovMaxCx = old.origin
+      ? Math.min(
+          old.origin.cx + old.gridDims.x,
+          next.origin.cx + next.gridDims.x,
+        )
+      : next.origin.cx;
+    const ovMinCy = old.origin
+      ? Math.max(old.origin.cy, next.origin.cy)
+      : next.origin.cy;
+    const ovMaxCy = old.origin
+      ? Math.min(
+          old.origin.cy + old.gridDims.y,
+          next.origin.cy + next.gridDims.y,
+        )
+      : next.origin.cy;
+    const ovMinCz = old.origin
+      ? Math.max(old.origin.cz, next.origin.cz)
+      : next.origin.cz;
+    const ovMaxCz = old.origin
+      ? Math.min(
+          old.origin.cz + old.gridDims.z,
+          next.origin.cz + next.gridDims.z,
+        )
+      : next.origin.cz;
+    const hasOverlap =
+      ovMinCx < ovMaxCx && ovMinCy < ovMaxCy && ovMinCz < ovMaxCz;
+
+    /** Whether a world chunk coordinate lies in the region both windows share. */
+    const inOverlap = (wcx: number, wcy: number, wcz: number): boolean =>
+      hasOverlap &&
+      wcx >= ovMinCx &&
+      wcx < ovMaxCx &&
+      wcy >= ovMinCy &&
+      wcy < ovMaxCy &&
+      wcz >= ovMinCz &&
+      wcz < ovMaxCz;
+
     if (old.origin && this.touchedSinceBaseline) {
+      const scratch = evictionScratch(csx * csy * csz);
       for (let cz = 0; cz < old.gridDims.z; cz++) {
+        const wcz = old.origin.cz + cz;
         for (let cy = 0; cy < old.gridDims.y; cy++) {
+          const wcy = old.origin.cy + cy;
           for (let cx = 0; cx < old.gridDims.x; cx++) {
-            const worldChunk: ChunkCoord = {
-              cx: old.origin.cx + cx,
-              cy: old.origin.cy + cy,
-              cz: old.origin.cz + cz,
-            };
-            if (isWithin(worldChunk, next.origin, next.gridDims)) continue;
-            const key = chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz);
+            const wcx = old.origin.cx + cx;
+            // Chunks still resident after the shift are carried by the memcpy;
+            // only the boundary slab is evicted. Tested with plain number
+            // comparisons against the precomputed overlap rather than building
+            // a ChunkCoord per iteration -- this loop runs over the whole old
+            // window, for every channel, on every commit.
+            if (inOverlap(wcx, wcy, wcz)) continue;
+            const key = chunkKey(wcx, wcy, wcz);
             if (!this.touchedSinceBaseline.has(key)) continue;
-            const cells = extractChunk(
+            // Extracted into a reused buffer: `coldStorage.set` encodes or
+            // copies out of it and never retains it, so one scratch serves
+            // every chunk in the slab instead of an allocation each.
+            extractChunkInto(
+              scratch,
               this.resident,
               cx,
               cy,
@@ -403,15 +466,10 @@ export class AuxiliaryChannel {
               old.cellDims,
               this.chunkSize,
             );
-            if (matchesBaselineFlat(cells, this.baselineValue)) {
+            if (matchesBaselineFlat(scratch, this.baselineValue)) {
               this.touchedSinceBaseline.delete(key);
             } else {
-              this.coldStorage.set(
-                worldChunk.cx,
-                worldChunk.cy,
-                worldChunk.cz,
-                cells,
-              );
+              this.coldStorage.set(wcx, wcy, wcz, scratch);
             }
           }
         }
@@ -436,7 +494,6 @@ export class AuxiliaryChannel {
     // and resize path keeps `cellDims === gridDims * chunkSize` (the
     // chunk-granular channels satisfy it trivially with `chunkSize` 1), so the
     // chunk-space overlap and the cell-space overlap describe the same region.
-    const { x: csx, y: csy, z: csz } = this.chunkSize;
     const newDimX = next.cellDims.x;
     const newDimY = next.cellDims.y;
     const newDimZ = next.cellDims.z;
@@ -444,31 +501,18 @@ export class AuxiliaryChannel {
     const newOy = next.origin.cy * csy;
     const newOz = next.origin.cz * csz;
 
-    // Overlap expressed in NEW-window local cell coordinates, half-open.
-    // An empty range (lo >= hi) means "no overlap", so every row is filled.
-    let loX = 0;
-    let hiX = 0;
-    let loY = 0;
-    let hiY = 0;
-    let loZ = 0;
-    let hiZ = 0;
-    let oldOx = 0;
-    let oldOy = 0;
-    let oldOz = 0;
-    if (old.origin) {
-      oldOx = old.origin.cx * csx;
-      oldOy = old.origin.cy * csy;
-      oldOz = old.origin.cz * csz;
-      loX = Math.max(oldOx, newOx) - newOx;
-      hiX = Math.min(oldOx + old.cellDims.x, newOx + newDimX) - newOx;
-      loY = Math.max(oldOy, newOy) - newOy;
-      hiY = Math.min(oldOy + old.cellDims.y, newOy + newDimY) - newOy;
-      loZ = Math.max(oldOz, newOz) - newOz;
-      hiZ = Math.min(oldOz + old.cellDims.z, newOz + newDimZ) - newOz;
-      if (loX >= hiX || loY >= hiY || loZ >= hiZ) {
-        loX = hiX = loY = hiY = loZ = hiZ = 0; // degenerate -> treat as none
-      }
-    }
+    // Overlap in NEW-window local CELL coordinates, half-open -- the chunk
+    // overlap above scaled by chunkSize. An empty range (lo >= hi) means "no
+    // overlap", so every row gets filled instead of copied.
+    const oldOx = old.origin ? old.origin.cx * csx : 0;
+    const oldOy = old.origin ? old.origin.cy * csy : 0;
+    const oldOz = old.origin ? old.origin.cz * csz : 0;
+    const loX = hasOverlap ? ovMinCx * csx - newOx : 0;
+    const hiX = hasOverlap ? ovMaxCx * csx - newOx : 0;
+    const loY = hasOverlap ? ovMinCy * csy - newOy : 0;
+    const hiY = hasOverlap ? ovMaxCy * csy - newOy : 0;
+    const loZ = hasOverlap ? ovMinCz * csz - newOz : 0;
+    const hiZ = hasOverlap ? ovMaxCz * csz - newOz : 0;
 
     const oldDimX = old.cellDims.x;
     const oldDimY = old.cellDims.y;
@@ -509,16 +553,18 @@ export class AuxiliaryChannel {
     // actually holds something for them -- otherwise the baseline seed above
     // already covers it.
     for (let cz = 0; cz < next.gridDims.z; cz++) {
+      const wcz = next.origin.cz + cz;
       for (let cy = 0; cy < next.gridDims.y; cy++) {
+        const wcy = next.origin.cy + cy;
         for (let cx = 0; cx < next.gridDims.x; cx++) {
-          const worldChunk: ChunkCoord = {
-            cx: next.origin.cx + cx,
-            cy: next.origin.cy + cy,
-            cz: next.origin.cz + cz,
-          };
-          if (old.origin && isWithin(worldChunk, old.origin, old.gridDims)) {
+          const wcx = next.origin.cx + cx;
+          // Same overlap test as the eviction pass, for the same reason: this
+          // runs over the whole new window per channel per commit, and only the
+          // newly-exposed slab needs anything done to it.
+          if (inOverlap(wcx, wcy, wcz)) {
             continue; // carried over by the overlap copy above
           }
+          const worldChunk: ChunkCoord = { cx: wcx, cy: wcy, cz: wcz };
           const stored = this.coldStorage.get(
             worldChunk.cx,
             worldChunk.cy,

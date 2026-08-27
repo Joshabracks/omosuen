@@ -969,6 +969,13 @@ export function renderCellMaps(
     return;
   }
 
+  // Everything from here to the per-cell-map loop is this camera's one-time
+  // setup: ~60 getUniformLocation calls, light and vision uniform uploads, the
+  // material colour table, GL state. Timed as a whole so it stops hiding
+  // inside the render phase -- uniform locations in particular are re-queried
+  // every frame rather than cached, and that has never been measured.
+  const prologueT0 = isProfilingEnabled() ? performance.now() : 0;
+
   // Enable depth testing for 3D rendering with depth writes enabled
   gl.enable(gl.DEPTH_TEST);
   gl.depthFunc(gl.LESS);
@@ -1317,6 +1324,14 @@ export function renderCellMaps(
   };
 
   const profiling = isProfilingEnabled();
+  if (profiling) {
+    recordComponentUpdate(
+      camera.id ?? -1,
+      camera.name,
+      'camera:cellPrologue',
+      performance.now() - prologueT0,
+    );
+  }
 
   // Render each cell-map
   for (const cellMap of cellMaps) {
@@ -1326,6 +1341,7 @@ export function renderCellMaps(
     let memoryTexUploadMs = 0;
     let bufferCleanupMs = 0;
     let drawLoopMs = 0;
+    let solidityComputeMs = 0;
     // Build this frame's render/cull volume in world space: a plain
     // axis-aligned box centered on the camera, with independent half-extents
     // per world axis (halfIsoX/halfIsoY/halfIsoZ). This is deliberately NOT
@@ -1531,7 +1547,17 @@ export function renderCellMaps(
       // a flag check on the frames where terrain is unchanged. (It used to be a
       // full mapX*mapY*mapZ pass per call: ~22ms each on a 224x140x224 window,
       // twice a frame.)
+      // Timed separately from the upload below. This is cached WASM-side, so
+      // it is a flag read on most frames -- but `commitCellStore` invalidates
+      // that cache, so a window-shift commit pays a full mapX*mapY*mapZ pass
+      // here, on the frame least able to afford it. It sat unattributed inside
+      // the render phase, which is what left ~5.7ms of a commit frame
+      // unexplained.
+      const solidityComputeT0 = profiling ? performance.now() : 0;
       const solidityMap = computeSolidityMap();
+      if (profiling) {
+        solidityComputeMs += performance.now() - solidityComputeT0;
+      }
       // The upload -- a whole-window texImage3D, reallocating and re-sending
       // the entire R8 array texture -- used to run unconditionally every
       // frame, making it the only one of this pass's five window textures with
@@ -2216,6 +2242,12 @@ export function renderCellMaps(
         cellMap.name,
         'cell-map:drawLoop',
         drawLoopMs,
+      );
+      recordComponentUpdate(
+        cellMap.id ?? -1,
+        cellMap.name,
+        'cell-map:solidityCompute',
+        solidityComputeMs,
       );
     }
   }

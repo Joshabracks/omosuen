@@ -1207,7 +1207,11 @@ export function renderCellMaps(
     const windowCommitted = cellMap.window.origin !== null;
 
     if (needSolidity && windowCommitted) {
-      // Recompute every frame — cheap for small maps.
+      // Cached WASM-side and only recomputed when a cell actually changes, so
+      // calling this every frame — and again from fog-of-war's update() — costs
+      // a flag check on the frames where terrain is unchanged. (It used to be a
+      // full mapX*mapY*mapZ pass per call: ~22ms each on a 224x140x224 window,
+      // twice a frame.)
       const solidityMap = computeSolidityMap();
       uploadVisibilityTexture(gl, camera, solidityMap, cellMap.mapSize);
       // Fog-of-war "explored" persistence: throttled per-source (a no-op

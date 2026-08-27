@@ -129,6 +129,12 @@ struct CellStore {
     dirty: BTreeMap<usize, u32>,
     expanded: Vec<u32>,
     expanded_valid: bool,
+    /// Cached 0/255-per-cell solidity map (see `solidity_run`). Lives on the
+    /// store rather than in a separate static so it shares `expanded`'s
+    /// invalidation points exactly -- both are per-cell derived views of the
+    /// same data, so anything that invalidates one invalidates the other.
+    solidity: Vec<u8>,
+    solidity_valid: bool,
 }
 
 impl CellStore {
@@ -142,6 +148,8 @@ impl CellStore {
             dirty: BTreeMap::new(),
             expanded: Vec::new(),
             expanded_valid: false,
+            solidity: Vec::new(),
+            solidity_valid: false,
         }
     }
 
@@ -178,6 +186,7 @@ impl CellStore {
         self.rebuild_cumulative();
         self.dirty.clear();
         self.expanded_valid = false;
+        self.solidity_valid = false;
     }
 
     fn coord_index(&self, x: usize, y: usize, z: usize) -> usize {
@@ -208,7 +217,23 @@ impl CellStore {
 
     fn set(&mut self, idx: usize, packed: u32) {
         self.dirty.insert(idx, packed);
-        self.expanded_valid = false;
+        // `expanded` and `solidity` are per-cell derived views, so a single-cell
+        // write can be applied to them directly. Dropping them instead would
+        // make one edited cell cost a full mapX*mapY*mapZ rebuild on the next
+        // read -- 7M cells for a typical windowed map.
+        if idx < self.total {
+            if self.expanded_valid {
+                self.expanded[idx] = packed;
+            }
+            if self.solidity_valid {
+                self.solidity[idx] = solid_byte(packed);
+            }
+        } else {
+            // Out-of-range index: can't patch, so fall back to invalidation
+            // (the write still lands in `dirty` exactly as before).
+            self.expanded_valid = false;
+            self.solidity_valid = false;
+        }
         if self.total > 0
             && (self.dirty.len() as f64) / (self.total as f64) >= FLUSH_THRESHOLD
         {
@@ -221,11 +246,16 @@ impl CellStore {
             return;
         }
         self.ensure_expanded();
-        // Recompress from the (valid) expanded buffer.
+        // Recompress from the (valid) expanded buffer. Recompression changes
+        // only the RLE encoding, never the cell contents, so `solidity` stays
+        // current across it -- carry the flag over compress_from's blanket
+        // invalidation rather than paying a needless full rebuild.
+        let solidity_was_valid = self.solidity_valid;
         let flat = core::mem::take(&mut self.expanded);
         self.compress_from(&flat);
         self.expanded = flat;
         self.expanded_valid = true;
+        self.solidity_valid = solidity_was_valid;
     }
 
     fn ensure_expanded(&mut self) {
@@ -247,6 +277,33 @@ impl CellStore {
             self.expanded[i] = val;
         }
         self.expanded_valid = true;
+    }
+
+    /// Ensures the cached solidity map is current. Cheap (a flag read) on any
+    /// call where no cell has changed since the last one -- which is the common
+    /// case, since the map is read at least once per frame by the render pass
+    /// and again by fog-of-war, but written only when terrain actually changes.
+    fn ensure_solidity(&mut self) {
+        if self.solidity_valid {
+            return;
+        }
+        self.ensure_expanded();
+        if self.solidity.len() < self.total {
+            self.solidity.resize(self.total, 0);
+        }
+        for i in 0..self.total {
+            self.solidity[i] = solid_byte(self.expanded[i]);
+        }
+        self.solidity_valid = true;
+    }
+}
+
+#[inline]
+fn solid_byte(packed: u32) -> u8 {
+    if unpack_visible_solid(packed) {
+        255
+    } else {
+        0
     }
 }
 
@@ -322,25 +379,19 @@ pub extern "C" fn store_expanded_len() -> usize {
 
 // ── Visibility (solidity) ──────────────────────────────────────────────────
 
-static mut SOLIDITY_OUT: Vec<u8> = Vec::new();
-
-/// Computes the solidity map (0/255 per cell) from the resident store and returns
-/// a pointer to the output buffer. Length is `store_expanded_len()`.
+/// Returns the solidity map (0/255 per cell) for the resident store as a pointer
+/// to an internally cached buffer. Length is `store_expanded_len()`.
+///
+/// The result is cached and only recomputed when a cell actually changes (see
+/// `CellStore::ensure_solidity`), so the repeat calls within a single frame --
+/// the render pass's `u_cellSolidity` upload and fog-of-war's sprite visibility
+/// test -- cost a flag read rather than a full mapX*mapY*mapZ pass each.
 #[no_mangle]
 pub extern "C" fn solidity_run() -> *const u8 {
     unsafe {
         let store = &mut *core::ptr::addr_of_mut!(STORE);
-        store.ensure_expanded();
-        let total = store.total;
-        let exp = &store.expanded;
-        let out = &mut *core::ptr::addr_of_mut!(SOLIDITY_OUT);
-        if out.len() < total {
-            out.resize(total, 0);
-        }
-        for i in 0..total {
-            out[i] = if unpack_visible_solid(exp[i]) { 255 } else { 0 };
-        }
-        out.as_ptr()
+        store.ensure_solidity();
+        store.solidity.as_ptr()
     }
 }
 

@@ -20,8 +20,14 @@ import { markForDisposal } from '../../loop/dispose';
 /** A vision source resolved to a plain world position, once per fog-of-war update tick. */
 interface ResolvedSource {
   pos: { x: number; y: number; z: number };
-  radius: number;
-  fadeWidth: number;
+  /**
+   * `pos` expressed in window-local cell space -- the form `isRayBlockedTS`
+   * actually wants. Depends only on the source, so it's computed once here
+   * rather than re-derived per (sprite x source) inside `isPositionVisible`.
+   */
+  localCell: { x: number; y: number; z: number };
+  /** `(radius + fadeWidth)^2`, pre-squared for the distance reject. */
+  outerSq: number;
 }
 
 /**
@@ -32,6 +38,8 @@ interface ResolvedSource {
  */
 function resolveActiveVisionSources(
   sources: VisionSourceT[],
+  windowOriginLocalCell: { x: number; y: number; z: number },
+  cellSize: { x: number; y: number; z: number },
 ): ResolvedSource[] {
   const resolved: ResolvedSource[] = [];
   for (const source of sources) {
@@ -43,10 +51,15 @@ function resolveActiveVisionSources(
     ) as TransformT | null;
     if (!transform) continue;
     const pos = transform.worldPosition;
+    const outer = source.radius + source.fadeWidth;
     resolved.push({
       pos: { x: pos.x, y: pos.y, z: pos.z },
-      radius: source.radius,
-      fadeWidth: source.fadeWidth,
+      localCell: {
+        x: pos.x / cellSize.x - windowOriginLocalCell.x,
+        y: pos.y / cellSize.y - windowOriginLocalCell.y,
+        z: pos.z / cellSize.z - windowOriginLocalCell.z,
+      },
+      outerSq: outer * outer,
     });
   }
   return resolved;
@@ -63,37 +76,51 @@ function resolveActiveVisionSources(
  * are still read fresh off each cached component every frame -- only the
  * "which components exist" walk is skipped when nothing changed.
  */
-let _gatherCache: {
+let gatherCache: {
   spriteVersion: number;
   sprites: SpriteT[];
   visionSourceVersion: number;
   visionSourceComponents: VisionSourceT[];
+  cellMapVersion: number;
+  cellMaps: CellMapT[];
 } | null = null;
 
-function gatherSpritesAndVisionSources(scene: NexusT): {
+function gatherSceneComponents(scene: NexusT): {
   sprites: SpriteT[];
   visionSourceComponents: VisionSourceT[];
+  cellMaps: CellMapT[];
 } {
   const spriteVersion = getRenderableVersion('sprite');
   const visionSourceVersion = getRenderableVersion('vision-source');
+  const cellMapVersion = getRenderableVersion('cell-map');
 
   const sprites =
-    _gatherCache && _gatherCache.spriteVersion === spriteVersion
-      ? _gatherCache.sprites
+    gatherCache && gatherCache.spriteVersion === spriteVersion
+      ? gatherCache.sprites
       : (scene.getComponentsByType('sprite', true) as SpriteT[]);
   const visionSourceComponents =
-    _gatherCache && _gatherCache.visionSourceVersion === visionSourceVersion
-      ? _gatherCache.visionSourceComponents
+    gatherCache && gatherCache.visionSourceVersion === visionSourceVersion
+      ? gatherCache.visionSourceComponents
       : (scene.getComponentsByType('vision-source', true) as VisionSourceT[]);
+  // `cell-map` is not opted into the component-lookup registry, so this walk is
+  // a full recursive scene traversal (measured at ~1.7ms on a 1400-component
+  // scene) for a result that only changes when a cell-map is added or removed.
+  // It's a renderable type, so the same version counter covers it.
+  const cellMaps =
+    gatherCache && gatherCache.cellMapVersion === cellMapVersion
+      ? gatherCache.cellMaps
+      : (scene.getComponentsByType('cell-map', true) as CellMapT[]);
 
-  _gatherCache = {
+  gatherCache = {
     spriteVersion,
     sprites,
     visionSourceVersion,
     visionSourceComponents,
+    cellMapVersion,
+    cellMaps,
   };
 
-  return { sprites, visionSourceComponents };
+  return { sprites, visionSourceComponents, cellMaps };
 }
 
 /**
@@ -119,23 +146,15 @@ function isPositionVisible(
     const dx = pos.x - source.pos.x;
     const dy = pos.y - source.pos.y;
     const dz = pos.z - source.pos.z;
-    const outer = source.radius + source.fadeWidth;
-    if (dx * dx + dy * dy + dz * dz >= outer * outer) continue;
-
-    const sourceLocalCellX =
-      source.pos.x / cellSize.x - windowOriginLocalCell.x;
-    const sourceLocalCellY =
-      source.pos.y / cellSize.y - windowOriginLocalCell.y;
-    const sourceLocalCellZ =
-      source.pos.z / cellSize.z - windowOriginLocalCell.z;
+    if (dx * dx + dy * dy + dz * dz >= source.outerSq) continue;
 
     if (
       !isRayBlockedTS(
         mask,
         cellDims,
-        sourceLocalCellX,
-        sourceLocalCellY,
-        sourceLocalCellZ,
+        source.localCell.x,
+        source.localCell.y,
+        source.localCell.z,
         localCellX,
         localCellY,
         localCellZ,
@@ -329,10 +348,8 @@ export const FogOfWar: FogOfWarMethods = {
       const scene = getActiveScene();
       if (!scene) return;
 
-      const cellMaps = scene.getComponentsByType(
-        'cell-map',
-        true,
-      ) as CellMapT[];
+      const { sprites, visionSourceComponents, cellMaps } =
+        gatherSceneComponents(scene);
       // Same "assume the first cell-map" simplification already used by
       // render-cell-maps.ts/render-sprites.ts throughout the fog-of-war
       // feature -- a scene with multiple cell-maps tests sprite visibility
@@ -341,7 +358,6 @@ export const FogOfWar: FogOfWarMethods = {
       const windowOrigin = originCellMap?.window.origin;
       if (!originCellMap || !windowOrigin) return;
 
-      const mask = computeSolidityMap();
       const cellDims = originCellMap.mapSize;
       const cellSize = originCellMap.cellSize;
       const windowOriginLocalCell = {
@@ -350,9 +366,33 @@ export const FogOfWar: FogOfWarMethods = {
         z: windowOrigin.cz * originCellMap.chunkSize.z,
       };
 
-      const { sprites, visionSourceComponents } =
-        gatherSpritesAndVisionSources(scene);
-      const sources = resolveActiveVisionSources(visionSourceComponents);
+      const sources = resolveActiveVisionSources(
+        visionSourceComponents,
+        windowOriginLocalCell,
+        cellSize,
+      );
+      // No enabled vision source means fog is inactive for this frame --
+      // render-cell-maps.ts gates its own solidity work on the same condition
+      // (`fogActive`/`needSolidity`). Bail BEFORE computeSolidityMap() rather
+      // than after, and leave every `_fowStatus` untouched: running the sweep
+      // with zero sources would mark every visible sprite obscured at once and
+      // spawn a phantom for each, which is not what "vision is momentarily
+      // off" should mean.
+      if (sources.length === 0) return;
+
+      // Held only for the synchronous loop below -- see the phantom-spawn note
+      // after it.
+      const mask = computeSolidityMap();
+
+      // `'visible' -> obscured` transitions found this pass. Collected rather
+      // than acted on inline because spawning a phantom is async, and `mask` is
+      // a view straight over WASM linear memory that the next solidity_run()
+      // rewrites and a WASM memory growth can DETACH (see visibility-mask.ts:
+      // "consume it before the next call"). Awaiting mid-loop would resume with
+      // a possibly-detached view, where every `mask[i]` reads `undefined`,
+      // `undefined > 127` is false, so every cell looks non-solid and every
+      // remaining sprite reads as visible -- occlusion silently failing open.
+      const newlyObscured: { sprite: SpriteT; transform: TransformT }[] = [];
 
       for (const sprite of sprites) {
         if (!sprite.parent || sprite.parent.type !== 'nexus') continue;
@@ -410,8 +450,15 @@ export const FogOfWar: FogOfWarMethods = {
         // observed -- see the Colony Forever perf report this fixed.
         if (sprite._fowStatus === 'visible') {
           sprite._fowStatus = 'obscured';
-          await spawnPhantom(scene, sprite, transform);
+          newlyObscured.push({ sprite, transform });
         }
+      }
+
+      // Past this point `mask` is dead -- nothing below may read it. Spawning
+      // after the loop also keeps the whole sweep in one synchronous run
+      // instead of suspending it once per transition.
+      for (const { sprite, transform } of newlyObscured) {
+        await spawnPhantom(scene, sprite, transform);
       }
     })();
   },

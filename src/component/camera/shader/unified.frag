@@ -860,7 +860,16 @@ void main() {
             if(fogVisibility < 1.0) {
                 vec3 captured;
                 if(memoryColorAt(fragCellPos, captured)) {
-                    memoryBase = captured;
+                    // The captured color is a flat per-material average (no
+                    // texture detail, no lighting) -- reuse this frame's
+                    // already-computed `lighting` (ambient/directional/AO/
+                    // cast-shadow, pre-multiplied, same term `cellColor`
+                    // uses) so memory-tier terrain still shows shape/relief
+                    // instead of one uniform blob. Only the captured
+                    // MATERIAL identity is frozen at observation time --
+                    // shading is allowed to react live, same as never-viewed
+                    // terrain already does.
+                    memoryBase = captured * lighting;
                 }
             }
             float styleSaturation = mix(u_fogNeverSaturation, u_fogMemorySaturation, fogExplored);

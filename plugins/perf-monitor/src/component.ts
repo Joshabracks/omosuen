@@ -13,6 +13,10 @@ import {
   getLastFrameProfile,
   getFrameHistory,
 } from 'omosuen';
+import {
+  installConsoleHelpers,
+  uninstallConsoleHelpers,
+} from './console-helpers.js';
 import type {
   ComponentData,
   ComponentOptions,
@@ -466,6 +470,10 @@ const methods: ComponentMethods = {
       document.body.appendChild(p.container);
     }
     setProfilingEnabled(true);
+    // Publishes `spikeLog` / `exportPerfSnapshot` on `window` for console use.
+    // Done here rather than in the browser build so it also reaches consumers
+    // that import this package as a module -- see console-helpers.ts.
+    installConsoleHelpers();
 
     const handler = (e: KeyboardEvent) => {
       if (e.key === p.toggleKey) {
@@ -492,6 +500,7 @@ const methods: ComponentMethods = {
       p.container.parentNode.removeChild(p.container);
     }
     setProfilingEnabled(false);
+    uninstallConsoleHelpers();
     p._disposed = true;
   },
 };

@@ -202,6 +202,25 @@ export interface CameraT
 
     // Per-cell emission (highlight) color texture (RGBA8, flattened cell grid).
     cellEmissionColorTexture: WebGLTexture | null;
+    // Window-LOCAL chunk coordinates currently painted non-black in
+    // cellEmissionColorTexture, keyed "x,y,z". Lets a window shift repaint only
+    // the handful of highlighted chunks (clear the old local slots, write the
+    // new ones) instead of rebuilding and re-uploading the whole window-sized
+    // texture, which is what a shift's full-version bump would otherwise force.
+    //
+    // Local rather than world coordinates deliberately: these are texel
+    // addresses, so they stay valid for clearing regardless of where the window
+    // has since moved to.
+    //
+    // EVERY path that writes colour into the texture must record the chunk here
+    // — including the per-cell delta upload. A highlight painted without being
+    // recorded is one the next shift won't know to clear, and it stays burned
+    // into the texture at a fixed screen position while the world pans beneath
+    // it. Null means "unknown", forcing the next upload down the full rebuild.
+    cellEmissionPaintedLocal: Map<
+      string,
+      { x: number; y: number; z: number }
+    > | null;
     // Whether the resident emission-color texture has any non-black cell (gates the
     // shader term + avoids binding an empty texture).
     cellEmissionColorHasAny: boolean;
@@ -221,6 +240,14 @@ export interface CameraT
     // exploredTexture above.
     nearMaterialTexture: WebGLTexture | null;
     nearMaterialVersion: number;
+    // Next z-layer to refill in nearMaterialTexture, or -1 when not refilling.
+    // A window shift used to force a whole-window rebuild of this texture in
+    // one frame; instead the texture is cleared to "no data captured" and then
+    // refilled a slab at a time over the following frames. Partial state is
+    // safe because the shader's nearMaterialAt returns -1 for a cleared texel
+    // and falls through to the coarse per-chunk far-material tier — remembered
+    // terrain briefly renders at lower detail rather than at a wrong position.
+    nearMaterialRefillZ: number;
     farMaterialTexture: WebGLTexture | null;
     farMaterialVersion: number;
   };
@@ -304,12 +331,14 @@ export function builder(options: CameraOptions): CameraT {
       solidityGeneration: -1,
       solidityDims: null,
       cellEmissionColorTexture: null,
+      cellEmissionPaintedLocal: null,
       cellEmissionColorHasAny: false,
       cellEmissionColorVersion: -1,
       exploredTexture: null,
       exploredVersion: -1,
       nearMaterialTexture: null,
       nearMaterialVersion: -1,
+      nearMaterialRefillZ: -1,
       farMaterialTexture: null,
       farMaterialVersion: -1,
     },

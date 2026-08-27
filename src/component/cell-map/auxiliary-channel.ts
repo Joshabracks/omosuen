@@ -138,7 +138,28 @@ export class AuxiliaryChannel {
   private readonly baselineValue: number;
   /** null when this channel can never diverge from baseline (see `trackDivergence`). */
   private readonly touchedSinceBaseline: Set<string> | null;
+  /**
+   * Whether an in-window `set` has ever landed on a channel that is NOT
+   * tracking divergence. Such a write leaves no record in
+   * `touchedSinceBaseline` (there is no set) and none in cold storage (it went
+   * straight into `resident`), so without this flag `isEntirelyBaseline` would
+   * claim the channel is still uniformly baseline and callers acting on that
+   * would discard the write. Configuring `trackDivergence: false` is a promise
+   * that no such setter exists, but this makes the predicate honest rather
+   * than dependent on every caller keeping that promise.
+   */
+  private everWrittenUntracked = false;
   private resident: Uint32Array = new Uint32Array(0);
+  /**
+   * The previous window's buffer, kept for reuse as the next shift's
+   * destination instead of allocating a fresh window-sized array each time.
+   * The two swap roles on every commit. Null until the first shift has one to
+   * hand back; discarded when a resize changes the required length.
+   *
+   * Recycled content is stale, so `onWindowChange` must write every cell of
+   * its destination -- it does not get `new Uint32Array`'s zero-fill.
+   */
+  private spare: Uint32Array | null = null;
   private currentOrigin: ChunkCoord | null = null;
   private currentGridDims: { x: number; y: number; z: number } = {
     x: 0,
@@ -177,12 +198,40 @@ export class AuxiliaryChannel {
     return this.touchedSinceBaseline !== null;
   }
 
-  /** Whether this channel currently holds any non-baseline content anywhere (resident or cold-stored). */
+  /**
+   * Whether this channel is provably still uniformly `baselineValue`
+   * everywhere -- resident and cold-stored alike. Conservative in both
+   * directions that matter: any `set` marks the channel diverged even when it
+   * wrote the baseline value itself, and an untracked channel falls back to
+   * `everWrittenUntracked`, so this never returns true for a channel that
+   * holds real content.
+   */
   get isEntirelyBaseline(): boolean {
     if (this.coldStorage.size > 0) return false;
-    if (this.touchedSinceBaseline && this.touchedSinceBaseline.size > 0)
-      return false;
-    return true;
+    if (this.touchedSinceBaseline) return this.touchedSinceBaseline.size === 0;
+    return !this.everWrittenUntracked;
+  }
+
+  /**
+   * World-chunk coordinates that may hold non-baseline content, or `null` when
+   * this channel doesn't track divergence (`trackDivergence: false`) and so
+   * cannot answer.
+   *
+   * A conservative SUPERSET, never a subset: `set` records a chunk even when it
+   * writes the baseline value itself, so a chunk can appear here after its
+   * content has been cleared. Callers may therefore process a chunk that turns
+   * out to be entirely baseline, but will never miss one that isn't -- which is
+   * the direction that matters for anything using this to decide what to
+   * redraw.
+   */
+  touchedChunks(): ChunkCoord[] | null {
+    if (!this.touchedSinceBaseline) return null;
+    const out: ChunkCoord[] = [];
+    for (const key of this.touchedSinceBaseline) {
+      const [cx, cy, cz] = key.split(',');
+      out.push({ cx: Number(cx), cy: Number(cy), cz: Number(cz) });
+    }
+    return out;
   }
 
   /** The current window's size in cells (matches the primary `CellWindow`'s `cellDimensions`). */
@@ -247,6 +296,7 @@ export class AuxiliaryChannel {
     if (local) {
       const { x: dimX, y: dimY } = this.currentCellDims;
       this.resident[local.z * dimY * dimX + local.y * dimX + local.x] = value;
+      if (!this.touchedSinceBaseline) this.everWrittenUntracked = true;
       if (this.touchedSinceBaseline) {
         const { x: csx, y: csy, z: csz } = this.chunkSize;
         const worldChunk: ChunkCoord = {
@@ -323,7 +373,15 @@ export class AuxiliaryChannel {
       return;
     }
 
-    const newResident = new Uint32Array(newTotal);
+    // Reuse the spare buffer from the previous shift rather than allocating a
+    // new window-sized array every time. A shift touches three cell-granular
+    // channels, so allocating here meant several multi-MB arrays per commit
+    // plus the GC that eventually follows them -- on the single frame that can
+    // least afford either. The two buffers simply trade places each shift.
+    let newResident = this.spare;
+    if (newResident === null || newResident.length !== newTotal) {
+      newResident = new Uint32Array(newTotal);
+    }
 
     if (old.origin && this.touchedSinceBaseline) {
       for (let cz = 0; cz < old.gridDims.z; cz++) {
@@ -360,6 +418,96 @@ export class AuxiliaryChannel {
       }
     }
 
+    // Carry the overlapping region across as a straight row-by-row memcpy, and
+    // baseline-fill only what that copy does NOT cover.
+    //
+    // A shift is a pure translation, so the region resident in BOTH windows is
+    // one contiguous box in each -- the same cells, at a fixed offset. The old
+    // code moved it one chunk at a time through `extractChunk` + `writeChunk`,
+    // which allocated a scratch buffer per chunk and copied every cell twice.
+    //
+    // `newResident` may be a recycled buffer holding the PREVIOUS window's
+    // contents, so every cell must be written exactly once here: the overlap
+    // rows by the copy, everything else by the fill. Filling the whole buffer
+    // first would be simpler but writes the bulk of the window twice, which on
+    // a large window is the same order of cost as the copy itself.
+    //
+    // Chunk grids map cleanly onto cell grids here because every construction
+    // and resize path keeps `cellDims === gridDims * chunkSize` (the
+    // chunk-granular channels satisfy it trivially with `chunkSize` 1), so the
+    // chunk-space overlap and the cell-space overlap describe the same region.
+    const { x: csx, y: csy, z: csz } = this.chunkSize;
+    const newDimX = next.cellDims.x;
+    const newDimY = next.cellDims.y;
+    const newDimZ = next.cellDims.z;
+    const newOx = next.origin.cx * csx;
+    const newOy = next.origin.cy * csy;
+    const newOz = next.origin.cz * csz;
+
+    // Overlap expressed in NEW-window local cell coordinates, half-open.
+    // An empty range (lo >= hi) means "no overlap", so every row is filled.
+    let loX = 0;
+    let hiX = 0;
+    let loY = 0;
+    let hiY = 0;
+    let loZ = 0;
+    let hiZ = 0;
+    let oldOx = 0;
+    let oldOy = 0;
+    let oldOz = 0;
+    if (old.origin) {
+      oldOx = old.origin.cx * csx;
+      oldOy = old.origin.cy * csy;
+      oldOz = old.origin.cz * csz;
+      loX = Math.max(oldOx, newOx) - newOx;
+      hiX = Math.min(oldOx + old.cellDims.x, newOx + newDimX) - newOx;
+      loY = Math.max(oldOy, newOy) - newOy;
+      hiY = Math.min(oldOy + old.cellDims.y, newOy + newDimY) - newOy;
+      loZ = Math.max(oldOz, newOz) - newOz;
+      hiZ = Math.min(oldOz + old.cellDims.z, newOz + newDimZ) - newOz;
+      if (loX >= hiX || loY >= hiY || loZ >= hiZ) {
+        loX = hiX = loY = hiY = loZ = hiZ = 0; // degenerate -> treat as none
+      }
+    }
+
+    const oldDimX = old.cellDims.x;
+    const oldDimY = old.cellDims.y;
+    const runLength = hiX - loX;
+    for (let lz = 0; lz < newDimZ; lz++) {
+      const rowZ = lz * newDimY * newDimX;
+      const zInside = lz >= loZ && lz < hiZ;
+      for (let ly = 0; ly < newDimY; ly++) {
+        const rowStart = rowZ + ly * newDimX;
+        if (!zInside || ly < loY || ly >= hiY || runLength === 0) {
+          newResident.fill(this.baselineValue, rowStart, rowStart + newDimX);
+          continue;
+        }
+        // Baseline the margins on either side of the carried-over run.
+        if (loX > 0) {
+          newResident.fill(this.baselineValue, rowStart, rowStart + loX);
+        }
+        if (hiX < newDimX) {
+          newResident.fill(
+            this.baselineValue,
+            rowStart + hiX,
+            rowStart + newDimX,
+          );
+        }
+        const oldStart =
+          (lz + newOz - oldOz) * oldDimY * oldDimX +
+          (ly + newOy - oldOy) * oldDimX +
+          (loX + newOx - oldOx);
+        newResident.set(
+          this.resident.subarray(oldStart, oldStart + runLength),
+          rowStart + loX,
+        );
+      }
+    }
+
+    // Everything left is a chunk that entered the window from outside it.
+    // Only those need per-chunk resolution, and only when cold storage
+    // actually holds something for them -- otherwise the baseline seed above
+    // already covers it.
     for (let cz = 0; cz < next.gridDims.z; cz++) {
       for (let cy = 0; cy < next.gridDims.y; cy++) {
         for (let cx = 0; cx < next.gridDims.x; cx++) {
@@ -368,41 +516,26 @@ export class AuxiliaryChannel {
             cy: next.origin.cy + cy,
             cz: next.origin.cz + cz,
           };
-          let cells: Uint32Array;
           if (old.origin && isWithin(worldChunk, old.origin, old.gridDims)) {
-            cells = extractChunk(
-              this.resident,
-              worldChunk.cx - old.origin.cx,
-              worldChunk.cy - old.origin.cy,
-              worldChunk.cz - old.origin.cz,
-              old.cellDims,
-              this.chunkSize,
+            continue; // carried over by the overlap copy above
+          }
+          const stored = this.coldStorage.get(
+            worldChunk.cx,
+            worldChunk.cy,
+            worldChunk.cz,
+          );
+          if (!stored) continue; // already baseline
+          if (this.touchedSinceBaseline) {
+            this.touchedSinceBaseline.add(
+              chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz),
             );
-          } else {
-            const stored = this.coldStorage.get(
-              worldChunk.cx,
-              worldChunk.cy,
-              worldChunk.cz,
-            );
-            if (stored) {
-              cells = stored;
-              if (this.touchedSinceBaseline) {
-                this.touchedSinceBaseline.add(
-                  chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz),
-                );
-              }
-            } else {
-              const count =
-                this.chunkSize.x * this.chunkSize.y * this.chunkSize.z;
-              cells = new Uint32Array(count).fill(this.baselineValue);
-            }
           }
           writeChunk(
             newResident,
             cx,
             cy,
             cz,
-            cells,
+            stored,
             next.cellDims,
             this.chunkSize,
           );
@@ -410,6 +543,8 @@ export class AuxiliaryChannel {
       }
     }
 
+    // Hand the outgoing buffer back for the next shift to write into.
+    this.spare = this.resident;
     this.resident = newResident;
     this.currentOrigin = next.origin;
     this.currentGridDims = next.gridDims;

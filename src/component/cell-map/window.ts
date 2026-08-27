@@ -149,33 +149,36 @@ export class CellWindow {
   /**
    * A shift/resize whose target window isn't fully assembled yet. The
    * window's committed state (`originChunk`/`gridDims`/`cellDims`) does NOT
-   * change until every chunk the target needs — both genuinely-new ones
-   * (`source: 'generate'`) AND ones reused from the current window
-   * (`source: 'reuse'`) — is staged and `reassemble` actually runs, see
-   * `advance`. Reused chunks are staged by reading the LIVE store directly
-   * (via `extractLiveChunk`) at the moment their turn in the queue comes up,
-   * not from a single upfront snapshot — that's what lets `reassemble`
-   * itself skip `cellStoreDump()`'s whole-window cost for the (now common)
-   * fully-staged case. `queue`/`queueIndex` form a cursor over `queue`
-   * (nearest-to-target-center first) rather than shifting the array, to
-   * avoid O(n) removals for large queues. Cold-storage-resolvable chunks are
-   * NOT staged here — that presence check is already cheap (a `Map.has`),
-   * resolved directly in `reassemble`'s assembly loop same as before.
+   * change until every chunk the target must GENERATE is staged and
+   * `reassemble` actually runs — see `advance`.
+   *
+   * Only genuinely-new chunks are queued. Chunks already resident in the
+   * current window are not: `reassemble` carries the whole overlapping box
+   * across in one memcpy straight out of the live store, so staging them
+   * individually would move the same bytes twice and, since the window can't
+   * commit until the queue drains, would stretch the shift over far more
+   * frames than the new terrain actually requires. Cold-storage-resolvable
+   * chunks are likewise skipped — that presence check is cheap (a `Map.has`)
+   * and `reassemble` resolves them directly.
+   *
+   * `queue`/`queueIndex` form a cursor over `queue` (nearest-to-target-center
+   * first) rather than shifting the array, to avoid O(n) removals.
    */
   private pendingShift: {
     origin: ChunkCoord;
     gridDims: { x: number; y: number; z: number };
     cellDims: { x: number; y: number; z: number };
-    queue: { coord: ChunkCoord; source: 'reuse' | 'generate' }[];
+    queue: { coord: ChunkCoord; source: 'generate' }[];
     queueIndex: number;
     staged: Map<string, Uint32Array>;
     /**
      * World-chunk keys (→ coord) whose staged copy is now stale because
-     * `setCell` wrote to that chunk (in-window: a 'reuse' chunk already
-     * staged from the live store; off-window: a 'generate' chunk whose
-     * cold-storage/baseline resolution may have changed) AFTER it was
-     * staged. Re-resolved fresh in `advance`'s commit-time correction pass,
-     * right before `reassemble` runs — see `setCell` and `advance`.
+     * `setCell` wrote to that chunk AFTER it was staged — an off-window write
+     * whose cold-storage/baseline resolution may have changed. Re-resolved
+     * fresh in `advance`'s commit-time correction pass, right before
+     * `reassemble` runs. In-window writes need no entry here: they go straight
+     * into the live store, which is exactly what the commit's overlap memcpy
+     * reads from.
      */
     editedDuringStaging: Map<string, ChunkCoord>;
     targetRadius?: { x: number; y: number; z: number };
@@ -331,13 +334,11 @@ export class CellWindow {
       };
       const key = this.chunkKey(worldChunk.cx, worldChunk.cy, worldChunk.cz);
       this.editedSinceBaseline.add(key);
-      // This chunk may already be staged (as a 'reuse' item) for an
-      // in-flight pending shift -- if so, that staged copy no longer
-      // reflects this write and needs re-resolving before commit. See
-      // advance()'s correction pass.
-      if (this.pendingShift?.staged.has(key)) {
-        this.pendingShift.editedDuringStaging.set(key, worldChunk);
-      }
+      // No editedDuringStaging bookkeeping needed for an in-window write: it
+      // just landed in the live store, and a pending shift's commit carries
+      // resident chunks across by copying straight out of that same store, so
+      // the write is picked up with no correction pass. (An in-window chunk is
+      // never queued for staging -- see `neededForTarget`.)
       return;
     }
 
@@ -638,7 +639,7 @@ export class CellWindow {
     const prevStaged = this.pendingShift?.staged;
     const prevEdited = this.pendingShift?.editedDuringStaging;
     const staged = new Map<string, Uint32Array>();
-    const queue: { coord: ChunkCoord; source: 'reuse' | 'generate' }[] = [];
+    const queue: { coord: ChunkCoord; source: 'generate' }[] = [];
     for (const item of needed) {
       const key = this.chunkKey(item.coord.cx, item.coord.cy, item.coord.cz);
       const prior = prevStaged?.get(key);
@@ -685,21 +686,28 @@ export class CellWindow {
   }
 
   /**
-   * Classifies every chunk a target window will need and how to get it:
-   * `'reuse'` if it's within the *current* (committed) window (its data
-   * needs to move, not change -- staged by reading the live store, see
-   * `extractLiveChunk`), `'generate'` if it needs `baselineChunk`. Chunks
-   * resolvable from cold storage are omitted entirely -- that presence
-   * check is cheap (a `Map.has`, no decode/copy), so `reassemble`'s
-   * assembly loop keeps resolving those directly rather than staging them.
+   * Classifies every chunk a target window will need that has to be GENERATED,
+   * i.e. produced by `baselineChunk`. Everything else is omitted, because
+   * `reassembleImpl` can source it without staging:
+   *
+   * - Chunks already inside the current committed window are carried across by
+   *   the commit's overlap memcpy (the whole overlapping box in one pass), so
+   *   pre-extracting them here would stage hundreds of chunks per shift to
+   *   move data the commit moves anyway -- and, because the window doesn't
+   *   move until the queue fully drains, would delay the shift by however many
+   *   budgeted frames that takes.
+   * - Chunks resolvable from cold storage are omitted too; that presence check
+   *   is cheap (a `Map.has`, no decode/copy) and the commit resolves them
+   *   directly.
+   *
    * No generation or copying happens here; this is the cheap up-front pass
    * `beginOrRetarget` uses to build (or shrink) a pending shift's queue.
    */
   private neededForTarget(
     origin: ChunkCoord,
     gridDims: { x: number; y: number; z: number },
-  ): { coord: ChunkCoord; source: 'reuse' | 'generate' }[] {
-    const needed: { coord: ChunkCoord; source: 'reuse' | 'generate' }[] = [];
+  ): { coord: ChunkCoord; source: 'generate' }[] {
+    const needed: { coord: ChunkCoord; source: 'generate' }[] = [];
     for (let cz = 0; cz < gridDims.z; cz++) {
       for (let cy = 0; cy < gridDims.y; cy++) {
         for (let cx = 0; cx < gridDims.x; cx++) {
@@ -712,7 +720,6 @@ export class CellWindow {
             this.originChunk &&
             this.isWithin(worldChunk, this.originChunk, this.gridDims)
           ) {
-            needed.push({ coord: worldChunk, source: 'reuse' });
             continue;
           }
           if (
@@ -729,13 +736,11 @@ export class CellWindow {
 
   /**
    * Reads one chunk's cells directly out of the *live* WASM store, at its
-   * current (pre-shift) position -- used to stage a `'reuse'`-sourced queue
-   * item. Reading live (at the moment this chunk's turn in the queue comes
-   * up) rather than from a single upfront whole-window snapshot is what lets
-   * `reassemble` skip `cellStoreDump()`'s cost entirely for the common,
-   * fully-staged case -- there's no snapshot to take. Only ever called for a
-   * chunk `neededForTarget` classified `'reuse'`, which is only possible
-   * when `originChunk` is set (that's the window it's being reused from).
+   * current position. Reached via `resolveChunk`'s in-window branch, which is
+   * the only caller -- shifts no longer stage resident chunks one at a time
+   * (the commit copies the whole overlapping box in one pass), so this now
+   * serves ad-hoc reads rather than the staging queue. Only valid when
+   * `originChunk` is set, which `resolveChunk`'s `isWithin` guard guarantees.
    */
   private extractLiveChunk(worldChunk: ChunkCoord): Uint32Array {
     const origin = this.originChunk!;
@@ -817,18 +822,11 @@ export class CellWindow {
     while (pending.queueIndex < pending.queue.length) {
       if (processed > 0 && performance.now() > deadline) break;
       const item = pending.queue[pending.queueIndex];
-      // 'reuse' items are always in-window by construction (that's why
-      // they were classified 'reuse'), so extractLiveChunk directly is
-      // equivalent to resolveChunk's isWithin branch here -- kept explicit
-      // for clarity. 'generate' items route through resolveChunk so a
-      // cold-storage entry written by an off-window edit while this item
-      // was still queued (neededForTarget saw nothing there at
-      // classification time) gets picked up instead of stale-baseline-
-      // generating over it.
-      const cells =
-        item.source === 'reuse'
-          ? this.extractLiveChunk(item.coord)
-          : this.resolveChunk(item.coord);
+      // Routed through resolveChunk rather than baselineChunk directly, so a
+      // cold-storage entry written by an off-window edit while this item was
+      // still queued (neededForTarget saw nothing there at classification
+      // time) gets picked up instead of being stale-baseline-generated over.
+      const cells = this.resolveChunk(item.coord);
       pending.staged.set(
         this.chunkKey(item.coord.cx, item.coord.cy, item.coord.cz),
         cells,
@@ -1027,13 +1025,10 @@ export class CellWindow {
     const total = dimX * dimY * dimZ;
     const staged = this.pendingShift?.staged;
 
-    // Live views over the current store (source, for any rare fallback read
-    // below) and a freshly reserved WASM buffer (dest, written directly --
-    // no intermediate JS-heap `assembled` array). In the common case (a
-    // pending shift's queue has already staged every chunk this call needs),
-    // `source` ends up unused: reused-chunk data was already read live,
-    // per-chunk, during `advance()`'s budgeted staging -- there's no
-    // whole-window snapshot to pay for here anymore.
+    // Live view over the current store (`source`) and a freshly reserved WASM
+    // buffer (`dest`, written directly -- no intermediate JS-heap array).
+    // These are two distinct Rust allocations (the store's `expanded` vec and
+    // `STORE_INPUT`), so copying between them below cannot alias.
     const { source, dest } = getReassembleViews(total);
 
     // Evict chunks that fall outside the new window. Ones that still match
@@ -1076,7 +1071,61 @@ export class CellWindow {
       }
     }
 
-    // Assemble the new window's contents directly into `dest`.
+    // Assemble the new window's contents directly into `dest`, in two passes.
+    //
+    // Pass 1 carries the overlap across as a straight row-by-row memcpy. A
+    // shift is a pure translation, so the region resident in BOTH windows is
+    // one contiguous box in each -- the same cells at a fixed offset. Moving it
+    // a chunk at a time through `writeChunk` copied the same bytes in
+    // chunk-width runs and, worse, required every one of those chunks to have
+    // been individually extracted into a JS buffer beforehand by `advance()`.
+    // Copying the box directly is the same bytes moved once, with no staging.
+    //
+    // Chunk grids map cleanly onto cell grids because every construction and
+    // resize path keeps `cellDims === gridDims * chunkSize`, so the chunk-space
+    // overlap and the cell-space overlap describe the same region.
+    if (oldOrigin) {
+      const { x: csx, y: csy, z: csz } = this.chunkSize;
+      const oldOx = oldOrigin.cx * csx;
+      const oldOy = oldOrigin.cy * csy;
+      const oldOz = oldOrigin.cz * csz;
+      const newOx = newOrigin.cx * csx;
+      const newOy = newOrigin.cy * csy;
+      const newOz = newOrigin.cz * csz;
+
+      // Overlap in world cells, half-open [min, max).
+      const minWX = Math.max(oldOx, newOx);
+      const maxWX = Math.min(oldOx + oldCellDims.x, newOx + dimX);
+      const minWY = Math.max(oldOy, newOy);
+      const maxWY = Math.min(oldOy + oldCellDims.y, newOy + dimY);
+      const minWZ = Math.max(oldOz, newOz);
+      const maxWZ = Math.min(oldOz + oldCellDims.z, newOz + dimZ);
+
+      if (minWX < maxWX && minWY < maxWY && minWZ < maxWZ) {
+        const runLength = maxWX - minWX;
+        const oldDimX = oldCellDims.x;
+        const oldDimY = oldCellDims.y;
+        for (let wz = minWZ; wz < maxWZ; wz++) {
+          const oldZ = (wz - oldOz) * oldDimY * oldDimX;
+          const newZ = (wz - newOz) * dimY * dimX;
+          for (let wy = minWY; wy < maxWY; wy++) {
+            const oldStart = oldZ + (wy - oldOy) * oldDimX + (minWX - oldOx);
+            const newStart = newZ + (wy - newOy) * dimX + (minWX - newOx);
+            dest.set(source.subarray(oldStart, oldStart + runLength), newStart);
+          }
+        }
+      }
+    }
+
+    // Pass 2 fills every chunk the overlap did not cover -- the newly-exposed
+    // slab -- from `staged` (generated or cold-storage-resolved by `advance()`)
+    // or, as a fallback, resolved on the spot.
+    //
+    // Deliberately runs AFTER the overlap copy so a chunk that was edited while
+    // the shift was still staging wins: `advance()` re-resolves those into
+    // `staged` at commit time (see `editedDuringStaging`), and writing them
+    // last means that re-resolution overwrites whatever the memcpy carried
+    // over. A staged entry is always at least as current as the live store.
     for (let cz = 0; cz < newGridDims.z; cz++) {
       for (let cy = 0; cy < newGridDims.y; cy++) {
         for (let cx = 0; cx < newGridDims.x; cx++) {
@@ -1090,21 +1139,25 @@ export class CellWindow {
             worldChunk.cy,
             worldChunk.cz,
           );
-          // Every chunk `neededForTarget` ever classifies gets staged before
-          // advance() lets its queue drain and commits -- by the time this
-          // loop runs, a chunk that's `isWithin` the old/committed window is
-          // guaranteed to already be in `staged` (it would have been
-          // classified 'reuse' and staged like any other queued item), and a
-          // needed.length===0 immediate commit (the only path that runs with
-          // nothing staged at all) is only reachable when there's zero
-          // overlap with the old window in the first place. `resolveChunk`
-          // below should therefore be unreachable in the current design --
-          // kept as a safe fallback through the same canonical resolution
-          // order every other chunk-sourcing call site uses, not an
-          // assertion, in case a future change breaks one of those
-          // invariants.
-          const cells = staged?.get(key) ?? this.resolveChunk(worldChunk);
-          this.writeChunk(dest, cx, cy, cz, cells, newCellDims);
+          const stagedCells = staged?.get(key);
+          if (stagedCells) {
+            this.writeChunk(dest, cx, cy, cz, stagedCells, newCellDims);
+            continue;
+          }
+          // Already carried over by the overlap copy above.
+          if (oldOrigin && this.isWithin(worldChunk, oldOrigin, oldGridDims)) {
+            continue;
+          }
+          // Neither staged nor resident: a chunk `neededForTarget` omitted
+          // because cold storage covered it, or an immediate (unstaged) commit.
+          this.writeChunk(
+            dest,
+            cx,
+            cy,
+            cz,
+            this.resolveChunk(worldChunk),
+            newCellDims,
+          );
         }
       }
     }

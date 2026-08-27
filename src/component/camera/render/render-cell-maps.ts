@@ -1,5 +1,8 @@
 import { AtlasManagerT } from '../../atlas-manager';
 import { CellMapT, CellMap, rebuildDirtyChunks } from '../../cell-map';
+// Reached directly rather than through the barrel: the channels are internal
+// cell-map state, deliberately not part of its public surface.
+import { cmEmissionColorChannel } from '../../cell-map/data';
 import { LightT } from '../../light';
 import { VisionSourceT } from '../../vision-source';
 import { FogOfWarT } from '../../fog-of-war';
@@ -295,12 +298,24 @@ function uploadVisibilityTexture(
  * `cellEmissionColorAt`. Returns the byte buffer and whether any cell is non-black
  * (so an all-black map skips upload + shader term entirely).
  */
+/**
+ * Scratch buffer for the whole-window emission rebuild, reused across calls.
+ * A window-sized RGBA8 buffer is multiple megabytes, and a full rebuild fires
+ * on every window-shift commit -- the frame least able to absorb an allocation
+ * of that size plus the collection that eventually follows it.
+ */
+let emissionBytesScratch: Uint8Array | null = null;
+
 function buildCellEmissionColorBytes(cellMap: CellMapT): {
   bytes: Uint8Array;
   hasAny: boolean;
 } {
   const packed = cellMap.emissionColorMap.value;
-  const bytes = new Uint8Array(packed.length * 4);
+  const needed = packed.length * 4;
+  if (emissionBytesScratch === null || emissionBytesScratch.length !== needed) {
+    emissionBytesScratch = new Uint8Array(needed);
+  }
+  const bytes = emissionBytesScratch;
   let hasAny = false;
   for (let i = 0; i < packed.length; i++) {
     const p = packed[i] | 0;
@@ -311,6 +326,187 @@ function buildCellEmissionColorBytes(cellMap: CellMapT): {
     bytes[i * 4 + 3] = 255;
   }
   return { bytes, hasAny };
+}
+
+/**
+ * Per-chunk staging buffer for the sparse emission path, grown on demand and
+ * reused. Sized to one chunk's RGBA8 texels.
+ */
+let emissionChunkScratch: Uint8Array | null = null;
+
+function emissionChunkBuffer(texels: number): Uint8Array {
+  const needed = texels * 4;
+  if (emissionChunkScratch === null || emissionChunkScratch.length < needed) {
+    emissionChunkScratch = new Uint8Array(needed);
+  }
+  return emissionChunkScratch;
+}
+
+/**
+ * Uploads one chunk's worth of the emission texture at a window-local chunk
+ * coordinate, either the live colours or (when `clear`) transparent black.
+ */
+function uploadEmissionChunk(
+  gl: WebGL2RenderingContext,
+  cellMap: CellMapT,
+  local: { x: number; y: number; z: number },
+  clear: boolean,
+): void {
+  const { x: csx, y: csy, z: csz } = cellMap.chunkSize;
+  const { x: mx, y: my } = cellMap.mapSize;
+  const baseX = local.x * csx;
+  const baseY = local.y * csy;
+  const baseZ = local.z * csz;
+  const buf = emissionChunkBuffer(csx * csy * csz);
+  const packed = cellMap.emissionColorMap.value;
+
+  let o = 0;
+  for (let z = 0; z < csz; z++) {
+    for (let y = 0; y < csy; y++) {
+      const row = (baseZ + z) * my * mx + (baseY + y) * mx + baseX;
+      for (let x = 0; x < csx; x++) {
+        const p = clear ? 0 : packed[row + x] | 0;
+        buf[o] = (p >> 16) & 0xff;
+        buf[o + 1] = (p >> 8) & 0xff;
+        buf[o + 2] = p & 0xff;
+        buf[o + 3] = 255;
+        o += 4;
+      }
+    }
+  }
+
+  gl.texSubImage3D(
+    gl.TEXTURE_2D_ARRAY,
+    0,
+    baseX,
+    baseY,
+    baseZ,
+    csx,
+    csy,
+    csz,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    buf.subarray(0, csx * csy * csz * 4),
+  );
+}
+
+/**
+ * Beyond this many chunks to repaint, the whole-window rebuild is cheaper than
+ * a texSubImage3D per chunk. Emission is a highlight channel -- a hover, a
+ * selection, a zone glow -- so the sparse path is the normal case and this cap
+ * exists for the pathological one (a map that has highlighted most of its
+ * chunks at some point, since the channel's touched set never shrinks).
+ */
+const EMISSION_SPARSE_CHUNK_CAP = 64;
+
+/**
+ * Window-local chunk coordinates that currently hold emission colour, derived
+ * from the channel's touched-chunk set (a conservative superset -- see
+ * `AuxiliaryChannel.touchedChunks`). Returns null when the channel can't
+ * answer, which forces the caller onto the full-rebuild path.
+ */
+function currentEmissionChunksLocal(
+  cellMap: CellMapT,
+): Map<string, { x: number; y: number; z: number }> | null {
+  const touched = cmEmissionColorChannel?.touchedChunks();
+  const origin = cellMap.window.origin;
+  if (!touched || !origin) return null;
+  const grid = cellMap.chunkGridSize;
+  const out = new Map<string, { x: number; y: number; z: number }>();
+  for (const c of touched) {
+    const x = c.cx - origin.cx;
+    const y = c.cy - origin.cy;
+    const z = c.cz - origin.cz;
+    if (x < 0 || x >= grid.x || y < 0 || y >= grid.y || z < 0 || z >= grid.z) {
+      continue; // outside the resident window; nothing to paint
+    }
+    out.set(`${x},${y},${z}`, { x, y, z });
+  }
+  return out;
+}
+
+/**
+ * Records that a chunk-local slot now holds colour in this camera's emission
+ * texture. See `cellEmissionPaintedLocal` for why every write must do this.
+ */
+function markEmissionChunkPainted(
+  camera: CameraT,
+  cellMap: CellMapT,
+  localCellX: number,
+  localCellY: number,
+  localCellZ: number,
+): void {
+  const painted = camera.glResources.cellEmissionPaintedLocal;
+  if (!painted) return;
+  const x = Math.floor(localCellX / cellMap.chunkSize.x);
+  const y = Math.floor(localCellY / cellMap.chunkSize.y);
+  const z = Math.floor(localCellZ / cellMap.chunkSize.z);
+  const key = `${x},${y},${z}`;
+  if (!painted.has(key)) painted.set(key, { x, y, z });
+}
+
+/**
+ * Repaints the emission texture for a window shift by touching only the chunks
+ * involved, instead of rebuilding and re-uploading the entire window-sized
+ * texture. Returns false when it declines, leaving the caller to do the full
+ * rebuild.
+ *
+ * A shift bumps `emissionColorFullVersion`, which normally forces every camera
+ * through that full rebuild -- a whole-window byte pass plus a multi-megabyte
+ * `texImage3D`, once per commit, to move what is usually a handful of coloured
+ * cells. Since the texture is window-local and a shift doesn't resize it, the
+ * same result is reachable by clearing the chunks that were painted before and
+ * writing the ones painted now: cost proportional to the highlights rather than
+ * to the window.
+ *
+ * Declines when the texture doesn't exist yet, when its dimensions changed (a
+ * resize genuinely needs reallocation), when the channel can't report what's
+ * painted, or when too many chunks are involved for this to beat the rebuild.
+ */
+function repaintEmissionSparse(
+  gl: WebGL2RenderingContext,
+  camera: CameraT,
+  cellMap: CellMapT,
+): boolean {
+  const res = camera.glResources;
+  const previous = res.cellEmissionPaintedLocal;
+  if (!res.cellEmissionColorTexture || previous === null) return false;
+
+  const dims = res.solidityDims;
+  if (
+    !dims ||
+    dims.x !== cellMap.mapSize.x ||
+    dims.y !== cellMap.mapSize.y ||
+    dims.z !== cellMap.mapSize.z
+  ) {
+    // Window size changed since the last solidity upload sized the textures;
+    // treat that as a resize and let the full path reallocate.
+    return false;
+  }
+
+  const current = currentEmissionChunksLocal(cellMap);
+  if (current === null) return false;
+  if (previous.size + current.size > EMISSION_SPARSE_CHUNK_CAP) return false;
+
+  gl.activeTexture(gl.TEXTURE6);
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, res.cellEmissionColorTexture);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+
+  // Clear first, then paint: a chunk in both sets must end up with its live
+  // colours, so the write has to come second.
+  for (const local of previous.values()) {
+    uploadEmissionChunk(gl, cellMap, local, true);
+  }
+  for (const local of current.values()) {
+    uploadEmissionChunk(gl, cellMap, local, false);
+  }
+
+  res.cellEmissionPaintedLocal = current;
+  // `current` is a superset of what's actually coloured, so a non-empty set
+  // doesn't prove colour exists -- but hasAny only ever gates the shader term
+  // on, and the same conservative direction already applies to the delta path.
+  if (current.size > 0) res.cellEmissionColorHasAny = true;
+  return true;
 }
 
 function uploadCellEmissionColorTexture(
@@ -405,6 +601,10 @@ function uploadCellEmissionColorDelta(
     // behavior -- never wrong (never hides real color), at worst briefly
     // conservative.
     if (packed !== 0) camera.glResources.cellEmissionColorHasAny = true;
+    // Record the chunk so the next window shift knows to clear this texel --
+    // see `cellEmissionPaintedLocal`. Done for zero writes too: clearing a cell
+    // to black doesn't prove the rest of its chunk is black.
+    markEmissionChunkPainted(camera, cellMap, region.x, region.y, region.z);
     gl.texSubImage3D(
       gl.TEXTURE_2D_ARRAY,
       0,
@@ -522,6 +722,86 @@ const MATERIAL_SENTINEL = 0xffff;
 function materialTexel(value: number): number {
   if (value === MATERIAL_SENTINEL) return NO_MATERIAL_TEXEL;
   return Math.min(value, NO_MATERIAL_TEXEL - 1);
+}
+
+/**
+ * Reusable "no data captured" fill for the near-material texture: every texel
+ * `NO_MATERIAL_TEXEL`, so the shader's `nearMaterialAt` returns -1 and falls
+ * through to the coarse far-material tier. Built once per window size and kept.
+ */
+let nearMaterialClearScratch: Uint8Array | null = null;
+
+function nearMaterialClearBuffer(length: number): Uint8Array {
+  if (
+    nearMaterialClearScratch === null ||
+    nearMaterialClearScratch.length !== length
+  ) {
+    nearMaterialClearScratch = new Uint8Array(length).fill(NO_MATERIAL_TEXEL);
+  }
+  return nearMaterialClearScratch;
+}
+
+/** Reusable staging buffer for one z-slab of the near-material refill. */
+let nearMaterialSlabScratch: Uint8Array | null = null;
+
+function nearMaterialSlabBuffer(length: number): Uint8Array {
+  if (
+    nearMaterialSlabScratch === null ||
+    nearMaterialSlabScratch.length < length
+  ) {
+    nearMaterialSlabScratch = new Uint8Array(length);
+  }
+  return nearMaterialSlabScratch;
+}
+
+/**
+ * Z-layers of the near-material texture refilled per frame. The refill is the
+ * amortized replacement for a whole-window rebuild on every window-shift
+ * commit -- at 15ms it was the single largest item on a commit frame, and
+ * unlike emission it cannot be made sparse, because captured terrain memory
+ * grows dense as the map is explored.
+ */
+const NEAR_MATERIAL_REFILL_LAYERS_PER_FRAME = 8;
+
+/**
+ * Builds and uploads `layers` z-slices of the near-material texture starting at
+ * `startZ`, returning the next z to resume from (or the layer count once done).
+ */
+function refillNearMaterialSlab(
+  gl: WebGL2RenderingContext,
+  camera: CameraT,
+  cellMap: CellMapT,
+  startZ: number,
+  layers: number,
+): number {
+  const { x: mx, y: my, z: mz } = cellMap.mapSize;
+  const endZ = Math.min(mz, startZ + layers);
+  const sliceTexels = mx * my;
+  const count = (endZ - startZ) * sliceTexels;
+  if (count <= 0) return mz;
+
+  const values = cellMap.memoryMaterialMap.value;
+  const buf = nearMaterialSlabBuffer(count);
+  const base = startZ * sliceTexels;
+  for (let i = 0; i < count; i++) buf[i] = materialTexel(values[base + i]);
+
+  gl.activeTexture(gl.TEXTURE8);
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.nearMaterialTexture);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texSubImage3D(
+    gl.TEXTURE_2D_ARRAY,
+    0,
+    0,
+    0,
+    startZ,
+    mx,
+    my,
+    endZ - startZ,
+    gl.RED,
+    gl.UNSIGNED_BYTE,
+    buf.subarray(0, count),
+  );
+  return endZ;
 }
 
 function buildNearMaterialBytes(cellMap: CellMapT): Uint8Array {
@@ -1050,6 +1330,7 @@ export function renderCellMaps(
     let gpuUploadMs = 0;
     let emissionColorGpuUploadMs = 0;
     let solidityGpuUploadMs = 0;
+    let memoryTexUploadMs = 0;
     // Build this frame's render/cull volume in world space: a plain
     // axis-aligned box centered on the camera, with independent half-extents
     // per world axis (halfIsoX/halfIsoY/halfIsoZ). This is deliberately NOT
@@ -1168,8 +1449,19 @@ export function renderCellMaps(
       if (chunk.glIndexBuffer) gl.deleteBuffer(chunk.glIndexBuffer);
     }
 
-    // Rebuild any dirty chunks
-    rebuildDirtyChunks(cellMap);
+    // Rebuild any dirty chunks -- but not on the frame a window shift just
+    // committed. That frame already carries the whole unbudgeted commit cost
+    // (store reassembly, the auxiliary channels, the terrain-memory texture
+    // rebuild), and meshing would stack its own 4ms budget on top of work that
+    // has already blown the frame. It is also the frame with the MOST dirty
+    // chunks, so it is exactly where the budget runs to its limit.
+    //
+    // Deferring costs one frame of pop-in on newly-exposed terrain, which the
+    // chunk-generation buffer ring already hides: those chunks are resident but
+    // outside the cull volume, so they are usually not drawn yet anyway.
+    if (!windowJustCommitted) {
+      rebuildDirtyChunks(cellMap);
+    }
 
     // Set per-cell-map uniforms
     gl.uniform3f(
@@ -1296,6 +1588,14 @@ export function renderCellMaps(
     // gate the shader checks before running the vision-source loop at all.
     gl.uniform1i(uFogExempt, fogActive ? 0 : 1);
 
+    // The three terrain-memory textures (explored, near-material,
+    // far-material) share one timing bucket, reported as
+    // 'cell-map:memoryTexUpload'. They were previously unattributed entirely,
+    // which meant a window-shift commit -- the frame that forces all three
+    // through a full rebuild at once -- reported less cost than it actually
+    // incurred, with the remainder hidden inside the opaque 'render' phase.
+    const memoryTexT0 = profiling ? performance.now() : 0;
+
     // Fog-of-war "explored" texture -- same version + capped dirty-region
     // delta pattern as the emission-color texture below (a camera already
     // caught up to cellMap.exploredVersion does nothing; one behind but
@@ -1357,14 +1657,45 @@ export function renderCellMaps(
           camera.glResources.nearMaterialVersion,
         );
       } else {
+        // Full invalidation (a window shift). Rather than rebuilding and
+        // uploading the whole window in this frame -- the single most
+        // expensive thing on a commit frame -- clear the texture to "no data
+        // captured" from a prebuilt constant buffer (no per-cell CPU pass) and
+        // refill it a slab at a time over the following frames.
+        //
+        // Safe to render against mid-refill: a cleared texel reads as -1 in
+        // `nearMaterialAt`, which falls through to the per-chunk far-material
+        // tier (uploaded whole, and cheap at one texel per chunk). Remembered
+        // terrain therefore drops to coarse colour for a few frames instead of
+        // showing fine detail at a stale position.
         uploadNearMaterialTexture(
           gl,
           camera,
-          buildNearMaterialBytes(cellMap),
+          nearMaterialClearBuffer(cellMap.memoryMaterialMap.value.length),
           cellMap.mapSize,
         );
+        camera.glResources.nearMaterialRefillZ = 0;
       }
       camera.glResources.nearMaterialVersion = cellMap.memoryMaterialVersion;
+    }
+    // Drive an in-flight refill forward. Deliberately outside the version
+    // check above: the refill spans frames on which the version no longer
+    // changes, and must still finish.
+    if (
+      fogActive &&
+      windowCommitted &&
+      camera.glResources.nearMaterialRefillZ >= 0 &&
+      camera.glResources.nearMaterialTexture
+    ) {
+      const next = refillNearMaterialSlab(
+        gl,
+        camera,
+        cellMap,
+        camera.glResources.nearMaterialRefillZ,
+        NEAR_MATERIAL_REFILL_LAYERS_PER_FRAME,
+      );
+      camera.glResources.nearMaterialRefillZ =
+        next >= cellMap.mapSize.z ? -1 : next;
     }
     gl.activeTexture(gl.TEXTURE8);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.nearMaterialTexture);
@@ -1398,6 +1729,7 @@ export function renderCellMaps(
     gl.activeTexture(gl.TEXTURE9);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.farMaterialTexture);
     gl.uniform1i(uFarMaterialTexture, 9);
+    if (profiling) memoryTexUploadMs += performance.now() - memoryTexT0;
 
     // Per-cell emission (highlight) color texture (Part A). Versioned delta
     // tracking (mirrors the atlas-manager's atlasVersion/fullVersion/
@@ -1436,12 +1768,19 @@ export function renderCellMaps(
           cellMap,
           camera.glResources.cellEmissionColorVersion,
         );
-      } else {
+      } else if (!repaintEmissionSparse(gl, camera, cellMap)) {
         const { bytes, hasAny } = buildCellEmissionColorBytes(cellMap);
         camera.glResources.cellEmissionColorHasAny = hasAny;
         if (hasAny) {
           uploadCellEmissionColorTexture(gl, camera, bytes, cellMap.mapSize);
         }
+        // The texture now matches the map exactly, so the painted set is
+        // whatever currently holds colour. Recomputed from the channel rather
+        // than the byte scan: same answer, chunk-granular, and it keeps the
+        // two paths agreeing on what "painted" means.
+        camera.glResources.cellEmissionPaintedLocal = hasAny
+          ? currentEmissionChunksLocal(cellMap)
+          : new Map();
       }
       camera.glResources.cellEmissionColorVersion =
         cellMap.emissionColorVersion;
@@ -1848,6 +2187,12 @@ export function renderCellMaps(
         cellMap.name,
         'cell-map:solidityGpuUpload',
         solidityGpuUploadMs,
+      );
+      recordComponentUpdate(
+        cellMap.id ?? -1,
+        cellMap.name,
+        'cell-map:memoryTexUpload',
+        memoryTexUploadMs,
       );
     }
   }

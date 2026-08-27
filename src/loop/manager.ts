@@ -52,6 +52,13 @@ let currentFPS = 0;
 let frameCount = 0;
 
 /**
+ * `performance.now()` at the top of the current `gameLoop` tick. Handed to
+ * `endFrame` so a frame's profile can record what the frame itself cost,
+ * measured over the same span its per-component accumulators cover.
+ */
+let frameStartTime = 0;
+
+/**
  * Target frames per second (used for init time budget)
  */
 let targetFPS = 60;
@@ -91,6 +98,7 @@ async function gameLoop(currentTime: number): Promise<void> {
   // Calculate FPS
   currentFPS = deltaTime > 0 ? 1000 / deltaTime : 0;
   frameCount++;
+  frameStartTime = performance.now();
 
   const profiling = isProfilingEnabled();
   if (profiling) beginFrame();
@@ -148,7 +156,7 @@ async function gameLoop(currentTime: number): Promise<void> {
   pollFlags();
   if (profiling) recordPhase('messages', performance.now() - t0);
 
-  if (profiling) endFrame(deltaTime, currentFPS);
+  if (profiling) endFrame(deltaTime, currentFPS, frameStartTime);
 
   // Schedule next frame (wrap async gameLoop to handle errors)
   animationFrameId = requestAnimationFrame((time) => {
@@ -188,6 +196,10 @@ export function start(fps: number = 60): void {
   loopPaused = false;
   lastFrameTime = 0;
   deltaTime = 0;
+  // Seeded here rather than left at 0, so a profiled frame that somehow
+  // finalizes before the first tick sets it reports a sane `workTime` instead
+  // of measuring against the epoch.
+  frameStartTime = performance.now();
 
   console.info(`[GAME LOOP] Starting game loop (target: ${targetFPS} FPS)`);
 

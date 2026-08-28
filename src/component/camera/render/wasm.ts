@@ -32,6 +32,16 @@ interface RenderExports {
   store_expanded_ptr: () => number;
   store_expanded_len: () => number;
   store_generation: () => number;
+  store_set_wrap: (wx: number, wy: number, wz: number) => void;
+  store_write_box: (
+    x0: number,
+    y0: number,
+    z0: number,
+    dx: number,
+    dy: number,
+    dz: number,
+  ) => void;
+  store_dump_unwrapped: () => number;
   // Visibility
   solidity_run: () => number;
   // Meshing
@@ -143,17 +153,24 @@ export function cellStoreFlush(): void {
   ex().store_flush();
 }
 
-/** Returns a copy of the store as a flat packed array (for serialization). */
+/**
+ * Returns a copy of the store as a flat packed array in WINDOW-LOCAL raster
+ * order (for serialization and `packedData`).
+ *
+ * Goes through `store_dump_unwrapped` rather than reading the expanded buffer
+ * directly: internally the store is toroidally addressed, and every consumer
+ * here expects plain window-local order. Unwrapping at this boundary is what
+ * stops wrapped indices leaking into save files.
+ */
 export function cellStoreDump(): Uint32Array {
   const e = ex();
   const len = e.store_expanded_len();
   if (len === 0) return new Uint32Array(0);
-  // store_expanded_ptr() can lazily rebuild the Rust-side expanded buffer
-  // (Vec::resize), which may grow WASM memory and detach any ArrayBuffer
-  // reference captured before it runs — so the pointer must be captured
-  // first, and `.buffer` read fresh afterward (same pattern as solidity()
-  // and loadCellStore() below).
-  const ptr = e.store_expanded_ptr();
+  // store_dump_unwrapped() can lazily rebuild/resize Rust-side buffers, which
+  // may grow WASM memory and detach any ArrayBuffer reference captured before
+  // it runs — so the pointer must be captured first, and `.buffer` read fresh
+  // afterward (same pattern as solidity() and loadCellStore() below).
+  const ptr = e.store_dump_unwrapped();
   return new Uint32Array(e.memory.buffer, ptr, len).slice();
 }
 
@@ -221,6 +238,46 @@ let solidityLen = -1;
  */
 export function cellStoreGeneration(): number {
   return ex().store_generation();
+}
+
+/**
+ * Sets the store's per-axis toroidal wrap offset. Moves no data — it changes
+ * how window-local coordinates map to buffer slots, which is what lets a window
+ * shift leave every retained cell in place and write only the newly-exposed
+ * slab. `loadCellStore` resets it to zero.
+ */
+export function setCellStoreWrap(wx: number, wy: number, wz: number): void {
+  ex().store_set_wrap(wx, wy, wz);
+}
+
+/**
+ * Reserves the bulk-load input buffer for `count` cells and returns a view over
+ * it, for callers that want to pack a slab and hand it to `writeCellStoreBox`.
+ * Same buffer `loadCellStore` uses; consume it before the next reserve.
+ */
+export function reserveCellStoreInput(count: number): Uint32Array {
+  const e = ex();
+  const ptr = e.store_reserve(count);
+  return new Uint32Array(e.memory.buffer, ptr, count);
+}
+
+/**
+ * Writes a box of WINDOW-LOCAL cells from the input buffer into their wrapped
+ * slots, updating solidity for exactly those cells. The toroidal replacement
+ * for a whole-window `loadCellStore` on a shift: only the newly-exposed slab
+ * is written, so the cost is O(slab) rather than O(window).
+ *
+ * The box must lie inside the window. Cells are `dx*dy*dz` in x-fastest order.
+ */
+export function writeCellStoreBox(
+  x0: number,
+  y0: number,
+  z0: number,
+  dx: number,
+  dy: number,
+  dz: number,
+): void {
+  ex().store_write_box(x0, y0, z0, dx, dy, dz);
 }
 
 /**

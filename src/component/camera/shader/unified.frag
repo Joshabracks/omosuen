@@ -20,6 +20,9 @@ uniform highp vec3 u_cellSize;
     // (0,0,0)).
 uniform highp vec3 u_windowSize;
 uniform highp vec3 u_windowOrigin;
+// Toroidal wrap offset in CELLS: the window origin modulo the window size,
+// computed with integer math on the CPU. See `windowSlot`.
+uniform highp ivec3 u_windowWrapOffset;
 uniform vec4 u_normalUVBounds;
 
     // Per-side (per-triplanar-plane) frames for cells (Mode 0).
@@ -285,21 +288,35 @@ vec3 computeSpecular(vec3 normal, vec3 worldPos, vec3 viewDir, float metallic, f
     return spec * metallic;
 }
 
+// Window-local cell coordinate -> texel slot in a window-sized array texture.
+//
+// The resident window is addressed toroidally: a cell's slot derives from its
+// WORLD position (`u_windowWrapOffset` is the window origin modulo the window
+// size), so panning leaves every retained cell in place and only the
+// newly-exposed slab is rewritten. Callers must bounds-check `local` FIRST —
+// this wraps unconditionally, and a coordinate outside the window would fold
+// onto the opposite edge.
+//
+// Deliberately NOT `mod(worldCell, u_windowSize)`: world cell coordinates get
+// large and highp float mod loses exactness. `local` is small and exact, and
+// the offset arrives as an integer computed on the CPU.
+ivec3 windowSlot(vec3 local) {
+    return (ivec3(local) + u_windowWrapOffset) % ivec3(u_windowSize);
+}
+
 // Check if a cell at integer coordinates is solid by sampling the solidity texture.
 // Out-of-bounds cells are empty — without this, CLAMP_TO_EDGE would fold the lookup
 // back onto a real edge cell and report false occlusion (e.g. AO at the map border).
 bool isCellSolid(vec3 cell) {
     // `cell` is a world-cell coordinate; translate into the resident grid's
-    // own local space before bounds-checking/sampling — a no-op today
-    // (u_windowOrigin is always (0,0,0) until the shiftable hot window
-    // lands), but this is the seam that makes it correct once it does.
+    // own local space before bounds-checking/sampling.
     vec3 local = cell - u_windowOrigin;
     if(local.x < 0.0 || local.x >= u_windowSize.x ||
        local.y < 0.0 || local.y >= u_windowSize.y ||
        local.z < 0.0 || local.z >= u_windowSize.z) {
         return false;
     }
-    return texelFetch(u_cellSolidity, ivec3(local), 0).r > 0.5;
+    return texelFetch(u_cellSolidity, windowSlot(local), 0).r > 0.5;
 }
 
 // Per-cell emission (highlight) color, sampled by integer cell coordinate using the
@@ -311,7 +328,7 @@ vec3 cellEmissionColorAt(vec3 cell) {
        local.z < 0.0 || local.z >= u_windowSize.z) {
         return vec3(0.0);
     }
-    return texelFetch(u_cellEmissionColor, ivec3(local), 0).rgb;
+    return texelFetch(u_cellEmissionColor, windowSlot(local), 0).rgb;
 }
 
 // Map a face fragment to the solid cell that owns it. `a_origPosition` sits on
@@ -431,7 +448,7 @@ int nearMaterialAt(vec3 fragCellPos) {
        local.z < 0.0 || local.z >= u_windowSize.z) {
         return -1;
     }
-    int texel = int(texelFetch(u_nearMaterialTexture, ivec3(local), 0).r * 255.0 + 0.5);
+    int texel = int(texelFetch(u_nearMaterialTexture, windowSlot(local), 0).r * 255.0 + 0.5);
     return texel >= 255 ? -1 : texel;
 }
 

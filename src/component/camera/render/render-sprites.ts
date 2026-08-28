@@ -322,6 +322,10 @@ export function renderSprites(
   const u_zoom = gl.getUniformLocation(program, 'u_zoom');
   const u_cellSize = gl.getUniformLocation(program, 'u_cellSize');
   const u_windowSize = gl.getUniformLocation(program, 'u_windowSize');
+  const u_windowWrapOffset = gl.getUniformLocation(
+    program,
+    'u_windowWrapOffset',
+  );
   const u_worldOffset = gl.getUniformLocation(program, 'u_worldOffset');
   const u_spritePosition = gl.getUniformLocation(program, 'u_spritePosition');
   const u_spriteSize = gl.getUniformLocation(program, 'u_spriteSize');
@@ -431,6 +435,27 @@ export function renderSprites(
       : 0,
     originCellMap && windowOrigin
       ? windowOrigin.cz * originCellMap.chunkSize.z * originCellMap.cellSize.z
+      : 0,
+  );
+
+  // Toroidal wrap offset for u_cellSolidity lookups (isCellSolid, shared with
+  // the cell pass). Set here rather than inherited from renderCellMaps because
+  // this pass sets its OWN u_windowSize above, and `windowSlot` takes the
+  // modulo against that -- an offset computed against a different size would
+  // fold lookups onto the wrong texels. Same failure shape as the u_worldOffset
+  // mismatch documented above, so it is computed here from the same cell-map.
+  const wrapMod = (v: number, d: number): number =>
+    d > 0 ? ((v % d) + d) % d : 0;
+  gl.uniform3i(
+    u_windowWrapOffset,
+    originCellMap && windowOrigin
+      ? wrapMod(windowOrigin.cx * originCellMap.chunkSize.x, maxMapWidth)
+      : 0,
+    originCellMap && windowOrigin
+      ? wrapMod(windowOrigin.cy * originCellMap.chunkSize.y, maxMapHeight)
+      : 0,
+    originCellMap && windowOrigin
+      ? wrapMod(windowOrigin.cz * originCellMap.chunkSize.z, maxMapDepth)
       : 0,
   );
 

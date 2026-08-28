@@ -1,8 +1,5 @@
 import { AtlasManagerT } from '../../atlas-manager';
 import { CellMapT, CellMap, rebuildDirtyChunks } from '../../cell-map';
-// Reached directly rather than through the barrel: the channels are internal
-// cell-map state, deliberately not part of its public surface.
-import { cmEmissionColorChannel } from '../../cell-map/data';
 import { LightT } from '../../light';
 import { VisionSourceT } from '../../vision-source';
 import { FogOfWarT } from '../../fog-of-war';
@@ -328,187 +325,6 @@ function buildCellEmissionColorBytes(cellMap: CellMapT): {
   return { bytes, hasAny };
 }
 
-/**
- * Per-chunk staging buffer for the sparse emission path, grown on demand and
- * reused. Sized to one chunk's RGBA8 texels.
- */
-let emissionChunkScratch: Uint8Array | null = null;
-
-function emissionChunkBuffer(texels: number): Uint8Array {
-  const needed = texels * 4;
-  if (emissionChunkScratch === null || emissionChunkScratch.length < needed) {
-    emissionChunkScratch = new Uint8Array(needed);
-  }
-  return emissionChunkScratch;
-}
-
-/**
- * Uploads one chunk's worth of the emission texture at a window-local chunk
- * coordinate, either the live colours or (when `clear`) transparent black.
- */
-function uploadEmissionChunk(
-  gl: WebGL2RenderingContext,
-  cellMap: CellMapT,
-  local: { x: number; y: number; z: number },
-  clear: boolean,
-): void {
-  const { x: csx, y: csy, z: csz } = cellMap.chunkSize;
-  const { x: mx, y: my } = cellMap.mapSize;
-  const baseX = local.x * csx;
-  const baseY = local.y * csy;
-  const baseZ = local.z * csz;
-  const buf = emissionChunkBuffer(csx * csy * csz);
-  const packed = cellMap.emissionColorMap.value;
-
-  let o = 0;
-  for (let z = 0; z < csz; z++) {
-    for (let y = 0; y < csy; y++) {
-      const row = (baseZ + z) * my * mx + (baseY + y) * mx + baseX;
-      for (let x = 0; x < csx; x++) {
-        const p = clear ? 0 : packed[row + x] | 0;
-        buf[o] = (p >> 16) & 0xff;
-        buf[o + 1] = (p >> 8) & 0xff;
-        buf[o + 2] = p & 0xff;
-        buf[o + 3] = 255;
-        o += 4;
-      }
-    }
-  }
-
-  gl.texSubImage3D(
-    gl.TEXTURE_2D_ARRAY,
-    0,
-    baseX,
-    baseY,
-    baseZ,
-    csx,
-    csy,
-    csz,
-    gl.RGBA,
-    gl.UNSIGNED_BYTE,
-    buf.subarray(0, csx * csy * csz * 4),
-  );
-}
-
-/**
- * Beyond this many chunks to repaint, the whole-window rebuild is cheaper than
- * a texSubImage3D per chunk. Emission is a highlight channel -- a hover, a
- * selection, a zone glow -- so the sparse path is the normal case and this cap
- * exists for the pathological one (a map that has highlighted most of its
- * chunks at some point, since the channel's touched set never shrinks).
- */
-const EMISSION_SPARSE_CHUNK_CAP = 64;
-
-/**
- * Window-local chunk coordinates that currently hold emission colour, derived
- * from the channel's touched-chunk set (a conservative superset -- see
- * `AuxiliaryChannel.touchedChunks`). Returns null when the channel can't
- * answer, which forces the caller onto the full-rebuild path.
- */
-function currentEmissionChunksLocal(
-  cellMap: CellMapT,
-): Map<string, { x: number; y: number; z: number }> | null {
-  const touched = cmEmissionColorChannel?.touchedChunks();
-  const origin = cellMap.window.origin;
-  if (!touched || !origin) return null;
-  const grid = cellMap.chunkGridSize;
-  const out = new Map<string, { x: number; y: number; z: number }>();
-  for (const c of touched) {
-    const x = c.cx - origin.cx;
-    const y = c.cy - origin.cy;
-    const z = c.cz - origin.cz;
-    if (x < 0 || x >= grid.x || y < 0 || y >= grid.y || z < 0 || z >= grid.z) {
-      continue; // outside the resident window; nothing to paint
-    }
-    out.set(`${x},${y},${z}`, { x, y, z });
-  }
-  return out;
-}
-
-/**
- * Records that a chunk-local slot now holds colour in this camera's emission
- * texture. See `cellEmissionPaintedLocal` for why every write must do this.
- */
-function markEmissionChunkPainted(
-  camera: CameraT,
-  cellMap: CellMapT,
-  localCellX: number,
-  localCellY: number,
-  localCellZ: number,
-): void {
-  const painted = camera.glResources.cellEmissionPaintedLocal;
-  if (!painted) return;
-  const x = Math.floor(localCellX / cellMap.chunkSize.x);
-  const y = Math.floor(localCellY / cellMap.chunkSize.y);
-  const z = Math.floor(localCellZ / cellMap.chunkSize.z);
-  const key = `${x},${y},${z}`;
-  if (!painted.has(key)) painted.set(key, { x, y, z });
-}
-
-/**
- * Repaints the emission texture for a window shift by touching only the chunks
- * involved, instead of rebuilding and re-uploading the entire window-sized
- * texture. Returns false when it declines, leaving the caller to do the full
- * rebuild.
- *
- * A shift bumps `emissionColorFullVersion`, which normally forces every camera
- * through that full rebuild -- a whole-window byte pass plus a multi-megabyte
- * `texImage3D`, once per commit, to move what is usually a handful of coloured
- * cells. Since the texture is window-local and a shift doesn't resize it, the
- * same result is reachable by clearing the chunks that were painted before and
- * writing the ones painted now: cost proportional to the highlights rather than
- * to the window.
- *
- * Declines when the texture doesn't exist yet, when its dimensions changed (a
- * resize genuinely needs reallocation), when the channel can't report what's
- * painted, or when too many chunks are involved for this to beat the rebuild.
- */
-function repaintEmissionSparse(
-  gl: WebGL2RenderingContext,
-  camera: CameraT,
-  cellMap: CellMapT,
-): boolean {
-  const res = camera.glResources;
-  const previous = res.cellEmissionPaintedLocal;
-  if (!res.cellEmissionColorTexture || previous === null) return false;
-
-  const dims = res.solidityDims;
-  if (
-    !dims ||
-    dims.x !== cellMap.mapSize.x ||
-    dims.y !== cellMap.mapSize.y ||
-    dims.z !== cellMap.mapSize.z
-  ) {
-    // Window size changed since the last solidity upload sized the textures;
-    // treat that as a resize and let the full path reallocate.
-    return false;
-  }
-
-  const current = currentEmissionChunksLocal(cellMap);
-  if (current === null) return false;
-  if (previous.size + current.size > EMISSION_SPARSE_CHUNK_CAP) return false;
-
-  gl.activeTexture(gl.TEXTURE6);
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, res.cellEmissionColorTexture);
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-
-  // Clear first, then paint: a chunk in both sets must end up with its live
-  // colours, so the write has to come second.
-  for (const local of previous.values()) {
-    uploadEmissionChunk(gl, cellMap, local, true);
-  }
-  for (const local of current.values()) {
-    uploadEmissionChunk(gl, cellMap, local, false);
-  }
-
-  res.cellEmissionPaintedLocal = current;
-  // `current` is a superset of what's actually coloured, so a non-empty set
-  // doesn't prove colour exists -- but hasAny only ever gates the shader term
-  // on, and the same conservative direction already applies to the delta path.
-  if (current.size > 0) res.cellEmissionColorHasAny = true;
-  return true;
-}
-
 function uploadCellEmissionColorTexture(
   gl: WebGL2RenderingContext,
   camera: CameraT,
@@ -601,10 +417,10 @@ function uploadCellEmissionColorDelta(
     // behavior -- never wrong (never hides real color), at worst briefly
     // conservative.
     if (packed !== 0) camera.glResources.cellEmissionColorHasAny = true;
-    // Record the chunk so the next window shift knows to clear this texel --
-    // see `cellEmissionPaintedLocal`. Done for zero writes too: clearing a cell
-    // to black doesn't prove the rest of its chunk is black.
-    markEmissionChunkPainted(camera, cellMap, region.x, region.y, region.z);
+    // No painted-chunk bookkeeping any more: it existed so a window shift
+    // could clear the texels it had painted, and a shift no longer disturbs
+    // them. `region` is already a slot coordinate (see `setEmissionColor`), so
+    // the buffer read above and this texel write address the same cell.
     gl.texSubImage3D(
       gl.TEXTURE_2D_ARRAY,
       0,
@@ -1015,6 +831,10 @@ export function renderCellMaps(
   // them.
   const uWindowSize = gl.getUniformLocation(program, 'u_windowSize');
   const uWindowOrigin = gl.getUniformLocation(program, 'u_windowOrigin');
+  const uWindowWrapOffset = gl.getUniformLocation(
+    program,
+    'u_windowWrapOffset',
+  );
   const uWorldOffset = gl.getUniformLocation(program, 'u_worldOffset');
   const uAlbedoTexture = gl.getUniformLocation(program, 'u_albedoTexture');
   const uNormalTexture = gl.getUniformLocation(program, 'u_normalTexture');
@@ -1504,11 +1324,22 @@ export function renderCellMaps(
     const windowOrigin = cellMap.window.origin;
     // Cell units (see the uWindowOrigin/uWorldOffset comment above) -- used
     // by the fragment shader's reveal/occlusion sampling.
-    gl.uniform3f(
-      uWindowOrigin,
-      (windowOrigin?.cx ?? 0) * cellMap.chunkSize.x,
-      (windowOrigin?.cy ?? 0) * cellMap.chunkSize.y,
-      (windowOrigin?.cz ?? 0) * cellMap.chunkSize.z,
+    const originCellX = (windowOrigin?.cx ?? 0) * cellMap.chunkSize.x;
+    const originCellY = (windowOrigin?.cy ?? 0) * cellMap.chunkSize.y;
+    const originCellZ = (windowOrigin?.cz ?? 0) * cellMap.chunkSize.z;
+    gl.uniform3f(uWindowOrigin, originCellX, originCellY, originCellZ);
+    // Toroidal wrap offset, in integer math on the CPU -- the shader must not
+    // compute it from world coordinates itself, which would lose exactness at
+    // large positions. Origins go negative (the window is camera-centred), so
+    // the double modulo is load-bearing. Must match `CellWindow.wrapFor`, which
+    // is what the store is actually addressed by.
+    const wrap = (v: number, d: number): number =>
+      d > 0 ? ((v % d) + d) % d : 0;
+    gl.uniform3i(
+      uWindowWrapOffset,
+      wrap(originCellX, cellMap.mapSize.x),
+      wrap(originCellY, cellMap.mapSize.y),
+      wrap(originCellZ, cellMap.mapSize.z),
     );
     // World/continuous units (cellSize-scaled) -- used by the vertex
     // shader's position offset + depth-bias recentering.
@@ -1803,19 +1634,18 @@ export function renderCellMaps(
           cellMap,
           camera.glResources.cellEmissionColorVersion,
         );
-      } else if (!repaintEmissionSparse(gl, camera, cellMap)) {
+      } else {
+        // A straight rebuild from the channel's buffer. The sparse
+        // clear-and-repaint path this replaced existed only because a window
+        // shift invalidated the whole texture under window-local addressing --
+        // toroidally, a shift leaves every retained texel correct, so the only
+        // full rebuilds left are genuine ones (first upload, resize, dirty-log
+        // overflow) where there is nothing to be sparse about.
         const { bytes, hasAny } = buildCellEmissionColorBytes(cellMap);
         camera.glResources.cellEmissionColorHasAny = hasAny;
         if (hasAny) {
           uploadCellEmissionColorTexture(gl, camera, bytes, cellMap.mapSize);
         }
-        // The texture now matches the map exactly, so the painted set is
-        // whatever currently holds colour. Recomputed from the channel rather
-        // than the byte scan: same answer, chunk-granular, and it keeps the
-        // two paths agreeing on what "painted" means.
-        camera.glResources.cellEmissionPaintedLocal = hasAny
-          ? currentEmissionChunksLocal(cellMap)
-          : new Map();
       }
       camera.glResources.cellEmissionColorVersion =
         cellMap.emissionColorVersion;

@@ -21,6 +21,9 @@ import {
   getExpandedStoreView,
   getReassembleViews,
   commitCellStore,
+  setCellStoreWrap,
+  reserveCellStoreInput,
+  writeCellStoreBox,
 } from '../camera/render/wasm';
 import type { ChunkColdStorage } from './cold-storage';
 import { isProfilingEnabled } from '../../loop/profile';
@@ -751,6 +754,7 @@ export class CellWindow {
       worldChunk.cy - origin.cy,
       worldChunk.cz - origin.cz,
       this.cellDims,
+      this.wrapFor(origin, this.cellDims),
     );
   }
 
@@ -1054,7 +1058,16 @@ export class CellWindow {
               // hidden baselineChunk/generator call) entirely.
               continue;
             }
-            const cells = this.extractChunk(source, cx, cy, cz, oldCellDims);
+            // Reads the store as it stands BEFORE the wrap is updated below,
+            // so this must use the OLD origin's offset.
+            const cells = this.extractChunk(
+              source,
+              cx,
+              cy,
+              cz,
+              oldCellDims,
+              this.wrapFor(oldOrigin, oldCellDims),
+            );
             const matches = this.matchesBaseline(worldChunk, cells);
             if (matches) {
               this.editedSinceBaseline.delete(key);
@@ -1084,85 +1097,57 @@ export class CellWindow {
     // Chunk grids map cleanly onto cell grids because every construction and
     // resize path keeps `cellDims === gridDims * chunkSize`, so the chunk-space
     // overlap and the cell-space overlap describe the same region.
-    if (oldOrigin) {
-      const { x: csx, y: csy, z: csz } = this.chunkSize;
-      const oldOx = oldOrigin.cx * csx;
-      const oldOy = oldOrigin.cy * csy;
-      const oldOz = oldOrigin.cz * csz;
-      const newOx = newOrigin.cx * csx;
-      const newOy = newOrigin.cy * csy;
-      const newOz = newOrigin.cz * csz;
+    const newWrap = this.wrapFor(newOrigin, newCellDims);
+    const dimsChanged =
+      oldCellDims.x !== dimX ||
+      oldCellDims.y !== dimY ||
+      oldCellDims.z !== dimZ;
 
-      // Overlap in world cells, half-open [min, max).
-      const minWX = Math.max(oldOx, newOx);
-      const maxWX = Math.min(oldOx + oldCellDims.x, newOx + dimX);
-      const minWY = Math.max(oldOy, newOy);
-      const maxWY = Math.min(oldOy + oldCellDims.y, newOy + dimY);
-      const minWZ = Math.max(oldOz, newOz);
-      const maxWZ = Math.min(oldOz + oldCellDims.z, newOz + dimZ);
-
-      if (minWX < maxWX && minWY < maxWY && minWZ < maxWZ) {
-        const runLength = maxWX - minWX;
-        const oldDimX = oldCellDims.x;
-        const oldDimY = oldCellDims.y;
-        for (let wz = minWZ; wz < maxWZ; wz++) {
-          const oldZ = (wz - oldOz) * oldDimY * oldDimX;
-          const newZ = (wz - newOz) * dimY * dimX;
-          for (let wy = minWY; wy < maxWY; wy++) {
-            const oldStart = oldZ + (wy - oldOy) * oldDimX + (minWX - oldOx);
-            const newStart = newZ + (wy - newOy) * dimX + (minWX - newOx);
-            dest.set(source.subarray(oldStart, oldStart + runLength), newStart);
+    if (oldOrigin !== null && !dimsChanged) {
+      // ---- Shift: only the newly-exposed slab is written. ----
+      //
+      // Under toroidal addressing a cell's slot is derived from its WORLD
+      // position, so every chunk that stays resident is already sitting in the
+      // slot the new origin implies. Declaring the new wrap is therefore all it
+      // takes to "move" the window; nothing is copied. This is the whole point
+      // of the scheme, and what turns an O(window) commit into O(slab).
+      setCellStoreWrap(newWrap.x, newWrap.y, newWrap.z);
+      this.writeExposedSlabs(
+        newOrigin,
+        newGridDims,
+        newCellDims,
+        oldOrigin,
+        oldGridDims,
+        staged,
+      );
+    } else {
+      // ---- Initial load or resize: rebuild the whole window. ----
+      //
+      // A resize changes cellDims, which changes every slot, so there is no
+      // incremental path. `dest` is assembled in WRAPPED order and handed to
+      // `commitCellStore`, which copies it verbatim and resets the wrap to
+      // zero -- so the real offset is declared immediately afterwards.
+      for (let cz = 0; cz < newGridDims.z; cz++) {
+        for (let cy = 0; cy < newGridDims.y; cy++) {
+          for (let cx = 0; cx < newGridDims.x; cx++) {
+            const worldChunk = {
+              cx: newOrigin.cx + cx,
+              cy: newOrigin.cy + cy,
+              cz: newOrigin.cz + cz,
+            };
+            const key = this.chunkKey(
+              worldChunk.cx,
+              worldChunk.cy,
+              worldChunk.cz,
+            );
+            const cells = staged?.get(key) ?? this.resolveChunk(worldChunk);
+            this.writeChunk(dest, cx, cy, cz, cells, newCellDims, newWrap);
           }
         }
       }
+      commitCellStore(dimX, dimY, dimZ);
+      setCellStoreWrap(newWrap.x, newWrap.y, newWrap.z);
     }
-
-    // Pass 2 fills every chunk the overlap did not cover -- the newly-exposed
-    // slab -- from `staged` (generated or cold-storage-resolved by `advance()`)
-    // or, as a fallback, resolved on the spot.
-    //
-    // Deliberately runs AFTER the overlap copy so a chunk that was edited while
-    // the shift was still staging wins: `advance()` re-resolves those into
-    // `staged` at commit time (see `editedDuringStaging`), and writing them
-    // last means that re-resolution overwrites whatever the memcpy carried
-    // over. A staged entry is always at least as current as the live store.
-    for (let cz = 0; cz < newGridDims.z; cz++) {
-      for (let cy = 0; cy < newGridDims.y; cy++) {
-        for (let cx = 0; cx < newGridDims.x; cx++) {
-          const worldChunk = {
-            cx: newOrigin.cx + cx,
-            cy: newOrigin.cy + cy,
-            cz: newOrigin.cz + cz,
-          };
-          const key = this.chunkKey(
-            worldChunk.cx,
-            worldChunk.cy,
-            worldChunk.cz,
-          );
-          const stagedCells = staged?.get(key);
-          if (stagedCells) {
-            this.writeChunk(dest, cx, cy, cz, stagedCells, newCellDims);
-            continue;
-          }
-          // Already carried over by the overlap copy above.
-          if (oldOrigin && this.isWithin(worldChunk, oldOrigin, oldGridDims)) {
-            continue;
-          }
-          // Neither staged nor resident: a chunk `neededForTarget` omitted
-          // because cold storage covered it, or an immediate (unstaged) commit.
-          this.writeChunk(
-            dest,
-            cx,
-            cy,
-            cz,
-            this.resolveChunk(worldChunk),
-            newCellDims,
-          );
-        }
-      }
-    }
-
-    commitCellStore(dimX, dimY, dimZ);
     this.originChunk = newOrigin;
     this.gridDims = newGridDims;
     this.cellDims = newCellDims;
@@ -1266,19 +1251,158 @@ export class CellWindow {
    *  flat array of the given cell dims, in chunk-local (0..chunkSize) order.
    *  `dims` is explicit (not `this.cellDims`) because during a resize the
    *  source flat array may be the OLD window's size, not the current one. */
+  /**
+   * Per-axis toroidal wrap offset for a window origin, in CELLS:
+   * `((originCells % cellDims) + cellDims) % cellDims`.
+   *
+   * Always a multiple of `chunkSize`, since `originCells` and `cellDims` both
+   * are — which is why a chunk never straddles the wrap seam and the row-wise
+   * bulk copies below stay contiguous.
+   */
+  private wrapFor(
+    origin: ChunkCoord,
+    cellDims: { x: number; y: number; z: number },
+  ): { x: number; y: number; z: number } {
+    const { x: csx, y: csy, z: csz } = this.chunkSize;
+    const w = (v: number, d: number): number => ((v % d) + d) % d;
+    return {
+      x: w(origin.cx * csx, cellDims.x),
+      y: w(origin.cy * csy, cellDims.y),
+      z: w(origin.cz * csz, cellDims.z),
+    };
+  }
+
+  /**
+   * Writes the chunks a shift newly exposed -- the new window minus the region
+   * it shares with the old one -- into the store, as a small number of
+   * contiguous boxes.
+   *
+   * The exposed region is a shell around the overlap, which decomposes into at
+   * most six disjoint boxes (two per axis, and a pure shift produces at most
+   * one per axis). Writing boxes rather than one call per chunk keeps the
+   * WASM-side copy in long runs: a box row spans the full box width instead of
+   * a single chunk's.
+   *
+   * With no overlap at all, the X pass alone covers the whole grid.
+   */
+  private writeExposedSlabs(
+    newOrigin: ChunkCoord,
+    newGridDims: { x: number; y: number; z: number },
+    newCellDims: { x: number; y: number; z: number },
+    oldOrigin: ChunkCoord,
+    oldGridDims: { x: number; y: number; z: number },
+    staged: Map<string, Uint32Array> | undefined,
+  ): void {
+    // Overlap in NEW-local CHUNK coordinates, half-open. Empty ranges collapse
+    // to [0,0), which makes the X pass below cover everything.
+    const lo = {
+      x: Math.max(oldOrigin.cx, newOrigin.cx) - newOrigin.cx,
+      y: Math.max(oldOrigin.cy, newOrigin.cy) - newOrigin.cy,
+      z: Math.max(oldOrigin.cz, newOrigin.cz) - newOrigin.cz,
+    };
+    const hi = {
+      x:
+        Math.min(oldOrigin.cx + oldGridDims.x, newOrigin.cx + newGridDims.x) -
+        newOrigin.cx,
+      y:
+        Math.min(oldOrigin.cy + oldGridDims.y, newOrigin.cy + newGridDims.y) -
+        newOrigin.cy,
+      z:
+        Math.min(oldOrigin.cz + oldGridDims.z, newOrigin.cz + newGridDims.z) -
+        newOrigin.cz,
+    };
+    if (lo.x >= hi.x || lo.y >= hi.y || lo.z >= hi.z) {
+      lo.x = hi.x = lo.y = hi.y = lo.z = hi.z = 0;
+    }
+
+    const g = newGridDims;
+    const boxes: {
+      x0: number;
+      x1: number;
+      y0: number;
+      y1: number;
+      z0: number;
+      z1: number;
+    }[] = [];
+    // X slabs span the full Y/Z extent; Y slabs are then restricted to the
+    // overlap's X range, and Z slabs to the overlap's X and Y -- which is what
+    // keeps the six boxes disjoint.
+    if (lo.x > 0)
+      boxes.push({ x0: 0, x1: lo.x, y0: 0, y1: g.y, z0: 0, z1: g.z });
+    if (hi.x < g.x)
+      boxes.push({ x0: hi.x, x1: g.x, y0: 0, y1: g.y, z0: 0, z1: g.z });
+    if (lo.y > 0)
+      boxes.push({ x0: lo.x, x1: hi.x, y0: 0, y1: lo.y, z0: 0, z1: g.z });
+    if (hi.y < g.y)
+      boxes.push({ x0: lo.x, x1: hi.x, y0: hi.y, y1: g.y, z0: 0, z1: g.z });
+    if (lo.z > 0)
+      boxes.push({ x0: lo.x, x1: hi.x, y0: lo.y, y1: hi.y, z0: 0, z1: lo.z });
+    if (hi.z < g.z)
+      boxes.push({ x0: lo.x, x1: hi.x, y0: lo.y, y1: hi.y, z0: hi.z, z1: g.z });
+
+    const { x: csx, y: csy, z: csz } = this.chunkSize;
+    for (const b of boxes) {
+      const bcx = b.x1 - b.x0;
+      const bcy = b.y1 - b.y0;
+      const bcz = b.z1 - b.z0;
+      if (bcx <= 0 || bcy <= 0 || bcz <= 0) continue;
+
+      const dx = bcx * csx;
+      const dy = bcy * csy;
+      const dz = bcz * csz;
+      const view = reserveCellStoreInput(dx * dy * dz);
+
+      for (let cz = b.z0; cz < b.z1; cz++) {
+        for (let cy = b.y0; cy < b.y1; cy++) {
+          for (let cx = b.x0; cx < b.x1; cx++) {
+            const worldChunk = {
+              cx: newOrigin.cx + cx,
+              cy: newOrigin.cy + cy,
+              cz: newOrigin.cz + cz,
+            };
+            const key = this.chunkKey(
+              worldChunk.cx,
+              worldChunk.cy,
+              worldChunk.cz,
+            );
+            const cells = staged?.get(key) ?? this.resolveChunk(worldChunk);
+            // Scatter the chunk's rows into their place within the box buffer.
+            const ox = (cx - b.x0) * csx;
+            const oy = (cy - b.y0) * csy;
+            const oz = (cz - b.z0) * csz;
+            let src = 0;
+            for (let z = 0; z < csz; z++) {
+              for (let y = 0; y < csy; y++) {
+                const dst = ((oz + z) * dy + (oy + y)) * dx + ox;
+                view.set(cells.subarray(src, src + csx), dst);
+                src += csx;
+              }
+            }
+          }
+        }
+      }
+
+      writeCellStoreBox(b.x0 * csx, b.y0 * csy, b.z0 * csz, dx, dy, dz);
+    }
+  }
+
   private extractChunk(
     flat: Uint32Array,
     cx: number,
     cy: number,
     cz: number,
-    dims: { x: number; y: number },
+    dims: { x: number; y: number; z: number },
+    wrap: { x: number; y: number; z: number },
   ): Uint32Array {
     const { x: csx, y: csy, z: csz } = this.chunkSize;
     const { x: dimX, y: dimY } = dims;
     const out = new Uint32Array(csx * csy * csz);
-    const baseX = cx * csx;
-    const baseY = cy * csy;
-    const baseZ = cz * csz;
+    // Wrapped chunk base. `wrap` is chunk-aligned (see `wrapFor`), so adding
+    // the in-chunk offsets below can never cross a dimension boundary and each
+    // row stays a single contiguous run.
+    const baseX = (cx * csx + wrap.x) % dimX;
+    const baseY = (cy * csy + wrap.y) % dimY;
+    const baseZ = (cz * csz + wrap.z) % dims.z;
     let idx = 0;
     // A chunk's cells aren't contiguous in the whole-window flat array
     // (dims-strided, not chunk-strided), but for a fixed (y,z) the x-range
@@ -1303,13 +1427,14 @@ export class CellWindow {
     cy: number,
     cz: number,
     cells: Uint32Array,
-    dims: { x: number; y: number },
+    dims: { x: number; y: number; z: number },
+    wrap: { x: number; y: number; z: number },
   ): void {
     const { x: csx, y: csy, z: csz } = this.chunkSize;
     const { x: dimX, y: dimY } = dims;
-    const baseX = cx * csx;
-    const baseY = cy * csy;
-    const baseZ = cz * csz;
+    const baseX = (cx * csx + wrap.x) % dimX;
+    const baseY = (cy * csy + wrap.y) % dimY;
+    const baseZ = (cz * csz + wrap.z) % dims.z;
     let idx = 0;
     // Mirror of extractChunk's row-wise bulk copy.
     for (let z = 0; z < csz; z++) {

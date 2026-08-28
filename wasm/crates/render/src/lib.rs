@@ -147,6 +147,17 @@ struct CellStore {
     /// must be able to answer a read. Every site that clears one is responsible
     /// for establishing the other first.
     rle_valid: bool,
+    /// Per-axis wrap offset for toroidal (clipmap) window addressing:
+    /// `((originCells % dims) + dims) % dims`, supplied by JS.
+    ///
+    /// The window is a ring buffer per axis, so a cell's slot depends only on
+    /// its world position, never on where the window currently sits. Shifting
+    /// the window then rewrites only the newly-exposed slab instead of
+    /// re-addressing every resident cell.
+    ///
+    /// All zeros means "no wrapping", in which case every index below is
+    /// identical to the plain window-local one.
+    wrap: [usize; 3],
     /// Monotonic counter bumped on every change to cell CONTENTS -- single-cell
     /// writes (`set`) and bulk loads (`store_load`). Deliberately NOT bumped by
     /// `flush`/`compress_from`, which re-encode the same contents into different
@@ -173,6 +184,7 @@ impl CellStore {
             // An empty store has an empty (and therefore trivially accurate)
             // RLE, which satisfies the invariant before anything is loaded.
             rle_valid: true,
+            wrap: [0, 0, 0],
             generation: 0,
         }
     }
@@ -236,24 +248,42 @@ impl CellStore {
         self.solidity_valid = solidity_was_valid;
     }
 
+    /// Raw window-local linear index. Used for RANGE CHECKING and as the key
+    /// for out-of-range `dirty` entries -- deliberately NOT wrapped, so an
+    /// out-of-range coordinate still produces an index past `total` that `set`
+    /// can detect. Not a buffer offset; see `slot_index`.
     fn coord_index(&self, x: usize, y: usize, z: usize) -> usize {
         z * self.dims[1] * self.dims[0] + y * self.dims[0] + x
     }
 
+    /// Buffer offset for a window-local coordinate, wrapped per axis (see
+    /// `wrap`). This is the only place cell addressing wraps; callers must have
+    /// established that the coordinate is in range first, since wrapping an
+    /// out-of-range coordinate would silently alias a valid cell.
+    fn slot_index(&self, x: usize, y: usize, z: usize) -> usize {
+        slot_index_of(x, y, z, self.dims, self.wrap)
+    }
+
     fn get_index(&self, idx: usize) -> u32 {
+        // `expanded` is checked FIRST, before `dirty`, because it is
+        // authoritative whenever valid: `set` patches it on every in-range
+        // write, so it already contains everything `dirty` holds. Checking it
+        // first also skips a BTreeMap probe on the hot read path.
+        //
+        // This ordering is what lets `store_write_box` clear `dirty` outright
+        // rather than removing the overwritten slots one by one -- see there.
+        if self.expanded_valid {
+            if idx < self.expanded.len() {
+                return self.expanded[idx];
+            }
+            // Out of range: only `dirty` can hold such an entry, and an
+            // out-of-range write invalidates `expanded`, so reaching here means
+            // there is nothing to find. 0 matches what the search below returns
+            // when no run covers the index.
+            return self.dirty.get(&idx).copied().unwrap_or(0);
+        }
         if let Some(&v) = self.dirty.get(&idx) {
             return v;
-        }
-        // Serve from the expanded cache whenever it is current: O(1) instead of
-        // the binary search below, and after a bulk load it is always current.
-        // Out-of-range reads return 0, matching what the search does when it
-        // finds no run covering the index.
-        if self.expanded_valid {
-            return if idx < self.expanded.len() {
-                self.expanded[idx]
-            } else {
-                0
-            };
         }
         // Only reachable when `expanded` has been dropped, which the invariant
         // guarantees leaves a valid RLE behind.
@@ -378,6 +408,29 @@ impl CellStore {
     }
 }
 
+/// Wrapped buffer offset for a window-local cell coordinate — the one place
+/// toroidal addressing is applied. Free function rather than a `CellStore`
+/// method because the mesher works from borrowed slices rather than `&self`.
+///
+/// The caller is responsible for bounds-checking `x/y/z` against `dims` FIRST.
+/// Bounds checks must stay in window-local space: a coordinate at `dims[0]` is
+/// genuinely outside the resident window (`EDGE_OCCLUDES` territory), and
+/// wrapping it here would make the window's opposite edge masquerade as an
+/// adjacent neighbour.
+#[inline]
+fn slot_index_of(
+    x: usize,
+    y: usize,
+    z: usize,
+    dims: [usize; 3],
+    wrap: [usize; 3],
+) -> usize {
+    let sx = (x + wrap[0]) % dims[0];
+    let sy = (y + wrap[1]) % dims[1];
+    let sz = (z + wrap[2]) % dims[2];
+    sz * dims[1] * dims[0] + sy * dims[0] + sx
+}
+
 #[inline]
 fn solid_byte(packed: u32) -> u8 {
     if unpack_visible_solid(packed) {
@@ -389,6 +442,9 @@ fn solid_byte(packed: u32) -> u8 {
 
 static mut STORE: CellStore = CellStore::new();
 static mut STORE_INPUT: Vec<u32> = Vec::new();
+/// Scratch for `store_dump_unwrapped`. Separate from `STORE_INPUT` so a dump
+/// can never clobber a bulk load's staging buffer.
+static mut STORE_UNWRAP: Vec<u32> = Vec::new();
 static mut CELL_SIZE: [f64; 3] = [0.0, 0.0, 0.0];
 
 /// Reserves the bulk-load input buffer (`count` u32s) and returns its pointer.
@@ -436,6 +492,9 @@ pub extern "C" fn store_load(mx: usize, my: usize, mz: usize) {
         store.dirty.clear();
         // Lazy, as before: a frame that never asks for solidity shouldn't pay.
         store.solidity_valid = false;
+        // A bulk load supplies plain window-local order, so any previous
+        // toroidal offset no longer describes this buffer.
+        store.wrap = [0, 0, 0];
         store.generation = store.generation.wrapping_add(1);
     }
 }
@@ -444,7 +503,14 @@ pub extern "C" fn store_load(mx: usize, my: usize, mz: usize) {
 pub extern "C" fn store_get(x: usize, y: usize, z: usize) -> u32 {
     unsafe {
         let store = &*core::ptr::addr_of!(STORE);
-        store.get_index(store.coord_index(x, y, z))
+        // Range-check in window-local space, then address the buffer through
+        // the wrapped slot. An out-of-range coordinate keeps its raw index so
+        // any `dirty` entry recorded for it is still found.
+        if x < store.dims[0] && y < store.dims[1] && z < store.dims[2] {
+            store.get_index(store.slot_index(x, y, z))
+        } else {
+            store.get_index(store.coord_index(x, y, z))
+        }
     }
 }
 
@@ -452,7 +518,14 @@ pub extern "C" fn store_get(x: usize, y: usize, z: usize) -> u32 {
 pub extern "C" fn store_set(x: usize, y: usize, z: usize, packed: u32) {
     unsafe {
         let store = &mut *core::ptr::addr_of_mut!(STORE);
-        let idx = store.coord_index(x, y, z);
+        // See `store_get`: in-range writes address the wrapped slot; an
+        // out-of-range one keeps its raw index so `set` still recognises it as
+        // out of range and takes the derived-view invalidation path.
+        let idx = if x < store.dims[0] && y < store.dims[1] && z < store.dims[2] {
+            store.slot_index(x, y, z)
+        } else {
+            store.coord_index(x, y, z)
+        };
         store.set(idx, packed);
     }
 }
@@ -478,6 +551,153 @@ pub extern "C" fn store_expanded_ptr() -> *const u32 {
 #[no_mangle]
 pub extern "C" fn store_expanded_len() -> usize {
     unsafe { (*core::ptr::addr_of!(STORE)).total }
+}
+
+/// Writes a box of window-local cells from `STORE_INPUT` into their wrapped
+/// slots, updating solidity for exactly those cells.
+///
+/// This is the toroidal replacement for `store_load` on a window SHIFT. Under
+/// toroidal addressing a shift leaves every retained cell already sitting in
+/// the slot its world position implies, so only the newly-exposed slab needs
+/// writing -- turning an O(window) rebuild into O(slab).
+///
+/// Input is `dx*dy*dz` cells in x-fastest / z-slowest order, matching the
+/// order JS packs chunks in elsewhere. `x0/y0/z0` are WINDOW-LOCAL and the box
+/// must lie inside the window; wrapping is applied per axis when addressing the
+/// destination, so a row can straddle the X seam and is written as two runs.
+#[no_mangle]
+pub extern "C" fn store_write_box(
+    x0: usize,
+    y0: usize,
+    z0: usize,
+    dx: usize,
+    dy: usize,
+    dz: usize,
+) {
+    unsafe {
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        if dx == 0 || dy == 0 || dz == 0 {
+            return;
+        }
+        let dims = store.dims;
+        if x0 + dx > dims[0] || y0 + dy > dims[1] || z0 + dz > dims[2] {
+            return; // caller error; writing would alias unrelated cells
+        }
+
+        // `expanded` must be the source of truth before we write into it.
+        store.ensure_expanded();
+        // Safe to drop wholesale rather than removing just the overwritten
+        // slots: `set` mirrors every in-range write into `expanded`, so with
+        // `expanded` valid there is nothing in `dirty` that isn't already
+        // there. Keeping stale entries WOULD be a bug -- a pending write is
+        // keyed by slot, and a slot this box overwrites now holds a different
+        // world cell entirely.
+        store.dirty.clear();
+
+        let track_solidity = store.solidity_valid;
+        if track_solidity && store.solidity.len() < store.total {
+            store.solidity.resize(store.total, 0);
+        }
+
+        let input = &*core::ptr::addr_of!(STORE_INPUT);
+        let wrap = store.wrap;
+        let row_span = dims[0];
+        let mut src = 0usize;
+        for z in z0..z0 + dz {
+            let sz = (z + wrap[2]) % dims[2];
+            for y in y0..y0 + dy {
+                let sy = (y + wrap[1]) % dims[1];
+                let row_base = sz * dims[1] * row_span + sy * row_span;
+                let sx0 = (x0 + wrap[0]) % row_span;
+                // A destination row wraps at most once, so at most two runs.
+                let head = (row_span - sx0).min(dx);
+                for i in 0..head {
+                    let v = input[src + i];
+                    store.expanded[row_base + sx0 + i] = v;
+                    if track_solidity {
+                        store.solidity[row_base + sx0 + i] = solid_byte(v);
+                    }
+                }
+                for i in head..dx {
+                    let v = input[src + i];
+                    store.expanded[row_base + (i - head)] = v;
+                    if track_solidity {
+                        store.solidity[row_base + (i - head)] = solid_byte(v);
+                    }
+                }
+                src += dx;
+            }
+        }
+
+        // Contents changed, so the compact form no longer describes them. The
+        // expanded cache stays valid -- we just wrote it -- which preserves the
+        // `expanded_valid || rle_valid` invariant.
+        store.rle_valid = false;
+        store.generation = store.generation.wrapping_add(1);
+    }
+}
+
+/// Fills `STORE_UNWRAP` with the store's cells in plain window-local raster
+/// order and returns a pointer to it. Length is `store_expanded_len()`.
+///
+/// Toroidal storage is an internal representation; every external consumer
+/// (`packedData`, serialization) expects window-local order. Doing the unwrap
+/// here keeps wrapped indices from leaking into save files and debug output,
+/// and costs a whole-window pass only on paths that are already rare.
+#[no_mangle]
+pub extern "C" fn store_dump_unwrapped() -> *const u32 {
+    unsafe {
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        store.ensure_expanded();
+        let dims = store.dims;
+        let wrap = store.wrap;
+        let total = store.total;
+        let out = &mut *core::ptr::addr_of_mut!(STORE_UNWRAP);
+        if out.len() < total {
+            out.resize(total, 0);
+        }
+        let row_span = dims[0];
+        for z in 0..dims[2] {
+            let sz = (z + wrap[2]) % dims[2];
+            for y in 0..dims[1] {
+                let sy = (y + wrap[1]) % dims[1];
+                let src_base = sz * dims[1] * row_span + sy * row_span;
+                let dst_base = z * dims[1] * row_span + y * row_span;
+                let sx0 = wrap[0] % row_span.max(1);
+                let head = row_span - sx0;
+                for i in 0..head {
+                    out[dst_base + i] = store.expanded[src_base + sx0 + i];
+                }
+                for i in head..row_span {
+                    out[dst_base + i] = store.expanded[src_base + (i - head)];
+                }
+            }
+        }
+        out.as_ptr()
+    }
+}
+
+/// Sets the per-axis toroidal wrap offset -- see `CellStore::wrap`.
+///
+/// Moves NO data: it changes how window-local coordinates map to buffer slots.
+/// That is the point of the scheme on a window shift, where every retained cell
+/// is already sitting in the slot its world position implies, so only the
+/// newly-exposed slab needs writing afterwards.
+///
+/// `store_load` resets this to zero, since a bulk load supplies a buffer in
+/// plain window-local order by definition. Callers that want a wrapped layout
+/// must set it after loading.
+#[no_mangle]
+pub extern "C" fn store_set_wrap(wx: usize, wy: usize, wz: usize) {
+    unsafe {
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        let dims = store.dims;
+        store.wrap = [
+            if dims[0] > 0 { wx % dims[0] } else { 0 },
+            if dims[1] > 0 { wy % dims[1] } else { 0 },
+            if dims[2] > 0 { wz % dims[2] } else { 0 },
+        ];
+    }
 }
 
 /// Monotonic counter over changes to cell CONTENTS -- see `CellStore::generation`.
@@ -749,6 +969,7 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
         store.ensure_expanded();
         let packed = &store.expanded;
         let map_dim = store.dims;
+        let store_wrap_snapshot = store.wrap;
         let cell_size = *core::ptr::addr_of!(CELL_SIZE);
         let custom_shapes = &*core::ptr::addr_of!(CUSTOM_SHAPES);
         let uv_enabled = *core::ptr::addr_of!(CUSTOM_UV_ENABLED);
@@ -773,8 +994,13 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
             (start[2] + chunk_size[2]).min(map_z),
         ];
         let dims = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
-        let stride_y = map_x;
-        let stride_z = map_x * map_y;
+        // Every cell read below goes through this rather than a raw stride, so
+        // toroidal window addressing is applied in exactly one place. Bounds
+        // checks stay in window-local space -- see `slot_index_of`.
+        let store_wrap = store_wrap_snapshot;
+        let cell_at = |x: usize, y: usize, z: usize| -> usize {
+            slot_index_of(x, y, z, map_dim, store_wrap)
+        };
 
         let mut quads: Vec<Quad> = Vec::new();
 
@@ -800,8 +1026,7 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                         coords[v_axis] = v_start + v;
                         coords[n_axis] = n;
 
-                        let cell_index =
-                            coords[2] * stride_z + coords[1] * stride_y + coords[0];
+                        let cell_index = cell_at(coords[0], coords[1], coords[2]);
                         let p = packed[cell_index];
                         if !unpack_visible_solid(p) {
                             continue;
@@ -829,9 +1054,10 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                             && nbz >= 0
                             && nbz < map_z as i64
                         {
-                            let nidx = nbz as usize * stride_z
-                                + nby as usize * stride_y
-                                + nbx as usize;
+                            // Bounds already confirmed in window-local space
+                            // above; only the address wraps.
+                            let nidx =
+                                cell_at(nbx as usize, nby as usize, nbz as usize);
                             // Neighbor occludes only if it also covers its face
                             // pointing back at this cell (face_dir ^ 1).
                             neighbor_solid =
@@ -966,7 +1192,7 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
         for z in start[2]..end[2] {
             for y in start[1]..end[1] {
                 for x in start[0]..end[0] {
-                    let p = packed[z * stride_z + y * stride_y + x];
+                    let p = packed[cell_at(x, y, z)];
                     if !unpack_visible_solid(p) {
                         continue;
                     }
@@ -1013,9 +1239,8 @@ pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
                                         && nbz >= 0
                                         && nbz < map_z as i64
                                     {
-                                        let nidx = nbz as usize * stride_z
-                                            + nby as usize * stride_y
-                                            + nbx as usize;
+                                        let nidx =
+                                            cell_at(nbx as usize, nby as usize, nbz as usize);
                                         if neighbor_blocks(packed[nidx], face ^ 1, custom_shapes) {
                                             t += 3;
                                             continue;
@@ -1352,6 +1577,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
         store.ensure_expanded();
         let packed = &store.expanded;
         let map_dim = store.dims;
+        let store_wrap_snapshot = store.wrap;
         let cell_size = *core::ptr::addr_of!(CELL_SIZE);
         let weights_map = &*core::ptr::addr_of!(MAP_WEIGHTS);
         let material_weights = &*core::ptr::addr_of!(MATERIAL_WEIGHTS);
@@ -1400,8 +1626,13 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
             (chunk_end[1] + overlap[1]).min(map_y),
             (chunk_end[2] + overlap[2]).min(map_z),
         ];
-        let stride_y = map_x;
-        let stride_z = map_x * map_y;
+        // See the same closure in `mesh_build_chunk`. `weights_map` is indexed
+        // with this too, so the smoothing weights JS uploads must be written in
+        // wrapped order to stay cell-aligned with `packed`.
+        let store_wrap = store_wrap_snapshot;
+        let cell_at = |x: usize, y: usize, z: usize| -> usize {
+            slot_index_of(x, y, z, map_dim, store_wrap)
+        };
 
         let mut key_to_index: BTreeMap<(u64, u64, u64), u32> = BTreeMap::new();
         let mut positions: Vec<[f64; 3]> = Vec::new();
@@ -1417,7 +1648,7 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
         for z in o_start[2]..o_end[2] {
             for y in o_start[1]..o_end[1] {
                 for x in o_start[0]..o_end[0] {
-                    let cell_index = z * stride_z + y * stride_y + x;
+                    let cell_index = cell_at(x, y, z);
                     let p = packed[cell_index];
                     if !unpack_visible_solid(p) {
                         continue;
@@ -1464,9 +1695,10 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                 && nbz >= 0
                                 && nbz < map_z as i64
                             {
-                                let nidx = nbz as usize * stride_z
-                                    + nby as usize * stride_y
-                                    + nbx as usize;
+                                // Bounds already confirmed in window-local space
+                                // above; only the address wraps.
+                                let nidx =
+                                    cell_at(nbx as usize, nby as usize, nbz as usize);
                                 // The neighbor occludes only if it also covers its
                                 // face pointing back at this cell (face_dir ^ 1).
                                 neighbor_solid = neighbor_blocks(
@@ -1545,9 +1777,8 @@ pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
                                         && nbz >= 0
                                         && nbz < map_z as i64
                                     {
-                                        let nidx = nbz as usize * stride_z
-                                            + nby as usize * stride_y
-                                            + nbx as usize;
+                                        let nidx =
+                                            cell_at(nbx as usize, nby as usize, nbz as usize);
                                         if neighbor_blocks(packed[nidx], face ^ 1, custom_shapes) {
                                             t += 3;
                                             continue;

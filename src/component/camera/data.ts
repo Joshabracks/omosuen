@@ -202,25 +202,6 @@ export interface CameraT
 
     // Per-cell emission (highlight) color texture (RGBA8, flattened cell grid).
     cellEmissionColorTexture: WebGLTexture | null;
-    // Window-LOCAL chunk coordinates currently painted non-black in
-    // cellEmissionColorTexture, keyed "x,y,z". Lets a window shift repaint only
-    // the handful of highlighted chunks (clear the old local slots, write the
-    // new ones) instead of rebuilding and re-uploading the whole window-sized
-    // texture, which is what a shift's full-version bump would otherwise force.
-    //
-    // Local rather than world coordinates deliberately: these are texel
-    // addresses, so they stay valid for clearing regardless of where the window
-    // has since moved to.
-    //
-    // EVERY path that writes colour into the texture must record the chunk here
-    // — including the per-cell delta upload. A highlight painted without being
-    // recorded is one the next shift won't know to clear, and it stays burned
-    // into the texture at a fixed screen position while the world pans beneath
-    // it. Null means "unknown", forcing the next upload down the full rebuild.
-    cellEmissionPaintedLocal: Map<
-      string,
-      { x: number; y: number; z: number }
-    > | null;
     // Whether the resident emission-color texture has any non-black cell (gates the
     // shader term + avoids binding an empty texture).
     cellEmissionColorHasAny: boolean;
@@ -331,7 +312,6 @@ export function builder(options: CameraOptions): CameraT {
       solidityGeneration: -1,
       solidityDims: null,
       cellEmissionColorTexture: null,
-      cellEmissionPaintedLocal: null,
       cellEmissionColorHasAny: false,
       cellEmissionColorVersion: -1,
       exploredTexture: null,

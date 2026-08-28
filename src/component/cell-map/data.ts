@@ -132,8 +132,9 @@ export let cmEmissionColorDirtyRegions: CellEmissionColorDirtyRegion[] = [];
  * deliberately: they're internal sync bookkeeping with no consumer outside
  * this file, so they stay out of `PROPERTY_ALLOWLIST`.
  */
-let cmEmissionColorSyncedBaseline = false;
 let cmEmissionColorSyncedCellCount = -1;
+/** Window cell count at the last memory-material sync; see cmEmissionColorSyncedCellCount. */
+let cmMemoryMaterialSyncedCellCount = -1;
 /**
  * Chunk-level fog-of-war "explored" state: one flag per chunk (has any
  * vision source ever seen into this chunk), backed by `cmExploredChannel`
@@ -438,8 +439,8 @@ export function resetCellMapState(): void {
   cmEmissionColorVersion = 0;
   cmEmissionColorFullVersion = 0;
   cmEmissionColorDirtyRegions = [];
-  cmEmissionColorSyncedBaseline = false;
   cmEmissionColorSyncedCellCount = -1;
+  cmMemoryMaterialSyncedCellCount = -1;
   cmMeshCacheCapacity = MESH_CACHE_MIN_CAPACITY;
   cmAuxWindowChangeMsAccum = 0;
   cmAuxFieldSyncMsAccum = 0;
@@ -1810,12 +1811,19 @@ function syncAuxiliaryFields(
   // replaced. `isEntirelyBaseline` is conservative (any write marks the chunk
   // touched, even one that writes the baseline value itself), so it never
   // returns a false positive here.
-  const emissionBaseline = emissionChannel.isEntirelyBaseline;
+  // Toroidally, a shift leaves every retained cell in its slot, so the texture
+  // a camera already holds stays correct unless the channel actually altered
+  // something -- which, for a sparse highlight channel, is usually not even the
+  // newly-exposed slab. `changedOnLastWindowChange` reports that, and is
+  // conservative: every path that cannot cheaply prove "unchanged" returns true.
+  //
+  // This gate matters enormously. Bumping unconditionally forces every camera
+  // through a whole-window rebuild -- a per-cell JS pass plus a multi-megabyte
+  // texImage3D -- on EVERY commit. Measured at a 3x render distance that was
+  // 24-38ms per shift, the single most expensive thing on the frame.
   const emissionUnchanged =
-    emissionBaseline &&
-    cmEmissionColorSyncedBaseline &&
+    !emissionChannel.changedOnLastWindowChange &&
     cmEmissionColorSyncedCellCount === emissionChannel.value.length;
-  cmEmissionColorSyncedBaseline = emissionBaseline;
   cmEmissionColorSyncedCellCount = emissionChannel.value.length;
   if (!emissionUnchanged) {
     cmEmissionColorVersion++;
@@ -1823,17 +1831,19 @@ function syncAuxiliaryFields(
     cmEmissionColorDirtyRegions = [];
   }
 
-  // Deliberately NOT given the same baseline skip as emission above. Emission
-  // has an explicit `u_hasCellEmissionColor` shader gate, so a camera that
-  // never uploads simply doesn't sample it; memory-material has no such gate
-  // and its baseline is a sentinel (0xffff = "nothing captured"), so a camera
-  // left with a null/never-uploaded texture would sample 0 and read it as
-  // material 0 instead. It also diverges almost immediately under active
-  // fog-of-war, so the skip would rarely fire anyway.
+  // Same gate. Memory-material diverges far more readily than emission (fog
+  // captures terrain constantly), so this fires more often -- but it still
+  // skips the shifts where the newly-exposed slab happens to be uncaptured.
   cmMemoryMaterialMap = new Array3Du32(dims, memoryMaterialChannel.value);
-  cmMemoryMaterialVersion++;
-  cmMemoryMaterialFullVersion = cmMemoryMaterialVersion;
-  cmMemoryMaterialDirtyRegions = [];
+  if (
+    memoryMaterialChannel.changedOnLastWindowChange ||
+    cmMemoryMaterialSyncedCellCount !== memoryMaterialChannel.value.length
+  ) {
+    cmMemoryMaterialVersion++;
+    cmMemoryMaterialFullVersion = cmMemoryMaterialVersion;
+    cmMemoryMaterialDirtyRegions = [];
+  }
+  cmMemoryMaterialSyncedCellCount = memoryMaterialChannel.value.length;
 
   if (smoothingChannel.canDiverge || forceSmoothingReassign) {
     cmSmoothingWeights = new Array3Di(
@@ -2207,6 +2217,7 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     chunkSize: optChunkSize,
     baselineValue: 0,
     trackDivergence: true,
+    toroidal: true,
     initialCellDims,
   });
   emissionChannel.seedFromDense(optEmissionColorMap.value, mapSize);
@@ -2214,6 +2225,7 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     chunkSize: optChunkSize,
     baselineValue: smoothingBaselineValue,
     trackDivergence: !smoothingIsUniform,
+    toroidal: true,
     initialCellDims,
   });
   smoothingChannel.seedFromDense(weightsArray3D.value, mapSize);
@@ -2224,6 +2236,7 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     chunkSize: { x: 1, y: 1, z: 1 },
     baselineValue: 0,
     trackDivergence: true,
+    toroidal: false,
     initialCellDims: initialChunkGridDims,
   });
   // Far-tier representative-material channel -- same {1,1,1} trick as
@@ -2237,6 +2250,7 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     chunkSize: { x: 1, y: 1, z: 1 },
     baselineValue: 0xffff,
     trackDivergence: true,
+    toroidal: false,
     initialCellDims: initialChunkGridDims,
   });
   // Near-tier "captured material" snapshot -- real chunk granularity (same
@@ -2248,6 +2262,7 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     chunkSize: optChunkSize,
     baselineValue: 0xffff,
     trackDivergence: true,
+    toroidal: true,
     initialCellDims,
   });
   // Synchronous initial assignment -- see `makeAuxiliaryOnReassemble`'s doc
@@ -2415,12 +2430,14 @@ function builderGenerative(options: CellMapOptions): CellMapT {
     chunkSize: optChunkSize,
     baselineValue: 0,
     trackDivergence: true,
+    toroidal: true,
     initialCellDims: windowCellDims,
   });
   const smoothingChannel = new AuxiliaryChannel({
     chunkSize: optChunkSize,
     baselineValue: smoothingBaselineValue,
     trackDivergence: !smoothingIsUniform,
+    toroidal: true,
     initialCellDims: windowCellDims,
   });
   if (!smoothingIsUniform) {
@@ -2432,6 +2449,7 @@ function builderGenerative(options: CellMapOptions): CellMapT {
     chunkSize: { x: 1, y: 1, z: 1 },
     baselineValue: 0,
     trackDivergence: true,
+    toroidal: false,
     initialCellDims: windowChunkGridDims,
   });
   // Far-tier representative-material channel -- same {1,1,1} trick as
@@ -2441,6 +2459,7 @@ function builderGenerative(options: CellMapOptions): CellMapT {
     chunkSize: { x: 1, y: 1, z: 1 },
     baselineValue: 0xffff,
     trackDivergence: true,
+    toroidal: false,
     initialCellDims: windowChunkGridDims,
   });
   // Near-tier "captured material" snapshot -- real chunk granularity (same
@@ -2451,6 +2470,7 @@ function builderGenerative(options: CellMapOptions): CellMapT {
     chunkSize: optChunkSize,
     baselineValue: 0xffff,
     trackDivergence: true,
+    toroidal: true,
     initialCellDims: windowCellDims,
   });
   // Synchronous initial assignment -- see `makeAuxiliaryOnReassemble`'s doc
@@ -2913,6 +2933,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     chunkSize: cks,
     baselineValue: 0,
     trackDivergence: true,
+    toroidal: true,
     initialCellDims: windowCellDims,
   });
   if (Array.isArray(dataEmissionColorStorageEntries)) {
@@ -2934,6 +2955,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     chunkSize: cks,
     baselineValue: dSmoothingBaselineValue,
     trackDivergence: !dSmoothingIsUniform,
+    toroidal: true,
     initialCellDims: windowCellDims,
   });
   if (!dSmoothingIsUniform) {
@@ -2957,6 +2979,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     chunkSize: { x: 1, y: 1, z: 1 },
     baselineValue: 0,
     trackDivergence: true,
+    toroidal: false,
     initialCellDims: windowChunkGridDims,
   });
   // Uses the channel's own `loadEntries` wrapper (delegates straight to
@@ -2975,12 +2998,12 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     chunkSize: { x: 1, y: 1, z: 1 },
     baselineValue: 0xffff,
     trackDivergence: true,
+    toroidal: false,
     initialCellDims: windowChunkGridDims,
   });
   dFarMaterialChannel.loadEntries(
-    (dataFarMaterialStorageEntries as
-      | ColdStorageEntrySnapshot[]
-      | undefined) ?? [],
+    (dataFarMaterialStorageEntries as ColdStorageEntrySnapshot[] | undefined) ??
+      [],
   );
 
   // Near-tier "captured material" channel -- same pattern as the two
@@ -2991,6 +3014,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     chunkSize: cks,
     baselineValue: 0xffff,
     trackDivergence: true,
+    toroidal: true,
     initialCellDims: windowCellDims,
   });
   dMemoryMaterialChannel.loadEntries(

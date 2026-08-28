@@ -640,10 +640,12 @@ export const CellMap: CellMapMethods = {
       packed,
     );
     if (local) {
-      component.emissionColorMap.set(
-        new Vector3D(local.x, local.y, local.z),
-        packed,
-      );
+      // No separate `emissionColorMap.set` here: the map is an `Array3Du32`
+      // adopting the channel's own buffer, so the channel write above already
+      // stored the value. Writing again through the map would ALSO be wrong --
+      // its indexing is plain window-local, while the buffer is toroidally
+      // addressed, so it would land on a different cell entirely.
+      //
       // Version-tagged per-cell dirty log (mirrors atlas-manager's
       // dirtyRegions) instead of a single whole-map dirty flag -- lets the
       // renderer patch just this texel via texSubImage3D per camera instead
@@ -656,11 +658,15 @@ export const CellMap: CellMapMethods = {
       // occasionally save).
       component.emissionColorVersion = component.emissionColorVersion + 1;
       const version = component.emissionColorVersion;
+      // Logged as a SLOT, not a window-local coordinate: the delta uploader
+      // reads the buffer and writes the texel at the same coordinate, and both
+      // are toroidally addressed.
+      const s = cmEmissionColorChannel!.slotCoords(local);
       component.emissionColorDirtyRegions.push({
         version,
-        x: local.x,
-        y: local.y,
-        z: local.z,
+        x: s.x,
+        y: s.y,
+        z: s.z,
       });
       if (
         component.emissionColorDirtyRegions.length >
@@ -816,17 +822,17 @@ export const CellMap: CellMapMethods = {
       materialIndex,
     );
     if (local) {
-      component.memoryMaterialMap.set(
-        new Vector3D(local.x, local.y, local.z),
-        materialIndex,
-      );
+      // See `setEmissionColor`: the channel write above already stored this
+      // into the buffer the map adopts, and writing through the map would use
+      // window-local indexing against a toroidally-addressed buffer.
       component.memoryMaterialVersion = component.memoryMaterialVersion + 1;
       const version = component.memoryMaterialVersion;
+      const s = cmMemoryMaterialChannel!.slotCoords(local);
       component.memoryMaterialDirtyRegions.push({
         version,
-        x: local.x,
-        y: local.y,
-        z: local.z,
+        x: s.x,
+        y: s.y,
+        z: s.z,
       });
       if (
         component.memoryMaterialDirtyRegions.length >

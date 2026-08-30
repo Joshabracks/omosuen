@@ -113,17 +113,6 @@ uniform bool u_fogExempt;
 uniform highp sampler2DArray u_exploredTexture; // R8: 0=unexplored, 255=explored
 uniform highp vec3 u_chunkGridSize;
 
-    // Terrain-memory LOD: near tier (per-cell, window-cell resolution) and
-    // far tier (per-chunk, chunk-grid resolution) captured material indices.
-    // NEAREST-filtered (unlike u_exploredTexture above) -- these carry a
-    // material INDEX, not a blend-safe scalar, so bilinear filtering would
-    // blend two different materials' indices into a meaningless value.
-    // 255 = no data captured at that cell/chunk yet.
-uniform highp sampler2DArray u_nearMaterialTexture; // R8
-uniform highp sampler2DArray u_farMaterialTexture;  // R8
-const int MAX_MEMORY_MATERIALS = 64;
-uniform vec3 u_fogMaterialColors[MAX_MEMORY_MATERIALS];
-
     // Fog-of-war style config (fog-of-war component). lightInfluence 0 (the
     // default) means local lighting never affects vision.
 uniform float u_fogMemorySaturation;
@@ -435,57 +424,6 @@ float exploredAt(vec3 fragCellPos) {
     vec2 uv = chunkLocal.xy / u_chunkGridSize.xy;
     float layer = floor(chunkLocal.z);
     return texture(u_exploredTexture, vec3(uv, layer)).r;
-}
-
-// Near-tier terrain-memory lookup: a captured material index at CELL
-// resolution (window-cell indexed, same layout as u_cellSolidity). Returns
-// -1 when no data has been captured at that cell yet (texel value 255).
-// texelFetch, not texture() -- this is an exact index, never blended.
-int nearMaterialAt(vec3 fragCellPos) {
-    vec3 local = fragCellPos - u_windowOrigin;
-    if(local.x < 0.0 || local.x >= u_windowSize.x ||
-       local.y < 0.0 || local.y >= u_windowSize.y ||
-       local.z < 0.0 || local.z >= u_windowSize.z) {
-        return -1;
-    }
-    int texel = int(texelFetch(u_nearMaterialTexture, windowSlot(local), 0).r * 255.0 + 0.5);
-    return texel >= 255 ? -1 : texel;
-}
-
-// Far-tier terrain-memory lookup: a captured material index at CHUNK
-// resolution (same chunk-local derivation as exploredAt, but NEAREST/
-// texelFetch since this is an index, not a blend-safe scalar).
-int farMaterialAt(vec3 fragCellPos) {
-    vec3 localCell = fragCellPos - u_windowOrigin;
-    vec3 chunkSizeCells = u_windowSize / u_chunkGridSize;
-    vec3 chunkLocal = floor(localCell / chunkSizeCells);
-    if(chunkLocal.x < 0.0 || chunkLocal.x >= u_chunkGridSize.x ||
-       chunkLocal.y < 0.0 || chunkLocal.y >= u_chunkGridSize.y ||
-       chunkLocal.z < 0.0 || chunkLocal.z >= u_chunkGridSize.z) {
-        return -1;
-    }
-    int texel = int(texelFetch(u_farMaterialTexture, ivec3(chunkLocal), 0).r * 255.0 + 0.5);
-    return texel >= 255 ? -1 : texel;
-}
-
-// Rendering-priority lookup for the terrain-memory LOD: near-tier capture
-// wins when present (fine detail immediately around a vision source),
-// falling back to far-tier (coarse, one color per chunk) otherwise. Returns
-// false (leaving `outColor` untouched) when neither tier has captured this
-// location yet -- callers fall back to live color in that case, matching
-// today's behavior for an explored-but-not-yet-individually-captured chunk.
-bool memoryColorAt(vec3 fragCellPos, out vec3 outColor) {
-    int near = nearMaterialAt(fragCellPos);
-    if(near >= 0) {
-        outColor = u_fogMaterialColors[near];
-        return true;
-    }
-    int far = farMaterialAt(fragCellPos);
-    if(far >= 0) {
-        outColor = u_fogMaterialColors[far];
-        return true;
-    }
-    return false;
 }
 
 // One jittered vision ray, reusing isRayBlocked. `off` is a cell-space
@@ -864,31 +802,22 @@ void main() {
         // this pass draws fully opaque) toward the normal live-visible color
         // as fogVisibility rises. fogStyleOpacity==0 already discarded above
         // unless fogVisibility>0, so nonLiveColor only ever matters when it's
-        // actually contributing. The style's BASE color is the captured
-        // terrain-memory snapshot (near tier if captured, else far tier)
-        // when available -- a frozen "what this looked like last time",
-        // not live-recomputed triplanar color -- falling back to live color
-        // only for an explored chunk that hasn't been individually captured
-        // yet. Only sampled when it could matter (fogVisibility<1): at full
-        // live visibility the final mix below discards it anyway.
+        // actually contributing.
+        //
+        // Both tiers style the SAME base color -- the fully-textured, lit
+        // cellColor -- so `memoryStyle` and `neverViewedStyle` are pure style
+        // filters and configuring them identically produces identical output.
+        //
+        // Remembered terrain used to substitute a flat per-material average
+        // color here, captured at observation time, which meant memory could
+        // never carry texture detail no matter how it was styled. "What this
+        // looked like last time" is now handled where it belongs -- by the
+        // geometry itself, which simply isn't rebuilt while a cell is
+        // unobserved (see cell-map/deferred-presentation.ts) -- so there is
+        // nothing left to substitute.
         vec3 fogOutColor = cellColor;
         if(fogActive) {
             vec3 memoryBase = cellColor;
-            if(fogVisibility < 1.0) {
-                vec3 captured;
-                if(memoryColorAt(fragCellPos, captured)) {
-                    // The captured color is a flat per-material average (no
-                    // texture detail, no lighting) -- reuse this frame's
-                    // already-computed `lighting` (ambient/directional/AO/
-                    // cast-shadow, pre-multiplied, same term `cellColor`
-                    // uses) so memory-tier terrain still shows shape/relief
-                    // instead of one uniform blob. Only the captured
-                    // MATERIAL identity is frozen at observation time --
-                    // shading is allowed to react live, same as never-viewed
-                    // terrain already does.
-                    memoryBase = captured * lighting;
-                }
-            }
             float styleSaturation = mix(u_fogNeverSaturation, u_fogMemorySaturation, fogExplored);
             vec3 styleTint = mix(u_fogNeverTint, u_fogMemoryTint, fogExplored);
             float luminance = dot(memoryBase, vec3(0.299, 0.587, 0.114));

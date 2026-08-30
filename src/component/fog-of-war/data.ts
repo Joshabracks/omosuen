@@ -42,11 +42,11 @@ export interface FogOfWarT
   lightInfluence: number;
 
   /**
-   * Extra cells, beyond one chunk-width, that still count as "near" a vision
-   * source for the fine (per-cell) memory-snapshot tier -- see the
-   * near/far terrain-memory LOD design. Default 0 (near = live vision
-   * radius + one chunk-width, no extra padding). Cells/chunks beyond this
-   * fall back to the coarser per-chunk memory tier.
+   * @deprecated No longer has any effect. It tuned the near/far terrain-memory
+   * LOD, which tiered how much detail a flat per-material colour snapshot
+   * carried. Remembered terrain is now the real geometry, deferred rather
+   * than repainted (see cell-map/deferred-presentation.ts), so there are no
+   * tiers left to tune. Retained so existing scenes and saves still load.
    */
   nearBufferCells: number;
 }

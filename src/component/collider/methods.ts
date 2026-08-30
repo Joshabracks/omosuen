@@ -237,7 +237,10 @@ export function makeColliderOBB(): ColliderOBB {
 }
 
 /** Writes the collider's world-space OBB into `out` (no allocation). */
-export function computeWorldOBBInto(collider: ColliderT, out: ColliderOBB): void {
+export function computeWorldOBBInto(
+  collider: ColliderT,
+  out: ColliderOBB,
+): void {
   computeOBBInto(collider, out);
 }
 
@@ -720,9 +723,17 @@ function testColliderVsCellMapMesh(
     };
   }
 
-  // Smoothed cell maps: test against actual chunk geometry
+  // Smoothed cell maps: test against actual chunk geometry.
   if (cellMap.smoothing > 0) {
-    return testColliderVsSmoothedMesh(collider, cellMap, solidCells);
+    const smoothed = testColliderVsSmoothedMesh(collider, cellMap, solidCells);
+    if (smoothed) return smoothed;
+    // No chunk geometry to test against, yet `solidCells` says something solid
+    // is here. The chunk's mesh hasn't been rebuilt yet -- it may be waiting on
+    // the per-frame remesh budget, or fog-of-war may be deliberately holding it
+    // back so terrain built out of sight isn't revealed early (see cell-map's
+    // deferred-presentation.ts). Either way the CELLS are authoritative and the
+    // mesh is not, so fall through to the per-cell path below rather than
+    // reporting no hit and letting a collider pass through solid ground.
   }
 
   // Full mesh collision (unsmoothed path)
@@ -815,18 +826,22 @@ function testColliderVsCellMapMesh(
 /**
  * Tests a collider against the smoothed chunk geometry of a cell map.
  * Used when cellMap.smoothing > 0 so collision matches the rendered mesh.
+ *
+ * Returns `null` -- distinct from a no-hit result -- when there is no chunk
+ * geometry in range at all. That is not "nothing is there": the caller only
+ * reaches here with cells its authoritative broad phase already found solid,
+ * so an empty triangle set means the mesh is behind the cell data, and the
+ * caller must fall back to testing the cells themselves.
  */
 function testColliderVsSmoothedMesh(
   collider: ColliderT,
   cellMap: CellMapT,
   solidCells: Vector3D[],
-): CellMapCollisionResult {
+): CellMapCollisionResult | null {
   const bounds = getWorldBoundsImpl(collider);
   const triangles = getChunkTrianglesInBounds(cellMap, bounds);
 
-  if (triangles.length === 0) {
-    return { hit: false, cells: [], center: null };
-  }
+  if (triangles.length === 0) return null;
 
   const contactPoints: Vector3D[] = [];
 

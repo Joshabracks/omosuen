@@ -16,7 +16,6 @@ import { setVisionUniforms } from './vision-uniforms';
 import { sweepExploredChunks } from './explored-sweep';
 import { computeSolidityMap } from './visibility-mask';
 import { cellStoreGeneration } from './wasm';
-import { buildMaterialColorTable } from './material-color-table';
 import {
   isProfilingEnabled,
   recordComponentUpdate,
@@ -527,239 +526,6 @@ function uploadExploredDelta(
   }
 }
 
-// Terrain-memory LOD: stored channel values are either a real material
-// index (0-4095) or the "never captured" sentinel 0xFFFF -- see
-// cell-map/methods.ts's setCellMemoryMaterial/setChunkFarMaterial. GPU
-// texels are a single R8 byte: 255 = no data, else the material index
-// clamped to what the (64-entry) material-color-table can look up.
-const NO_MATERIAL_TEXEL = 255;
-const MATERIAL_SENTINEL = 0xffff;
-
-function materialTexel(value: number): number {
-  if (value === MATERIAL_SENTINEL) return NO_MATERIAL_TEXEL;
-  return Math.min(value, NO_MATERIAL_TEXEL - 1);
-}
-
-/**
- * Reusable "no data captured" fill for the near-material texture: every texel
- * `NO_MATERIAL_TEXEL`, so the shader's `nearMaterialAt` returns -1 and falls
- * through to the coarse far-material tier. Built once per window size and kept.
- */
-let nearMaterialClearScratch: Uint8Array | null = null;
-
-function nearMaterialClearBuffer(length: number): Uint8Array {
-  if (
-    nearMaterialClearScratch === null ||
-    nearMaterialClearScratch.length !== length
-  ) {
-    nearMaterialClearScratch = new Uint8Array(length).fill(NO_MATERIAL_TEXEL);
-  }
-  return nearMaterialClearScratch;
-}
-
-/** Reusable staging buffer for one z-slab of the near-material refill. */
-let nearMaterialSlabScratch: Uint8Array | null = null;
-
-function nearMaterialSlabBuffer(length: number): Uint8Array {
-  if (
-    nearMaterialSlabScratch === null ||
-    nearMaterialSlabScratch.length < length
-  ) {
-    nearMaterialSlabScratch = new Uint8Array(length);
-  }
-  return nearMaterialSlabScratch;
-}
-
-/**
- * Z-layers of the near-material texture refilled per frame. The refill is the
- * amortized replacement for a whole-window rebuild on every window-shift
- * commit -- at 15ms it was the single largest item on a commit frame, and
- * unlike emission it cannot be made sparse, because captured terrain memory
- * grows dense as the map is explored.
- */
-const NEAR_MATERIAL_REFILL_LAYERS_PER_FRAME = 8;
-
-/**
- * Builds and uploads `layers` z-slices of the near-material texture starting at
- * `startZ`, returning the next z to resume from (or the layer count once done).
- */
-function refillNearMaterialSlab(
-  gl: WebGL2RenderingContext,
-  camera: CameraT,
-  cellMap: CellMapT,
-  startZ: number,
-  layers: number,
-): number {
-  const { x: mx, y: my, z: mz } = cellMap.mapSize;
-  const endZ = Math.min(mz, startZ + layers);
-  const sliceTexels = mx * my;
-  const count = (endZ - startZ) * sliceTexels;
-  if (count <= 0) return mz;
-
-  const values = cellMap.memoryMaterialMap.value;
-  const buf = nearMaterialSlabBuffer(count);
-  const base = startZ * sliceTexels;
-  for (let i = 0; i < count; i++) buf[i] = materialTexel(values[base + i]);
-
-  gl.activeTexture(gl.TEXTURE8);
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.nearMaterialTexture);
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texSubImage3D(
-    gl.TEXTURE_2D_ARRAY,
-    0,
-    0,
-    0,
-    startZ,
-    mx,
-    my,
-    endZ - startZ,
-    gl.RED,
-    gl.UNSIGNED_BYTE,
-    buf.subarray(0, count),
-  );
-  return endZ;
-}
-
-function uploadNearMaterialTexture(
-  gl: WebGL2RenderingContext,
-  camera: CameraT,
-  bytes: Uint8Array,
-  windowSize: { x: number; y: number; z: number },
-): void {
-  if (!camera.glResources.nearMaterialTexture) {
-    camera.glResources.nearMaterialTexture = gl.createTexture();
-  }
-  gl.activeTexture(gl.TEXTURE8);
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.nearMaterialTexture);
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texImage3D(
-    gl.TEXTURE_2D_ARRAY,
-    0,
-    gl.R8,
-    windowSize.x,
-    windowSize.y,
-    windowSize.z,
-    0,
-    gl.RED,
-    gl.UNSIGNED_BYTE,
-    bytes,
-  );
-  // NEAREST -- unlike u_exploredTexture, this carries a material INDEX, not
-  // a blend-safe scalar. Interpolating between two neighboring cells'
-  // indices would sample a color that doesn't correspond to any real
-  // material.
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-}
-
-function uploadNearMaterialDelta(
-  gl: WebGL2RenderingContext,
-  camera: CameraT,
-  cellMap: CellMapT,
-  fromVersion: number,
-): void {
-  gl.activeTexture(gl.TEXTURE8);
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.nearMaterialTexture);
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  const { x: mx, y: my } = cellMap.mapSize;
-  const values = cellMap.memoryMaterialMap.value;
-  const texel = new Uint8Array(1);
-  for (const region of cellMap.memoryMaterialDirtyRegions) {
-    if (region.version <= fromVersion) continue;
-    texel[0] = materialTexel(
-      values[region.z * my * mx + region.y * mx + region.x],
-    );
-    gl.texSubImage3D(
-      gl.TEXTURE_2D_ARRAY,
-      0,
-      region.x,
-      region.y,
-      region.z,
-      1,
-      1,
-      1,
-      gl.RED,
-      gl.UNSIGNED_BYTE,
-      texel,
-    );
-  }
-}
-
-function buildFarMaterialBytes(cellMap: CellMapT): Uint8Array {
-  const values = cellMap.farMaterialMap.value;
-  const bytes = new Uint8Array(values.length);
-  for (let i = 0; i < values.length; i++) bytes[i] = materialTexel(values[i]);
-  return bytes;
-}
-
-function uploadFarMaterialTexture(
-  gl: WebGL2RenderingContext,
-  camera: CameraT,
-  bytes: Uint8Array,
-  chunkGridSize: { x: number; y: number; z: number },
-): void {
-  if (!camera.glResources.farMaterialTexture) {
-    camera.glResources.farMaterialTexture = gl.createTexture();
-  }
-  gl.activeTexture(gl.TEXTURE9);
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.farMaterialTexture);
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texImage3D(
-    gl.TEXTURE_2D_ARRAY,
-    0,
-    gl.R8,
-    chunkGridSize.x,
-    chunkGridSize.y,
-    chunkGridSize.z,
-    0,
-    gl.RED,
-    gl.UNSIGNED_BYTE,
-    bytes,
-  );
-  // NEAREST for the same reason as the near-tier texture above.
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-}
-
-function uploadFarMaterialDelta(
-  gl: WebGL2RenderingContext,
-  camera: CameraT,
-  cellMap: CellMapT,
-  fromVersion: number,
-): void {
-  gl.activeTexture(gl.TEXTURE9);
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.farMaterialTexture);
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  const { x: mx, y: my } = cellMap.chunkGridSize;
-  const values = cellMap.farMaterialMap.value;
-  const texel = new Uint8Array(1);
-  for (const region of cellMap.farMaterialDirtyRegions) {
-    if (region.version <= fromVersion) continue;
-    texel[0] = materialTexel(
-      values[region.z * my * mx + region.y * mx + region.x],
-    );
-    gl.texSubImage3D(
-      gl.TEXTURE_2D_ARRAY,
-      0,
-      region.x,
-      region.y,
-      region.z,
-      1,
-      1,
-      1,
-      gl.RED,
-      gl.UNSIGNED_BYTE,
-      texel,
-    );
-  }
-}
-
 /**
  * Renders all cell-maps using chunk-based batched rendering.
  * Each chunk has a pre-built mesh with hidden face culling and greedy meshing applied.
@@ -909,18 +675,6 @@ export function renderCellMaps(
   // Terrain-memory LOD: near tier (per-cell, window-cell resolution) and
   // far tier (per-chunk, chunk-grid resolution) captured material indices,
   // plus the small material-index -> flat-color lookup table both sample.
-  const uNearMaterialTexture = gl.getUniformLocation(
-    program,
-    'u_nearMaterialTexture',
-  );
-  const uFarMaterialTexture = gl.getUniformLocation(
-    program,
-    'u_farMaterialTexture',
-  );
-  const uFogMaterialColors = gl.getUniformLocation(
-    program,
-    'u_fogMaterialColors[0]',
-  );
   const uFogMemorySaturation = gl.getUniformLocation(
     program,
     'u_fogMemorySaturation',
@@ -1024,28 +778,6 @@ export function renderCellMaps(
     neverViewedStyle.tint.z,
   );
   gl.uniform1f(uFogLightInfluence, fogOfWar?.lightInfluence ?? 0);
-
-  // Material-index -> flat-color lookup table for the terrain-memory LOD
-  // (near/far tiers store a captured material index, not a color -- see
-  // material-color-table.ts). Cheap to rebuild every frame (small, cached
-  // per-material internally); rebuilding here also means a material added
-  // at runtime shows up without any extra invalidation plumbing.
-  // `imageCache` (filePath -> decoded image) is the only reliable place to
-  // read real pixel data for a normally-loaded (filePath) texture map -- see
-  // material-color-table.ts's doc comment.
-  const materials = cellMaps.length > 0 ? cellMaps[0].materials : [];
-  const materialAtlasManager = sceneRoot.getComponentByType(
-    'atlas-manager',
-    true,
-  ) as AtlasManagerT | null;
-  gl.uniform3fv(
-    uFogMaterialColors,
-    buildMaterialColorTable(
-      materials,
-      textureMapCache,
-      materialAtlasManager?.imageCache,
-    ),
-  );
 
   // Set axonometric angle + orbit yaw uniforms (GPU computes cos/sin)
   setAngleUniform(gl, camera.id!, camera.axonometricAngle);
@@ -1429,12 +1161,7 @@ export function renderCellMaps(
       // throttle is only updated when the sweep actually runs, so skipping
       // here leaves the source still "moved" and it sweeps next frame.
       if (fogActive && !windowJustCommitted) {
-        sweepExploredChunks(
-          cellMap,
-          visionSources,
-          solidityMap,
-          fogOfWar?.nearBufferCells ?? 0,
-        );
+        sweepExploredChunks(cellMap, visionSources, solidityMap);
       }
     }
     // Always keep u_cellSolidity pointed at unit 3, even on frames that don't
@@ -1454,12 +1181,17 @@ export function renderCellMaps(
     // gate the shader checks before running the vision-source loop at all.
     gl.uniform1i(uFogExempt, fogActive ? 0 : 1);
 
-    // The three terrain-memory textures (explored, near-material,
-    // far-material) share one timing bucket, reported as
-    // 'cell-map:memoryTexUpload'. They were previously unattributed entirely,
-    // which meant a window-shift commit -- the frame that forces all three
-    // through a full rebuild at once -- reported less cost than it actually
-    // incurred, with the remainder hidden inside the opaque 'render' phase.
+    // The fog-of-war "explored" texture's upload, reported as
+    // 'cell-map:memoryTexUpload'. It was previously unattributed entirely,
+    // which meant a window-shift commit -- the frame that forces a full
+    // rebuild -- reported less cost than it actually incurred, with the
+    // remainder hidden inside the opaque 'render' phase.
+    //
+    // This bucket used to cover two further textures, the per-cell and
+    // per-chunk captured-material tiers behind the old flat-colour terrain
+    // memory. Remembered terrain is now the real geometry, deferred rather
+    // than repainted (see cell-map/deferred-presentation.ts), so both are
+    // gone.
     const memoryTexT0 = profiling ? performance.now() : 0;
 
     // Fog-of-war "explored" texture -- same version + capped dirty-region
@@ -1504,97 +1236,6 @@ export function renderCellMaps(
       cellMap.chunkGridSize.z,
     );
 
-    // Terrain-memory LOD textures -- same version + capped dirty-region
-    // delta pattern as the explored texture above, one per tier.
-    if (
-      fogActive &&
-      windowCommitted &&
-      camera.glResources.nearMaterialVersion !== cellMap.memoryMaterialVersion
-    ) {
-      if (
-        camera.glResources.nearMaterialTexture &&
-        camera.glResources.nearMaterialVersion >=
-          cellMap.memoryMaterialFullVersion
-      ) {
-        uploadNearMaterialDelta(
-          gl,
-          camera,
-          cellMap,
-          camera.glResources.nearMaterialVersion,
-        );
-      } else {
-        // Full invalidation (a window shift). Rather than rebuilding and
-        // uploading the whole window in this frame -- the single most
-        // expensive thing on a commit frame -- clear the texture to "no data
-        // captured" from a prebuilt constant buffer (no per-cell CPU pass) and
-        // refill it a slab at a time over the following frames.
-        //
-        // Safe to render against mid-refill: a cleared texel reads as -1 in
-        // `nearMaterialAt`, which falls through to the per-chunk far-material
-        // tier (uploaded whole, and cheap at one texel per chunk). Remembered
-        // terrain therefore drops to coarse colour for a few frames instead of
-        // showing fine detail at a stale position.
-        uploadNearMaterialTexture(
-          gl,
-          camera,
-          nearMaterialClearBuffer(cellMap.memoryMaterialMap.value.length),
-          cellMap.mapSize,
-        );
-        camera.glResources.nearMaterialRefillZ = 0;
-      }
-      camera.glResources.nearMaterialVersion = cellMap.memoryMaterialVersion;
-    }
-    // Drive an in-flight refill forward. Deliberately outside the version
-    // check above: the refill spans frames on which the version no longer
-    // changes, and must still finish.
-    if (
-      fogActive &&
-      windowCommitted &&
-      camera.glResources.nearMaterialRefillZ >= 0 &&
-      camera.glResources.nearMaterialTexture
-    ) {
-      const next = refillNearMaterialSlab(
-        gl,
-        camera,
-        cellMap,
-        camera.glResources.nearMaterialRefillZ,
-        NEAR_MATERIAL_REFILL_LAYERS_PER_FRAME,
-      );
-      camera.glResources.nearMaterialRefillZ =
-        next >= cellMap.mapSize.z ? -1 : next;
-    }
-    gl.activeTexture(gl.TEXTURE8);
-    gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.nearMaterialTexture);
-    gl.uniform1i(uNearMaterialTexture, 8);
-
-    if (
-      fogActive &&
-      windowCommitted &&
-      camera.glResources.farMaterialVersion !== cellMap.farMaterialVersion
-    ) {
-      if (
-        camera.glResources.farMaterialTexture &&
-        camera.glResources.farMaterialVersion >= cellMap.farMaterialFullVersion
-      ) {
-        uploadFarMaterialDelta(
-          gl,
-          camera,
-          cellMap,
-          camera.glResources.farMaterialVersion,
-        );
-      } else {
-        uploadFarMaterialTexture(
-          gl,
-          camera,
-          buildFarMaterialBytes(cellMap),
-          cellMap.chunkGridSize,
-        );
-      }
-      camera.glResources.farMaterialVersion = cellMap.farMaterialVersion;
-    }
-    gl.activeTexture(gl.TEXTURE9);
-    gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.farMaterialTexture);
-    gl.uniform1i(uFarMaterialTexture, 9);
     if (profiling) memoryTexUploadMs += performance.now() - memoryTexT0;
 
     // Per-cell emission (highlight) color texture (Part A). Versioned delta

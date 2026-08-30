@@ -260,23 +260,6 @@ export interface ChunkExploredDirtyRegion {
 }
 
 /**
- * A single dirty cell in `memoryMaterialMap` (near-tier fog-of-war "captured
- * material" snapshot -- one real material index per CELL, for cells near an
- * active vision source), tagged with the `memoryMaterialVersion` that
- * produced it. Stored in window-LOCAL CELL coordinates -- valid only as long
- * as no window shift has happened since it was logged (a shift bumps
- * `memoryMaterialFullVersion` past every pre-shift entry, which is what makes
- * stale local coords safe to ignore rather than something that has to be
- * actively invalidated). Mirrors `CellEmissionColorDirtyRegion` exactly.
- */
-export interface MemoryMaterialDirtyRegion {
-  version: number;
-  x: number;
-  y: number;
-  z: number;
-}
-
-/**
  * Built mesh data for a single chunk, ready for GPU upload.
  * Contains all visible faces after hidden face culling and greedy meshing.
  */

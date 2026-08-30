@@ -219,18 +219,6 @@ export interface CameraT
     // and far tier (R8, per-chunk, chunk-grid resolution) captured material
     // indices (255 = not captured). Same version-tracking convention as
     // exploredTexture above.
-    nearMaterialTexture: WebGLTexture | null;
-    nearMaterialVersion: number;
-    // Next z-layer to refill in nearMaterialTexture, or -1 when not refilling.
-    // A window shift used to force a whole-window rebuild of this texture in
-    // one frame; instead the texture is cleared to "no data captured" and then
-    // refilled a slab at a time over the following frames. Partial state is
-    // safe because the shader's nearMaterialAt returns -1 for a cleared texel
-    // and falls through to the coarse per-chunk far-material tier — remembered
-    // terrain briefly renders at lower detail rather than at a wrong position.
-    nearMaterialRefillZ: number;
-    farMaterialTexture: WebGLTexture | null;
-    farMaterialVersion: number;
   };
 }
 
@@ -316,11 +304,6 @@ export function builder(options: CameraOptions): CameraT {
       cellEmissionColorVersion: -1,
       exploredTexture: null,
       exploredVersion: -1,
-      nearMaterialTexture: null,
-      nearMaterialVersion: -1,
-      nearMaterialRefillZ: -1,
-      farMaterialTexture: null,
-      farMaterialVersion: -1,
     },
   };
 

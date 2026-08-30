@@ -13,8 +13,13 @@ import type { SpriteT, SpriteOptions } from '../sprite/data';
 import type { TransformT, TransformOptions } from '../transform/data';
 import type { VisionSourceT } from '../vision-source/data';
 import { computeSolidityMap } from '../camera/render/visibility-mask';
-import { sweepFogOfWar } from './sweep';
+import { isPositionVisible, sweepFogOfWar } from './sweep';
 import type { ObscuredTransition, ResolvedSource } from './sweep';
+import {
+  clearDeferredCells,
+  revealObservedCells,
+  setCellObservationPredicate,
+} from '../cell-map/deferred-presentation';
 import { markForDisposal } from '../../loop/dispose';
 
 /**
@@ -124,6 +129,64 @@ async function spawnPhantom(
 }
 
 /**
+ * Window origin as of the last sweep, so a shift can be detected and the
+ * deferred-presentation overlay dropped (see the check in `update`).
+ */
+let lastWindowOrigin: { cx: number; cy: number; cz: number } | null = null;
+
+/**
+ * Everything the observation predicate needs, snapshotted at the end of each
+ * fog update. Terrain writes happen at arbitrary points in the frame (gameplay
+ * code, not the render pass), so the predicate cannot recompute vision sources
+ * on demand -- it answers from the most recent sweep, which is at most one
+ * frame stale. That matches the staleness `_fowStatus` already carries.
+ *
+ * The solidity mask is deliberately NOT cached here: it is a live view over
+ * WASM linear memory that a growth can detach, so the predicate re-fetches it
+ * (a cached flag read WASM-side on almost every call) at the moment of use.
+ */
+let observationContext: {
+  sources: ResolvedSource[];
+  cellDims: { x: number; y: number; z: number };
+  cellSize: { x: number; y: number; z: number };
+  windowOriginLocalCell: { x: number; y: number; z: number };
+} | null = null;
+
+/**
+ * "Can the player see this world cell right now?" -- installed into cell-map's
+ * deferred-presentation module so a terrain write can decide whether to show
+ * itself. Uses exactly the same test as the sprite sweep, so what counts as
+ * seen for terrain, for sprites and for the shader all agree.
+ *
+ * Fails OPEN (returns true, meaning "visible, don't defer") whenever it cannot
+ * answer: no sweep has run yet, or vision is momentarily off. Deferring on a
+ * bad answer would hide terrain changes indefinitely; showing them is the safe
+ * direction.
+ */
+function isWorldCellObserved(
+  worldX: number,
+  worldY: number,
+  worldZ: number,
+): boolean {
+  const ctx = observationContext;
+  if (!ctx || ctx.sources.length === 0) return true;
+
+  const { cellSize } = ctx;
+  return isPositionVisible(
+    {
+      x: (worldX + 0.5) * cellSize.x,
+      y: (worldY + 0.5) * cellSize.y,
+      z: (worldZ + 0.5) * cellSize.z,
+    },
+    ctx.sources,
+    computeSolidityMap(),
+    ctx.cellDims,
+    ctx.windowOriginLocalCell,
+    cellSize,
+  );
+}
+
+/**
  * Methods interface for fog-of-war component.
  * Provides type-safe method signatures for the $ Proxy.
  */
@@ -204,16 +267,26 @@ export const FogOfWar: FogOfWarMethods = {
   },
 
   /**
-   * Gets how many cells beyond one chunk-width still count as "near" a
-   * vision source for the fine-grained terrain-memory tier.
+   * Gets `nearBufferCells`.
+   *
+   * @deprecated No longer has any effect. It tuned the near/far terrain-memory
+   * LOD, which tiered how much detail a flat per-material colour snapshot
+   * carried. Remembered terrain is now the real geometry, deferred rather
+   * than repainted (see cell-map/deferred-presentation.ts), so there are no
+   * tiers left to tune. Retained so existing scenes and saves still load.
    */
   getNearBufferCells: (fow: FogOfWarT): number => {
     return fow.nearBufferCells;
   },
 
   /**
-   * Sets how many cells beyond one chunk-width still count as "near" a
-   * vision source for the fine-grained terrain-memory tier.
+   * Sets `nearBufferCells`.
+   *
+   * @deprecated No longer has any effect. It tuned the near/far terrain-memory
+   * LOD, which tiered how much detail a flat per-material colour snapshot
+   * carried. Remembered terrain is now the real geometry, deferred rather
+   * than repainted (see cell-map/deferred-presentation.ts), so there are no
+   * tiers left to tune. Retained so existing scenes and saves still load.
    */
   setNearBufferCells: (fow: FogOfWarT, nearBufferCells: number): void => {
     fow.nearBufferCells = nearBufferCells;
@@ -237,6 +310,11 @@ export const FogOfWar: FogOfWarMethods = {
    * consistent with this engine's existing frame-budgeted init elsewhere.
    */
   update: (_component: ComponentData, _deltaTime: number): void => {
+    // Installed here rather than at module load so a scene with no
+    // fog-of-war component never defers terrain writes. Idempotent, and
+    // cleared in `dispose` below.
+    setCellObservationPredicate(isWorldCellObserved);
+
     void (async () => {
       const scene = getActiveScene();
       if (!scene) return;
@@ -288,7 +366,36 @@ export const FogOfWar: FogOfWarMethods = {
       // off" should mean.
       if (sources.length === 0) return;
 
-      // TEMPORARY -- Stage 0 measurement only.
+      // A window shift leaves every retained cell in its toroidal slot but
+      // evicts the rest, and an evicted cell's slot is later reused by a
+      // different world cell -- a surviving overlay entry would then paint
+      // remembered terrain onto that unrelated cell. Dropping the whole
+      // overlay on a shift is the documented limitation: revisiting a
+      // long-abandoned area shows its current state rather than your memory
+      // of it.
+      if (
+        lastWindowOrigin === null ||
+        lastWindowOrigin.cx !== windowOrigin.cx ||
+        lastWindowOrigin.cy !== windowOrigin.cy ||
+        lastWindowOrigin.cz !== windowOrigin.cz
+      ) {
+        lastWindowOrigin = {
+          cx: windowOrigin.cx,
+          cy: windowOrigin.cy,
+          cz: windowOrigin.cz,
+        };
+        clearDeferredCells(originCellMap);
+      }
+
+      // Publish what the observation predicate answers from, before anything
+      // can write terrain this frame.
+      observationContext = {
+        sources,
+        cellDims,
+        cellSize,
+        windowOriginLocalCell,
+      };
+
       // Held only for the synchronous loop below -- see the phantom-spawn note
       // after it.
       const mask = computeSolidityMap();
@@ -325,6 +432,17 @@ export const FogOfWar: FogOfWarMethods = {
         markForDisposal(revealedPhantoms[i]);
       }
 
+      // Past this point `mask` is DEAD -- `revealObservedCells` writes to WASM
+      // (clearing overlay entries), and a memory growth there can detach the
+      // view. Nothing below may read it. Same discipline as the phantom spawns
+      // further down, and the same silent fail-open if it is broken: a
+      // detached view reads `undefined`, `undefined > 127` is false, so every
+      // cell looks non-solid and everything reads as visible.
+      //
+      // Terrain hidden while unobserved that the player can now see: drop the
+      // overlay entry and dirty the chunk so the normal remesh path catches up.
+      revealObservedCells(originCellMap);
+
       // Past this point `mask` is dead -- nothing below may read it. Spawning
       // after the loop also keeps the whole sweep in one synchronous run
       // instead of suspending it once per transition.
@@ -343,5 +461,12 @@ export const FogOfWar: FogOfWarMethods = {
   dispose: (component: ComponentData): void => {
     const fow = component as FogOfWarT;
     fow._disposed = true;
+    // Stop deferring terrain writes, and reveal anything currently hidden --
+    // with fog gone there is nothing to hide it from, and leaving the overlay
+    // in place would freeze that terrain's appearance permanently.
+    setCellObservationPredicate(null);
+    clearDeferredCells();
+    observationContext = null;
+    lastWindowOrigin = null;
   },
 };

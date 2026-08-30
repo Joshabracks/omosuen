@@ -7,42 +7,39 @@ import {
 import { FogOfWarT, FogOfWarStyle } from './data';
 import { Vector2D, Vector3D, Vector4D } from '../../math';
 import { getActiveScene } from '../../scene';
-import { getRenderableVersion } from '../renderable-version';
+import { sceneIndex } from '../scene-index';
 import type { NexusT } from '../nexus/data';
 import type { SpriteT, SpriteOptions } from '../sprite/data';
 import type { TransformT, TransformOptions } from '../transform/data';
 import type { VisionSourceT } from '../vision-source/data';
-import type { CellMapT } from '../cell-map/data';
 import { computeSolidityMap } from '../camera/render/visibility-mask';
-import { isRayBlockedTS } from '../camera/render/explored-sweep';
+import { sweepFogOfWar } from './sweep';
+import type { ObscuredTransition, ResolvedSource } from './sweep';
 import { markForDisposal } from '../../loop/dispose';
-
-/** A vision source resolved to a plain world position, once per fog-of-war update tick. */
-interface ResolvedSource {
-  pos: { x: number; y: number; z: number };
-  /**
-   * `pos` expressed in window-local cell space -- the form `isRayBlockedTS`
-   * actually wants. Depends only on the source, so it's computed once here
-   * rather than re-derived per (sprite x source) inside `isPositionVisible`.
-   */
-  localCell: { x: number; y: number; z: number };
-  /** `(radius + fadeWidth)^2`, pre-squared for the distance reject. */
-  outerSq: number;
-}
+import { isProfilingEnabled } from '../../loop/profile';
+// TEMPORARY -- Stage 0 measurement only. Remove with `probe.ts`.
+import { fowProbe, fowProbeFrame, fowProbeTick } from './probe';
 
 /**
  * Resolves each source's CURRENT world position from its sibling transform --
  * called fresh every frame regardless of whether `sources` itself came from
- * the gather cache below, since a source's position (unlike the component
- * list) moves every frame even when nothing was added/removed.
+ * the scene index, since a source's position (unlike the component list)
+ * moves every frame even when nothing was added/removed.
+ *
+ * `count` is the index's valid-entry count; `sources` is grown to a high-water
+ * mark and entries past `count` are stale (see scene-index.ts).
  */
 function resolveActiveVisionSources(
   sources: VisionSourceT[],
+  count: number,
   windowOriginLocalCell: { x: number; y: number; z: number },
   cellSize: { x: number; y: number; z: number },
 ): ResolvedSource[] {
   const resolved: ResolvedSource[] = [];
-  for (const source of sources) {
+  for (let i = 0; i < count; i++) {
+    const source = sources[i];
+    // The index is a frame old, so an entry can name something disposed since.
+    if (source._disposed === true) continue;
     if (!source.enabled) continue;
     if (!source.parent || source.parent.type !== 'nexus') continue;
     const transform = castTo<NexusT>(source.parent).getComponentByType(
@@ -63,107 +60,6 @@ function resolveActiveVisionSources(
     });
   }
   return resolved;
-}
-
-/**
- * Caches the raw sprite/vision-source COMPONENT LISTS (which entities exist),
- * not any per-frame derived state -- mirrors camera/collect-renderables's
- * `RENDERABLES_CACHE` pattern exactly, keyed on the same per-type version
- * counters (bumped on every add/remove, `renderable-version.ts`), so a
- * `getComponentsByType` tree walk only re-runs when something was actually
- * added or removed since last frame instead of on every single frame. Global
- * (not per-camera) since fog-of-war is scene-unique. Positions/`_fowStatus`
- * are still read fresh off each cached component every frame -- only the
- * "which components exist" walk is skipped when nothing changed.
- */
-let gatherCache: {
-  spriteVersion: number;
-  sprites: SpriteT[];
-  visionSourceVersion: number;
-  visionSourceComponents: VisionSourceT[];
-  cellMapVersion: number;
-  cellMaps: CellMapT[];
-} | null = null;
-
-function gatherSceneComponents(scene: NexusT): {
-  sprites: SpriteT[];
-  visionSourceComponents: VisionSourceT[];
-  cellMaps: CellMapT[];
-} {
-  const spriteVersion = getRenderableVersion('sprite');
-  const visionSourceVersion = getRenderableVersion('vision-source');
-  const cellMapVersion = getRenderableVersion('cell-map');
-
-  const sprites =
-    gatherCache && gatherCache.spriteVersion === spriteVersion
-      ? gatherCache.sprites
-      : (scene.getComponentsByType('sprite', true) as SpriteT[]);
-  const visionSourceComponents =
-    gatherCache && gatherCache.visionSourceVersion === visionSourceVersion
-      ? gatherCache.visionSourceComponents
-      : (scene.getComponentsByType('vision-source', true) as VisionSourceT[]);
-  // `cell-map` is not opted into the component-lookup registry, so this walk is
-  // a full recursive scene traversal (measured at ~1.7ms on a 1400-component
-  // scene) for a result that only changes when a cell-map is added or removed.
-  // It's a renderable type, so the same version counter covers it.
-  const cellMaps =
-    gatherCache && gatherCache.cellMapVersion === cellMapVersion
-      ? gatherCache.cellMaps
-      : (scene.getComponentsByType('cell-map', true) as CellMapT[]);
-
-  gatherCache = {
-    spriteVersion,
-    sprites,
-    visionSourceVersion,
-    visionSourceComponents,
-    cellMapVersion,
-    cellMaps,
-  };
-
-  return { sprites, visionSourceComponents, cellMaps };
-}
-
-/**
- * Real (accurate, per-fragment-matching) visibility test for a single
- * world point: early distance-squared reject per source (cheap), then the
- * same DDA raycast the live shader path and the explored-chunk sweep both
- * use, so a tracked sprite's visible/obscured transition agrees with what
- * the per-pixel shader test would actually show.
- */
-function isPositionVisible(
-  pos: { x: number; y: number; z: number },
-  sources: ResolvedSource[],
-  mask: Uint8Array,
-  cellDims: { x: number; y: number; z: number },
-  windowOriginLocalCell: { x: number; y: number; z: number },
-  cellSize: { x: number; y: number; z: number },
-): boolean {
-  const localCellX = pos.x / cellSize.x - windowOriginLocalCell.x;
-  const localCellY = pos.y / cellSize.y - windowOriginLocalCell.y;
-  const localCellZ = pos.z / cellSize.z - windowOriginLocalCell.z;
-
-  for (const source of sources) {
-    const dx = pos.x - source.pos.x;
-    const dy = pos.y - source.pos.y;
-    const dz = pos.z - source.pos.z;
-    if (dx * dx + dy * dy + dz * dz >= source.outerSq) continue;
-
-    if (
-      !isRayBlockedTS(
-        mask,
-        cellDims,
-        source.localCell.x,
-        source.localCell.y,
-        source.localCell.z,
-        localCellX,
-        localCellY,
-        localCellZ,
-      )
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 /**
@@ -348,13 +244,32 @@ export const FogOfWar: FogOfWarMethods = {
       const scene = getActiveScene();
       if (!scene) return;
 
-      const { sprites, visionSourceComponents, cellMaps } =
-        gatherSceneComponents(scene);
+      // TEMPORARY -- Stage 0 measurement only. All `probe`/`fowProbe`
+      // references in this file come out with `probe.ts`.
+      const probing = isProfilingEnabled();
+      const tGather = probing ? performance.now() : 0;
+
+      // Everything this sweep needs about "which components exist" comes from
+      // the shared scene index, published by the on-screen pass's walk of the
+      // tree (scene-index.ts). That walk runs at loop phase 3.6 and this runs
+      // at phase 2, so the index in hand was built LAST frame -- the same
+      // staleness `transform.worldPosition` already has here, since world
+      // transforms are refreshed at phase 3.5. Entries are guarded on
+      // `_disposed` where it matters rather than filtered up front.
+      //
+      // This replaced three recursive `getComponentsByType` walks plus two
+      // `getComponentByType` lookups per sprite per frame, all of which
+      // re-derived what that one walk had already established. The gather
+      // cache they sat behind was also self-defeating: spawning or disposing
+      // a phantom bumps the `sprite` renderable version, so every frame with
+      // a visibility transition forced a full scene re-walk on the next one.
+      const index = sceneIndex;
+
       // Same "assume the first cell-map" simplification already used by
       // render-cell-maps.ts/render-sprites.ts throughout the fog-of-war
       // feature -- a scene with multiple cell-maps tests sprite visibility
       // against only the first one's solidity/window data.
-      const originCellMap = cellMaps[0];
+      const originCellMap = index.cellMapCount > 0 ? index.cellMaps[0] : null;
       const windowOrigin = originCellMap?.window.origin;
       if (!originCellMap || !windowOrigin) return;
 
@@ -367,7 +282,8 @@ export const FogOfWar: FogOfWarMethods = {
       };
 
       const sources = resolveActiveVisionSources(
-        visionSourceComponents,
+        index.visionSources,
+        index.visionSourceCount,
         windowOriginLocalCell,
         cellSize,
       );
@@ -380,9 +296,22 @@ export const FogOfWar: FogOfWarMethods = {
       // off" should mean.
       if (sources.length === 0) return;
 
+      // TEMPORARY -- Stage 0 measurement only.
+      const tSolidity = probing ? performance.now() : 0;
+
       // Held only for the synchronous loop below -- see the phantom-spawn note
       // after it.
       const mask = computeSolidityMap();
+
+      // TEMPORARY -- Stage 0 measurement only.
+      const tSweep = probing ? performance.now() : 0;
+      // Ray count is accumulated inside the sweep, so this frame's own count
+      // has to be taken as a delta around the call.
+      const raysBefore = fowProbe.rays;
+      if (probing) {
+        fowProbe.sources += sources.length;
+        fowProbe.maskCells = mask.length;
+      }
 
       // `'visible' -> obscured` transitions found this pass. Collected rather
       // than acted on inline because spawning a phantom is async, and `mask` is
@@ -392,66 +321,43 @@ export const FogOfWar: FogOfWarMethods = {
       // a possibly-detached view, where every `mask[i]` reads `undefined`,
       // `undefined > 127` is false, so every cell looks non-solid and every
       // remaining sprite reads as visible -- occlusion silently failing open.
-      const newlyObscured: { sprite: SpriteT; transform: TransformT }[] = [];
+      //
+      // Deliberately a fresh array per frame, not a reused module-level one:
+      // the spawn loop below awaits, so a shared buffer could be cleared by
+      // the NEXT frame's sweep while this one is still draining it.
+      const newlyObscured: ObscuredTransition[] = [];
+      const revealedPhantoms: NexusT[] = [];
 
-      for (const sprite of sprites) {
-        if (!sprite.parent || sprite.parent.type !== 'nexus') continue;
-        const nexus = castTo<NexusT>(sprite.parent);
-        const transform = nexus.getComponentByType(
-          'transform',
-          false,
-        ) as TransformT | null;
-        if (!transform) continue;
+      sweepFogOfWar(
+        index,
+        sources,
+        mask,
+        cellDims,
+        windowOriginLocalCell,
+        cellSize,
+        newlyObscured,
+        revealedPhantoms,
+      );
 
-        // A spawned phantom: check whether vision has returned to ITS OWN
-        // (frozen) position, independent of wherever the real sprite it
-        // stood in for currently is.
-        if (sprite._fowStatus === 'phantom') {
-          const visible = isPositionVisible(
-            transform.worldPosition,
-            sources,
-            mask,
-            cellDims,
-            windowOriginLocalCell,
-            cellSize,
-          );
-          if (visible) markForDisposal(nexus);
-          continue;
-        }
+      // Safe to act on while `mask` is still live: `markForDisposal` only sets
+      // a flag and queues an id, it never awaits.
+      for (let i = 0; i < revealedPhantoms.length; i++) {
+        markForDisposal(revealedPhantoms[i]);
+      }
 
-        if (sprite.trackedByFog !== true) continue;
-        // A sprite carrying its own vision-source always sees itself --
-        // never obscure/phantom it (render-sprites.ts also defensively
-        // forces such a sprite to draw live regardless of `_fowStatus`).
-        if (nexus.getComponentByType('vision-source', false)) continue;
-
-        const visible = isPositionVisible(
-          transform.worldPosition,
-          sources,
-          mask,
-          cellDims,
-          windowOriginLocalCell,
-          cellSize,
+      // TEMPORARY -- Stage 0 measurement only. Taken before the awaits below,
+      // since those escape the `fog-of-war` profiler bucket too.
+      if (probing) {
+        fowProbeFrame(
+          tSolidity - tGather,
+          tSweep - tSolidity,
+          performance.now() - tSweep,
+          fowProbe.rays - raysBefore,
+          index.count,
         );
-
-        if (visible) {
-          // Covers both 'unseen' -> 'visible' (first-ever sighting) and
-          // 'obscured' -> 'visible' (seen again after going out of sight).
-          if (sprite._fowStatus !== 'visible') sprite._fowStatus = 'visible';
-          continue;
-        }
-        // Phantom-spawning is gated strictly on the 'visible' -> not-visible
-        // edge -- an 'unseen' sprite that's simply never been seen stays
-        // 'unseen' forever here, exactly like terrain's "never explored"
-        // stays hidden. Spawning a phantom for a never-seen sprite was the
-        // actual bug: every off-screen sprite (trackedByFog defaults true)
-        // would otherwise get a permanent phantom the instant fog-of-war
-        // first evaluated it, regardless of whether it had ever really been
-        // observed -- see the Colony Forever perf report this fixed.
-        if (sprite._fowStatus === 'visible') {
-          sprite._fowStatus = 'obscured';
-          newlyObscured.push({ sprite, transform });
-        }
+        fowProbe.phantomsSpawned += newlyObscured.length;
+        fowProbe.phantomsDisposed += revealedPhantoms.length;
+        fowProbeTick();
       }
 
       // Past this point `mask` is dead -- nothing below may read it. Spawning

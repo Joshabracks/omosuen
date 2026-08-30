@@ -117,20 +117,33 @@ export interface SpriteT
   /**
    * Runtime-only fog-of-war state, driven entirely by fog-of-war's update()
    * (src/component/fog-of-war/methods.ts) — never set by application code,
-   * never serialized. 'unseen' (the default): never yet confirmed live-
-   * visible — renders normally, exactly like 'visible' (the GPU's own
-   * live-visibility discard is what actually hides it, same as before this
-   * feature existed); fog-of-war never spawns a phantom for an 'unseen'
-   * sprite, only for one that's genuinely gone OUT of sight after having
-   * been seen. 'visible': confirmed live-visible at least once, currently
-   * in sight — render normally. 'obscured': was 'visible', now out of every
-   * vision source's sight; this sprite's own draw call is skipped (its
-   * phantom stand-in renders instead) but its update/gameplay logic keeps
-   * running. 'phantom': this sprite *is* a frozen stand-in spawned by
-   * fog-of-war for some other (obscured) sprite — renders with the
-   * fog-of-war memory style, disposed once vision returns to its position.
+   * never serialized.
+   *
+   * It also selects which of the two fog fades the renderer applies, which is
+   * why the 'visible' threshold is FULL visibility rather than any visibility:
+   * a sprite on its way in is still 'unseen', and the state alone therefore
+   * says which direction it is travelling.
+   *
+   * - 'unseen' (the default): not yet fully in view — either never seen, or
+   *   coming back after being obscured. Renders fading in from transparency
+   *   in normal colours. Fog-of-war never spawns a phantom for an 'unseen'
+   *   sprite, only for one that has genuinely gone out of sight after having
+   *   been fully seen.
+   * - 'visible': has reached FULL live visibility since it was last obscured.
+   *   Renders dissolving toward the fog-of-war memory style as visibility
+   *   drops, staying solid rather than thinning out.
+   * - 'obscuring': visibility has reached zero and its phantom is being
+   *   spawned. Still drawn — holding the memory look, which is what the
+   *   phantom will show — so the handover happens on one frame instead of
+   *   leaving a gap while the async spawn lands. `spawnPhantom` moves it to
+   *   'obscured' once the stand-in is actually attached.
+   * - 'obscured': the phantom has taken over; this sprite's own draw call is
+   *   skipped, but its update/gameplay logic keeps running.
+   * - 'phantom': this sprite *is* a stand-in spawned by fog-of-war for some
+   *   other (obscured) sprite — renders with the fog-of-war memory style,
+   *   disposed once vision returns to its position.
    */
-  _fowStatus: 'unseen' | 'visible' | 'obscured' | 'phantom';
+  _fowStatus: 'unseen' | 'visible' | 'obscuring' | 'obscured' | 'phantom';
 }
 
 export interface SpriteOptions extends ComponentOptions {

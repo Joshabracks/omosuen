@@ -47,19 +47,22 @@ export interface ResolvedSource {
 const PHANTOM_COINCIDENCE_EPSILON = 0.01;
 
 /**
- * Whether a phantom has been made redundant by the sprite it stands in for.
+ * Whether a phantom currently has its own sprite drawing on top of it -- in
+ * which case it must NOT fade.
  *
- * A phantom exists to represent a sprite that ISN'T drawing at that position.
- * Once the sprite is drawing there again, it renders its own dissolve out of
- * the memory look (see unified.frag's sprite path), which covers the reveal
- * completely -- so the phantom has no job left, and leaving it up would
- * double-draw over that dissolve. Worse, the outcome would depend on their
- * arbitrary relative sort order, since a phantom and its unmoved sprite sit at
- * identical depth.
+ * A phantom is the opaque backdrop its sprite fades back in over. Two stacked
+ * draws only cross-dissolve cleanly while the lower one stays solid: with the
+ * phantom at constant memory opacity and only the sprite's alpha ramping, the
+ * composite is exactly `L*v + M*(1-v)`. Fade them BOTH and the background
+ * leaks through the middle instead (`a(1-a)`, up to 25% at the midpoint).
  *
- * `spawnPos` is where the phantom was frozen. A sprite that has since moved is
- * NOT coincident, and its phantom keeps its own fade-out instead: looking at
- * the abandoned spot should dissolve the memory away rather than blink it out.
+ * `spawnPos` is where the phantom was frozen. A sprite that has since moved on
+ * is not standing over it, so nothing is covering that phantom and it fades
+ * out normally -- looking at an abandoned spot should dissolve the memory away
+ * rather than blink it out.
+ *
+ * Either way the phantom is disposed at full visibility (`sweepFogOfWar`); by
+ * then a coincident sprite is completely opaque, so its removal cannot show.
  */
 export function phantomSupersededBySprite(
   sprite: SpriteT | null | undefined,
@@ -303,10 +306,10 @@ export function sweepFogOfWar(
     // stood in for currently is.
     //
     // Disposed only at FULL visibility, not the moment visibility becomes
-    // non-zero. The shader cross-fades the pair -- real sprite at alpha
-    // `vis`, phantom at `1 - vis` -- so the phantom has to outlive the fade
-    // band or the two alphas stop summing to one and a hole opens up in the
-    // middle of it. That hole is the bug this whole arrangement fixes.
+    // non-zero: its sprite fades back in ON TOP of it, so the phantom is the
+    // opaque backdrop that fade happens over. Retiring it early would leave
+    // the sprite fading up from the bare terrain instead, and at full
+    // visibility the sprite is completely opaque, so its removal is invisible.
     if (status === 'phantom') {
       if (
         computeSpriteVisibility(
@@ -333,36 +336,52 @@ export function sweepFogOfWar(
     if (selfLit[i]) continue;
 
     const transform = transforms[i];
+    const vis = computeSpriteVisibility(
+      transform.worldPosition,
+      sources,
+      mask,
+      cellDims,
+      windowOriginLocalCell,
+      cellSize,
+    );
 
-    // `> 0`, matching the shader's `discard` threshold exactly: a sprite
-    // starts drawing as soon as it is even faintly visible, and the shader
-    // fades it in from there. Any other threshold here would reintroduce a
-    // band where the CPU and the GPU disagree about whether it should draw.
-    if (
-      computeSpriteVisibility(
-        transform.worldPosition,
-        sources,
-        mask,
-        cellDims,
-        windowOriginLocalCell,
-        cellSize,
-      ) > 0
-    ) {
-      // Covers both 'unseen' -> 'visible' (first-ever sighting) and
-      // 'obscured' -> 'visible' (seen again after going out of sight).
+    // `'visible'` means FULLY in view, not merely in view at all -- which is
+    // what lets the renderer tell the two fog fades apart at the same
+    // visibility. A sprite on its way IN stays `'unseen'` until it is
+    // completely revealed, so it renders fading up from transparency; only
+    // once it has been fully seen does it become eligible for the dissolve
+    // toward the memory look on the way back out. See `SpriteT._fowStatus`.
+    if (vis >= 1) {
       if (status !== 'visible') sprite._fowStatus = 'visible';
       continue;
     }
-    // Phantom-spawning is gated strictly on the 'visible' -> not-visible
-    // edge -- an 'unseen' sprite that's simply never been seen stays
-    // 'unseen' forever here, exactly like terrain's "never explored"
-    // stays hidden. Spawning a phantom for a never-seen sprite was the
-    // actual bug: every off-screen sprite (trackedByFog defaults true)
-    // would otherwise get a permanent phantom the instant fog-of-war
-    // first evaluated it, regardless of whether it had ever really been
-    // observed -- see the Colony Forever perf report this fixed.
+
+    if (vis > 0) {
+      // Partly in view. A sprite coming back from `'obscured'` restarts as
+      // `'unseen'` so it fades in; one still `'obscuring'` (zero visibility a
+      // moment ago, phantom mid-spawn) goes back to `'visible'`, since it had
+      // been fully seen and is simply on its way out again.
+      if (status === 'obscured') sprite._fowStatus = 'unseen';
+      else if (status === 'obscuring') sprite._fowStatus = 'visible';
+      continue;
+    }
+
+    // Fully out of sight. Phantom-spawning is gated strictly on the
+    // `'visible'` -> not-visible edge -- an `'unseen'` sprite that has never
+    // been fully seen stays `'unseen'` here, exactly like terrain's "never
+    // explored" stays hidden. Spawning a phantom for a never-seen sprite was
+    // the actual bug: every off-screen sprite (trackedByFog defaults true)
+    // would otherwise get a permanent phantom the instant fog-of-war first
+    // evaluated it, regardless of whether it had ever really been observed --
+    // see the Colony Forever perf report this fixed.
+    //
+    // `'obscuring'`, not `'obscured'`: the sprite keeps drawing (holding the
+    // memory look its dissolve already renders at zero visibility) until
+    // `spawnPhantom` has actually attached the stand-in, then that flips it.
+    // Going straight to `'obscured'` here is what left a gap, since the spawn
+    // is async and lands a frame or more later.
     if (status === 'visible') {
-      sprite._fowStatus = 'obscured';
+      sprite._fowStatus = 'obscuring';
       newlyObscured.push({ sprite, transform });
     }
   }

@@ -102,31 +102,40 @@ const livePhantoms = new Map<number, LivePhantom>();
 const phantomOwner = new Map<number, number>();
 
 /**
- * Disposes any phantom whose own sprite is drawing at the spot it remembers.
+ * Phantom nexus ids whose own sprite is currently drawing on top of them, and
+ * which must therefore render at CONSTANT memory opacity rather than fading.
  *
- * Run after the sweep, so it sees the `_fowStatus` the sweep just wrote. The
- * sweep disposes a phantom once vision at its position is FULL, which is the
- * right rule for a spot the sprite has moved on from -- the memory dissolves
- * as you confirm nothing is there. But when the sprite never moved, it starts
- * drawing again the instant visibility is non-zero, rendering its own dissolve
- * out of the memory look; the phantom is then redundant, and keeping it would
- * double-draw over that dissolve. See `phantomSupersededBySprite`.
+ * A phantom is the opaque backdrop its sprite fades back in over; fading both
+ * of them leaks the background through the middle of the transition. Read by
+ * render-sprites.ts via `isPhantomCoveredBySprite`. Refreshed once per sweep
+ * rather than recomputed per draw call.
  */
-function disposeSupersededPhantoms(): void {
+const coveredPhantoms = new Set<number>();
+
+/**
+ * Whether this phantom has its own sprite drawing over it this frame -- see
+ * `coveredPhantoms`. False for anything fog-of-war isn't tracking, so an
+ * unknown phantom simply fades as normal.
+ */
+export function isPhantomCoveredBySprite(phantomNexusId: number): boolean {
+  return coveredPhantoms.has(phantomNexusId);
+}
+
+/**
+ * Recomputes `coveredPhantoms`. Run after the sweep, so it sees the
+ * `_fowStatus` the sweep just wrote.
+ */
+function refreshCoveredPhantoms(): void {
+  coveredPhantoms.clear();
   if (livePhantoms.size === 0) return;
-  let superseded: NexusT[] | null = null;
   for (const entry of livePhantoms.values()) {
-    if (!entry.nexus || entry.nexus._disposed === true) continue;
+    const nexus = entry.nexus;
+    if (!nexus || nexus.id === undefined || nexus._disposed === true) continue;
     if (
       phantomSupersededBySprite(entry.sprite, entry.transform, entry.spawnPos)
     ) {
-      (superseded ??= []).push(entry.nexus);
+      coveredPhantoms.add(nexus.id);
     }
-  }
-  if (!superseded) return;
-  for (const nexus of superseded) {
-    forgetPhantom(nexus);
-    markForDisposal(nexus);
   }
 }
 
@@ -217,7 +226,11 @@ async function spawnPhantom(
     rotation: new Vector3D(0, transform.worldRotation.y, 0),
     scale: new Vector3D(s.x, s.y, s.z),
   };
-  await newComponent('transform', transformOptions, phantomNexus);
+  const phantomTransform = (await newComponent(
+    'transform',
+    transformOptions,
+    phantomNexus,
+  )) as TransformT | null;
 
   const spriteOptions: SpriteOptions = {
     name: `${sprite.name}-fow-phantom-sprite`,
@@ -248,7 +261,40 @@ async function spawnPhantom(
     trackedByFog: false,
     _fowStatus: 'phantom',
   };
-  await newComponent('sprite', spriteOptions, phantomNexus);
+  const phantomSprite = (await newComponent(
+    'sprite',
+    spriteOptions,
+    phantomNexus,
+  )) as SpriteT | null;
+
+  // THE HANDOVER. Everything above is async, so the source sprite has kept
+  // running for a frame or more since it went out of sight -- it may have
+  // moved, and it may have animated. Re-sync from its state RIGHT NOW, then
+  // hand over, both before returning to the caller.
+  //
+  // The source sprite has been holding its own memory look this whole time
+  // ('obscuring', see SpriteT._fowStatus), so it is still drawing and the two
+  // are momentarily identical. Flipping it to 'obscured' here means the
+  // phantom appears and the sprite stops on the SAME frame. Setting
+  // 'obscured' back in the sweep instead is what left a gap: the sprite
+  // vanished immediately and the phantom arrived a frame or more later.
+  if (phantomTransform && sprite._disposed !== true) {
+    const now = transform.worldPosition;
+    phantomTransform.position = new Vector3D(now.x, now.y, now.z);
+    phantomTransform.rotation = new Vector3D(0, transform.worldRotation.y, 0);
+    const nowScale = transform.worldScale;
+    phantomTransform.scale = new Vector3D(nowScale.x, nowScale.y, nowScale.z);
+    // Animation only ever writes `frame` (see animation-controller), so this
+    // is all that can have gone stale visually.
+    if (phantomSprite) phantomSprite.frame = { ...sprite.frame };
+
+    const entry = livePhantoms.get(spriteId);
+    if (entry) entry.spawnPos = { x: now.x, y: now.y, z: now.z };
+  }
+  // Only ever flip a sprite that is still waiting on this spawn -- if vision
+  // returned mid-spawn the sweep will have put it back to 'visible', and
+  // hiding it here would blink out a unit the player can see.
+  if (sprite._fowStatus === 'obscuring') sprite._fowStatus = 'obscured';
 }
 
 /**
@@ -555,10 +601,10 @@ export const FogOfWar: FogOfWarMethods = {
         forgetPhantom(revealedPhantoms[i]);
         markForDisposal(revealedPhantoms[i]);
       }
-      // Reads `_fowStatus` as the sweep just left it, so a sprite that flipped
-      // back to 'visible' this pass retires its phantom in the same frame --
-      // no frame where both draw at the same spot.
-      disposeSupersededPhantoms();
+      // Reads `_fowStatus` as the sweep just left it, so a sprite that started
+      // fading back in this pass has its phantom pinned opaque for the draw
+      // that follows -- which is what its fade-in is composited over.
+      refreshCoveredPhantoms();
 
       // Past this point `mask` is DEAD -- `revealObservedCells` writes to WASM
       // (clearing overlay entries), and a memory growth there can detach the

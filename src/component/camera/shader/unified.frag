@@ -78,6 +78,12 @@ uniform float u_opacity;
     // stand-in for some other (currently obscured) tracked sprite. See
     // SpriteT._fowStatus's doc comment.
 uniform bool u_spriteFogMemory;
+    // Fog-of-war: this sprite is not yet fully in view (`_fowStatus` is
+    // 'unseen'), so it fades IN from transparency in normal colours rather
+    // than dissolving toward the memory look. Set per draw call from the CPU,
+    // because visibility alone cannot say which direction a sprite is
+    // travelling and the two fades are deliberately different.
+uniform bool u_spriteFogRevealing;
     // Fog-of-war visibility for THIS sprite, 0..1, computed once on the CPU
     // (render-sprites.ts, via fog-of-war/sweep.ts's computeSpriteVisibility)
     // rather than per fragment. Pure geometry -- radial falloff times the
@@ -957,31 +963,43 @@ void main() {
         float luminance = dot(liveRgb, vec3(0.299, 0.587, 0.114));
         vec3 memoryRgb = mix(vec3(luminance), liveRgb, u_fogMemorySaturation) * u_fogMemoryTint;
 
+        // The two fog fades are deliberately DIFFERENT, and which one applies
+        // is decided on the CPU from `_fowStatus` (see SpriteT) rather than
+        // from fogVis, which cannot say which direction a sprite is moving:
+        //
+        //   fading in   transparent -> full normal colour  (alpha ramps)
+        //   fading out  full normal colour -> memory look  (colour dissolves)
+        //
+        // Fading in over a solid backdrop is what keeps it clean. A sprite
+        // returning to view fades up over its own phantom, which fog-of-war
+        // pins at CONSTANT memory opacity while it is covered
+        // (`isPhantomCoveredBySprite`), so the composite is exactly
+        // `L*v + M*(1-v)`. Were both to fade at once the background would leak
+        // through the middle instead -- `a(1-a)`, up to 25% at the midpoint.
         vec3 finalRgb;
         float fogAlpha;
         if(u_spriteFogMemory) {
-            // A phantom is already the memory; it only fades OUT as vision
-            // returns to the spot it remembers. When its own sprite is
-            // standing there and drawing, fog-of-war disposes it instead (see
-            // `phantomSupersededBySprite`), so this fade is the case where the
-            // sprite has moved on and the remembered spot turns out to be
-            // empty.
+            // A phantom is already the memory. It holds steady while its own
+            // sprite fades in on top of it, and fades out only when nothing is
+            // covering it -- the sprite moved on, and the remembered spot is
+            // turning out to be empty. render-sprites.ts feeds a fogVis of 0
+            // for the covered case, which lands here as full memory opacity.
             finalRgb = memoryRgb;
             fogAlpha = (1.0 - fogVis) * u_fogMemoryOpacity;
+        } else if(u_spriteFogRevealing) {
+            // Not yet fully in view: fade up from transparency in normal
+            // colours. Deliberately NOT tinted toward the memory look on the
+            // way in -- a newly discovered sprite has no memory to emerge
+            // from, and one returning to view has its phantom underneath
+            // doing that job.
+            finalRgb = liveRgb;
+            fogAlpha = fogVis;
         } else {
-            // A live sprite DISSOLVES into its own remembered look rather than
-            // just thinning out: at fogVis 1 this is the plain lit sprite, at
-            // fogVis 0 it is pixel-identical to a phantom of the same frame --
-            // which is exactly what takes over when it stops drawing. The
-            // sprite therefore appears to fade INTO the fog, still animating,
-            // instead of dimming while a separate memory image pops in.
-            //
-            // Deliberately ONE draw call rather than a live pass plus a memory
-            // pass. Sprites blend SRC_ALPHA/ONE_MINUS_SRC_ALPHA, so two
-            // stacked draws at alpha `a` and `1-a` composite to
-            // `a^2*C1 + (1-a)*C2 + a(1-a)*B` -- the background keeps weight
-            // `a(1-a)`, up to 25% at the midpoint. Complementary alphas are
-            // NOT a cross-dissolve; only mixing within one invocation is.
+            // Fully seen, now on its way out: DISSOLVE toward the memory look
+            // while staying solid, so it fades INTO the fog rather than
+            // thinning out over the terrain. At fogVis 0 this is
+            // pixel-identical to a phantom of the same frame -- which is
+            // exactly what replaces it, so the handover cannot be seen.
             finalRgb = mix(memoryRgb, liveRgb, fogVis);
             fogAlpha = mix(u_fogMemoryOpacity, 1.0, fogVis);
         }

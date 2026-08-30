@@ -65,7 +65,7 @@ function entity(
   x: number,
   y: number,
   z: number,
-  status: 'unseen' | 'visible' | 'obscured' | 'phantom',
+  status: 'unseen' | 'visible' | 'obscuring' | 'obscured' | 'phantom',
   opts: { trackedByFog?: boolean; disposed?: boolean } = {},
 ): Entity {
   const nexus = {
@@ -188,8 +188,10 @@ console.log('\nfog-of-war sweep');
   solidAt(wall, 3, 0, 1);
   const obscuredEdges = run(buildIndex([{ e: blocked }]), [src], wall);
   check(
-    'a wall between source and sprite obscures it',
-    blocked.sprite._fowStatus === 'obscured',
+    // 'obscuring', not 'obscured': the sprite keeps drawing its memory look
+    // until spawnPhantom has attached the stand-in and flips it.
+    'a wall between source and sprite starts it obscuring',
+    blocked.sprite._fowStatus === 'obscuring',
     `got ${blocked.sprite._fowStatus}`,
   );
   check(
@@ -352,7 +354,7 @@ console.log('\nfog-of-war sweep');
   run(buildIndex([{ e: far }]), [source(1.5, 0.5, 1.5, 2)], emptyMask());
   check(
     'a sprite beyond radius+fadeWidth is obscured despite clear line of sight',
-    far.sprite._fowStatus === 'obscured',
+    far.sprite._fowStatus === 'obscuring',
     `got ${far.sprite._fowStatus}`,
   );
 }
@@ -368,8 +370,8 @@ console.log('\nfog-of-war sweep');
   const edges = run(buildIndex([{ e: a }, { e: b }]), [], emptyMask());
   check(
     'sweeping with zero sources obscures everything (hence the caller bail)',
-    a.sprite._fowStatus === 'obscured' &&
-      b.sprite._fowStatus === 'obscured' &&
+    a.sprite._fowStatus === 'obscuring' &&
+      b.sprite._fowStatus === 'obscuring' &&
       edges.newlyObscured.length === 2,
     `${a.sprite._fowStatus}/${b.sprite._fowStatus}, ${edges.newlyObscured.length} transitions`,
   );
@@ -581,29 +583,110 @@ function wideCentreRay(
   );
 }
 
-// 16. The other half of the cross-fade: the real sprite starts drawing as soon
-//     as visibility is non-zero, so within the band the pair coexists. That
-//     coexistence is new, and is why fog-of-war/methods.ts keeps a phantom
-//     registry -- without it, a sprite loitering at the edge of vision would
-//     strand a fresh phantom on every crossing.
+// ── Fade direction ─────────────────────────────────────────────────────────
+//
+// The two fog fades are deliberately different -- in from transparency, out to
+// the memory look -- and the renderer tells them apart from `_fowStatus`
+// alone, since visibility cannot say which way a sprite is travelling. That
+// works only because `'visible'` means FULLY in view: a sprite on its way in
+// stays `'unseen'` until it is completely revealed.
+
+console.log('\nfade direction');
+
 {
-  const sources = [wideSource(4.5, 4.5, 6, 4)];
-  const fading = entity(4.5 + 8, 0.5, 4.5, 'obscured');
-  sweepFogOfWar(
-    buildIndex([{ e: fading }]),
-    sources,
-    emptyWide(),
-    WIDE,
-    WIDE_ORIGIN,
-    { x: 1, y: 1, z: 1 },
-    [],
-    [],
+  const sources = [wideSource(4.5, 4.5, 6, 4)]; // radius 6, outer 10
+  // Runs the sweep on one entity at distance `d` and reports what it became.
+  const sweepAt = (
+    d: number,
+    status: 'unseen' | 'visible' | 'obscuring' | 'obscured' | 'phantom',
+  ): { status: string; obscured: ObscuredTransition[] } => {
+    const e = entity(4.5 + d, 0.5, 4.5, status);
+    const obscured: ObscuredTransition[] = [];
+    sweepFogOfWar(
+      buildIndex([{ e }]),
+      sources,
+      emptyWide(),
+      WIDE,
+      WIDE_ORIGIN,
+      { x: 1, y: 1, z: 1 },
+      obscured,
+      [],
+    );
+    return { status: e.sprite._fowStatus as string, obscured };
+  };
+
+  // 16. THE INVERSION. This previously asserted the opposite -- that partial
+  //     visibility flipped a sprite straight to 'visible'. Under that rule the
+  //     renderer had no way to know a sprite was fading IN, and gave it the
+  //     dissolve, so a newly discovered unit appeared instantly at full
+  //     opacity wearing the fog filter instead of fading up from nothing.
+  check(
+    "a sprite at partial visibility stays 'unseen' (it is fading in)",
+    sweepAt(8, 'unseen').status === 'unseen',
+    `got ${sweepAt(8, 'unseen').status}`,
   );
   check(
-    "a sprite at partial visibility flips to 'visible'",
-    fading.sprite._fowStatus === 'visible',
-    `got ${fading.sprite._fowStatus}`,
+    "and only becomes 'visible' once fully in view",
+    sweepAt(3, 'unseen').status === 'visible',
+    `got ${sweepAt(3, 'unseen').status}`,
   );
+
+  // 17. Coming back from obscured restarts the fade-IN, rather than resuming
+  //     the dissolve it left off on.
+  check(
+    "'obscured' -> 'unseen' when visibility returns",
+    sweepAt(8, 'obscured').status === 'unseen',
+    `got ${sweepAt(8, 'obscured').status}`,
+  );
+
+  // 18. The handover state: at zero visibility a fully-seen sprite goes
+  //     'obscuring', NOT 'obscured'. It keeps drawing its memory look until
+  //     spawnPhantom has actually attached the stand-in and flips it -- going
+  //     straight to 'obscured' is what left a one-frame gap.
+  {
+    const out = sweepAt(12, 'visible');
+    check(
+      "'visible' -> 'obscuring' at zero visibility",
+      out.status === 'obscuring',
+      `got ${out.status}`,
+    );
+    check(
+      'and the phantom spawn is still requested exactly once',
+      out.obscured.length === 1,
+      `got ${out.obscured.length}`,
+    );
+  }
+
+  // 19. If vision returns before the phantom lands, the sprite goes back to
+  //     'visible' -- it had been fully seen, so it resumes the dissolve rather
+  //     than restarting a fade-in.
+  check(
+    "'obscuring' -> 'visible' if visibility returns mid-spawn",
+    sweepAt(8, 'obscuring').status === 'visible',
+    `got ${sweepAt(8, 'obscuring').status}`,
+  );
+
+  // 20. An 'obscuring' sprite that stays hidden must NOT re-request a phantom
+  //     every frame while the first spawn is in flight.
+  {
+    const out = sweepAt(12, 'obscuring');
+    check(
+      "'obscuring' at zero visibility requests no further phantom",
+      out.obscured.length === 0,
+      `got ${out.obscured.length}`,
+    );
+  }
+
+  // 21. And the original invariant still holds: a sprite that was never fully
+  //     seen leaves view without leaving a memory behind.
+  {
+    const out = sweepAt(12, 'unseen');
+    check(
+      "an 'unseen' sprite going out of view spawns no phantom",
+      out.obscured.length === 0 && out.status === 'unseen',
+      `${out.status}, ${out.obscured.length} transitions`,
+    );
+  }
 }
 
 // ── Phantom supersession ───────────────────────────────────────────────────

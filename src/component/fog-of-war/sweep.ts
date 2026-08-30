@@ -38,6 +38,48 @@ export interface ResolvedSource {
   fadeWidth: number;
 }
 
+/**
+ * How far a sprite may drift from where its phantom was spawned and still
+ * count as "standing in the same place". Generous enough to absorb float
+ * noise in a composed world transform, tight enough that a unit taking even
+ * one step reads as having moved on.
+ */
+const PHANTOM_COINCIDENCE_EPSILON = 0.01;
+
+/**
+ * Whether a phantom has been made redundant by the sprite it stands in for.
+ *
+ * A phantom exists to represent a sprite that ISN'T drawing at that position.
+ * Once the sprite is drawing there again, it renders its own dissolve out of
+ * the memory look (see unified.frag's sprite path), which covers the reveal
+ * completely -- so the phantom has no job left, and leaving it up would
+ * double-draw over that dissolve. Worse, the outcome would depend on their
+ * arbitrary relative sort order, since a phantom and its unmoved sprite sit at
+ * identical depth.
+ *
+ * `spawnPos` is where the phantom was frozen. A sprite that has since moved is
+ * NOT coincident, and its phantom keeps its own fade-out instead: looking at
+ * the abandoned spot should dissolve the memory away rather than blink it out.
+ */
+export function phantomSupersededBySprite(
+  sprite: SpriteT | null | undefined,
+  transform: TransformT | null | undefined,
+  spawnPos: { x: number; y: number; z: number },
+): boolean {
+  if (!sprite || !transform) return false;
+  if (sprite._disposed === true) return false;
+  // 'obscured' means render-sprites skips it entirely, so nothing is covering
+  // the phantom and it must stay.
+  if (sprite._fowStatus === 'obscured') return false;
+
+  const p = transform.worldPosition;
+  return (
+    Math.abs(p.x - spawnPos.x) <= PHANTOM_COINCIDENCE_EPSILON &&
+    Math.abs(p.y - spawnPos.y) <= PHANTOM_COINCIDENCE_EPSILON &&
+    Math.abs(p.z - spawnPos.z) <= PHANTOM_COINCIDENCE_EPSILON
+  );
+}
+
 /** A `visible` -> not-visible transition found by the sweep. */
 export interface ObscuredTransition {
   sprite: SpriteT;

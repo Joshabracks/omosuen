@@ -12,6 +12,7 @@
 import {
   computeSpriteVisibility,
   isPositionVisible,
+  phantomSupersededBySprite,
   sweepFogOfWar,
   type FogSweepIndex,
   type ObscuredTransition,
@@ -603,6 +604,86 @@ function wideCentreRay(
     fading.sprite._fowStatus === 'visible',
     `got ${fading.sprite._fowStatus}`,
   );
+}
+
+// ── Phantom supersession ───────────────────────────────────────────────────
+//
+// A phantom stands in for a sprite that ISN'T drawing at that position. Once
+// the sprite draws there again it dissolves out of the memory look itself, so
+// the phantom is redundant and must go -- otherwise the two double-draw at
+// identical depth, in whichever order the stable sort happens to leave them.
+//
+// But a phantom whose sprite has moved on must NOT be retired early: looking
+// at the abandoned spot should dissolve the memory away over the vision
+// gradient, not blink it out.
+
+console.log('\nphantom supersession');
+
+{
+  const at = (x: number, z: number) => ({ x, y: 0.5, z });
+
+  // Unmoved and drawing: the sprite's own dissolve covers the reveal.
+  {
+    const e = entity(4, 0.5, 4, 'visible');
+    check(
+      'an unmoved, drawing sprite supersedes its phantom',
+      phantomSupersededBySprite(e.sprite, e.transform, at(4, 4)),
+    );
+  }
+
+  // Obscured: render-sprites skips it entirely, so nothing covers the phantom.
+  {
+    const e = entity(4, 0.5, 4, 'obscured');
+    check(
+      "an 'obscured' sprite does not supersede it (it isn't drawn at all)",
+      !phantomSupersededBySprite(e.sprite, e.transform, at(4, 4)),
+    );
+  }
+
+  // Moved on: the phantom marks an abandoned spot and keeps its own fade.
+  {
+    const e = entity(9, 0.5, 4, 'visible');
+    check(
+      'a sprite that moved away does not supersede it',
+      !phantomSupersededBySprite(e.sprite, e.transform, at(4, 4)),
+    );
+    const oneStep = entity(5, 0.5, 4, 'visible');
+    check(
+      'and even a single step counts as moved',
+      !phantomSupersededBySprite(oneStep.sprite, oneStep.transform, at(4, 4)),
+    );
+  }
+
+  // Float noise in a composed world transform must not read as movement.
+  {
+    const e = entity(4 + 1e-9, 0.5, 4 - 1e-9, 'visible');
+    check(
+      'sub-epsilon float drift still counts as unmoved',
+      phantomSupersededBySprite(e.sprite, e.transform, at(4, 4)),
+    );
+  }
+
+  // Disposed / missing owners.
+  {
+    const gone = entity(4, 0.5, 4, 'visible', { disposed: true });
+    check(
+      'a disposed sprite supersedes nothing',
+      !phantomSupersededBySprite(gone.sprite, gone.transform, at(4, 4)),
+    );
+    check(
+      'and neither does a missing one',
+      !phantomSupersededBySprite(null, null, at(4, 4)),
+    );
+  }
+
+  // 'unseen' is a drawn state (the shader gates it), so it counts.
+  {
+    const e = entity(4, 0.5, 4, 'unseen');
+    check(
+      "an 'unseen' sprite still supersedes -- it is submitted and shader-gated",
+      phantomSupersededBySprite(e.sprite, e.transform, at(4, 4)),
+    );
+  }
 }
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

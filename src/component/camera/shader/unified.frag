@@ -871,10 +871,13 @@ void main() {
                 float lightLevel = computeLightLevel(v_origWorldPos);
                 fogVis = clamp(fogVis + lightLevel * u_fogLightInfluence * (1.0 - fogVis), 0.0, 1.0);
             }
-            // The pair cross-fades: a real sprite is drawn at alpha `fogVis`,
-            // its phantom at `1.0 - fogVis`. At a shared position the two sum
-            // to exactly one, so there is never a frame with neither visible
-            // (the bug this replaced) nor one with both at full strength.
+            // Both sides are gated on this one number, so there is never a
+            // frame with neither the sprite nor its phantom visible -- the bug
+            // this replaced. The transition itself is NOT done by playing the
+            // two off against each other with complementary alpha (see the
+            // dissolve comment further down for why that cannot work); a live
+            // sprite blends to its own memory look within this single draw,
+            // and a phantom only ever fades out.
             if(u_spriteFogMemory) {
                 if(fogVis >= 1.0) discard;
             } else {
@@ -947,22 +950,43 @@ void main() {
         vec3 litColor = albedo.rgb * lighting * u_tint.rgb + specular + spriteEmission;
         vec4 tinted = vec4(litColor, albedo.a * u_tint.a);
 
-        // Fog-of-war memory styling for a frozen tracked sprite (see the
-        // discard block above) -- desaturate/tint like terrain memory, and
-        // use REAL alpha for opacity (sprites already blend, unlike cells,
+        // Fog-of-war memory styling -- desaturate/tint like terrain memory,
+        // using REAL alpha for opacity (sprites already blend, unlike cells,
         // so there's no need for the fade-to-black trick the cell path uses).
-        vec3 finalRgb = tinted.rgb;
-        // The cross-fade weight from the fog block above: a phantom fades out
-        // over exactly the band its real sprite fades in over.
-        float fogAlpha = u_spriteFogMemory ? (1.0 - fogVis) : fogVis;
-        float memoryOpacity = fogAlpha;
+        vec3 liveRgb = tinted.rgb;
+        float luminance = dot(liveRgb, vec3(0.299, 0.587, 0.114));
+        vec3 memoryRgb = mix(vec3(luminance), liveRgb, u_fogMemorySaturation) * u_fogMemoryTint;
+
+        vec3 finalRgb;
+        float fogAlpha;
         if(u_spriteFogMemory) {
-            float luminance = dot(finalRgb, vec3(0.299, 0.587, 0.114));
-            finalRgb = mix(vec3(luminance), finalRgb, u_fogMemorySaturation) * u_fogMemoryTint;
-            memoryOpacity *= u_fogMemoryOpacity;
+            // A phantom is already the memory; it only fades OUT as vision
+            // returns to the spot it remembers. When its own sprite is
+            // standing there and drawing, fog-of-war disposes it instead (see
+            // `phantomSupersededBySprite`), so this fade is the case where the
+            // sprite has moved on and the remembered spot turns out to be
+            // empty.
+            finalRgb = memoryRgb;
+            fogAlpha = (1.0 - fogVis) * u_fogMemoryOpacity;
+        } else {
+            // A live sprite DISSOLVES into its own remembered look rather than
+            // just thinning out: at fogVis 1 this is the plain lit sprite, at
+            // fogVis 0 it is pixel-identical to a phantom of the same frame --
+            // which is exactly what takes over when it stops drawing. The
+            // sprite therefore appears to fade INTO the fog, still animating,
+            // instead of dimming while a separate memory image pops in.
+            //
+            // Deliberately ONE draw call rather than a live pass plus a memory
+            // pass. Sprites blend SRC_ALPHA/ONE_MINUS_SRC_ALPHA, so two
+            // stacked draws at alpha `a` and `1-a` composite to
+            // `a^2*C1 + (1-a)*C2 + a(1-a)*B` -- the background keeps weight
+            // `a(1-a)`, up to 25% at the midpoint. Complementary alphas are
+            // NOT a cross-dissolve; only mixing within one invocation is.
+            finalRgb = mix(memoryRgb, liveRgb, fogVis);
+            fogAlpha = mix(u_fogMemoryOpacity, 1.0, fogVis);
         }
 
         // Apply opacity to final alpha channel
-        fragColor = vec4(finalRgb, tinted.a * u_opacity * memoryOpacity);
+        fragColor = vec4(finalRgb, tinted.a * u_opacity * fogAlpha);
     }
 }

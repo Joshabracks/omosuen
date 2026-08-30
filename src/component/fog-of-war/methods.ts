@@ -13,7 +13,11 @@ import type { SpriteT, SpriteOptions } from '../sprite/data';
 import type { TransformT, TransformOptions } from '../transform/data';
 import type { VisionSourceT } from '../vision-source/data';
 import { computeSolidityMap } from '../camera/render/visibility-mask';
-import { isPositionVisible, sweepFogOfWar } from './sweep';
+import {
+  isPositionVisible,
+  phantomSupersededBySprite,
+  sweepFogOfWar,
+} from './sweep';
 import type { ObscuredTransition, ResolvedSource } from './sweep';
 import {
   clearDeferredCells,
@@ -82,10 +86,49 @@ function resolveActiveVisionSources(
  * dispose queue, so "spawned" and "disposed" were never actually atomic with
  * respect to each other.
  */
-const livePhantoms = new Map<number, NexusT | null>();
+interface LivePhantom {
+  /** `null` while the spawn is still in flight (see `spawnPhantom`). */
+  nexus: NexusT | null;
+  /** The sprite this stands in for, and its transform, for the check below. */
+  sprite: SpriteT;
+  transform: TransformT;
+  /** Where the phantom was frozen -- `phantomSupersededBySprite`'s reference. */
+  spawnPos: { x: number; y: number; z: number };
+}
+
+const livePhantoms = new Map<number, LivePhantom>();
 
 /** Reverse of `livePhantoms`: phantom nexus id -> the sprite id it stands in for. */
 const phantomOwner = new Map<number, number>();
+
+/**
+ * Disposes any phantom whose own sprite is drawing at the spot it remembers.
+ *
+ * Run after the sweep, so it sees the `_fowStatus` the sweep just wrote. The
+ * sweep disposes a phantom once vision at its position is FULL, which is the
+ * right rule for a spot the sprite has moved on from -- the memory dissolves
+ * as you confirm nothing is there. But when the sprite never moved, it starts
+ * drawing again the instant visibility is non-zero, rendering its own dissolve
+ * out of the memory look; the phantom is then redundant, and keeping it would
+ * double-draw over that dissolve. See `phantomSupersededBySprite`.
+ */
+function disposeSupersededPhantoms(): void {
+  if (livePhantoms.size === 0) return;
+  let superseded: NexusT[] | null = null;
+  for (const entry of livePhantoms.values()) {
+    if (!entry.nexus || entry.nexus._disposed === true) continue;
+    if (
+      phantomSupersededBySprite(entry.sprite, entry.transform, entry.spawnPos)
+    ) {
+      (superseded ??= []).push(entry.nexus);
+    }
+  }
+  if (!superseded) return;
+  for (const nexus of superseded) {
+    forgetPhantom(nexus);
+    markForDisposal(nexus);
+  }
+}
 
 /**
  * Drops a phantom's registry entries, freeing its sprite to be given a new one
@@ -120,8 +163,9 @@ async function spawnPhantom(
   const spriteId = sprite.id;
   if (spriteId === undefined) return;
 
-  if (livePhantoms.has(spriteId)) {
-    const existing = livePhantoms.get(spriteId) ?? null;
+  const existingEntry = livePhantoms.get(spriteId);
+  if (existingEntry) {
+    const existing = existingEntry.nexus;
     // `null` means a spawn is already in flight for this sprite.
     if (existing === null || existing._disposed !== true) return;
     // The phantom went away by a path other than our own reveal (scene
@@ -130,10 +174,20 @@ async function spawnPhantom(
     forgetPhantom(existing);
   }
 
+  const frozenPos = {
+    x: transform.worldPosition.x,
+    y: transform.worldPosition.y,
+    z: transform.worldPosition.z,
+  };
   // Claim the slot BEFORE the first await: two obscure edges on consecutive
   // frames would otherwise both pass the check above while the first spawn is
-  // still resolving. Replaced with the real nexus once it exists.
-  livePhantoms.set(spriteId, null);
+  // still resolving. `nexus` is filled in once it exists.
+  livePhantoms.set(spriteId, {
+    nexus: null,
+    sprite,
+    transform,
+    spawnPos: frozenPos,
+  });
 
   const phantomNexus = (await newComponent(
     'nexus',
@@ -144,7 +198,12 @@ async function spawnPhantom(
     livePhantoms.delete(spriteId);
     return;
   }
-  livePhantoms.set(spriteId, phantomNexus);
+  livePhantoms.set(spriteId, {
+    nexus: phantomNexus,
+    sprite,
+    transform,
+    spawnPos: frozenPos,
+  });
   if (phantomNexus.id !== undefined) {
     phantomOwner.set(phantomNexus.id, spriteId);
   }
@@ -496,6 +555,10 @@ export const FogOfWar: FogOfWarMethods = {
         forgetPhantom(revealedPhantoms[i]);
         markForDisposal(revealedPhantoms[i]);
       }
+      // Reads `_fowStatus` as the sweep just left it, so a sprite that flipped
+      // back to 'visible' this pass retires its phantom in the same frame --
+      // no frame where both draw at the same spot.
+      disposeSupersededPhantoms();
 
       // Past this point `mask` is DEAD -- `revealObservedCells` writes to WASM
       // (clearing overlay entries), and a memory growth there can detach the

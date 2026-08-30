@@ -49,6 +49,23 @@ export function cacheVisionUniformLocations(
   _visionSourceFadeWidth.set(cameraId, fadeWidth);
 }
 
+/**
+ * The sources `setVisionUniforms` resolved on its last call, in the same order
+ * and capped the same way, so a CPU-side visibility computation is guaranteed
+ * to be looking at exactly what the shader was handed.
+ *
+ * Live view of the reused per-frame array -- read it before the next
+ * `setVisionUniforms` call, and don't retain it.
+ */
+export function getResolvedVisionSources(): readonly {
+  source: VisionSourceT;
+  pos: Vector3D;
+}[] {
+  return _sourcesArr.length > MAX_VISION_SOURCES
+    ? _sourcesArr.slice(0, MAX_VISION_SOURCES)
+    : _sourcesArr;
+}
+
 export function clearVisionUniformCache(cameraId: number): void {
   _numVisionSources.delete(cameraId);
   _visionSourcePos.delete(cameraId);

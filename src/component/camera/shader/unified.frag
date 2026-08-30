@@ -78,6 +78,13 @@ uniform float u_opacity;
     // stand-in for some other (currently obscured) tracked sprite. See
     // SpriteT._fowStatus's doc comment.
 uniform bool u_spriteFogMemory;
+    // Fog-of-war visibility for THIS sprite, 0..1, computed once on the CPU
+    // (render-sprites.ts, via fog-of-war/sweep.ts's computeSpriteVisibility)
+    // rather than per fragment. Pure geometry -- radial falloff times the
+    // fraction of jittered rays that reach the sprite -- with the
+    // u_fogLightInfluence boost applied in the fragment shader on top.
+    // 1.0 when there are no vision sources.
+uniform float u_spriteVisibility;
 
     // Occlusion mask uniforms (sprite mode — samples cell FBO depth texture)
 uniform sampler2D u_depthTexture;
@@ -842,18 +849,37 @@ void main() {
         if(albedo.a < 0.01)
             discard;
 
-        // Fog-of-war: an ordinary sprite draw call only renders when
-        // live-visible (never in the memory tier — memory shows remembered
-        // terrain, not current entity state). A PHANTOM draw call
-        // (u_spriteFogMemory) is a different sprite entity entirely — a
-        // frozen last-seen stand-in fog-of-war/methods.ts's update() spawned
-        // for some other, currently obscured tracked sprite (see
-        // SpriteT._fowStatus) — so the live per-fragment computeVisibility
-        // discard is skipped here — always render it, styled like terrain
-        // memory below instead.
-        if(!u_spriteFogMemory && u_numVisionSources > 0) {
-            vec3 fragCellPos = v_origWorldPos / u_cellSize;
-            if(computeVisibility(v_origWorldPos, fragCellPos) <= 0.0) discard;
+        // Fog-of-war visibility for this sprite, 0..1.
+        //
+        // Supplied by the CPU as u_spriteVisibility rather than computed here.
+        // v_origWorldPos in sprite mode is u_spritePosition (see unified.vert)
+        // — constant across the whole quad — so calling computeVisibility per
+        // fragment re-ran eight DDA raycasts per pixel to produce one number
+        // per sprite. Worse, it was a SECOND opinion: fog-of-war's CPU sweep
+        // decided _fowStatus and phantom disposal from its own single-ray
+        // test, and where the two disagreed (a sight line threading a gap the
+        // jittered rays clip) the phantom was disposed while the real sprite
+        // was discarded, leaving a hole. One number now drives both.
+        //
+        // The light-influence boost stays here: it needs a light walk but no
+        // raycasts, so it is cheap per fragment, and u_spriteVisibility is
+        // deliberately the pure-geometry term for it to build on.
+        float fogVis = 1.0;
+        if(u_numVisionSources > 0) {
+            fogVis = u_spriteVisibility;
+            if(u_fogLightInfluence > 0.0) {
+                float lightLevel = computeLightLevel(v_origWorldPos);
+                fogVis = clamp(fogVis + lightLevel * u_fogLightInfluence * (1.0 - fogVis), 0.0, 1.0);
+            }
+            // The pair cross-fades: a real sprite is drawn at alpha `fogVis`,
+            // its phantom at `1.0 - fogVis`. At a shared position the two sum
+            // to exactly one, so there is never a frame with neither visible
+            // (the bug this replaced) nor one with both at full strength.
+            if(u_spriteFogMemory) {
+                if(fogVis >= 1.0) discard;
+            } else {
+                if(fogVis <= 0.0) discard;
+            }
         }
 
         // Occlusion test: discard sprite fragments behind cells (or show silhouette)
@@ -926,11 +952,14 @@ void main() {
         // use REAL alpha for opacity (sprites already blend, unlike cells,
         // so there's no need for the fade-to-black trick the cell path uses).
         vec3 finalRgb = tinted.rgb;
-        float memoryOpacity = 1.0;
+        // The cross-fade weight from the fog block above: a phantom fades out
+        // over exactly the band its real sprite fades in over.
+        float fogAlpha = u_spriteFogMemory ? (1.0 - fogVis) : fogVis;
+        float memoryOpacity = fogAlpha;
         if(u_spriteFogMemory) {
             float luminance = dot(finalRgb, vec3(0.299, 0.587, 0.114));
             finalRgb = mix(vec3(luminance), finalRgb, u_fogMemorySaturation) * u_fogMemoryTint;
-            memoryOpacity = u_fogMemoryOpacity;
+            memoryOpacity *= u_fogMemoryOpacity;
         }
 
         // Apply opacity to final alpha channel

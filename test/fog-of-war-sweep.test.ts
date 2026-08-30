@@ -10,6 +10,8 @@
  */
 
 import {
+  computeSpriteVisibility,
+  isPositionVisible,
   sweepFogOfWar,
   type FogSweepIndex,
   type ObscuredTransition,
@@ -90,8 +92,19 @@ function entity(
   return { nexus, transform, sprite };
 }
 
-/** A source at (x,y,z) with a generous radius, matching `resolveActiveVisionSources`. */
-function source(x: number, y: number, z: number, radius = 10): ResolvedSource {
+/**
+ * A source at (x,y,z), matching `resolveActiveVisionSources`. `fadeWidth`
+ * defaults to 0 (hard-edged) so the older cases below keep testing a clean
+ * binary radius; the cross-fade cases pass one explicitly.
+ */
+function source(
+  x: number,
+  y: number,
+  z: number,
+  radius = 10,
+  fadeWidth = 0,
+): ResolvedSource {
+  const outer = radius + fadeWidth;
   return {
     pos: { x, y, z },
     localCell: {
@@ -99,8 +112,28 @@ function source(x: number, y: number, z: number, radius = 10): ResolvedSource {
       y: y / CELL_SIZE.y - WINDOW_ORIGIN.y,
       z: z / CELL_SIZE.z - WINDOW_ORIGIN.z,
     },
-    outerSq: radius * radius,
+    outerSq: outer * outer,
+    radius,
+    fadeWidth,
   };
+}
+
+/** The shader-mirroring visibility of a world point, for the cases below. */
+function visibilityAt(
+  x: number,
+  y: number,
+  z: number,
+  sources: ResolvedSource[],
+  mask: Uint8Array,
+): number {
+  return computeSpriteVisibility(
+    { x, y, z },
+    sources,
+    mask,
+    CELL_DIMS,
+    WINDOW_ORIGIN,
+    CELL_SIZE,
+  );
 }
 
 function buildIndex(entries: { e: Entity; selfLit?: boolean }[]): FogSweepIndex {
@@ -338,6 +371,237 @@ console.log('\nfog-of-war sweep');
       b.sprite._fowStatus === 'obscured' &&
       edges.newlyObscured.length === 2,
     `${a.sprite._fowStatus}/${b.sprite._fowStatus}, ${edges.newlyObscured.length} transitions`,
+  );
+}
+
+// ── Sprite visibility: the number the shader is handed ─────────────────────
+//
+// `computeSpriteVisibility` mirrors unified.frag's `visionSourceVisibility`:
+// a radial smoothstep times the fraction of eight jittered rays that arrive.
+// It is what `render-sprites.ts` uploads as `u_spriteVisibility`, so these
+// cases pin the contract the GPU relies on.
+
+console.log('\nsprite visibility');
+
+// A roomier grid than the 8x4x8 above, for the aperture geometry below.
+const WIDE = { x: 24, y: 4, z: 24 };
+const WIDE_ORIGIN = { x: 0, y: 0, z: 0 };
+function emptyWide(): Uint8Array {
+  return new Uint8Array(WIDE.x * WIDE.y * WIDE.z);
+}
+function wideMask(solidColumns: [number, number][]): Uint8Array {
+  const m = new Uint8Array(WIDE.x * WIDE.y * WIDE.z);
+  for (const [x, z] of solidColumns) {
+    for (let y = 0; y < WIDE.y; y++) {
+      m[z * WIDE.y * WIDE.x + y * WIDE.x + x] = 255;
+    }
+  }
+  return m;
+}
+function wideSource(
+  x: number,
+  z: number,
+  radius: number,
+  fadeWidth = 0,
+): ResolvedSource {
+  const outer = radius + fadeWidth;
+  return {
+    pos: { x, y: 0.5, z },
+    localCell: { x, y: 0.5, z },
+    outerSq: outer * outer,
+    radius,
+    fadeWidth,
+  };
+}
+function wideVisibility(
+  target: { x: number; y: number; z: number },
+  sources: ResolvedSource[],
+  mask: Uint8Array,
+): number {
+  return computeSpriteVisibility(target, sources, mask, WIDE, WIDE_ORIGIN, {
+    x: 1,
+    y: 1,
+    z: 1,
+  });
+}
+function wideCentreRay(
+  target: { x: number; y: number; z: number },
+  sources: ResolvedSource[],
+  mask: Uint8Array,
+): boolean {
+  return isPositionVisible(target, sources, mask, WIDE, WIDE_ORIGIN, {
+    x: 1,
+    y: 1,
+    z: 1,
+  });
+}
+
+// 11. THE BUG. Two pillars with a sight line threading exactly between them:
+//     the single centre ray the CPU used to cast gets through, while all eight
+//     of the shader's jittered rays clip one pillar or the other. The old code
+//     disposed the phantom on the centre ray and let the shader discard the
+//     real sprite, leaving a hole where the entity should be -- with both at
+//     the same position, because the sprite never moved.
+//
+//     Minimised from a randomised search: of ~16.6k sampled configurations,
+//     3.6% disagreed at all and 0.018% disagreed this totally. Rare per
+//     sample, routine over a map full of rock faces and doorways.
+{
+  const mask = wideMask([
+    [7, 7],
+    [13, 9],
+  ]);
+  const sources = [wideSource(2.5, 3.5, 60)];
+  const target = { x: 21.5, y: 0.5, z: 15.5 };
+
+  check(
+    'the centre ray threads the gap between the pillars',
+    wideCentreRay(target, sources, mask),
+  );
+  check(
+    'but every jittered ray is blocked, so sprite visibility is 0',
+    wideVisibility(target, sources, mask) === 0,
+    `got ${wideVisibility(target, sources, mask)}`,
+  );
+  check(
+    'with the pillars removed both agree the point is visible',
+    wideCentreRay(target, sources, emptyWide()) &&
+      wideVisibility(target, sources, emptyWide()) === 1,
+  );
+}
+
+// 12. Line of sight is SOFT: the eight rays are averaged, not OR'd. A pillar
+//     clipping some of them but not others gives a fractional visibility well
+//     inside `radius`, where the radial term is exactly 1 -- so this isolates
+//     the LOS fraction. Treating "any ray arrived" as full visibility would
+//     make partial occlusion snap to solid.
+{
+  const sources = [wideSource(2.5, 3.5, 60)];
+  const target = { x: 16.5, y: 0.5, z: 7.5 };
+
+  const grazing = wideVisibility(target, sources, wideMask([[5, 3]]));
+  check(
+    'a pillar clipping some rays gives partial visibility',
+    grazing > 0 && grazing < 1,
+    `got ${grazing}`,
+  );
+  const heavier = wideVisibility(target, sources, wideMask([[5, 4]]));
+  check(
+    'and a pillar clipping more of them gives less',
+    heavier < grazing && heavier > 0,
+    `${heavier} vs ${grazing}`,
+  );
+}
+
+// 13. Radial falloff matches the shader's smoothstep.
+{
+  const sources = [wideSource(4.5, 4.5, 6, 4)]; // radius 6, outer 10
+  const at = (d: number): number =>
+    wideVisibility({ x: 4.5 + d, y: 0.5, z: 4.5 }, sources, emptyWide());
+
+  check('fully visible inside `radius`', at(3) === 1, `got ${at(3)}`);
+  check('zero at/beyond `radius + fadeWidth`', at(10) === 0, `got ${at(10)}`);
+  check(
+    'partial inside the fade band',
+    at(8) > 0 && at(8) < 1,
+    `got ${at(8)}`,
+  );
+  check(
+    'and monotonically decreasing across it',
+    at(6.5) > at(7.5) && at(7.5) > at(8.5) && at(8.5) > at(9.5),
+    `${at(6.5)} ${at(7.5)} ${at(8.5)} ${at(9.5)}`,
+  );
+}
+
+// 14. Complementarity -- the property that makes a gap impossible. The shader
+//     draws a real sprite at alpha `vis` and its phantom at `1 - vis`, so
+//     across the whole fade band the pair sums to exactly one: never a
+//     distance where neither is visible, never one where both are solid.
+{
+  const sources = [wideSource(4.5, 4.5, 6, 4)];
+  let worst = 0;
+  let anyPartial = false;
+  for (let d = 0; d <= 12; d += 0.25) {
+    const vis = wideVisibility({ x: 4.5 + d, y: 0.5, z: 4.5 }, sources, emptyWide());
+    if (vis > 0 && vis < 1) anyPartial = true;
+    worst = Math.max(worst, Math.abs(vis + (1 - vis) - 1));
+  }
+  check('the swept range actually crosses the fade band', anyPartial);
+  check(
+    'sprite alpha + phantom alpha == 1 at every distance',
+    worst === 0,
+    `max deviation ${worst}`,
+  );
+}
+
+// 15. A phantom must OUTLIVE the fade band -- disposing it the moment
+//     visibility becomes non-zero is what would tear the cross-fade open.
+{
+  const sources = [wideSource(4.5, 4.5, 6, 4)];
+  const mask = emptyWide();
+  const dims = WIDE;
+
+  // Partially visible: still standing.
+  const fading = entity(4.5 + 8, 0.5, 4.5, 'phantom');
+  const partial: NexusT[] = [];
+  sweepFogOfWar(
+    buildIndex([{ e: fading }]),
+    sources,
+    mask,
+    dims,
+    WIDE_ORIGIN,
+    { x: 1, y: 1, z: 1 },
+    [],
+    partial,
+  );
+  check(
+    'a phantom at partial visibility is not disposed',
+    partial.length === 0,
+    `got ${partial.length}`,
+  );
+
+  // Fully visible: gone.
+  const done = entity(4.5 + 2, 0.5, 4.5, 'phantom');
+  const full: NexusT[] = [];
+  sweepFogOfWar(
+    buildIndex([{ e: done }]),
+    sources,
+    mask,
+    dims,
+    WIDE_ORIGIN,
+    { x: 1, y: 1, z: 1 },
+    [],
+    full,
+  );
+  check(
+    'a phantom at full visibility is disposed',
+    full.length === 1,
+    `got ${full.length}`,
+  );
+}
+
+// 16. The other half of the cross-fade: the real sprite starts drawing as soon
+//     as visibility is non-zero, so within the band the pair coexists. That
+//     coexistence is new, and is why fog-of-war/methods.ts keeps a phantom
+//     registry -- without it, a sprite loitering at the edge of vision would
+//     strand a fresh phantom on every crossing.
+{
+  const sources = [wideSource(4.5, 4.5, 6, 4)];
+  const fading = entity(4.5 + 8, 0.5, 4.5, 'obscured');
+  sweepFogOfWar(
+    buildIndex([{ e: fading }]),
+    sources,
+    emptyWide(),
+    WIDE,
+    WIDE_ORIGIN,
+    { x: 1, y: 1, z: 1 },
+    [],
+    [],
+  );
+  check(
+    "a sprite at partial visibility flips to 'visible'",
+    fading.sprite._fowStatus === 'visible',
+    `got ${fading.sprite._fowStatus}`,
   );
 }
 

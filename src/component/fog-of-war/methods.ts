@@ -59,9 +59,46 @@ function resolveActiveVisionSources(
         z: pos.z / cellSize.z - windowOriginLocalCell.z,
       },
       outerSq: outer * outer,
+      radius: source.radius,
+      fadeWidth: source.fadeWidth,
     });
   }
   return resolved;
+}
+
+/**
+ * The live phantom standing in for each obscured sprite, keyed by that
+ * sprite's id.
+ *
+ * Needed because a phantom and its `'visible'` sprite now COEXIST for the
+ * duration of the shader's cross-fade (the phantom is disposed only at full
+ * visibility, see `sweepFogOfWar`). A sprite hovering around the edge of
+ * vision therefore re-crosses the `visible -> obscured` edge while its
+ * previous phantom is still alive, and without this guard each crossing would
+ * strand another one at the same spot.
+ *
+ * It also closes a race that was previously only accidentally impossible:
+ * `spawnPhantom` is async and `markForDisposal` defers to the end-of-frame
+ * dispose queue, so "spawned" and "disposed" were never actually atomic with
+ * respect to each other.
+ */
+const livePhantoms = new Map<number, NexusT | null>();
+
+/** Reverse of `livePhantoms`: phantom nexus id -> the sprite id it stands in for. */
+const phantomOwner = new Map<number, number>();
+
+/**
+ * Drops a phantom's registry entries, freeing its sprite to be given a new one
+ * next time it goes out of sight.
+ */
+function forgetPhantom(phantomNexus: NexusT): void {
+  const phantomId = phantomNexus.id;
+  if (phantomId === undefined) return;
+  const spriteId = phantomOwner.get(phantomId);
+  if (spriteId !== undefined) {
+    phantomOwner.delete(phantomId);
+    livePhantoms.delete(spriteId);
+  }
 }
 
 /**
@@ -72,18 +109,45 @@ function resolveActiveVisionSources(
  * (its nexus, its own update/gameplay logic) is never touched. `_generated`
  * excludes the phantom nexus from scene serialization (see
  * `serializeComponentRecursive`, src/scene/loader.ts).
+ *
+ * A no-op if `sprite` already has a live phantom (see `livePhantoms`).
  */
 async function spawnPhantom(
   scene: NexusT,
   sprite: SpriteT,
   transform: TransformT,
 ): Promise<void> {
+  const spriteId = sprite.id;
+  if (spriteId === undefined) return;
+
+  if (livePhantoms.has(spriteId)) {
+    const existing = livePhantoms.get(spriteId) ?? null;
+    // `null` means a spawn is already in flight for this sprite.
+    if (existing === null || existing._disposed !== true) return;
+    // The phantom went away by a path other than our own reveal (scene
+    // teardown, an external markForDisposal). Self-heal rather than blocking
+    // this sprite from ever getting another one.
+    forgetPhantom(existing);
+  }
+
+  // Claim the slot BEFORE the first await: two obscure edges on consecutive
+  // frames would otherwise both pass the check above while the first spawn is
+  // still resolving. Replaced with the real nexus once it exists.
+  livePhantoms.set(spriteId, null);
+
   const phantomNexus = (await newComponent(
     'nexus',
     { name: `${sprite.name}-fow-phantom` },
     scene,
   )) as NexusT | null;
-  if (!phantomNexus) return;
+  if (!phantomNexus) {
+    livePhantoms.delete(spriteId);
+    return;
+  }
+  livePhantoms.set(spriteId, phantomNexus);
+  if (phantomNexus.id !== undefined) {
+    phantomOwner.set(phantomNexus.id, spriteId);
+  }
   phantomNexus._generated = true;
 
   const p = transform.worldPosition;
@@ -429,6 +493,7 @@ export const FogOfWar: FogOfWarMethods = {
       // Safe to act on while `mask` is still live: `markForDisposal` only sets
       // a flag and queues an id, it never awaits.
       for (let i = 0; i < revealedPhantoms.length; i++) {
+        forgetPhantom(revealedPhantoms[i]);
         markForDisposal(revealedPhantoms[i]);
       }
 
@@ -468,5 +533,9 @@ export const FogOfWar: FogOfWarMethods = {
     clearDeferredCells();
     observationContext = null;
     lastWindowOrigin = null;
+    // Phantoms themselves are ordinary scene nexuses and are torn down with
+    // the scene; only this bookkeeping is ours to clear.
+    livePhantoms.clear();
+    phantomOwner.clear();
   },
 };

@@ -16,7 +16,10 @@ import {
   setOrbitYawUniform,
   setLightUniforms,
 } from './light-uniforms';
-import { setVisionUniforms } from './vision-uniforms';
+import { getResolvedVisionSources, setVisionUniforms } from './vision-uniforms';
+import { computeSpriteVisibility } from '../../fog-of-war/sweep';
+import type { ResolvedSource } from '../../fog-of-war/sweep';
+import { computeSolidityMap } from './visibility-mask';
 
 /** Default cell dimensions when no cell-maps are in the scene. */
 const DEFAULT_CELL_SIZE_X = 32;
@@ -376,6 +379,10 @@ export function renderSprites(
     'u_hasCellEmissionColor',
   );
   const u_spriteFogMemory = gl.getUniformLocation(program, 'u_spriteFogMemory');
+  const u_spriteVisibility = gl.getUniformLocation(
+    program,
+    'u_spriteVisibility',
+  );
 
   // Set constant uniforms (same for all sprites)
   // Sprites render at full resolution to screen (not via FBO), so they use
@@ -464,6 +471,55 @@ export function renderSprites(
 
   // Set fog-of-war vision-source uniforms (same sources as cell-maps)
   setVisionUniforms(gl, camera.id!, visionSources);
+
+  // Per-sprite fog visibility is computed HERE, on the CPU, and uploaded as
+  // u_spriteVisibility -- see the fog block in unified.frag's sprite path for
+  // why. Resolved from the exact array setVisionUniforms just handed the
+  // shader, so the two cannot drift.
+  //
+  // `origin` is null until the cell-map's first window commit; with no
+  // cell-map (or no committed window) there is no solidity data to raycast
+  // against, so every sprite is treated as fully visible -- matching the
+  // pre-existing behaviour of a scene that has sprites but no terrain.
+  const fogSources: ResolvedSource[] = [];
+  const spriteFogActive =
+    !!originCellMap && !!windowOrigin && visionSources.length > 0;
+  if (spriteFogActive) {
+    const cs = originCellMap.cellSize;
+    const originLocalCell = {
+      x: windowOrigin.cx * originCellMap.chunkSize.x,
+      y: windowOrigin.cy * originCellMap.chunkSize.y,
+      z: windowOrigin.cz * originCellMap.chunkSize.z,
+    };
+    for (const { source, pos } of getResolvedVisionSources()) {
+      const outer = source.radius + source.fadeWidth;
+      fogSources.push({
+        pos: { x: pos.x, y: pos.y, z: pos.z },
+        localCell: {
+          x: pos.x / cs.x - originLocalCell.x,
+          y: pos.y / cs.y - originLocalCell.y,
+          z: pos.z / cs.z - originLocalCell.z,
+        },
+        outerSq: outer * outer,
+        radius: source.radius,
+        fadeWidth: source.fadeWidth,
+      });
+    }
+  }
+  // Cached WASM-side, so this is a flag read on frames where terrain did not
+  // change. Held only across the synchronous draw loop below -- nothing in it
+  // writes to WASM, so the view cannot be detached mid-use.
+  const fogMask = fogSources.length > 0 ? computeSolidityMap() : null;
+  const fogCellDims = originCellMap?.mapSize;
+  const fogCellSize = originCellMap?.cellSize;
+  const fogWindowOriginLocalCell =
+    originCellMap && windowOrigin
+      ? {
+          x: windowOrigin.cx * originCellMap.chunkSize.x,
+          y: windowOrigin.cy * originCellMap.chunkSize.y,
+          z: windowOrigin.cz * originCellMap.chunkSize.z,
+        }
+      : null;
   // u_fogLightInfluence feeds computeVisibility (used by both cell and
   // sprite fragment paths) -- uploaded independently here too, not just in
   // renderCellMaps, since a scene with sprites but no cell-maps never runs
@@ -681,6 +737,24 @@ export function renderSprites(
     // previous tracked-sprite draw this frame can never leak into an
     // unrelated untracked sprite's draw call.
     gl.uniform1i(u_spriteFogMemory, _drawIsMemory[di] ? 1 : 0);
+
+    // Fog visibility for this sprite, at its own world position -- the same
+    // point fog-of-war's sweep tests, so a phantom and the sprite it stands in
+    // for (which share a position) get the same number and cross-fade cleanly.
+    // 1.0 when fog isn't active, which the shader reads as fully visible.
+    gl.uniform1f(
+      u_spriteVisibility,
+      fogMask && fogCellDims && fogCellSize && fogWindowOriginLocalCell
+        ? computeSpriteVisibility(
+            spriteTransform.worldPosition,
+            fogSources,
+            fogMask,
+            fogCellDims,
+            fogWindowOriginLocalCell,
+            fogCellSize,
+          )
+        : 1,
+    );
 
     // Get albedo texture map (required)
     if (!sprite.textureMapKeys.albedo) {

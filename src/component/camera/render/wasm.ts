@@ -33,6 +33,16 @@ interface RenderExports {
   store_expanded_len: () => number;
   store_generation: () => number;
   store_set_wrap: (wx: number, wy: number, wz: number) => void;
+  store_remember_set: (
+    x: number,
+    y: number,
+    z: number,
+    packed: number,
+  ) => void;
+  store_remember_clear: (x: number, y: number, z: number) => void;
+  store_remember_clear_all: () => void;
+  store_remember_len: () => number;
+  store_remember_has: (x: number, y: number, z: number) => number;
   store_write_box: (
     x0: number,
     y0: number,
@@ -248,6 +258,52 @@ export function cellStoreGeneration(): number {
  */
 export function setCellStoreWrap(wx: number, wy: number, wz: number): void {
   ex().store_set_wrap(wx, wy, wz);
+}
+
+// ── Fog-of-war deferred presentation ───────────────────────────────────────
+//
+// The store stays AUTHORITATIVE: `cellStoreGet`, the solidity map, and
+// therefore line-of-sight all read current truth. These record what the player
+// last SAW at a cell edited while unobserved, and only the mesher consults
+// them -- so the geometry reaching the GPU still shows the old terrain until
+// the cell is observed again. See `CellStore::remembered` in the Rust crate.
+//
+// Coordinates are WINDOW-LOCAL and wrapped to their toroidal slot internally,
+// exactly like `setCellStore`. Out-of-window coordinates are ignored.
+
+/**
+ * Records the cell the player last saw at a window-local coordinate.
+ * Idempotent on purpose: a second write to an already-remembered cell is
+ * ignored, so what's kept is the state at the last actual observation, not
+ * whatever the cell passed through on the way to its current value.
+ */
+export function rememberCell(
+  x: number,
+  y: number,
+  z: number,
+  packed: number,
+): void {
+  ex().store_remember_set(x, y, z, packed);
+}
+
+/** Drops the remembered value at a cell -- it has been observed again. */
+export function forgetRememberedCell(x: number, y: number, z: number): void {
+  ex().store_remember_clear(x, y, z);
+}
+
+/** Drops every remembered value (overlay cap reached, or a bulk reload). */
+export function forgetAllRememberedCells(): void {
+  ex().store_remember_clear_all();
+}
+
+/** How many cells currently diverge from what the player last saw. */
+export function rememberedCellCount(): number {
+  return ex().store_remember_len();
+}
+
+/** Whether a cell already carries a remembered value. */
+export function hasRememberedCell(x: number, y: number, z: number): boolean {
+  return ex().store_remember_has(x, y, z) === 1;
 }
 
 /**

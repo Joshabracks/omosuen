@@ -27,6 +27,7 @@
     "test:wasm-audio-harness": "tsx test/wasm-audio-harness.test.ts",
     "test:camera": "tsx test/camera-projection.test.ts",
     "test:fog": "tsx test/fog-of-war-sweep.test.ts",
+    "test:deferred": "tsx test/deferred-presentation.test.ts",
     "test": "start http://localhost:3000/ && node test/integration-test-server.js",
     "test:cli": "tsx test/cli.test.ts",
     "test:packer": "tsx test/packer-bench.test.ts",

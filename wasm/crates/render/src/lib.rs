@@ -166,6 +166,19 @@ struct CellStore {
     /// texture on frames where terrain didn't change, which is nearly all of
     /// them (see `uploadVisibilityTexture` in render-cell-maps.ts).
     generation: u32,
+    /// Fog-of-war deferred presentation: slot index -> the packed cell the
+    /// player LAST SAW there, for cells edited while unobserved.
+    ///
+    /// The store itself stays authoritative -- `get`/`solidity`/line-of-sight
+    /// and everything gameplay reads see current truth. This map is consulted
+    /// by the MESHER only, so the geometry that reaches the GPU still shows
+    /// the remembered terrain until the cell is observed again and JS clears
+    /// the entry (see `mesh_apply_remembered` and `store_remember_set`).
+    ///
+    /// Keyed by SLOT index (post-toroidal-wrap), the same space the mesher
+    /// reads `expanded` in, so no translation is needed at build time.
+    /// Sparse: only cells that actually diverged.
+    remembered: BTreeMap<usize, u32>,
 }
 
 impl CellStore {
@@ -186,6 +199,7 @@ impl CellStore {
             rle_valid: true,
             wrap: [0, 0, 0],
             generation: 0,
+            remembered: BTreeMap::new(),
         }
     }
 
@@ -495,6 +509,11 @@ pub extern "C" fn store_load(mx: usize, my: usize, mz: usize) {
         // A bulk load supplies plain window-local order, so any previous
         // toroidal offset no longer describes this buffer.
         store.wrap = [0, 0, 0];
+        // Same reasoning for the deferred-presentation overlay: its keys are
+        // slot indices into the buffer that just got replaced wholesale, so
+        // they no longer name the cells they were recorded for. Keeping them
+        // would paint remembered terrain onto unrelated cells.
+        store.remembered.clear();
         store.generation = store.generation.wrapping_add(1);
     }
 }
@@ -725,6 +744,110 @@ pub extern "C" fn solidity_run() -> *const u8 {
         let store = &mut *core::ptr::addr_of_mut!(STORE);
         store.ensure_solidity();
         store.solidity.as_ptr()
+    }
+}
+
+// ── Fog-of-war deferred presentation ───────────────────────────────────────
+//
+// See `CellStore::remembered`. JS records the pre-change value here when it
+// edits a cell the player cannot currently see, and clears it once the cell is
+// observed again. Only the mesher consults it, so authoritative reads --
+// `get`, `solidity`, and therefore line-of-sight -- are completely unaffected.
+
+/// Records the cell the player last saw at a WINDOW-LOCAL coordinate (wrapped
+/// to its slot exactly like `store_set`). Idempotent by
+/// design: a second write to an already-remembered cell is IGNORED, so the
+/// value kept is the one from the last time the cell was actually observed,
+/// not the state it passed through on the way to its current value.
+#[no_mangle]
+pub extern "C" fn store_remember_set(x: usize, y: usize, z: usize, packed: u32) {
+    unsafe {
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        if x < store.dims[0] && y < store.dims[1] && z < store.dims[2] {
+            let idx = store.slot_index(x, y, z);
+            store.remembered.entry(idx).or_insert(packed);
+        }
+    }
+}
+
+/// Drops the remembered value at a window-local coordinate -- the cell has been
+/// observed again, so
+/// the mesher should show its authoritative contents from here on.
+#[no_mangle]
+pub extern "C" fn store_remember_clear(x: usize, y: usize, z: usize) {
+    unsafe {
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        if x < store.dims[0] && y < store.dims[1] && z < store.dims[2] {
+            let idx = store.slot_index(x, y, z);
+            store.remembered.remove(&idx);
+        }
+    }
+}
+
+/// Drops every remembered value. Used when the overlay hits its cap and on a
+/// bulk reload, where the old slots no longer describe the same cells.
+#[no_mangle]
+pub extern "C" fn store_remember_clear_all() {
+    unsafe {
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        store.remembered.clear();
+    }
+}
+
+/// Number of cells currently diverging from what the player last saw.
+#[no_mangle]
+pub extern "C" fn store_remember_len() -> usize {
+    unsafe { (*core::ptr::addr_of!(STORE)).remembered.len() }
+}
+
+/// Whether a cell currently carries a remembered value. Lets JS decide whether
+/// a write is the FIRST divergence at this cell without duplicating the map.
+#[no_mangle]
+pub extern "C" fn store_remember_has(x: usize, y: usize, z: usize) -> u32 {
+    unsafe {
+        let store = &*core::ptr::addr_of!(STORE);
+        if x >= store.dims[0] || y >= store.dims[1] || z >= store.dims[2] {
+            return 0;
+        }
+        let idx = slot_index_of(x, y, z, store.dims, store.wrap);
+        if store.remembered.contains_key(&idx) {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+/// Swaps every remembered value into `expanded`, returning the authoritative
+/// values it displaced so `mesh_restore_remembered` can put them back.
+///
+/// Writes `expanded` DIRECTLY rather than going through `CellStore::set`, which
+/// would bump `generation` and invalidate the solidity cache -- solidity must
+/// keep deriving from authoritative data (line-of-sight computed against
+/// remembered terrain would let a wall mined out of sight permanently block
+/// vision through the opening that now exists, with nothing able to reveal it).
+///
+/// Patching in place rather than meshing from a copy is what makes the smoothed
+/// mesher's read margin work: it reads `min(smoothing, chunkSize)` cells beyond
+/// the chunk bounds, and an in-place patch keeps the whole buffer consistent
+/// without having to reason about how far outside the chunk it will reach.
+fn mesh_apply_remembered(store: &mut CellStore) -> Vec<(usize, u32)> {
+    let mut saved = Vec::with_capacity(store.remembered.len());
+    for (&idx, &remembered) in store.remembered.iter() {
+        if idx < store.expanded.len() {
+            saved.push((idx, store.expanded[idx]));
+            store.expanded[idx] = remembered;
+        }
+    }
+    saved
+}
+
+/// Undoes `mesh_apply_remembered`. MUST run before returning to JS -- leaving
+/// the patch in place would make every later authoritative read (and the next
+/// solidity rebuild) see remembered terrain.
+fn mesh_restore_remembered(store: &mut CellStore, saved: &[(usize, u32)]) {
+    for &(idx, authoritative) in saved {
+        store.expanded[idx] = authoritative;
     }
 }
 
@@ -961,9 +1084,27 @@ pub extern "C" fn mesh_set_smoothing(smoothing: usize, normal_smoothing: f64) {
     }
 }
 
-/// Builds one chunk's greedy mesh from the resident store.
+/// Builds one chunk's greedy mesh from what the player should SEE -- the
+/// resident store with any remembered (deferred-presentation) cells patched
+/// over it. See `CellStore::remembered`.
+///
+/// The patch/restore lives out here rather than inside the builder because the
+/// builder holds `&store.expanded` borrowed for its whole body; re-deriving the
+/// static between the two phases is the same idiom the rest of this file uses.
 #[no_mangle]
 pub extern "C" fn mesh_build_chunk(cx: usize, cy: usize, cz: usize) {
+    unsafe {
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        store.ensure_expanded();
+        let saved = mesh_apply_remembered(store);
+        mesh_build_chunk_impl(cx, cy, cz);
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        mesh_restore_remembered(store, &saved);
+    }
+}
+
+/// Builds one chunk's greedy mesh from the resident store.
+fn mesh_build_chunk_impl(cx: usize, cy: usize, cz: usize) {
     unsafe {
         let store = &mut *core::ptr::addr_of_mut!(STORE);
         store.ensure_expanded();
@@ -1568,10 +1709,25 @@ fn compute_smooth_normals(
     vn
 }
 
-/// Builds one chunk's smoothed (Laplacian) mesh from the resident store and the
-/// weights buffer. Requires mesh_reserve_weights + mesh_set_smoothing.
+/// Smoothed counterpart of `mesh_build_chunk` -- same remembered-cell patch,
+/// same reason it lives outside the builder. The in-place patch also covers
+/// this path's read margin (`min(smoothing, chunkSize)` cells beyond the chunk
+/// bounds) for free, since the whole buffer is consistent during the build.
 #[no_mangle]
 pub extern "C" fn mesh_build_chunk_smoothed(cx: usize, cy: usize, cz: usize) {
+    unsafe {
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        store.ensure_expanded();
+        let saved = mesh_apply_remembered(store);
+        mesh_build_chunk_smoothed_impl(cx, cy, cz);
+        let store = &mut *core::ptr::addr_of_mut!(STORE);
+        mesh_restore_remembered(store, &saved);
+    }
+}
+
+/// Builds one chunk's smoothed (Laplacian) mesh from the resident store and the
+/// weights buffer. Requires mesh_reserve_weights + mesh_set_smoothing.
+fn mesh_build_chunk_smoothed_impl(cx: usize, cy: usize, cz: usize) {
     unsafe {
         let store = &mut *core::ptr::addr_of_mut!(STORE);
         store.ensure_expanded();

@@ -33,12 +33,7 @@ interface RenderExports {
   store_expanded_len: () => number;
   store_generation: () => number;
   store_set_wrap: (wx: number, wy: number, wz: number) => void;
-  store_remember_set: (
-    x: number,
-    y: number,
-    z: number,
-    packed: number,
-  ) => void;
+  store_remember_set: (x: number, y: number, z: number, packed: number) => void;
   store_remember_clear: (x: number, y: number, z: number) => void;
   store_remember_clear_all: () => void;
   store_remember_len: () => number;

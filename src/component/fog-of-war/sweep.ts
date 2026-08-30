@@ -19,8 +19,6 @@ import { isRayBlockedTS } from '../camera/render/ray-blocked';
 import type { NexusT } from '../nexus/data';
 import type { SpriteT } from '../sprite/data';
 import type { TransformT } from '../transform/data';
-// TEMPORARY -- Stage 0 measurement only. Remove with `probe.ts`.
-import { fowProbe } from './probe';
 
 /** A vision source resolved to a plain world position, once per fog-of-war update tick. */
 export interface ResolvedSource {
@@ -78,20 +76,7 @@ export function isPositionVisible(
     const dx = pos.x - source.pos.x;
     const dy = pos.y - source.pos.y;
     const dz = pos.z - source.pos.z;
-    if (dx * dx + dy * dy + dz * dz >= source.outerSq) {
-      // TEMPORARY -- Stage 0 measurement only.
-      fowProbe.distRejects++;
-      continue;
-    }
-
-    // TEMPORARY -- Stage 0 measurement only. Manhattan cell span is an upper
-    // bound on the DDA's step count, computed here rather than by counting
-    // steps inside the loop (which would inflate the cost being measured).
-    fowProbe.rays++;
-    fowProbe.rayCellSpan +=
-      Math.abs(Math.floor(localCellX) - Math.floor(source.localCell.x)) +
-      Math.abs(Math.floor(localCellY) - Math.floor(source.localCell.y)) +
-      Math.abs(Math.floor(localCellZ) - Math.floor(source.localCell.z));
+    if (dx * dx + dy * dy + dz * dz >= source.outerSq) continue;
 
     if (
       !isRayBlockedTS(
@@ -180,8 +165,6 @@ export function sweepFogOfWar(
     if (selfLit[i]) continue;
 
     const transform = transforms[i];
-    // TEMPORARY -- Stage 0 measurement only.
-    fowProbe.transformsResolved++;
 
     if (
       isPositionVisible(

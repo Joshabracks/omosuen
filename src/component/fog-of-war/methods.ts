@@ -16,9 +16,6 @@ import { computeSolidityMap } from '../camera/render/visibility-mask';
 import { sweepFogOfWar } from './sweep';
 import type { ObscuredTransition, ResolvedSource } from './sweep';
 import { markForDisposal } from '../../loop/dispose';
-import { isProfilingEnabled } from '../../loop/profile';
-// TEMPORARY -- Stage 0 measurement only. Remove with `probe.ts`.
-import { fowProbe, fowProbeFrame, fowProbeTick } from './probe';
 
 /**
  * Resolves each source's CURRENT world position from its sibling transform --
@@ -244,11 +241,6 @@ export const FogOfWar: FogOfWarMethods = {
       const scene = getActiveScene();
       if (!scene) return;
 
-      // TEMPORARY -- Stage 0 measurement only. All `probe`/`fowProbe`
-      // references in this file come out with `probe.ts`.
-      const probing = isProfilingEnabled();
-      const tGather = probing ? performance.now() : 0;
-
       // Everything this sweep needs about "which components exist" comes from
       // the shared scene index, published by the on-screen pass's walk of the
       // tree (scene-index.ts). That walk runs at loop phase 3.6 and this runs
@@ -297,21 +289,9 @@ export const FogOfWar: FogOfWarMethods = {
       if (sources.length === 0) return;
 
       // TEMPORARY -- Stage 0 measurement only.
-      const tSolidity = probing ? performance.now() : 0;
-
       // Held only for the synchronous loop below -- see the phantom-spawn note
       // after it.
       const mask = computeSolidityMap();
-
-      // TEMPORARY -- Stage 0 measurement only.
-      const tSweep = probing ? performance.now() : 0;
-      // Ray count is accumulated inside the sweep, so this frame's own count
-      // has to be taken as a delta around the call.
-      const raysBefore = fowProbe.rays;
-      if (probing) {
-        fowProbe.sources += sources.length;
-        fowProbe.maskCells = mask.length;
-      }
 
       // `'visible' -> obscured` transitions found this pass. Collected rather
       // than acted on inline because spawning a phantom is async, and `mask` is
@@ -343,21 +323,6 @@ export const FogOfWar: FogOfWarMethods = {
       // a flag and queues an id, it never awaits.
       for (let i = 0; i < revealedPhantoms.length; i++) {
         markForDisposal(revealedPhantoms[i]);
-      }
-
-      // TEMPORARY -- Stage 0 measurement only. Taken before the awaits below,
-      // since those escape the `fog-of-war` profiler bucket too.
-      if (probing) {
-        fowProbeFrame(
-          tSolidity - tGather,
-          tSweep - tSolidity,
-          performance.now() - tSweep,
-          fowProbe.rays - raysBefore,
-          index.count,
-        );
-        fowProbe.phantomsSpawned += newlyObscured.length;
-        fowProbe.phantomsDisposed += revealedPhantoms.length;
-        fowProbeTick();
       }
 
       // Past this point `mask` is dead -- nothing below may read it. Spawning

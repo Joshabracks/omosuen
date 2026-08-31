@@ -886,8 +886,24 @@ void main() {
             // and a phantom only ever fades out.
             if(u_spriteFogMemory) {
                 if(fogVis >= 1.0) discard;
-            } else {
+            } else if(u_spriteFogRevealing) {
+                // Only a not-yet-fully-seen sprite vanishes at zero. It has no
+                // memory to fall back on, so there is nothing to draw.
                 if(fogVis <= 0.0) discard;
+            } else {
+                // A fully-seen sprite at zero visibility renders its MEMORY
+                // look instead of vanishing -- the dissolve below already
+                // produces exactly that at fogVis 0.
+                //
+                // It has to. fog-of-war's sweep runs a phase before this one,
+                // off a scene index and world transforms from the previous
+                // frame, so on the frame a sprite crosses zero the renderer
+                // sees 0.000 while the sweep still has it 'visible'. Discarding
+                // here made that one-frame disagreement a blank frame, every
+                // single time a sprite left vision -- and the 'obscuring' hold
+                // could not help, because it is not set until the sweep catches
+                // up on the NEXT frame. Rendering the memory look makes the two
+                // states identical on screen, so the lag stops being visible.
             }
         }
 

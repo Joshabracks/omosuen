@@ -129,6 +129,42 @@ export function fogDrawKind(
   }
 }
 
+/**
+ * Whether unified.frag's sprite path discards this draw outright, given its
+ * branch and visibility. A mirror of the discard guards in that shader.
+ *
+ * Exists because these thresholds are asymmetric and have twice produced a
+ * silently blank sprite that no CPU-side test could see:
+ *
+ *   - `'memory'` discards at FULL visibility. Routing `'obscuring'` (which
+ *     sits at zero) to `'dissolving'` made its hold draw nothing.
+ *   - `'dissolving'` used to discard at ZERO. The sweep runs a phase earlier
+ *     than the renderer, off last frame's transforms, so on the frame a sprite
+ *     crosses zero the renderer sees 0 while the sweep still has it 'visible'
+ *     -- and that one-frame disagreement became a blank frame every time a
+ *     sprite left vision. It no longer discards: a fully-seen sprite at zero
+ *     renders its memory look, identical to the hold that follows.
+ *
+ * It has no runtime caller: the shader is the only thing that actually
+ * discards. It exists so those thresholds are written down somewhere a test
+ * can reach them, and it must be kept in step with unified.frag by hand -- the
+ * two blank-frame bugs above were both invisible to this suite precisely
+ * because the rule lived only in GLSL.
+ */
+export function fogDiscards(kind: FogDrawKind, vis: number): boolean {
+  switch (kind) {
+    case 'skip':
+      return true;
+    case 'memory':
+      return vis >= 1;
+    case 'revealing':
+      return vis <= 0;
+    case 'dissolving':
+      // Never. See above.
+      return false;
+  }
+}
+
 /** A `visible` -> not-visible transition found by the sweep. */
 export interface ObscuredTransition {
   sprite: SpriteT;
@@ -398,7 +434,9 @@ export function sweepFogOfWar(
     // once it has been fully seen does it become eligible for the dissolve
     // toward the memory look on the way back out. See `SpriteT._fowStatus`.
     if (vis >= 1) {
-      if (status !== 'visible') sprite._fowStatus = 'visible';
+      if (status !== 'visible') {
+        sprite._fowStatus = 'visible';
+      }
       continue;
     }
 
@@ -407,8 +445,11 @@ export function sweepFogOfWar(
       // `'unseen'` so it fades in; one still `'obscuring'` (zero visibility a
       // moment ago, phantom mid-spawn) goes back to `'visible'`, since it had
       // been fully seen and is simply on its way out again.
-      if (status === 'obscured') sprite._fowStatus = 'unseen';
-      else if (status === 'obscuring') sprite._fowStatus = 'visible';
+      if (status === 'obscured') {
+        sprite._fowStatus = 'unseen';
+      } else if (status === 'obscuring') {
+        sprite._fowStatus = 'visible';
+      }
       continue;
     }
 

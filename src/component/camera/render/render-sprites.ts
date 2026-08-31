@@ -524,6 +524,7 @@ export function renderSprites(
   // change. Held only across the synchronous draw loop below -- nothing in it
   // writes to WASM, so the view cannot be detached mid-use.
   const fogMask = fogSources.length > 0 ? computeSolidityMap() : null;
+
   const fogCellDims = originCellMap?.mapSize;
   const fogCellSize = originCellMap?.cellSize;
   const fogWindowOriginLocalCell =

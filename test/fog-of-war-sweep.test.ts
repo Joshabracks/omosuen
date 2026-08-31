@@ -11,6 +11,7 @@
 
 import {
   computeSpriteVisibility,
+  fogDiscards,
   fogDrawKind,
   isPositionVisible,
   phantomSupersededBySprite,
@@ -825,6 +826,46 @@ console.log('\ndraw routing');
     // discards there.
     fogDrawKind('obscuring', false) !== 'dissolving' &&
       fogDrawKind('obscuring', false) !== 'revealing',
+  );
+}
+
+// -- Discard thresholds ----------------------------------------------------
+//
+// The shader's live branches discard at OPPOSITE ends, and getting a state onto
+// the wrong one draws nothing at all rather than drawing wrongly. That has now
+// caused two separate blank-frame bugs, so the thresholds are pinned here.
+
+console.log('\ndiscard thresholds');
+
+{
+  check('a memory draw survives at zero visibility', !fogDiscards('memory', 0));
+  check(
+    'a memory draw is discarded at full visibility',
+    fogDiscards('memory', 1),
+  );
+
+  check('a revealing draw is discarded at zero', fogDiscards('revealing', 0));
+  check(
+    'a revealing draw survives once non-zero',
+    !fogDiscards('revealing', 0.01),
+  );
+
+  check(
+    // THE BUG. The sweep runs a phase before the renderer, off last frame's
+    // transforms, so on the frame a sprite crosses zero the renderer sees 0
+    // while the sweep still has it 'visible' -- and it is therefore still
+    // routed to 'dissolving'. Discarding here blanked it for exactly one
+    // frame, every single time a sprite left vision.
+    'a dissolving draw is NEVER discarded, including at zero visibility',
+    !fogDiscards('dissolving', 0) &&
+      !fogDiscards('dissolving', 0.5) &&
+      !fogDiscards('dissolving', 1),
+  );
+
+  check(
+    'a fully-seen sprite at zero still draws, whichever side of the lag it is on',
+    !fogDiscards(fogDrawKind('visible', false), 0) &&
+      !fogDiscards(fogDrawKind('obscuring', false), 0),
   );
 }
 

@@ -18,7 +18,11 @@ import {
 } from './light-uniforms';
 import { getResolvedVisionSources, setVisionUniforms } from './vision-uniforms';
 import { computeSpriteVisibility, fogDrawKind } from '../../fog-of-war/sweep';
-import { phantomFogAlpha, spriteFogPresence } from '../../fog-of-war/methods';
+import {
+  isPhantomCoveredBySprite,
+  phantomFogAlpha,
+  spriteFogPresence,
+} from '../../fog-of-war/methods';
 import type { ResolvedSource } from '../../fog-of-war/sweep';
 import { computeSolidityMap } from './visibility-mask';
 
@@ -663,15 +667,25 @@ export function renderSprites(
       'vision-source',
       false,
     );
-    // Only 'obscured' is skipped. An 'obscuring' sprite is deliberately still
-    // drawn: it has reached zero visibility but its phantom is mid-spawn, and
-    // it holds the memory look until the swap so the handover lands on one
+    // 'obscured' and 'unseen' are skipped. An 'obscuring' sprite is deliberately
+    // still drawn: it has reached zero visibility but its phantom is mid-spawn,
+    // and it holds the memory look until the swap so the handover lands on one
     // frame instead of leaving a gap (see SpriteT._fowStatus).
     // Which shader branch this sprite takes, per fog state. See `fogDrawKind`
     // -- notably 'obscuring' draws as a MEMORY, because for those frames the
     // sprite IS the memory (its phantom does not exist yet) and must match the
     // branch the phantom will take at the swap.
-    const drawKind = fogDrawKind(sprite._fowStatus, hasOwnVisionSource);
+    //
+    // `spriteFogActive` and `trackedByFog` gate the 'unseen' skip: with no fog
+    // component, no vision sources, or fog opted out per sprite, nothing ever
+    // advances `_fowStatus` off its 'unseen' default and every sprite must still
+    // draw.
+    const drawKind = fogDrawKind(
+      sprite._fowStatus,
+      hasOwnVisionSource,
+      sprite.trackedByFog !== false,
+      spriteFogActive,
+    );
     if (drawKind === 'skip') continue;
     const isMemory = drawKind === 'memory';
 
@@ -770,8 +784,32 @@ export function renderSprites(
     // tests, so a phantom and the sprite it stands in for (which share a
     // position) get the same number and therefore the same look.
     // 1.0 when fog isn't active, which the shader reads as fully visible.
+    //
+    // A COVERED phantom is fed 0 regardless. In the memory branch `fogVis`
+    // drives nothing but the `u_spriteFogMemory && fogVis >= 1.0` discard
+    // (colour there is `memoryRgb` unconditionally), and a covered phantom must
+    // keep drawing until the sprite over it is fully opaque -- it is that
+    // sprite's opaque backdrop. Without this it is discarded the moment its spot
+    // reaches full vision, which on a fast approach is long before the fade-in
+    // finishes, and the background shows through. An UNCOVERED phantom keeps its
+    // real visibility and still discards under full vision: that is the "you
+    // looked right at the spot and nothing is there" path.
+    const phantomNexusId = spriteTransform.parent?.id;
+    const isPhantom = sprite._fowStatus === 'phantom';
+    const covered =
+      isPhantom &&
+      phantomNexusId !== undefined &&
+      isPhantomCoveredBySprite(phantomNexusId);
+
     let spriteVis = 1;
-    if (fogMask && fogCellDims && fogCellSize && fogWindowOriginLocalCell) {
+    if (covered) {
+      spriteVis = 0;
+    } else if (
+      fogMask &&
+      fogCellDims &&
+      fogCellSize &&
+      fogWindowOriginLocalCell
+    ) {
       spriteVis = computeSpriteVisibility(
         spriteTransform.worldPosition,
         fogSources,
@@ -790,10 +828,16 @@ export function renderSprites(
     // A phantom's opacity is derived from the presence of the sprite standing
     // over it wherever there is one, so the pair is complementary from a single
     // timer rather than two that have to stay in agreement.
-    const phantomNexusId = spriteTransform.parent?.id;
+    //
+    // Branch on `isPhantom`, NOT on `_drawIsMemory` -- the two are not the same
+    // set. An `'obscuring'` sprite also draws as a memory (it IS the memory
+    // until its phantom lands), but it is a real sprite, so `phantomNexusId`
+    // would be its own nexus and `phantomFogAlpha` would be asked about an id
+    // that is not a phantom's. It happens to answer 1, which is what the hold
+    // wants, but only by missing the lookup.
     gl.uniform1f(
       u_spriteFogAlpha,
-      _drawIsMemory[di]
+      isPhantom
         ? phantomNexusId !== undefined
           ? phantomFogAlpha(phantomNexusId)
           : 1

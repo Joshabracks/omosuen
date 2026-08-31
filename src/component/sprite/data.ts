@@ -170,7 +170,7 @@ export interface SpriteOptions extends ComponentOptions {
   emissionColor?: Vector3D;
   trackedByFog?: boolean;
   /** Runtime-only; see `SpriteT._fowStatus`. Only fog-of-war's own update() should ever pass this. */
-  _fowStatus?: 'unseen' | 'visible' | 'obscured' | 'phantom';
+  _fowStatus?: 'unseen' | 'visible' | 'obscuring' | 'obscured' | 'phantom';
 }
 
 /**

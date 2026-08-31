@@ -17,7 +17,10 @@ import {
   fogFadeStep,
   FOG_FADE_SECONDS,
   phantomAlpha,
+  phantomIsSpent,
   isPositionVisible,
+  isSamePhantomPlace,
+  PHANTOM_REVEAL_VISIBILITY,
   phantomSupersededBySprite,
   sweepFogOfWar,
   type FogSweepIndex,
@@ -300,6 +303,92 @@ console.log('\nfog-of-war sweep');
     'and the phantom sprite is not itself re-statused',
     seenAgain.sprite._fowStatus === 'phantom',
     `got ${seenAgain.sprite._fowStatus}`,
+  );
+}
+
+// 5b. A memory needs a SOLID look before it starts dissolving, not a graze.
+//
+//     A phantom is frozen where visibility hit exactly zero -- the outer edge
+//     of the falloff -- so a `> 0` bar had no hysteresis against the very edge
+//     that created it. Combined with the sweep reading an index one to two
+//     frames stale, a source drifting a fraction of a cell inward re-revealed
+//     a phantom within a frame or two of its birth and latched a dissolve that
+//     never runs backwards: the unit vanished and its memory died with it,
+//     leaving nothing behind.
+{
+  // radius 2, fadeWidth 6 -> a wide band to place a phantom inside of. The
+  // phantom sits at the far edge of the window so both sources stay in bounds.
+  const wide = (x: number) => source(x, 0.5, 1.5, 2, 6);
+  const open = emptyMask();
+
+  // A source that grazes the phantom: visible, but below the bar.
+  const phantomAt = { x: 7.5, y: 0.5, z: 1.5 };
+  const grazing = wide(0.5);
+  const grazeVis = visibilityAt(
+    phantomAt.x,
+    phantomAt.y,
+    phantomAt.z,
+    [grazing],
+    open,
+  );
+  check(
+    'the grazing fixture really is a partial look',
+    grazeVis > 0 && grazeVis < PHANTOM_REVEAL_VISIBILITY,
+    `got ${grazeVis}`,
+  );
+
+  const grazed = entity(phantomAt.x, phantomAt.y, phantomAt.z, 'phantom');
+  check(
+    'a phantom merely grazed by the falloff is NOT reported',
+    run(buildIndex([{ e: grazed }]), [grazing], open).revealedPhantoms
+      .length === 0,
+  );
+
+  const solid = wide(2.5);
+  const solidVis = visibilityAt(
+    phantomAt.x,
+    phantomAt.y,
+    phantomAt.z,
+    [solid],
+    open,
+  );
+  check(
+    'the solid-look fixture clears the bar without being full vision',
+    solidVis >= PHANTOM_REVEAL_VISIBILITY && solidVis < 1,
+    `got ${solidVis}`,
+  );
+
+  const looked = entity(phantomAt.x, phantomAt.y, phantomAt.z, 'phantom');
+  check(
+    'a phantom given a solid look IS reported',
+    run(buildIndex([{ e: looked }]), [solid], open).revealedPhantoms.length ===
+      1,
+  );
+
+  // The bar must stay below full vision: a memory you walk right up to has to
+  // clear, and `radial` is strictly below 1 anywhere in the fade band.
+  check(
+    'the bar is reachable short of full vision',
+    PHANTOM_REVEAL_VISIBILITY > 0 && PHANTOM_REVEAL_VISIBILITY < 1,
+    `got ${PHANTOM_REVEAL_VISIBILITY}`,
+  );
+}
+
+// 5c. Repeat crossings in one spot share a memory; distinct places do not.
+{
+  const at = (x: number, z: number) => ({ x, y: 0.5, z });
+  check(
+    'a freeze point on top of an existing memory is the same place',
+    isSamePhantomPlace(at(5.5, 1.5), at(5.5 + 0.5, 1.5)),
+  );
+  check(
+    'a freeze point a couple of cells away is a new place',
+    !isSamePhantomPlace(at(5.5, 1.5), at(7.5, 1.5)),
+  );
+  check(
+    'the radius is far looser than the coincidence epsilon',
+    isSamePhantomPlace(at(5.5, 1.5), at(5.5, 1.5)) &&
+      !isSamePhantomPlace(at(5.5, 1.5), at(5.5, 1.5 + 1)),
   );
 }
 
@@ -784,12 +873,14 @@ console.log('\nphantom supersession');
     );
   }
 
-  // 'unseen' is a drawn state (the shader gates it), so it counts.
+  // 'unseen' is a SKIP state, exactly like 'obscured' -- never submitted, so it
+  // covers nothing. Were it to count, a phantom could be pinned solid by a
+  // sprite that never draws and would never be disposed.
   {
     const e = entity(4, 0.5, 4, 'unseen');
     check(
-      "an 'unseen' sprite still supersedes -- it is submitted and shader-gated",
-      phantomSupersededBySprite(e.sprite, e.transform, at(4, 4)),
+      "an 'unseen' sprite supersedes nothing -- it is not submitted at all",
+      !phantomSupersededBySprite(e.sprite, e.transform, at(4, 4)),
     );
   }
 }
@@ -807,15 +898,18 @@ console.log('\nphantom supersession');
 console.log('\ndraw routing');
 
 {
+  // Fog governing this sprite: tracked, not self-lit, fog active.
+  const kind = (s: SpriteT['_fowStatus']) => fogDrawKind(s, false, true, true);
+
   check(
     "'obscured' is not submitted -- its phantom draws instead",
-    fogDrawKind('obscured', false) === 'skip',
-    `got ${fogDrawKind('obscured', false)}`,
+    kind('obscured') === 'skip',
+    `got ${kind('obscured')}`,
   );
   check(
     "'phantom' draws as memory",
-    fogDrawKind('phantom', false) === 'memory',
-    `got ${fogDrawKind('phantom', false)}`,
+    kind('phantom') === 'memory',
+    `got ${kind('phantom')}`,
   );
   check(
     // THE BUG. 'obscuring' sits at zero visibility, which is precisely the
@@ -823,21 +917,27 @@ console.log('\ndraw routing');
     // hold draw nothing, which is the flicker it was added to remove. It must
     // take the same branch its phantom will, so the swap is invisible.
     "'obscuring' draws as memory, not as a live sprite",
-    fogDrawKind('obscuring', false) === 'memory',
-    `got ${fogDrawKind('obscuring', false)}`,
+    kind('obscuring') === 'memory',
+    `got ${kind('obscuring')}`,
   );
   check(
-    // No separate 'revealing' kind any more: colour is a pure function of
-    // distance for every live sprite, and opacity carries the direction.
-    "'unseen' and 'visible' share one live branch",
-    fogDrawKind('unseen', false) === 'live' &&
-      fogDrawKind('visible', false) === 'live',
-    `${fogDrawKind('unseen', false)} / ${fogDrawKind('visible', false)}`,
+    // THE OTHER BUG. 'unseen' means never observed at all -- there is no memory
+    // of it to show. Routed to 'live' it rendered at fogVis 0, i.e. the memory
+    // look at its LIVE position: unexplored props looked like correct memories
+    // and unexplored animals walked around inside the fog.
+    "'unseen' is not submitted -- never seen means nothing to draw",
+    kind('unseen') === 'skip',
+    `got ${kind('unseen')}`,
+  );
+  check(
+    "'visible' is the only live state under fog",
+    kind('visible') === 'live',
+    `got ${kind('visible')}`,
   );
   check(
     'a sprite with its own vision-source is never hidden or restyled',
-    (['unseen', 'visible', 'obscuring', 'obscured', 'phantom'] as const).every(
-      (s) => fogDrawKind(s, true) === 'live',
+    (['unseen', 'visible', 'obscuring', 'obscured'] as const).every(
+      (s) => fogDrawKind(s, true, true, true) === 'live',
     ),
   );
   check(
@@ -845,7 +945,30 @@ console.log('\ndraw routing');
     // memory discards at full visibility, live at zero. A state that only ever
     // occurs at one of those extremes must not be routed to the branch that
     // discards there.
-    fogDrawKind('obscuring', false) === 'memory',
+    kind('obscuring') === 'memory',
+  );
+
+  // The guards that keep the 'unseen' skip from blanking the screen. Without
+  // them every sprite in a fog-less scene, and every trackedByFog:false sprite
+  // anywhere, would be hidden forever -- nothing ever moves them off 'unseen'.
+  check(
+    'with fog inactive every state draws live',
+    (['unseen', 'visible', 'obscuring', 'obscured'] as const).every(
+      (s) => fogDrawKind(s, false, true, false) === 'live',
+    ),
+  );
+  check(
+    'an untracked sprite draws live whatever its status',
+    (['unseen', 'visible', 'obscuring', 'obscured'] as const).every(
+      (s) => fogDrawKind(s, false, false, true) === 'live',
+    ),
+  );
+  check(
+    // A phantom carries trackedByFog:false itself, so it has to be answered
+    // before that opt-out or every memory would draw as a live sprite.
+    'a phantom still draws as memory despite being untracked',
+    fogDrawKind('phantom', false, false, true) === 'memory' &&
+      fogDrawKind('phantom', false, false, false) === 'memory',
   );
 }
 
@@ -877,8 +1000,8 @@ console.log('\ndiscard thresholds');
 
   check(
     'a fully-seen sprite at zero still draws, whichever side of the lag it is on',
-    !fogDiscards(fogDrawKind('visible', false), 0) &&
-      !fogDiscards(fogDrawKind('obscuring', false), 0),
+    !fogDiscards(fogDrawKind('visible', false, true, true), 0) &&
+      !fogDiscards(fogDrawKind('obscuring', false, true, true), 0),
   );
 }
 
@@ -923,28 +1046,66 @@ console.log('\ntimed fades');
   );
   check('a zero delta advances nothing', advanceFade(0.4, fogFadeStep(0)) === 0.4);
 
-  // Complementarity: a covered phantom is derived from its owner's single
-  // timer, so the pair cannot drift apart or leave a gap between them.
-  let worst = 0;
-  for (let p = 0; p <= 1.0001; p += 0.05) {
-    worst = Math.max(worst, Math.abs(phantomAlpha(true, p, 0) + p - 1));
+  // THE REVEAL FLASH. The phantom and its sprite are two STACKED draws (the
+  // phantom sorts behind via MEMORY_DEPTH_BIAS), so what the player sees is
+  // `src-over`, not a sum:
+  //
+  //     coverage = a_sprite + a_phantom * (1 - a_sprite)
+  //
+  // Fading the phantom to `1 - p` while the sprite ramps to `p` reads as
+  // complementary but composites to `p + (1-p)^2` -- 0.75 at the midpoint, a 25%
+  // hole the lit background shows through. Only stationary sprites ever get
+  // close enough to count as covering, which is exactly who saw the flash.
+  //
+  // Held solid, coverage runs memoryOpacity -> 1 and never dips.
+  const over = (aPhantom: number, aSprite: number): number =>
+    aSprite + aPhantom * (1 - aSprite);
+  const mix = (a: number, b: number, t: number): number => a + (b - a) * t;
+  for (const memOpacity of [1, 0.6]) {
+    // The phantom's draw: memory branch, `u_fogMemoryOpacity * u_spriteFogAlpha`.
+    const aPhantom = memOpacity * phantomAlpha(true, 0);
+    let lowest = Infinity;
+    // Sweep the sprite's fade-in against every visibility it could be seen at,
+    // since the live branch's alpha is `mix(memOpacity, 1, fogVis) * presence`
+    // and vision is climbing at the same time the timer is.
+    for (let p = 0; p <= 1.0001; p += 0.05) {
+      for (let v = 0; v <= 1.0001; v += 0.1) {
+        lowest = Math.min(lowest, over(aPhantom, mix(memOpacity, 1, v) * p));
+      }
+    }
+    check(
+      `a covered phantom never lets the background through (memory opacity ${memOpacity})`,
+      lowest >= memOpacity - 1e-12,
+      `dipped to ${lowest}, floor is ${memOpacity}`,
+    );
   }
   check(
-    // Tolerance is float epsilon, not slack: `(1 - p) + p` is not bit-exact
-    // for arbitrary p. A real desync between the pair -- two timers drifting
-    // rather than one deriving the other -- would be orders of magnitude
-    // larger than this, so the bound still catches it.
-    'a covered phantom and its sprite always sum to opaque',
-    worst < 1e-12,
-    `max deviation ${worst}`,
+    // The old `1 - ownerPresence` model, pinned so it cannot come back.
+    'the faded-backdrop model really would have leaked 25% at the midpoint',
+    Math.abs(over(1 - 0.5, 0.5) - 0.75) < 1e-12,
   );
   check(
     'a covered phantom ignores its own dissolve entirely',
-    phantomAlpha(true, 0.25, 0.9) === phantomAlpha(true, 0.25, 0.1),
+    phantomAlpha(true, 0.9) === phantomAlpha(true, 0.1),
   );
   check(
     'an uncovered phantom runs its own dissolve to zero',
-    phantomAlpha(false, 0, 1) === 0 && phantomAlpha(false, 0, 0) === 1,
+    phantomAlpha(false, 1) === 0 && phantomAlpha(false, 0) === 1,
+  );
+
+  // Disposal can no longer key off alpha reaching zero, since a covered phantom
+  // holds at 1 forever. It is spent when the sprite over it is fully opaque.
+  check(
+    'a covered phantom is spent only once its sprite is fully opaque',
+    !phantomIsSpent(true, 0.99, 0) && phantomIsSpent(true, 1, 0),
+  );
+  check(
+    'a covered phantom is never spent by its own dissolve',
+    !phantomIsSpent(true, 0, 1),
+  );
+  check(
+    'an uncovered phantom is spent when its dissolve completes',
+    !phantomIsSpent(false, 1, 0.99) && phantomIsSpent(false, 0, 1),
   );
 }
 

@@ -47,6 +47,52 @@ export interface ResolvedSource {
 const PHANTOM_COINCIDENCE_EPSILON = 0.01;
 
 /**
+ * How much of a look it takes before a memory starts dissolving.
+ *
+ * A phantom is frozen at the point visibility hit exactly ZERO -- the outer edge
+ * of the falloff -- so a `> 0` bar has no hysteresis at all against the very
+ * edge that created it. Worse, the sweep reads a scene index and world
+ * transforms one to two frames stale (a phantom is not even indexed until the
+ * frame after it spawns), so a source drifting a fraction of a cell inward
+ * re-revealed a phantom within a frame or two of its birth and latched a
+ * dissolve that never runs backwards. The unit vanished, its memory flickered
+ * and died, and nothing was left behind.
+ *
+ * Above this bar the source has had to genuinely close on the spot rather than
+ * merely graze it, which is what "you looked and nothing was there" should
+ * mean. A tunable starting default, same status as `EDGE_PAD_PX` /
+ * `EDGE_PAD_WORLD`.
+ */
+export const PHANTOM_REVEAL_VISIBILITY = 0.35;
+
+/**
+ * How far a new freeze point may sit from an existing phantom's and still count
+ * as "the same place", in world units.
+ *
+ * A sprite may hold SEVERAL memories -- one per place it was last seen before
+ * being lost -- and each stands until vision reaches it. But a unit milling
+ * about on the vision boundary re-crosses it in essentially one spot, and
+ * without this those crossings would stack a pile of coincident memories. Far
+ * looser than `PHANTOM_COINCIDENCE_EPSILON`, which asks the much stricter
+ * question of whether a sprite is standing EXACTLY on its own phantom.
+ */
+export const PHANTOM_RESPAWN_RADIUS = 0.75;
+
+/** Whether two world points are close enough to share one memory. */
+export function isSamePhantomPlace(
+  a: { x: number; y: number; z: number },
+  b: { x: number; y: number; z: number },
+): boolean {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const dz = a.z - b.z;
+  return (
+    dx * dx + dy * dy + dz * dz <=
+    PHANTOM_RESPAWN_RADIUS * PHANTOM_RESPAWN_RADIUS
+  );
+}
+
+/**
  * Whether a phantom currently has its own sprite drawing on top of it -- in
  * which case it must NOT fade.
  *
@@ -71,9 +117,13 @@ export function phantomSupersededBySprite(
 ): boolean {
   if (!sprite || !transform) return false;
   if (sprite._disposed === true) return false;
-  // 'obscured' means render-sprites skips it entirely, so nothing is covering
-  // the phantom and it must stay.
-  if (sprite._fowStatus === 'obscured') return false;
+  // Both of these are SKIP states -- render-sprites submits neither, so nothing
+  // is covering the phantom and it must stay. Keep this list in step with the
+  // `'skip'` cases of `fogDrawKind`: a phantom pinned solid by a sprite that
+  // never draws would never be disposed.
+  if (sprite._fowStatus === 'obscured' || sprite._fowStatus === 'unseen') {
+    return false;
+  }
 
   const p = transform.worldPosition;
   return (
@@ -98,27 +148,51 @@ export function phantomSupersededBySprite(
  * here needs to know which direction a sprite is travelling -- which is what
  * let the `vis >= 1` latch that broke partial reveals go away. Opacity carries
  * the direction instead, on a timer.
+ *
+ * `'unseen'` -- never observed at all -- is a SKIP, matching terrain's
+ * never-explored cells. It has to be decided here rather than in the shader:
+ * the shader only knows `fogVis`, which cannot tell "never seen" from "leaving
+ * vision", and discarding a live sprite at zero visibility blanked one frame off
+ * every exit (the sweep runs a phase earlier, off a stale index). So the live
+ * branch never discards and this hides never-seen sprites instead. Letting them
+ * fall through to `'live'` is what left every unexplored prop drawn in the
+ * memory look -- and every unexplored ANIMAL visibly walking around inside the
+ * fog, which is how the regression was spotted.
  */
 export type FogDrawKind = 'skip' | 'memory' | 'live';
 
 export function fogDrawKind(
   status: SpriteT['_fowStatus'],
   hasOwnVisionSource: boolean,
+  trackedByFog: boolean,
+  fogActive: boolean,
 ): FogDrawKind {
+  // FIRST, before the opt-out below: a phantom is itself `trackedByFog: false`
+  // (see `spawnPhantom`), so answering that guard first would draw every memory
+  // as a live sprite.
+  if (status === 'phantom') return 'memory';
   // A sprite carrying its own vision source always sees itself, so fog never
   // restyles or hides it (render-time half of the guarantee `sweepFogOfWar`
   // already makes by never obscuring such a sprite).
-  if (hasOwnVisionSource) return 'live';
+  //
+  // The other two guards are what keep the `'unseen'` skip below from blanking
+  // the screen. A `trackedByFog: false` sprite is skipped by the sweep and so
+  // stays `'unseen'` forever; so does EVERY sprite in a scene with no fog-of-war
+  // component or no enabled vision source. `fogActive` mirrors the conditions
+  // under which `FogOfWar.update` bails without sweeping at all, so the renderer
+  // and the sweep agree on when fog governs anything.
+  if (hasOwnVisionSource || !trackedByFog || !fogActive) return 'live';
   switch (status) {
+    case 'unseen':
+      // Never seen at all, so there is nothing to remember and nothing to show.
+      return 'skip';
     case 'obscured':
       return 'skip';
-    case 'phantom':
-      return 'memory';
     case 'obscuring':
       // No phantom yet -- for these frames this sprite IS the memory, and must
       // take the same branch the phantom will so the swap is invisible.
       return 'memory';
-    default:
+    case 'visible':
       return 'live';
   }
 }
@@ -181,19 +255,40 @@ export function advanceFade(current: number, step: number): number {
 /**
  * Opacity multiplier for a phantom draw, 0..1.
  *
- * A phantom with its own sprite drawing over it is exactly `1 - ownerPresence`:
- * complementary BY CONSTRUCTION, from one timer rather than two that have to
- * agree. Two independent timers summing to opaque is the shape of every gap
- * and double-image failure this system has had.
+ * A COVERED phantom holds at 1 and does not fade at all. It is the backdrop its
+ * sprite fades in over, and the two are stacked draws, not summed ones: the
+ * composite is `a_sprite + a_phantom * (1 - a_sprite)`. Ramping the phantom down
+ * to `1 - presence` while the sprite ramps up to `presence` looks complementary
+ * written out, but composites to `p + (1-p)^2` -- a 25% hole at the midpoint
+ * that the lit background shows through. That was the reveal "flash", and it hit
+ * only STATIONARY sprites because only they are ever coincident enough to count
+ * as covering (`phantomSupersededBySprite`).
  *
- * With no sprite over it, it runs its own dissolve.
+ * Held constant instead, the composite runs `memoryOpacity -> 1` monotonically
+ * for any memory opacity, which is the cross-dissolve this always wanted.
+ * Disposal cannot key off this reaching zero any more -- see `phantomIsSpent`.
+ *
+ * With no sprite over it, a phantom runs its own dissolve as before.
  */
-export function phantomAlpha(
+export function phantomAlpha(covered: boolean, dissolve: number): number {
+  if (covered) return 1;
+  return Math.max(0, 1 - dissolve);
+}
+
+/**
+ * Whether a phantom has finished its job and can be disposed.
+ *
+ * A covered phantom never fades (see `phantomAlpha`), so "alpha reached zero" no
+ * longer answers this. It is spent once the sprite standing over it is fully
+ * opaque, at which point removing the backdrop underneath cannot be seen.
+ * Uncovered, it is spent when its own dissolve completes.
+ */
+export function phantomIsSpent(
   covered: boolean,
   ownerPresence: number,
   dissolve: number,
-): number {
-  return Math.max(0, 1 - (covered ? ownerPresence : dissolve));
+): boolean {
+  return covered ? ownerPresence >= 1 : dissolve >= 1;
 }
 
 /** A `visible` -> not-visible transition found by the sweep. */
@@ -417,12 +512,13 @@ export function sweepFogOfWar(
     // A spawned phantom: has vision returned to ITS OWN (frozen) position,
     // independent of wherever the real sprite it stood in for currently is?
     //
-    // Reported at ANY non-zero visibility, and it STARTS the dissolve rather
-    // than ending the phantom. Disposal is by the dissolve completing on a
-    // timer (methods.ts), because tying it to full visibility meant a phantom
-    // only glimpsed from a distance would dissolve part-way and then fade back
-    // in as the source retreated -- or stall for good at whatever fraction the
-    // source stopped at.
+    // Reported once the look is a solid one (`PHANTOM_REVEAL_VISIBILITY`, see
+    // there for why any-non-zero was a hair trigger), and it STARTS the
+    // dissolve rather than ending the phantom. Disposal is by the dissolve
+    // completing on a timer (methods.ts), because tying it to full visibility
+    // meant a phantom only glimpsed from a distance would dissolve part-way and
+    // then fade back in as the source retreated -- or stall for good at
+    // whatever fraction the source stopped at.
     if (status === 'phantom') {
       if (
         computeSpriteVisibility(
@@ -432,7 +528,7 @@ export function sweepFogOfWar(
           cellDims,
           windowOriginLocalCell,
           cellSize,
-        ) > 0
+        ) >= PHANTOM_REVEAL_VISIBILITY
       ) {
         revealedPhantoms.push(nexuses[i]);
       }

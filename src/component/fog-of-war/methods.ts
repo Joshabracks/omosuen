@@ -17,7 +17,9 @@ import {
   advanceFade,
   fogFadeStep,
   isPositionVisible,
+  isSamePhantomPlace,
   phantomAlpha,
+  phantomIsSpent,
   phantomSupersededBySprite,
   sweepFogOfWar,
 } from './sweep';
@@ -78,29 +80,33 @@ function resolveActiveVisionSources(
 }
 
 /**
- * The live phantom standing in for each obscured sprite, keyed by that
- * sprite's id.
+ * One live phantom: a frozen stand-in left where a sprite was last seen.
  *
- * Needed because a phantom and its `'visible'` sprite now COEXIST for the
- * duration of the shader's cross-fade (the phantom is disposed only at full
- * visibility, see `sweepFogOfWar`). A sprite hovering around the edge of
- * vision therefore re-crosses the `visible -> obscured` edge while its
- * previous phantom is still alive, and without this guard each crossing would
- * strand another one at the same spot.
- *
- * It also closes a race that was previously only accidentally impossible:
- * `spawnPhantom` is async and `markForDisposal` defers to the end-of-frame
- * dispose queue, so "spawned" and "disposed" were never actually atomic with
- * respect to each other.
+ * A sprite may own SEVERAL of these at once, and that is load-bearing. A memory
+ * stands until vision actually reaches ITS OWN spot -- seeing the unit
+ * somewhere else does not retire it -- so a unit that goes dark at A, is seen
+ * again at B and goes dark there leaves memories at both. Keying this map by
+ * sprite id (one memory per sprite) is what made the second one
+ * unrepresentable, and `spawnPhantom` answered that by silently refusing to
+ * spawn -- leaving the sprite stuck in `'obscuring'`, which renders as an
+ * opaque memory-look sprite at its LIVE position: a ghost that walks. Keyed by
+ * phantom nexus id instead, that case is simply a second entry.
  */
 interface LivePhantom {
-  /** `null` while the spawn is still in flight (see `spawnPhantom`). */
-  nexus: NexusT | null;
-  /** The sprite this stands in for, and its transform, for the check below. */
-  sprite: SpriteT;
-  transform: TransformT;
+  /** The phantom's own nexus, and the two components hanging off it. */
+  nexus: NexusT;
+  phantomTransform: TransformT | null;
+  phantomSprite: SpriteT | null;
+  /**
+   * The sprite this stands in for, and its transform. The OWNER's, not the
+   * phantom's -- `phantomSupersededBySprite` asks where the real sprite is now.
+   */
+  ownerSprite: SpriteT;
+  ownerTransform: TransformT;
   /** Where the phantom was frozen -- `phantomSupersededBySprite`'s reference. */
   spawnPos: { x: number; y: number; z: number };
+  /** Monotonic spawn order, so the oldest memory can be found (see the cap). */
+  seq: number;
   /**
    * Dissolve progress, 0..1, for a phantom with NO sprite standing over it --
    * the spot has been abandoned and the memory is being confirmed empty.
@@ -112,19 +118,58 @@ interface LivePhantom {
   dissolve: number;
 }
 
+/** Every live phantom, keyed by its OWN nexus id. */
 const livePhantoms = new Map<number, LivePhantom>();
 
-/** Reverse of `livePhantoms`: phantom nexus id -> the sprite id it stands in for. */
+/** Phantom nexus id -> the sprite id it stands in for. */
 const phantomOwner = new Map<number, number>();
+
+/**
+ * Sprite ids with a `spawnPhantom` currently in flight.
+ *
+ * `spawnPhantom` awaits three `newComponent` calls, so "this sprite is already
+ * being handled" needs its own marker -- it used to be encoded as a `null`
+ * nexus in `livePhantoms`, which conflated "in flight" with "has a memory" and
+ * is what forced the one-memory-per-sprite keying above. Claimed before the
+ * first await and released in a `finally`.
+ */
+const pendingPhantoms = new Set<number>();
+
+/**
+ * Upper bound on live memories per sprite; beyond it the OLDEST starts
+ * dissolving.
+ *
+ * A deliberate deviation from "a memory stands until you look at it": a unit
+ * patrolling the vision boundary crosses it over and over, and without a cap
+ * would accumulate memories without bound. `Infinity` restores strict
+ * honest-memory. Note `isSamePhantomPlace` already collapses repeat crossings
+ * in ONE spot into a single refreshed memory, so reaching this cap means the
+ * sprite really was lost in four distinct places.
+ */
+const MAX_PHANTOMS_PER_SPRITE = 4;
+
+/** Spawn counter backing `LivePhantom.seq`. */
+let phantomSeq = 0;
+
+/**
+ * Scratch: sprite ids the sweep just moved into `'obscuring'` this frame.
+ *
+ * Unlike `newlyObscured` (deliberately a fresh array per frame, since the spawn
+ * loop awaits and a shared buffer could be cleared out from under it) this one
+ * is safe to reuse -- it is filled and read entirely within the synchronous
+ * stretch of `update`, before the first await.
+ */
+const justObscured = new Set<number>();
 
 /**
  * Phantom nexus ids whose own sprite is currently drawing on top of them, and
  * which must therefore render at CONSTANT memory opacity rather than fading.
  *
  * A phantom is the opaque backdrop its sprite fades back in over; fading both
- * of them leaks the background through the middle of the transition. Read by
- * render-sprites.ts via `isPhantomCoveredBySprite`. Refreshed once per sweep
- * rather than recomputed per draw call.
+ * of them leaks the background through the middle of the transition. Reaches
+ * the renderer through `phantomFogAlpha`, which folds it into the one opacity
+ * number that draw call needs. Refreshed once per sweep rather than recomputed
+ * per draw call.
  */
 const coveredPhantoms = new Set<number>();
 
@@ -148,29 +193,27 @@ export function spriteFogPresence(spriteId: number | undefined): number {
 /**
  * Opacity multiplier for a phantom draw, 0..1.
  *
- * A phantom with its own sprite drawing over it is exactly `1 - presence` of
- * that sprite: complementary BY CONSTRUCTION, from one timer rather than two
- * that have to agree. Two independent timers summing to opaque is the shape of
- * every gap and double-image failure this system has had.
- *
- * With no sprite over it, it runs its own dissolve.
+ * A phantom with its own sprite drawing over it holds SOLID at 1 -- it is the
+ * backdrop that sprite fades in over, and fading both leaks the background
+ * through the middle. See `phantomAlpha`. With no sprite over it, it runs its
+ * own dissolve.
  */
 export function phantomFogAlpha(phantomNexusId: number): number {
-  const spriteId = phantomOwner.get(phantomNexusId);
-  if (spriteId === undefined) return 1;
-  const entry = livePhantoms.get(spriteId);
+  const entry = livePhantoms.get(phantomNexusId);
   if (!entry) return 1;
-  return phantomAlpha(
-    coveredPhantoms.has(phantomNexusId),
-    spriteFogPresence(spriteId),
-    entry.dissolve,
-  );
+  return phantomAlpha(coveredPhantoms.has(phantomNexusId), entry.dissolve);
 }
 
 /**
  * Whether this phantom has its own sprite drawing over it this frame -- see
  * `coveredPhantoms`. False for anything fog-of-war isn't tracking, so an
  * unknown phantom simply fades as normal.
+ *
+ * Read by render-sprites.ts, which feeds a covered phantom `u_spriteVisibility
+ * = 0` so the shader's `u_spriteFogMemory && fogVis >= 1.0` discard cannot fire
+ * on it. A covered phantom must stay drawn until its sprite has fully faded in;
+ * without this it is discarded outright the moment its spot reaches full
+ * vision, which on a fast approach is well before the sprite is opaque.
  */
 export function isPhantomCoveredBySprite(phantomNexusId: number): boolean {
   return coveredPhantoms.has(phantomNexusId);
@@ -194,8 +237,11 @@ function advanceFogTimers(index: FogSweepIndex, deltaTimeMs: number): void {
     const status = sprite._fowStatus;
     if (status === 'phantom') continue;
 
-    if (status === 'obscured') {
-      // Gone; its next arrival should fade in from nothing again.
+    if (status === 'obscured' || status === 'unseen') {
+      // Not drawn at all (both are `fogDrawKind` skips), so its next arrival
+      // should fade in from nothing. Without `'unseen'` here a never-seen
+      // sprite's presence ramps to 1 while it is hidden, and it pops in at full
+      // opacity the instant vision first reaches it instead of fading.
       spritePresence.delete(spriteId);
       continue;
     }
@@ -207,11 +253,10 @@ function advanceFogTimers(index: FogSweepIndex, deltaTimeMs: number): void {
   // A phantom nobody is standing over dissolves on its own clock, but only
   // once vision has actually reached the spot -- and never runs backwards
   // afterwards, which is the reversal this replaced.
-  for (const entry of livePhantoms.values()) {
-    const nexus = entry.nexus;
-    if (!nexus || nexus.id === undefined || nexus._disposed === true) continue;
-    if (coveredPhantoms.has(nexus.id)) continue;
-    if (entry.dissolve <= 0 && !dissolvingPhantoms.has(nexus.id)) continue;
+  for (const [phantomId, entry] of livePhantoms) {
+    if (entry.nexus._disposed === true) continue;
+    if (coveredPhantoms.has(phantomId)) continue;
+    if (entry.dissolve <= 0 && !dissolvingPhantoms.has(phantomId)) continue;
     entry.dissolve = advanceFade(entry.dissolve, step);
   }
 }
@@ -227,17 +272,35 @@ const dissolvingPhantoms = new Set<number>();
  */
 function disposeFadedPhantoms(): void {
   if (livePhantoms.size === 0) return;
-  let faded: NexusT[] | null = null;
-  for (const entry of livePhantoms.values()) {
-    const nexus = entry.nexus;
-    if (!nexus || nexus.id === undefined || nexus._disposed === true) continue;
-    if (phantomFogAlpha(nexus.id) <= 0) (faded ??= []).push(nexus);
+  let faded: number[] | null = null;
+  for (const [phantomId, entry] of livePhantoms) {
+    // Torn down by something other than us (scene teardown, an external
+    // markForDisposal). Reap the bookkeeping here rather than leaving the entry
+    // to sit in the map forever -- it is no longer `spawnPhantom`'s job to
+    // notice, now that a live phantom never blocks a spawn.
+    if (entry.nexus._disposed === true) {
+      (faded ??= []).push(phantomId);
+      continue;
+    }
+    // Not "alpha reached zero" -- a COVERED phantom now holds solid at 1 and
+    // would never qualify. It is spent when the sprite over it is fully opaque.
+    const ownerId = phantomOwner.get(phantomId);
+    if (
+      phantomIsSpent(
+        coveredPhantoms.has(phantomId),
+        ownerId === undefined ? 1 : spriteFogPresence(ownerId),
+        entry.dissolve,
+      )
+    ) {
+      (faded ??= []).push(phantomId);
+    }
   }
   if (!faded) return;
-  for (const nexus of faded) {
-    if (nexus.id !== undefined) dissolvingPhantoms.delete(nexus.id);
-    forgetPhantom(nexus);
-    markForDisposal(nexus);
+  for (const phantomId of faded) {
+    const entry = livePhantoms.get(phantomId);
+    dissolvingPhantoms.delete(phantomId);
+    forgetPhantom(phantomId);
+    if (entry && entry.nexus._disposed !== true) markForDisposal(entry.nexus);
   }
 }
 
@@ -248,29 +311,78 @@ function disposeFadedPhantoms(): void {
 function refreshCoveredPhantoms(): void {
   coveredPhantoms.clear();
   if (livePhantoms.size === 0) return;
-  for (const entry of livePhantoms.values()) {
-    const nexus = entry.nexus;
-    if (!nexus || nexus.id === undefined || nexus._disposed === true) continue;
+  for (const [phantomId, entry] of livePhantoms) {
+    if (entry.nexus._disposed === true) continue;
     if (
-      phantomSupersededBySprite(entry.sprite, entry.transform, entry.spawnPos)
+      phantomSupersededBySprite(
+        entry.ownerSprite,
+        entry.ownerTransform,
+        entry.spawnPos,
+      )
     ) {
-      coveredPhantoms.add(nexus.id);
+      coveredPhantoms.add(phantomId);
     }
   }
 }
 
+/** Drops one phantom's registry entries. */
+function forgetPhantom(phantomId: number): void {
+  phantomOwner.delete(phantomId);
+  livePhantoms.delete(phantomId);
+}
+
 /**
- * Drops a phantom's registry entries, freeing its sprite to be given a new one
- * next time it goes out of sight.
+ * Every live phantom currently standing in for `spriteId`, oldest first.
+ *
+ * Walks `livePhantoms` rather than keeping a third index: a sprite holds at
+ * most `MAX_PHANTOMS_PER_SPRITE` memories and this runs only on the
+ * `visible -> obscured` edge, not per frame.
  */
-function forgetPhantom(phantomNexus: NexusT): void {
-  const phantomId = phantomNexus.id;
-  if (phantomId === undefined) return;
-  const spriteId = phantomOwner.get(phantomId);
-  if (spriteId !== undefined) {
-    phantomOwner.delete(phantomId);
-    livePhantoms.delete(spriteId);
+function phantomsForSprite(spriteId: number): LivePhantom[] {
+  const found: LivePhantom[] = [];
+  for (const [phantomId, entry] of livePhantoms) {
+    if (entry.nexus._disposed === true) continue;
+    if (phantomOwner.get(phantomId) === spriteId) found.push(entry);
   }
+  found.sort((a, b) => a.seq - b.seq);
+  return found;
+}
+
+/**
+ * Re-freezes a phantom onto its sprite's state RIGHT NOW, and restarts its
+ * memory clock.
+ *
+ * Shared by the tail of a fresh spawn (where everything above it was async, so
+ * the sprite has kept moving and animating since the freeze point was taken)
+ * and by the same-place refresh (where an existing memory is being reused for a
+ * new crossing instead of stacking a second one on top of it).
+ */
+function freezePhantomTo(
+  entry: LivePhantom,
+  sprite: SpriteT,
+  transform: TransformT,
+): void {
+  const now = transform.worldPosition;
+  const nowScale = transform.worldScale;
+  if (entry.phantomTransform) {
+    entry.phantomTransform.position = new Vector3D(now.x, now.y, now.z);
+    entry.phantomTransform.rotation = new Vector3D(
+      0,
+      transform.worldRotation.y,
+      0,
+    );
+    entry.phantomTransform.scale = new Vector3D(
+      nowScale.x,
+      nowScale.y,
+      nowScale.z,
+    );
+  }
+  // Animation only ever writes `frame` (see animation-controller), so this is
+  // all that can have gone stale visually.
+  if (entry.phantomSprite) entry.phantomSprite.frame = { ...sprite.frame };
+  entry.spawnPos = { x: now.x, y: now.y, z: now.z };
+  entry.dissolve = 0;
+  if (entry.nexus.id !== undefined) dissolvingPhantoms.delete(entry.nexus.id);
 }
 
 /**
@@ -282,7 +394,12 @@ function forgetPhantom(phantomNexus: NexusT): void {
  * excludes the phantom nexus from scene serialization (see
  * `serializeComponentRecursive`, src/scene/loader.ts).
  *
- * A no-op if `sprite` already has a live phantom (see `livePhantoms`).
+ * A sprite may hold SEVERAL phantoms at once -- one per place it was last seen
+ * before being lost -- since a memory stands until vision reaches its own spot.
+ * Two guards keep that from running away: a spawn already in flight for this
+ * sprite is a no-op (`pendingPhantoms`), and a freeze point landing on top of an
+ * existing memory refreshes that one instead of stacking a second
+ * (`isSamePhantomPlace`).
  */
 async function spawnPhantom(
   scene: NexusT,
@@ -291,53 +408,64 @@ async function spawnPhantom(
 ): Promise<void> {
   const spriteId = sprite.id;
   if (spriteId === undefined) return;
-
-  const existingEntry = livePhantoms.get(spriteId);
-  if (existingEntry) {
-    const existing = existingEntry.nexus;
-    // `null` means a spawn is already in flight for this sprite.
-    if (existing === null || existing._disposed !== true) return;
-    // The phantom went away by a path other than our own reveal (scene
-    // teardown, an external markForDisposal). Self-heal rather than blocking
-    // this sprite from ever getting another one.
-    forgetPhantom(existing);
-  }
+  // The same obscure edge being processed twice -- the in-flight spawn will
+  // flip this sprite to 'obscured' when it lands.
+  if (pendingPhantoms.has(spriteId)) return;
 
   const frozenPos = {
     x: transform.worldPosition.x,
     y: transform.worldPosition.y,
     z: transform.worldPosition.z,
   };
-  // Claim the slot BEFORE the first await: two obscure edges on consecutive
-  // frames would otherwise both pass the check above while the first spawn is
-  // still resolving. `nexus` is filled in once it exists.
-  livePhantoms.set(spriteId, {
-    nexus: null,
-    sprite,
-    transform,
-    spawnPos: frozenPos,
-    dissolve: 0,
-  });
 
+  // Lost in a place we already remember losing it: reuse that memory rather
+  // than piling a second one on the same spot. Synchronous, so the sprite is
+  // handed over on this frame with no `'obscuring'` interval at all.
+  const existing = phantomsForSprite(spriteId);
+  for (const entry of existing) {
+    if (!isSamePhantomPlace(entry.spawnPos, frozenPos)) continue;
+    freezePhantomTo(entry, sprite, transform);
+    if (sprite._fowStatus === 'obscuring') sprite._fowStatus = 'obscured';
+    return;
+  }
+  // Cap reached: the oldest memory starts dissolving to make room. See
+  // MAX_PHANTOMS_PER_SPRITE for why this bound exists at all.
+  for (let i = 0; i <= existing.length - MAX_PHANTOMS_PER_SPRITE; i++) {
+    const id = existing[i].nexus.id;
+    if (id !== undefined) dissolvingPhantoms.add(id);
+  }
+
+  // Claim the sprite BEFORE the first await: two obscure edges on consecutive
+  // frames would otherwise both get this far while the first spawn is still
+  // resolving.
+  pendingPhantoms.add(spriteId);
+  try {
+    await spawnPhantomNexus(scene, sprite, transform, spriteId, frozenPos);
+  } finally {
+    pendingPhantoms.delete(spriteId);
+  }
+}
+
+/**
+ * The allocating half of `spawnPhantom`, split out so the `pendingPhantoms`
+ * claim above can be released in a `finally` no matter how this exits.
+ */
+async function spawnPhantomNexus(
+  scene: NexusT,
+  sprite: SpriteT,
+  transform: TransformT,
+  spriteId: number,
+  frozenPos: { x: number; y: number; z: number },
+): Promise<void> {
   const phantomNexus = (await newComponent(
     'nexus',
     { name: `${sprite.name}-fow-phantom` },
     scene,
   )) as NexusT | null;
-  if (!phantomNexus) {
-    livePhantoms.delete(spriteId);
-    return;
-  }
-  livePhantoms.set(spriteId, {
-    nexus: phantomNexus,
-    sprite,
-    transform,
-    spawnPos: frozenPos,
-    dissolve: 0,
-  });
-  if (phantomNexus.id !== undefined) {
-    phantomOwner.set(phantomNexus.id, spriteId);
-  }
+  // Nothing to flip the sprite out of `'obscuring'` with -- the repair pass in
+  // `update` will re-report it next frame rather than leaving it drawing the
+  // memory look at its live position forever.
+  if (!phantomNexus || phantomNexus.id === undefined) return;
   phantomNexus._generated = true;
 
   const p = transform.worldPosition;
@@ -400,19 +528,20 @@ async function spawnPhantom(
   // phantom appears and the sprite stops on the SAME frame. Setting
   // 'obscured' back in the sweep instead is what left a gap: the sprite
   // vanished immediately and the phantom arrived a frame or more later.
-  if (phantomTransform && sprite._disposed !== true) {
-    const now = transform.worldPosition;
-    phantomTransform.position = new Vector3D(now.x, now.y, now.z);
-    phantomTransform.rotation = new Vector3D(0, transform.worldRotation.y, 0);
-    const nowScale = transform.worldScale;
-    phantomTransform.scale = new Vector3D(nowScale.x, nowScale.y, nowScale.z);
-    // Animation only ever writes `frame` (see animation-controller), so this
-    // is all that can have gone stale visually.
-    if (phantomSprite) phantomSprite.frame = { ...sprite.frame };
+  const entry: LivePhantom = {
+    nexus: phantomNexus,
+    phantomTransform,
+    phantomSprite,
+    ownerSprite: sprite,
+    ownerTransform: transform,
+    spawnPos: frozenPos,
+    seq: phantomSeq++,
+    dissolve: 0,
+  };
+  livePhantoms.set(phantomNexus.id, entry);
+  phantomOwner.set(phantomNexus.id, spriteId);
 
-    const entry = livePhantoms.get(spriteId);
-    if (entry) entry.spawnPos = { x: now.x, y: now.y, z: now.z };
-  }
+  if (sprite._disposed !== true) freezePhantomTo(entry, sprite, transform);
   // Only ever flip a sprite that is still waiting on this spawn -- if vision
   // returned mid-spawn the sweep will have put it back to 'visible', and
   // hiding it here would blink out a unit the player can see.
@@ -717,6 +846,44 @@ export const FogOfWar: FogOfWarMethods = {
         revealedPhantoms,
       );
 
+      // REPAIR. An `'obscuring'` sprite is one waiting on a spawn to flip it to
+      // `'obscured'`; with no spawn in flight, nothing ever will. Until this
+      // pass existed that was terminal, and a terminal `'obscuring'` draws the
+      // memory look at the sprite's LIVE position at full opacity -- a ghost
+      // that walks around, indistinguishable from a correct memory except that
+      // it moves. Re-report it so the spawn is simply retried next frame.
+      //
+      // The refusal that used to cause this is gone (a live phantom no longer
+      // blocks a second one), so this is a net for the remaining ways a spawn
+      // can be lost: `newComponent` returning null, an id-less sprite, a scene
+      // swapped out mid-spawn.
+      //
+      // Sprites the sweep itself just moved into `'obscuring'` are already in
+      // `newlyObscured` and must not be queued twice.
+      justObscured.clear();
+      for (let i = 0; i < newlyObscured.length; i++) {
+        const id = newlyObscured[i].sprite.id;
+        if (id !== undefined) justObscured.add(id);
+      }
+      for (let i = 0; i < index.count; i++) {
+        const s = index.sprites[i];
+        if (s._disposed === true || s._fowStatus !== 'obscuring') continue;
+        const id = s.id;
+        if (id === undefined) continue;
+        if (pendingPhantoms.has(id) || justObscured.has(id)) continue;
+        // Opted out of fog, or gained a vision-source, while it was waiting on
+        // its spawn. The sweep guards on both before it ever obscures anything;
+        // finishing the handover now would hide a sprite fog no longer governs
+        // (untracked), or leave a phantom drawing alongside one that renders
+        // live regardless of status (self-lit). Fail visible instead, the same
+        // direction `spritePresence` and `isWorldCellObserved` fail.
+        if (s.trackedByFog !== true || index.selfLit[i]) {
+          s._fowStatus = 'visible';
+          continue;
+        }
+        newlyObscured.push({ sprite: s, transform: index.transforms[i] });
+      }
+
       // Safe to act on while `mask` is still live: `markForDisposal` only sets
       // a flag and queues an id, it never awaits.
       // Vision has reached these phantoms. That STARTS their dissolve; it
@@ -771,8 +938,16 @@ export const FogOfWar: FogOfWarMethods = {
     observationContext = null;
     lastWindowOrigin = null;
     // Phantoms themselves are ordinary scene nexuses and are torn down with
-    // the scene; only this bookkeeping is ours to clear.
+    // the scene; only this bookkeeping is ours to clear. ALL of it -- these are
+    // module-level maps that otherwise outlive the scene, and a stale
+    // `spritePresence` entry in particular would hand a later sprite that
+    // reuses the id a presence of 1 and skip its fade-in.
     livePhantoms.clear();
     phantomOwner.clear();
+    pendingPhantoms.clear();
+    coveredPhantoms.clear();
+    dissolvingPhantoms.clear();
+    spritePresence.clear();
+    justObscured.clear();
   },
 };

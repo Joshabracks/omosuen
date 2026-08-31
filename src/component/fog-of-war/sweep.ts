@@ -87,21 +87,19 @@ export function phantomSupersededBySprite(
  * Which way a sprite should be drawn, given its fog state. Mirrors the branch
  * structure of unified.frag's sprite path exactly.
  *
- * - `'skip'` — not submitted at all.
- * - `'memory'` — the fog memory look at memory opacity, fading out only as
- *   vision returns. Discards at FULL visibility.
- * - `'revealing'` — fades in from transparency in live colours.
- * - `'dissolving'` — live colours dissolving toward the memory look as
- *   visibility drops. Discards at ZERO visibility.
+ * - `'skip'` -- not submitted at all; its phantom draws instead.
+ * - `'memory'` -- the fog memory look, fading out only as vision returns.
+ *   Discards at FULL visibility.
+ * - `'live'` -- colour blended from the memory look toward live by DISTANCE,
+ *   at an opacity supplied separately by the presence ramp. Never discards.
  *
- * Extracted so the mapping is testable. It was previously inline in
- * render-sprites, where an `'obscuring'` sprite fell through to
- * `'dissolving'` — whose discard threshold is exactly where an `'obscuring'`
- * sprite sits, so it drew nothing and the hold that state exists for was a
- * no-op. The CPU-only suite could not see that, because the discard lives in
- * the shader; this function is the seam that makes it visible.
+ * There is deliberately no separate "revealing" kind. Colour is a pure
+ * function of distance for every live sprite, entering or leaving, so nothing
+ * here needs to know which direction a sprite is travelling -- which is what
+ * let the `vis >= 1` latch that broke partial reveals go away. Opacity carries
+ * the direction instead, on a timer.
  */
-export type FogDrawKind = 'skip' | 'memory' | 'revealing' | 'dissolving';
+export type FogDrawKind = 'skip' | 'memory' | 'live';
 
 export function fogDrawKind(
   status: SpriteT['_fowStatus'],
@@ -110,10 +108,9 @@ export function fogDrawKind(
   // A sprite carrying its own vision source always sees itself, so fog never
   // restyles or hides it (render-time half of the guarantee `sweepFogOfWar`
   // already makes by never obscuring such a sprite).
-  if (hasOwnVisionSource) return 'dissolving';
+  if (hasOwnVisionSource) return 'live';
   switch (status) {
     case 'obscured':
-      // Its phantom draws instead.
       return 'skip';
     case 'phantom':
       return 'memory';
@@ -121,11 +118,8 @@ export function fogDrawKind(
       // No phantom yet -- for these frames this sprite IS the memory, and must
       // take the same branch the phantom will so the swap is invisible.
       return 'memory';
-    case 'unseen':
-      // Not yet fully in view.
-      return 'revealing';
     default:
-      return 'dissolving';
+      return 'live';
   }
 }
 
@@ -133,17 +127,17 @@ export function fogDrawKind(
  * Whether unified.frag's sprite path discards this draw outright, given its
  * branch and visibility. A mirror of the discard guards in that shader.
  *
- * Exists because these thresholds are asymmetric and have twice produced a
- * silently blank sprite that no CPU-side test could see:
+ * Exists because these thresholds have twice produced a silently blank sprite
+ * that no CPU-side test could see:
  *
  *   - `'memory'` discards at FULL visibility. Routing `'obscuring'` (which
- *     sits at zero) to `'dissolving'` made its hold draw nothing.
- *   - `'dissolving'` used to discard at ZERO. The sweep runs a phase earlier
+ *     sits at zero) to the live branch made its hold draw nothing.
+ *   - The live branch used to discard at ZERO. The sweep runs a phase earlier
  *     than the renderer, off last frame's transforms, so on the frame a sprite
  *     crosses zero the renderer sees 0 while the sweep still has it 'visible'
  *     -- and that one-frame disagreement became a blank frame every time a
- *     sprite left vision. It no longer discards: a fully-seen sprite at zero
- *     renders its memory look, identical to the hold that follows.
+ *     sprite left vision. It no longer discards: a live sprite at zero renders
+ *     its memory look, identical to the hold that follows.
  *
  * It has no runtime caller: the shader is the only thing that actually
  * discards. It exists so those thresholds are written down somewhere a test
@@ -157,12 +151,49 @@ export function fogDiscards(kind: FogDrawKind, vis: number): boolean {
       return true;
     case 'memory':
       return vis >= 1;
-    case 'revealing':
-      return vis <= 0;
-    case 'dissolving':
+    case 'live':
       // Never. See above.
       return false;
   }
+}
+
+/**
+ * How long a sprite takes to fade in, and a phantom to dissolve away.
+ *
+ * Time rather than distance because a distance-driven fade is only as
+ * monotonic as the thing driving it: a source that stops closing leaves the
+ * animation stalled part-way, and one that retreats runs it backwards. A timer
+ * always completes. Colour stays distance-driven -- that part SHOULD track the
+ * source, and reversing it reads correctly.
+ */
+export const FOG_FADE_SECONDS = 0.25;
+
+/** Fraction of a full fade covered by `deltaTimeMs` (the loop's own unit). */
+export function fogFadeStep(deltaTimeMs: number): number {
+  return Math.max(0, deltaTimeMs) / 1000 / FOG_FADE_SECONDS;
+}
+
+/** Advances a 0..1 fade by `step`, clamped. Never runs backwards. */
+export function advanceFade(current: number, step: number): number {
+  return Math.min(1, Math.max(0, current) + Math.max(0, step));
+}
+
+/**
+ * Opacity multiplier for a phantom draw, 0..1.
+ *
+ * A phantom with its own sprite drawing over it is exactly `1 - ownerPresence`:
+ * complementary BY CONSTRUCTION, from one timer rather than two that have to
+ * agree. Two independent timers summing to opaque is the shape of every gap
+ * and double-image failure this system has had.
+ *
+ * With no sprite over it, it runs its own dissolve.
+ */
+export function phantomAlpha(
+  covered: boolean,
+  ownerPresence: number,
+  dissolve: number,
+): number {
+  return Math.max(0, 1 - (covered ? ownerPresence : dissolve));
 }
 
 /** A `visible` -> not-visible transition found by the sweep. */
@@ -383,15 +414,15 @@ export function sweepFogOfWar(
 
     const status = sprite._fowStatus;
 
-    // A spawned phantom: check whether vision has returned to ITS OWN
-    // (frozen) position, independent of wherever the real sprite it
-    // stood in for currently is.
+    // A spawned phantom: has vision returned to ITS OWN (frozen) position,
+    // independent of wherever the real sprite it stood in for currently is?
     //
-    // Disposed only at FULL visibility, not the moment visibility becomes
-    // non-zero: its sprite fades back in ON TOP of it, so the phantom is the
-    // opaque backdrop that fade happens over. Retiring it early would leave
-    // the sprite fading up from the bare terrain instead, and at full
-    // visibility the sprite is completely opaque, so its removal is invisible.
+    // Reported at ANY non-zero visibility, and it STARTS the dissolve rather
+    // than ending the phantom. Disposal is by the dissolve completing on a
+    // timer (methods.ts), because tying it to full visibility meant a phantom
+    // only glimpsed from a distance would dissolve part-way and then fade back
+    // in as the source retreated -- or stall for good at whatever fraction the
+    // source stopped at.
     if (status === 'phantom') {
       if (
         computeSpriteVisibility(
@@ -401,7 +432,7 @@ export function sweepFogOfWar(
           cellDims,
           windowOriginLocalCell,
           cellSize,
-        ) >= 1
+        ) > 0
       ) {
         revealedPhantoms.push(nexuses[i]);
       }
@@ -427,40 +458,35 @@ export function sweepFogOfWar(
       cellSize,
     );
 
-    // `'visible'` means FULLY in view, not merely in view at all -- which is
-    // what lets the renderer tell the two fog fades apart at the same
-    // visibility. A sprite on its way IN stays `'unseen'` until it is
-    // completely revealed, so it renders fading up from transparency; only
-    // once it has been fully seen does it become eligible for the dissolve
-    // toward the memory look on the way back out. See `SpriteT._fowStatus`.
-    if (vis >= 1) {
-      if (status !== 'visible') {
-        sprite._fowStatus = 'visible';
-      }
-      continue;
-    }
-
+    // `'visible'` means "has been seen at all, and so deserves a memory when
+    // it leaves". It latches at ANY non-zero visibility, not at full.
+    //
+    // It used to require `vis >= 1`, to let the renderer tell a fade-in from a
+    // fade-out. But visibility is `radial * (hits/8)` and `radial` is strictly
+    // below 1 anywhere in the fade band, so a sprite that never reached the
+    // inner radius could never qualify -- it would fade in, fade back out, and
+    // leave nothing behind. Colour is now a pure function of distance and
+    // opacity carries the direction, so no threshold has to encode it.
     if (vis > 0) {
-      // Partly in view. A sprite coming back from `'obscured'` restarts as
-      // `'unseen'` so it fades in; one still `'obscuring'` (zero visibility a
-      // moment ago, phantom mid-spawn) goes back to `'visible'`, since it had
-      // been fully seen and is simply on its way out again.
-      if (status === 'obscured') {
-        sprite._fowStatus = 'unseen';
+      if (status === 'obscured' || status === 'unseen') {
+        sprite._fowStatus = 'visible';
       } else if (status === 'obscuring') {
+        // Vision returned before its phantom landed; it is simply on its way
+        // out again rather than starting over.
         sprite._fowStatus = 'visible';
       }
       continue;
     }
 
-    // Fully out of sight. Phantom-spawning is gated strictly on the
-    // `'visible'` -> not-visible edge -- an `'unseen'` sprite that has never
-    // been fully seen stays `'unseen'` here, exactly like terrain's "never
+    // Fully out of sight. Phantom-spawning is still gated strictly on the
+    // `'visible'` -> not-visible edge -- an `'unseen'` sprite, meaning one
+    // never seen AT ALL, stays `'unseen'` here, exactly like terrain's "never
     // explored" stays hidden. Spawning a phantom for a never-seen sprite was
     // the actual bug: every off-screen sprite (trackedByFog defaults true)
     // would otherwise get a permanent phantom the instant fog-of-war first
     // evaluated it, regardless of whether it had ever really been observed --
-    // see the Colony Forever perf report this fixed.
+    // see the Colony Forever perf report this fixed. That invariant is intact;
+    // only the bar for "seen" moved from fully-revealed to seen-at-all.
     //
     // `'obscuring'`, not `'obscured'`: the sprite keeps drawing (holding the
     // memory look its dissolve already renders at zero visibility) until

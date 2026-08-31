@@ -10,9 +10,13 @@
  */
 
 import {
+  advanceFade,
   computeSpriteVisibility,
   fogDiscards,
   fogDrawKind,
+  fogFadeStep,
+  FOG_FADE_SECONDS,
+  phantomAlpha,
   isPositionVisible,
   phantomSupersededBySprite,
   sweepFogOfWar,
@@ -418,6 +422,18 @@ function wideSource(
     fadeWidth,
   };
 }
+function visibilityAtWide(
+  x: number,
+  sources: ResolvedSource[],
+  mask: Uint8Array,
+): number {
+  return computeSpriteVisibility({ x, y: 0.5, z: 4.5 }, sources, mask, WIDE, WIDE_ORIGIN, {
+    x: 1,
+    y: 1,
+    z: 1,
+  });
+}
+
 function wideVisibility(
   target: { x: number; y: number; z: number },
   sources: ResolvedSource[],
@@ -560,8 +576,11 @@ function wideCentreRay(
     partial,
   );
   check(
-    'a phantom at partial visibility is not disposed',
-    partial.length === 0,
+    // Vision reaching a phantom now STARTS its dissolve rather than ending it.
+    // Reporting only at full visibility is what let a half-seen phantom stall
+    // or fade back in when the source turned away.
+    'vision partly reaching a phantom starts its dissolve',
+    partial.length === 1,
     `got ${partial.length}`,
   );
 
@@ -579,7 +598,7 @@ function wideCentreRay(
     full,
   );
   check(
-    'a phantom at full visibility is disposed',
+    'and full visibility reports it too',
     full.length === 1,
     `got ${full.length}`,
   );
@@ -623,12 +642,16 @@ console.log('\nfade direction');
   //     dissolve, so a newly discovered unit appeared instantly at full
   //     opacity wearing the fog filter instead of fading up from nothing.
   check(
-    "a sprite at partial visibility stays 'unseen' (it is fading in)",
-    sweepAt(8, 'unseen').status === 'unseen',
+    // THE FIX. This previously required FULL visibility, which is unreachable
+    // anywhere in the fade band (radial < 1 there), so a sprite that never
+    // entered the inner radius never became eligible for a phantom -- it faded
+    // in, faded out, and left no memory behind.
+    "a sprite at partial visibility becomes 'visible' -- it has been seen",
+    sweepAt(8, 'unseen').status === 'visible',
     `got ${sweepAt(8, 'unseen').status}`,
   );
   check(
-    "and only becomes 'visible' once fully in view",
+    'and so does one fully in view',
     sweepAt(3, 'unseen').status === 'visible',
     `got ${sweepAt(3, 'unseen').status}`,
   );
@@ -636,8 +659,8 @@ console.log('\nfade direction');
   // 17. Coming back from obscured restarts the fade-IN, rather than resuming
   //     the dissolve it left off on.
   check(
-    "'obscured' -> 'unseen' when visibility returns",
-    sweepAt(8, 'obscured').status === 'unseen',
+    "'obscured' -> 'visible' when visibility returns",
+    sweepAt(8, 'obscured').status === 'visible',
     `got ${sweepAt(8, 'obscured').status}`,
   );
 
@@ -804,19 +827,17 @@ console.log('\ndraw routing');
     `got ${fogDrawKind('obscuring', false)}`,
   );
   check(
-    "'unseen' fades in from transparency",
-    fogDrawKind('unseen', false) === 'revealing',
-    `got ${fogDrawKind('unseen', false)}`,
-  );
-  check(
-    "'visible' dissolves toward the memory look",
-    fogDrawKind('visible', false) === 'dissolving',
-    `got ${fogDrawKind('visible', false)}`,
+    // No separate 'revealing' kind any more: colour is a pure function of
+    // distance for every live sprite, and opacity carries the direction.
+    "'unseen' and 'visible' share one live branch",
+    fogDrawKind('unseen', false) === 'live' &&
+      fogDrawKind('visible', false) === 'live',
+    `${fogDrawKind('unseen', false)} / ${fogDrawKind('visible', false)}`,
   );
   check(
     'a sprite with its own vision-source is never hidden or restyled',
     (['unseen', 'visible', 'obscuring', 'obscured', 'phantom'] as const).every(
-      (s) => fogDrawKind(s, true) === 'dissolving',
+      (s) => fogDrawKind(s, true) === 'live',
     ),
   );
   check(
@@ -824,8 +845,7 @@ console.log('\ndraw routing');
     // memory discards at full visibility, live at zero. A state that only ever
     // occurs at one of those extremes must not be routed to the branch that
     // discards there.
-    fogDrawKind('obscuring', false) !== 'dissolving' &&
-      fogDrawKind('obscuring', false) !== 'revealing',
+    fogDrawKind('obscuring', false) === 'memory',
   );
 }
 
@@ -844,28 +864,135 @@ console.log('\ndiscard thresholds');
     fogDiscards('memory', 1),
   );
 
-  check('a revealing draw is discarded at zero', fogDiscards('revealing', 0));
   check(
-    'a revealing draw survives once non-zero',
-    !fogDiscards('revealing', 0.01),
-  );
-
-  check(
-    // THE BUG. The sweep runs a phase before the renderer, off last frame's
-    // transforms, so on the frame a sprite crosses zero the renderer sees 0
-    // while the sweep still has it 'visible' -- and it is therefore still
-    // routed to 'dissolving'. Discarding here blanked it for exactly one
-    // frame, every single time a sprite left vision.
-    'a dissolving draw is NEVER discarded, including at zero visibility',
-    !fogDiscards('dissolving', 0) &&
-      !fogDiscards('dissolving', 0.5) &&
-      !fogDiscards('dissolving', 1),
+    // The sweep runs a phase before the renderer, off last frame's transforms,
+    // so on the frame a sprite crosses zero the renderer sees 0 while the sweep
+    // still has it 'visible'. Discarding a live draw there blanked it for
+    // exactly one frame, every single time a sprite left vision.
+    'a live draw is NEVER discarded, including at zero visibility',
+    !fogDiscards('live', 0) &&
+      !fogDiscards('live', 0.5) &&
+      !fogDiscards('live', 1),
   );
 
   check(
     'a fully-seen sprite at zero still draws, whichever side of the lag it is on',
     !fogDiscards(fogDrawKind('visible', false), 0) &&
       !fogDiscards(fogDrawKind('obscuring', false), 0),
+  );
+}
+
+// -- Timed fades -----------------------------------------------------------
+//
+// Opacity is on a clock, colour is on distance. A distance-driven fade is only
+// as monotonic as its driver: a source that stops closing leaves it stalled
+// part-way, and one that retreats runs it backwards. Those were the two
+// reported inconsistencies.
+
+console.log('\ntimed fades');
+
+{
+  // A full fade takes exactly FOG_FADE_SECONDS regardless of frame rate.
+  const stepAt = (fps: number) => fogFadeStep(1000 / fps);
+  const framesToFull = (fps: number) => {
+    let v = 0;
+    let n = 0;
+    while (v < 1 && n < 10000) {
+      v = advanceFade(v, stepAt(fps));
+      n++;
+    }
+    return n / fps;
+  };
+  check(
+    'a fade takes the configured duration at 60fps',
+    Math.abs(framesToFull(60) - FOG_FADE_SECONDS) < 0.02,
+    `${framesToFull(60)}s`,
+  );
+  check(
+    'and the same wall-clock duration at 20fps',
+    Math.abs(framesToFull(20) - FOG_FADE_SECONDS) < 0.06,
+    `${framesToFull(20)}s`,
+  );
+
+  check('a fade clamps at 1', advanceFade(0.9, 10) === 1);
+  check(
+    // THE POINT of moving to a timer. A distance-driven fade reverses when the
+    // source retreats; this cannot, because time only moves one way.
+    'a fade never runs backwards, even given a negative step',
+    advanceFade(0.6, -5) === 0.6,
+  );
+  check('a zero delta advances nothing', advanceFade(0.4, fogFadeStep(0)) === 0.4);
+
+  // Complementarity: a covered phantom is derived from its owner's single
+  // timer, so the pair cannot drift apart or leave a gap between them.
+  let worst = 0;
+  for (let p = 0; p <= 1.0001; p += 0.05) {
+    worst = Math.max(worst, Math.abs(phantomAlpha(true, p, 0) + p - 1));
+  }
+  check(
+    // Tolerance is float epsilon, not slack: `(1 - p) + p` is not bit-exact
+    // for arbitrary p. A real desync between the pair -- two timers drifting
+    // rather than one deriving the other -- would be orders of magnitude
+    // larger than this, so the bound still catches it.
+    'a covered phantom and its sprite always sum to opaque',
+    worst < 1e-12,
+    `max deviation ${worst}`,
+  );
+  check(
+    'a covered phantom ignores its own dissolve entirely',
+    phantomAlpha(true, 0.25, 0.9) === phantomAlpha(true, 0.25, 0.1),
+  );
+  check(
+    'an uncovered phantom runs its own dissolve to zero',
+    phantomAlpha(false, 0, 1) === 0 && phantomAlpha(false, 0, 0) === 1,
+  );
+}
+
+// -- Problem 1: a partly-seen sprite still leaves a memory ------------------
+
+console.log('\npartial reveal leaves a memory');
+
+{
+  const sources = [wideSource(4.5, 4.5, 6, 4)]; // radius 6, outer 10
+  const mask = emptyWide();
+  const sweepAtWide = (d: number, status: 'unseen' | 'visible') => {
+    const e = entity(4.5 + d, 0.5, 4.5, status);
+    const obscured: ObscuredTransition[] = [];
+    sweepFogOfWar(
+      buildIndex([{ e }]),
+      sources,
+      mask,
+      WIDE,
+      WIDE_ORIGIN,
+      { x: 1, y: 1, z: 1 },
+      obscured,
+      [],
+    );
+    return { status: e.sprite._fowStatus as string, obscured };
+  };
+
+  // Inside the fade band visibility is radial * (hits/8) with radial strictly
+  // below 1, so this sprite can NEVER reach full visibility -- which is exactly
+  // why the old `vis >= 1` latch stranded it.
+  const partial = visibilityAtWide(4.5 + 8, sources, mask);
+  check(
+    'the fixture sprite genuinely cannot reach full visibility',
+    partial > 0 && partial < 1,
+    `vis=${partial}`,
+  );
+
+  const seen = sweepAtWide(8, 'unseen');
+  check(
+    'a partly-seen sprite becomes eligible for a memory',
+    seen.status === 'visible',
+    `got ${seen.status}`,
+  );
+
+  const left = sweepAtWide(12, 'visible');
+  check(
+    'and leaves a phantom behind when it goes out of sight',
+    left.obscured.length === 1 && left.status === 'obscuring',
+    `${left.status}, ${left.obscured.length} transitions`,
   );
 }
 

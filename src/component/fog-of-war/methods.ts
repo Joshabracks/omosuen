@@ -14,11 +14,18 @@ import type { TransformT, TransformOptions } from '../transform/data';
 import type { VisionSourceT } from '../vision-source/data';
 import { computeSolidityMap } from '../camera/render/visibility-mask';
 import {
+  advanceFade,
+  fogFadeStep,
   isPositionVisible,
+  phantomAlpha,
   phantomSupersededBySprite,
   sweepFogOfWar,
 } from './sweep';
-import type { ObscuredTransition, ResolvedSource } from './sweep';
+import type {
+  FogSweepIndex,
+  ObscuredTransition,
+  ResolvedSource,
+} from './sweep';
 import {
   clearDeferredCells,
   revealObservedCells,
@@ -94,6 +101,15 @@ interface LivePhantom {
   transform: TransformT;
   /** Where the phantom was frozen -- `phantomSupersededBySprite`'s reference. */
   spawnPos: { x: number; y: number; z: number };
+  /**
+   * Dissolve progress, 0..1, for a phantom with NO sprite standing over it --
+   * the spot has been abandoned and the memory is being confirmed empty.
+   * Latches once vision reaches it and then runs to completion on a timer,
+   * because a distance-driven dissolve stalls or reverses whenever the source
+   * stops closing. A covered phantom ignores this and derives its opacity from
+   * its owner's presence instead (see `phantomAlpha`).
+   */
+  dissolve: number;
 }
 
 const livePhantoms = new Map<number, LivePhantom>();
@@ -113,12 +129,116 @@ const phantomOwner = new Map<number, number>();
 const coveredPhantoms = new Set<number>();
 
 /**
+ * Fade-in progress per sprite id, 0..1.
+ *
+ * ABSENT MEANS 1, not 0. The sweep only walks sprites in the scene index that
+ * are tracked and not self-lit; everything else -- untracked sprites, self-lit
+ * ones, anything the index has not caught up with -- must render normally. A
+ * missing entry defaulting to 0 would hide arbitrary sprites outright, so this
+ * fails visible on purpose.
+ */
+const spritePresence = new Map<number, number>();
+
+/** Fade-in progress for a sprite, 1 when untracked. See `spritePresence`. */
+export function spriteFogPresence(spriteId: number | undefined): number {
+  if (spriteId === undefined) return 1;
+  return spritePresence.get(spriteId) ?? 1;
+}
+
+/**
+ * Opacity multiplier for a phantom draw, 0..1.
+ *
+ * A phantom with its own sprite drawing over it is exactly `1 - presence` of
+ * that sprite: complementary BY CONSTRUCTION, from one timer rather than two
+ * that have to agree. Two independent timers summing to opaque is the shape of
+ * every gap and double-image failure this system has had.
+ *
+ * With no sprite over it, it runs its own dissolve.
+ */
+export function phantomFogAlpha(phantomNexusId: number): number {
+  const spriteId = phantomOwner.get(phantomNexusId);
+  if (spriteId === undefined) return 1;
+  const entry = livePhantoms.get(spriteId);
+  if (!entry) return 1;
+  return phantomAlpha(
+    coveredPhantoms.has(phantomNexusId),
+    spriteFogPresence(spriteId),
+    entry.dissolve,
+  );
+}
+
+/**
  * Whether this phantom has its own sprite drawing over it this frame -- see
  * `coveredPhantoms`. False for anything fog-of-war isn't tracking, so an
  * unknown phantom simply fades as normal.
  */
 export function isPhantomCoveredBySprite(phantomNexusId: number): boolean {
   return coveredPhantoms.has(phantomNexusId);
+}
+
+/**
+ * Advances the fade timers. Run after the sweep, so it reads the `_fowStatus`
+ * and `coveredPhantoms` state this frame just produced.
+ *
+ * `deltaTime` is milliseconds (the loop's own unit). A paused fog-of-war nexus
+ * is skipped by the update traversal entirely, so timers freeze with the rest
+ * of the simulation rather than running on underneath it.
+ */
+function advanceFogTimers(index: FogSweepIndex, deltaTimeMs: number): void {
+  const step = fogFadeStep(deltaTimeMs);
+
+  for (let i = 0; i < index.count; i++) {
+    const sprite = index.sprites[i];
+    const spriteId = sprite.id;
+    if (spriteId === undefined || sprite._disposed === true) continue;
+    const status = sprite._fowStatus;
+    if (status === 'phantom') continue;
+
+    if (status === 'obscured') {
+      // Gone; its next arrival should fade in from nothing again.
+      spritePresence.delete(spriteId);
+      continue;
+    }
+    if (sprite.trackedByFog !== true) continue;
+    const current = spritePresence.get(spriteId) ?? 0;
+    spritePresence.set(spriteId, advanceFade(current, step));
+  }
+
+  // A phantom nobody is standing over dissolves on its own clock, but only
+  // once vision has actually reached the spot -- and never runs backwards
+  // afterwards, which is the reversal this replaced.
+  for (const entry of livePhantoms.values()) {
+    const nexus = entry.nexus;
+    if (!nexus || nexus.id === undefined || nexus._disposed === true) continue;
+    if (coveredPhantoms.has(nexus.id)) continue;
+    if (entry.dissolve <= 0 && !dissolvingPhantoms.has(nexus.id)) continue;
+    entry.dissolve = advanceFade(entry.dissolve, step);
+  }
+}
+
+/** Phantom nexus ids whose dissolve has been triggered by vision reaching them. */
+const dissolvingPhantoms = new Set<number>();
+
+/**
+ * Disposes every phantom whose fade has reached zero -- either its own
+ * dissolve completed, or the sprite standing over it finished fading in and
+ * has fully replaced it. Both are guaranteed to arrive, which is the point of
+ * putting them on a clock.
+ */
+function disposeFadedPhantoms(): void {
+  if (livePhantoms.size === 0) return;
+  let faded: NexusT[] | null = null;
+  for (const entry of livePhantoms.values()) {
+    const nexus = entry.nexus;
+    if (!nexus || nexus.id === undefined || nexus._disposed === true) continue;
+    if (phantomFogAlpha(nexus.id) <= 0) (faded ??= []).push(nexus);
+  }
+  if (!faded) return;
+  for (const nexus of faded) {
+    if (nexus.id !== undefined) dissolvingPhantoms.delete(nexus.id);
+    forgetPhantom(nexus);
+    markForDisposal(nexus);
+  }
 }
 
 /**
@@ -196,6 +316,7 @@ async function spawnPhantom(
     sprite,
     transform,
     spawnPos: frozenPos,
+    dissolve: 0,
   });
 
   const phantomNexus = (await newComponent(
@@ -212,6 +333,7 @@ async function spawnPhantom(
     sprite,
     transform,
     spawnPos: frozenPos,
+    dissolve: 0,
   });
   if (phantomNexus.id !== undefined) {
     phantomOwner.set(phantomNexus.id, spriteId);
@@ -478,7 +600,7 @@ export const FogOfWar: FogOfWarMethods = {
    * not synchronously within this call -- an imperceptible one-frame delay,
    * consistent with this engine's existing frame-budgeted init elsewhere.
    */
-  update: (_component: ComponentData, _deltaTime: number): void => {
+  update: (_component: ComponentData, deltaTime: number): void => {
     // Installed here rather than at module load so a scene with no
     // fog-of-war component never defers terrain writes. Idempotent, and
     // cleared in `dispose` below.
@@ -597,14 +719,20 @@ export const FogOfWar: FogOfWarMethods = {
 
       // Safe to act on while `mask` is still live: `markForDisposal` only sets
       // a flag and queues an id, it never awaits.
+      // Vision has reached these phantoms. That STARTS their dissolve; it
+      // does not end them. Disposal is by the fade reaching zero below, so a
+      // phantom only half-seen still finishes disappearing instead of fading
+      // back in when the source turns away.
       for (let i = 0; i < revealedPhantoms.length; i++) {
-        forgetPhantom(revealedPhantoms[i]);
-        markForDisposal(revealedPhantoms[i]);
+        const id = revealedPhantoms[i].id;
+        if (id !== undefined) dissolvingPhantoms.add(id);
       }
       // Reads `_fowStatus` as the sweep just left it, so a sprite that started
       // fading back in this pass has its phantom pinned opaque for the draw
       // that follows -- which is what its fade-in is composited over.
       refreshCoveredPhantoms();
+      advanceFogTimers(index, deltaTime);
+      disposeFadedPhantoms();
 
       // Past this point `mask` is DEAD -- `revealObservedCells` writes to WASM
       // (clearing overlay entries), and a memory growth there can detach the

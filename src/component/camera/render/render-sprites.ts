@@ -18,7 +18,7 @@ import {
 } from './light-uniforms';
 import { getResolvedVisionSources, setVisionUniforms } from './vision-uniforms';
 import { computeSpriteVisibility, fogDrawKind } from '../../fog-of-war/sweep';
-import { isPhantomCoveredBySprite } from '../../fog-of-war/methods';
+import { phantomFogAlpha, spriteFogPresence } from '../../fog-of-war/methods';
 import type { ResolvedSource } from '../../fog-of-war/sweep';
 import { computeSolidityMap } from './visibility-mask';
 
@@ -52,7 +52,6 @@ const _drawDepths: number[] = [];
 // that's currently obscured) -- the second loop must set
 // u_spriteFogMemory=true for that draw call.
 const _drawIsMemory: boolean[] = [];
-const _drawIsRevealing: boolean[] = [];
 
 /**
  * Depth nudge applied to a memory (phantom) draw so it always sorts behind a
@@ -389,14 +388,11 @@ export function renderSprites(
     'u_hasCellEmissionColor',
   );
   const u_spriteFogMemory = gl.getUniformLocation(program, 'u_spriteFogMemory');
-  const u_spriteFogRevealing = gl.getUniformLocation(
-    program,
-    'u_spriteFogRevealing',
-  );
   const u_spriteVisibility = gl.getUniformLocation(
     program,
     'u_spriteVisibility',
   );
+  const u_spriteFogAlpha = gl.getUniformLocation(program, 'u_spriteFogAlpha');
 
   // Set constant uniforms (same for all sprites)
   // Sprites render at full resolution to screen (not via FBO), so they use
@@ -678,7 +674,6 @@ export function renderSprites(
     const drawKind = fogDrawKind(sprite._fowStatus, hasOwnVisionSource);
     if (drawKind === 'skip') continue;
     const isMemory = drawKind === 'memory';
-    const isRevealing = drawKind === 'revealing';
 
     // World position so a sprite under a transformed parent nexus is
     // placed/sorted by its composed world transform. A phantom sprite's own
@@ -728,7 +723,6 @@ export function renderSprites(
     _drawDepths[drawCount] =
       pRx + heightScale * p.y + pRz - (isMemory ? MEMORY_DEPTH_BIAS : 0);
     _drawIsMemory[drawCount] = isMemory;
-    _drawIsRevealing[drawCount] = isRevealing;
     drawCount++;
   }
 
@@ -746,21 +740,18 @@ export function renderSprites(
     const st = _drawTransforms[i];
     const sd = _drawDepths[i];
     const sm = _drawIsMemory[i];
-    const sr = _drawIsRevealing[i];
     let j = i - 1;
     while (j >= 0 && _drawDepths[j] > sd) {
       _drawSprites[j + 1] = _drawSprites[j];
       _drawTransforms[j + 1] = _drawTransforms[j];
       _drawDepths[j + 1] = _drawDepths[j];
       _drawIsMemory[j + 1] = _drawIsMemory[j];
-      _drawIsRevealing[j + 1] = _drawIsRevealing[j];
       j--;
     }
     _drawSprites[j + 1] = s;
     _drawTransforms[j + 1] = st;
     _drawDepths[j + 1] = sd;
     _drawIsMemory[j + 1] = sm;
-    _drawIsRevealing[j + 1] = sr;
   }
 
   // Render each sprite (back-to-front)
@@ -774,37 +765,40 @@ export function renderSprites(
     // previous tracked-sprite draw this frame can never leak into an
     // unrelated untracked sprite's draw call.
     gl.uniform1i(u_spriteFogMemory, _drawIsMemory[di] ? 1 : 0);
-    gl.uniform1i(u_spriteFogRevealing, _drawIsRevealing[di] ? 1 : 0);
 
-    // Fog visibility for this sprite, at its own world position -- the same
-    // point fog-of-war's sweep tests, so a phantom and the sprite it stands in
-    // for (which share a position) get the same number.
+    // Fog COLOUR comes from distance -- the same point fog-of-war's sweep
+    // tests, so a phantom and the sprite it stands in for (which share a
+    // position) get the same number and therefore the same look.
     // 1.0 when fog isn't active, which the shader reads as fully visible.
-    //
-    // A phantom whose own sprite is drawing on top of it is fed 0 instead of
-    // its real visibility: the shader turns that into full memory opacity, so
-    // it holds steady as the opaque backdrop that sprite's fade-in is
-    // composited over. Fading both would leak the background through the
-    // middle of the transition. See `isPhantomCoveredBySprite`.
     let spriteVis = 1;
     if (fogMask && fogCellDims && fogCellSize && fogWindowOriginLocalCell) {
-      const covered =
-        _drawIsMemory[di] &&
-        spriteTransform.parent !== null &&
-        spriteTransform.parent.id !== undefined &&
-        isPhantomCoveredBySprite(spriteTransform.parent.id);
-      spriteVis = covered
-        ? 0
-        : computeSpriteVisibility(
-            spriteTransform.worldPosition,
-            fogSources,
-            fogMask,
-            fogCellDims,
-            fogWindowOriginLocalCell,
-            fogCellSize,
-          );
+      spriteVis = computeSpriteVisibility(
+        spriteTransform.worldPosition,
+        fogSources,
+        fogMask,
+        fogCellDims,
+        fogWindowOriginLocalCell,
+        fogCellSize,
+      );
     }
     gl.uniform1f(u_spriteVisibility, spriteVis);
+
+    // Fog OPACITY comes from a timer, not from distance. A distance-driven
+    // fade stalls part-way whenever the source stops closing and runs backwards
+    // when it retreats; a timed one always completes. See fog-of-war/methods.ts.
+    //
+    // A phantom's opacity is derived from the presence of the sprite standing
+    // over it wherever there is one, so the pair is complementary from a single
+    // timer rather than two that have to stay in agreement.
+    const phantomNexusId = spriteTransform.parent?.id;
+    gl.uniform1f(
+      u_spriteFogAlpha,
+      _drawIsMemory[di]
+        ? phantomNexusId !== undefined
+          ? phantomFogAlpha(phantomNexusId)
+          : 1
+        : spriteFogPresence(sprite.id),
+    );
 
     // Get albedo texture map (required)
     if (!sprite.textureMapKeys.albedo) {

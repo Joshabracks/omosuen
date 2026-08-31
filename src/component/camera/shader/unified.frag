@@ -78,12 +78,11 @@ uniform float u_opacity;
     // stand-in for some other (currently obscured) tracked sprite. See
     // SpriteT._fowStatus's doc comment.
 uniform bool u_spriteFogMemory;
-    // Fog-of-war: this sprite is not yet fully in view (`_fowStatus` is
-    // 'unseen'), so it fades IN from transparency in normal colours rather
-    // than dissolving toward the memory look. Set per draw call from the CPU,
-    // because visibility alone cannot say which direction a sprite is
-    // travelling and the two fades are deliberately different.
-uniform bool u_spriteFogRevealing;
+    // Fog-of-war OPACITY for this draw, 0..1, supplied per draw call from the
+    // CPU. Timed, not distance-driven: a live sprite fades in over a fixed
+    // duration, and a phantom fades out over one. Distance drives COLOUR only
+    // (u_spriteVisibility). See fog-of-war/methods.ts for why.
+uniform float u_spriteFogAlpha;
     // Fog-of-war visibility for THIS sprite, 0..1, computed once on the CPU
     // (render-sprites.ts, via fog-of-war/sweep.ts's computeSpriteVisibility)
     // rather than per fragment. Pure geometry -- radial falloff times the
@@ -879,32 +878,20 @@ void main() {
             }
             // Both sides are gated on this one number, so there is never a
             // frame with neither the sprite nor its phantom visible -- the bug
-            // this replaced. The transition itself is NOT done by playing the
-            // two off against each other with complementary alpha (see the
-            // dissolve comment further down for why that cannot work); a live
-            // sprite blends to its own memory look within this single draw,
-            // and a phantom only ever fades out.
-            if(u_spriteFogMemory) {
-                if(fogVis >= 1.0) discard;
-            } else if(u_spriteFogRevealing) {
-                // Only a not-yet-fully-seen sprite vanishes at zero. It has no
-                // memory to fall back on, so there is nothing to draw.
-                if(fogVis <= 0.0) discard;
-            } else {
-                // A fully-seen sprite at zero visibility renders its MEMORY
-                // look instead of vanishing -- the dissolve below already
-                // produces exactly that at fogVis 0.
-                //
-                // It has to. fog-of-war's sweep runs a phase before this one,
-                // off a scene index and world transforms from the previous
-                // frame, so on the frame a sprite crosses zero the renderer
-                // sees 0.000 while the sweep still has it 'visible'. Discarding
-                // here made that one-frame disagreement a blank frame, every
-                // single time a sprite left vision -- and the 'obscuring' hold
-                // could not help, because it is not set until the sweep catches
-                // up on the NEXT frame. Rendering the memory look makes the two
-                // states identical on screen, so the lag stops being visible.
-            }
+            // this replaced.
+            //
+            // A phantom discards only once vision fully covers its spot. A
+            // LIVE sprite never discards: at zero visibility it renders its
+            // memory look, identical to the phantom that replaces it.
+            //
+            // That asymmetry is load-bearing. fog-of-war's sweep runs a phase
+            // before this one, off a scene index and world transforms from the
+            // previous frame, so on the frame a sprite crosses zero the
+            // renderer sees 0.000 while the sweep still has it 'visible'.
+            // Discarding here made that one-frame disagreement a blank frame,
+            // every single time a sprite left vision. Mirrored on the CPU in
+            // fog-of-war/sweep.ts's `fogDiscards`, which is where it is tested.
+            if(u_spriteFogMemory && fogVis >= 1.0) discard;
         }
 
         // Occlusion test: discard sprite fragments behind cells (or show silhouette)
@@ -979,45 +966,36 @@ void main() {
         float luminance = dot(liveRgb, vec3(0.299, 0.587, 0.114));
         vec3 memoryRgb = mix(vec3(luminance), liveRgb, u_fogMemorySaturation) * u_fogMemoryTint;
 
-        // The two fog fades are deliberately DIFFERENT, and which one applies
-        // is decided on the CPU from `_fowStatus` (see SpriteT) rather than
-        // from fogVis, which cannot say which direction a sprite is moving:
+        // Fog COLOUR is a pure function of distance, for every live sprite,
+        // entering or leaving alike. At fogVis 0 a sprite is pixel-identical to
+        // a phantom of the same frame; at 1 it is fully live. Nothing here
+        // needs to know which direction it is travelling -- OPACITY carries
+        // that, on a timer, in u_spriteFogAlpha.
         //
-        //   fading in   transparent -> full normal colour  (alpha ramps)
-        //   fading out  full normal colour -> memory look  (colour dissolves)
-        //
-        // Fading in over a solid backdrop is what keeps it clean. A sprite
-        // returning to view fades up over its own phantom, which fog-of-war
-        // pins at CONSTANT memory opacity while it is covered
-        // (`isPhantomCoveredBySprite`), so the composite is exactly
-        // `L*v + M*(1-v)`. Were both to fade at once the background would leak
-        // through the middle instead -- `a(1-a)`, up to 25% at the midpoint.
+        // That is what removed the old fade-direction machinery. Telling the
+        // two apart had required latching 'visible' at FULL visibility, and
+        // since visibility is `radial * (hits/8)` with radial strictly below 1
+        // anywhere in the fade band, a sprite that never reached the inner
+        // radius could never latch -- so it faded in, faded out, and left no
+        // memory behind.
         vec3 finalRgb;
         float fogAlpha;
         if(u_spriteFogMemory) {
-            // A phantom is already the memory. It holds steady while its own
-            // sprite fades in on top of it, and fades out only when nothing is
-            // covering it -- the sprite moved on, and the remembered spot is
-            // turning out to be empty. render-sprites.ts feeds a fogVis of 0
-            // for the covered case, which lands here as full memory opacity.
+            // A phantom is already the memory; only its opacity changes. The
+            // CPU supplies that as `1 - presence` of the sprite standing over
+            // it, or its own dissolve timer when the sprite has moved on -- so
+            // a covered pair is complementary from ONE timer rather than two
+            // that have to agree.
             finalRgb = memoryRgb;
-            fogAlpha = (1.0 - fogVis) * u_fogMemoryOpacity;
-        } else if(u_spriteFogRevealing) {
-            // Not yet fully in view: fade up from transparency in normal
-            // colours. Deliberately NOT tinted toward the memory look on the
-            // way in -- a newly discovered sprite has no memory to emerge
-            // from, and one returning to view has its phantom underneath
-            // doing that job.
-            finalRgb = liveRgb;
-            fogAlpha = fogVis;
+            fogAlpha = u_fogMemoryOpacity * u_spriteFogAlpha;
         } else {
-            // Fully seen, now on its way out: DISSOLVE toward the memory look
-            // while staying solid, so it fades INTO the fog rather than
-            // thinning out over the terrain. At fogVis 0 this is
-            // pixel-identical to a phantom of the same frame -- which is
-            // exactly what replaces it, so the handover cannot be seen.
+            // A live sprite: colour dissolves toward the memory look as it
+            // leaves and back toward live as it returns, purely by distance.
+            // At fogVis 0 this is pixel-identical to a phantom of the same
+            // frame -- which is exactly what replaces it, so the handover
+            // cannot be seen. Opacity is the timed fade-in.
             finalRgb = mix(memoryRgb, liveRgb, fogVis);
-            fogAlpha = mix(u_fogMemoryOpacity, 1.0, fogVis);
+            fogAlpha = mix(u_fogMemoryOpacity, 1.0, fogVis) * u_spriteFogAlpha;
         }
 
         // Apply opacity to final alpha channel

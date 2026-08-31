@@ -17,7 +17,7 @@ import {
   setLightUniforms,
 } from './light-uniforms';
 import { getResolvedVisionSources, setVisionUniforms } from './vision-uniforms';
-import { computeSpriteVisibility } from '../../fog-of-war/sweep';
+import { computeSpriteVisibility, fogDrawKind } from '../../fog-of-war/sweep';
 import { isPhantomCoveredBySprite } from '../../fog-of-war/methods';
 import type { ResolvedSource } from '../../fog-of-war/sweep';
 import { computeSolidityMap } from './visibility-mask';
@@ -670,11 +670,14 @@ export function renderSprites(
     // drawn: it has reached zero visibility but its phantom is mid-spawn, and
     // it holds the memory look until the swap so the handover lands on one
     // frame instead of leaving a gap (see SpriteT._fowStatus).
-    if (sprite._fowStatus === 'obscured' && !hasOwnVisionSource) continue;
-    const isMemory = sprite._fowStatus === 'phantom' && !hasOwnVisionSource;
-    // Not yet fully in view -> fades in from transparency rather than
-    // dissolving toward the memory look. See the fog block in unified.frag.
-    const isRevealing = sprite._fowStatus === 'unseen' && !hasOwnVisionSource;
+    // Which shader branch this sprite takes, per fog state. See `fogDrawKind`
+    // -- notably 'obscuring' draws as a MEMORY, because for those frames the
+    // sprite IS the memory (its phantom does not exist yet) and must match the
+    // branch the phantom will take at the swap.
+    const drawKind = fogDrawKind(sprite._fowStatus, hasOwnVisionSource);
+    if (drawKind === 'skip') continue;
+    const isMemory = drawKind === 'memory';
+    const isRevealing = drawKind === 'revealing';
 
     // World position so a sprite under a transformed parent nexus is
     // placed/sorted by its composed world transform. A phantom sprite's own

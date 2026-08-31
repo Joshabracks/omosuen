@@ -11,6 +11,7 @@
 
 import {
   computeSpriteVisibility,
+  fogDrawKind,
   isPositionVisible,
   phantomSupersededBySprite,
   sweepFogOfWar,
@@ -767,6 +768,64 @@ console.log('\nphantom supersession');
       phantomSupersededBySprite(e.sprite, e.transform, at(4, 4)),
     );
   }
+}
+
+// ── Draw routing ───────────────────────────────────────────────────────────
+//
+// Which shader branch each fog state takes. This exists because the branches
+// have DIFFERENT discard thresholds -- the live path discards at zero
+// visibility, the memory path at full -- so routing a state to the wrong one
+// silently draws nothing. That is not visible to a CPU-only suite unless the
+// mapping itself is asserted, which is how 'obscuring' shipped as a no-op:
+// it was routed to the live path, whose discard threshold is exactly where an
+// 'obscuring' sprite sits, so the hold it exists for drew nothing at all.
+
+console.log('\ndraw routing');
+
+{
+  check(
+    "'obscured' is not submitted -- its phantom draws instead",
+    fogDrawKind('obscured', false) === 'skip',
+    `got ${fogDrawKind('obscured', false)}`,
+  );
+  check(
+    "'phantom' draws as memory",
+    fogDrawKind('phantom', false) === 'memory',
+    `got ${fogDrawKind('phantom', false)}`,
+  );
+  check(
+    // THE BUG. 'obscuring' sits at zero visibility, which is precisely the
+    // live branch's discard threshold -- routing it there makes the handover
+    // hold draw nothing, which is the flicker it was added to remove. It must
+    // take the same branch its phantom will, so the swap is invisible.
+    "'obscuring' draws as memory, not as a live sprite",
+    fogDrawKind('obscuring', false) === 'memory',
+    `got ${fogDrawKind('obscuring', false)}`,
+  );
+  check(
+    "'unseen' fades in from transparency",
+    fogDrawKind('unseen', false) === 'revealing',
+    `got ${fogDrawKind('unseen', false)}`,
+  );
+  check(
+    "'visible' dissolves toward the memory look",
+    fogDrawKind('visible', false) === 'dissolving',
+    `got ${fogDrawKind('visible', false)}`,
+  );
+  check(
+    'a sprite with its own vision-source is never hidden or restyled',
+    (['unseen', 'visible', 'obscuring', 'obscured', 'phantom'] as const).every(
+      (s) => fogDrawKind(s, true) === 'dissolving',
+    ),
+  );
+  check(
+    'and no state is ever routed somewhere it would be discarded outright',
+    // memory discards at full visibility, live at zero. A state that only ever
+    // occurs at one of those extremes must not be routed to the branch that
+    // discards there.
+    fogDrawKind('obscuring', false) !== 'dissolving' &&
+      fogDrawKind('obscuring', false) !== 'revealing',
+  );
 }
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

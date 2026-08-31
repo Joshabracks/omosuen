@@ -83,6 +83,52 @@ export function phantomSupersededBySprite(
   );
 }
 
+/**
+ * Which way a sprite should be drawn, given its fog state. Mirrors the branch
+ * structure of unified.frag's sprite path exactly.
+ *
+ * - `'skip'` — not submitted at all.
+ * - `'memory'` — the fog memory look at memory opacity, fading out only as
+ *   vision returns. Discards at FULL visibility.
+ * - `'revealing'` — fades in from transparency in live colours.
+ * - `'dissolving'` — live colours dissolving toward the memory look as
+ *   visibility drops. Discards at ZERO visibility.
+ *
+ * Extracted so the mapping is testable. It was previously inline in
+ * render-sprites, where an `'obscuring'` sprite fell through to
+ * `'dissolving'` — whose discard threshold is exactly where an `'obscuring'`
+ * sprite sits, so it drew nothing and the hold that state exists for was a
+ * no-op. The CPU-only suite could not see that, because the discard lives in
+ * the shader; this function is the seam that makes it visible.
+ */
+export type FogDrawKind = 'skip' | 'memory' | 'revealing' | 'dissolving';
+
+export function fogDrawKind(
+  status: SpriteT['_fowStatus'],
+  hasOwnVisionSource: boolean,
+): FogDrawKind {
+  // A sprite carrying its own vision source always sees itself, so fog never
+  // restyles or hides it (render-time half of the guarantee `sweepFogOfWar`
+  // already makes by never obscuring such a sprite).
+  if (hasOwnVisionSource) return 'dissolving';
+  switch (status) {
+    case 'obscured':
+      // Its phantom draws instead.
+      return 'skip';
+    case 'phantom':
+      return 'memory';
+    case 'obscuring':
+      // No phantom yet -- for these frames this sprite IS the memory, and must
+      // take the same branch the phantom will so the swap is invisible.
+      return 'memory';
+    case 'unseen':
+      // Not yet fully in view.
+      return 'revealing';
+    default:
+      return 'dissolving';
+  }
+}
+
 /** A `visible` -> not-visible transition found by the sweep. */
 export interface ObscuredTransition {
   sprite: SpriteT;

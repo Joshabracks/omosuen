@@ -14,6 +14,7 @@ import {
 } from './light-uniforms';
 import { setVisionUniforms } from './vision-uniforms';
 import { sweepExploredCells } from './explored-sweep';
+import { fogUsesExploredHistory, setFogUniforms } from './fog-uniforms';
 import { computeSolidityMap } from './visibility-mask';
 import { cellStoreGeneration } from './wasm';
 import {
@@ -720,25 +721,6 @@ export function renderCellMaps(
   // Terrain-memory LOD: near tier (per-cell, window-cell resolution) and
   // far tier (per-chunk, chunk-grid resolution) captured material indices,
   // plus the small material-index -> flat-color lookup table both sample.
-  const uFogMemorySaturation = gl.getUniformLocation(
-    program,
-    'u_fogMemorySaturation',
-  );
-  const uFogMemoryOpacity = gl.getUniformLocation(
-    program,
-    'u_fogMemoryOpacity',
-  );
-  const uFogMemoryTint = gl.getUniformLocation(program, 'u_fogMemoryTint');
-  const uFogNeverSaturation = gl.getUniformLocation(
-    program,
-    'u_fogNeverSaturation',
-  );
-  const uFogNeverOpacity = gl.getUniformLocation(program, 'u_fogNeverOpacity');
-  const uFogNeverTint = gl.getUniformLocation(program, 'u_fogNeverTint');
-  const uFogLightInfluence = gl.getUniformLocation(
-    program,
-    'u_fogLightInfluence',
-  );
 
   // Depth-cue uniform locations (AO / cast shadow / height ramp; outline is post-process)
   const uAoWeight = gl.getUniformLocation(program, 'u_aoWeight');
@@ -800,33 +782,10 @@ export function renderCellMaps(
   // apply only when fogActive is false anyway (u_numVisionSources gates
   // that), so falling back to the documented default style here just keeps
   // behavior identical to having a fog-of-war component with default values.
-  const memoryStyle = fogOfWar?.memoryStyle ?? {
-    saturation: 0,
-    opacity: 1,
-    tint: { x: 1, y: 1, z: 1 },
-  };
-  const neverViewedStyle = fogOfWar?.neverViewedStyle ?? {
-    saturation: 0,
-    opacity: 0,
-    tint: { x: 0, y: 0, z: 0 },
-  };
-  gl.uniform1f(uFogMemorySaturation, memoryStyle.saturation);
-  gl.uniform1f(uFogMemoryOpacity, memoryStyle.opacity);
-  gl.uniform3f(
-    uFogMemoryTint,
-    memoryStyle.tint.x,
-    memoryStyle.tint.y,
-    memoryStyle.tint.z,
-  );
-  gl.uniform1f(uFogNeverSaturation, neverViewedStyle.saturation);
-  gl.uniform1f(uFogNeverOpacity, neverViewedStyle.opacity);
-  gl.uniform3f(
-    uFogNeverTint,
-    neverViewedStyle.tint.x,
-    neverViewedStyle.tint.y,
-    neverViewedStyle.tint.z,
-  );
-  gl.uniform1f(uFogLightInfluence, fogOfWar?.lightInfluence ?? 0);
+  // Styles, lightInfluence, memory mode and dropHidden -- shared with the
+  // sprite pass so the two cannot disagree about them (see fog-uniforms.ts).
+  setFogUniforms(gl, camera.id!, fogOfWar);
+  const usesExploredHistory = fogUsesExploredHistory(fogOfWar);
 
   // Set axonometric angle + orbit yaw uniforms (GPU computes cos/sin)
   setAngleUniform(gl, camera.id!, camera.axonometricAngle);
@@ -1213,7 +1172,11 @@ export function renderCellMaps(
       // frame of fog latency (~16ms, imperceptible) and is self-healing: the
       // per-source throttle is only updated when the sweep actually runs, so
       // skipping here leaves the source still "moved" and it sweeps next frame.
-      if (fogActive && !windowJustCommitted) {
+      // Only `memory: 'full'` reads the explored texture, so the other modes
+      // skip the sweep outright rather than maintaining state nothing samples.
+      // That is a real saving, not just tidiness: this is a per-source
+      // flood-fill with a raycast per newly-explored cell.
+      if (usesExploredHistory && fogActive && !windowJustCommitted) {
         sweepExploredCells(
           cellMap,
           visionSources,

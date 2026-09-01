@@ -117,13 +117,6 @@ uniform bool u_fogUseLineOfSight;
 uniform highp vec3 u_visionSourcePos[MAX_VISION_SOURCES];
 uniform float u_visionSourceRadius[MAX_VISION_SOURCES];
 uniform float u_visionSourceFadeWidth[MAX_VISION_SOURCES];
-// Per-source line-of-sight fraction for THIS sprite, 0..1, sampled once at its
-// anchor on the CPU. The expensive half of visibility (eight DDA raycasts)
-// stays one-per-sprite; the cheap half (radial falloff) is recomputed per
-// fragment against v_spriteGroundPos. Kept per SOURCE rather than pre-combined
-// because visibility is max(radial_i * los_i) over sources, which does not
-// factor into (max radial) * (max los). All 1.0 in 'distance' mode.
-uniform float u_spriteLos[MAX_VISION_SOURCES];
 uniform bool u_fogExempt;
 
     // Fog-of-war persistent "explored" state -- one texel per CELL, the same
@@ -136,13 +129,21 @@ uniform highp sampler3D u_exploredTexture; // R8: 0=unexplored, 255=explored
 
     // Fog-of-war style config (fog-of-war component). lightInfluence 0 (the
     // default) means local lighting never affects vision.
-uniform float u_fogMemorySaturation;
-uniform float u_fogMemoryOpacity;
-uniform vec3 u_fogMemoryTint;
-uniform float u_fogNeverSaturation;
-uniform float u_fogNeverOpacity;
-uniform vec3 u_fogNeverTint;
+uniform float u_fogFadedSaturation;
+uniform float u_fogFadedOpacity;
+uniform vec3 u_fogFadedTint;
+uniform float u_fogHiddenSaturation;
+uniform float u_fogHiddenOpacity;
+uniform vec3 u_fogHiddenTint;
 uniform float u_fogLightInfluence;
+// FogOfWarT.memory: true only for 'full'. Picks what selects between the two
+// style tiers -- the persistent explored texture, or the current radial zone.
+// See computeRadialZone.
+uniform bool u_fogUseExplored;
+// FogOfWarT.dropHidden. Discards terrain nothing reaches, before any texture or
+// lighting work. False still discards a fragment that would paint nothing at
+// all, which is a pure no-op optimisation rather than a policy.
+uniform bool u_fogDropHidden;
 
     // Depth cues (cell mode; each weight 0 = off, early-out → free)
 uniform float u_aoWeight;
@@ -528,28 +529,26 @@ float visionSourceVisibility(
     return radial * los;
 }
 
-// A sprite fragment's live visibility: the same max-over-sources as
-// computeVisibility, but with the radial term evaluated at THIS fragment's
-// ground position and the LOS term taken from the CPU's per-sprite sample.
+// How far INTO vision range a point is, ignoring line of sight entirely: 1
+// anywhere inside a source's radius, ramping to 0 across its fadeWidth.
 //
-// Terrain shades per fragment while a sprite used to get one number for its
-// whole quad, so a sprite and the tile under it disagreed about how fogged
-// they were -- most visibly as a sprite at full saturation standing on
-// desaturated ground. Splitting the term this way closes that for the radial
-// half at no raycast cost. Under 'distance' mode every los_i is 1 and this
-// becomes exactly what the terrain path computes, so the two agree completely.
-float computeSpriteFragVisibility(vec3 groundPos) {
-    float visibility = 0.0;
+// This is the style selector under memory 'partial'/'none' (u_fogUseExplored
+// false), and it is what makes those modes need no history: 1 is the faded
+// zone -- in range, whether or not it can actually be seen -- and 0 is the
+// hidden zone. Because radial is already flat at 1 inside the radius, the
+// source's fade band IS the hidden-to-faded transition, so there is no hard
+// step to alias along.
+float computeRadialZone(vec3 worldPos) {
+    float zone = 0.0;
     for(int i = 0; i < MAX_VISION_SOURCES; i++) {
         if(i >= u_numVisionSources) break;
         float radius = u_visionSourceRadius[i];
         float outer = radius + u_visionSourceFadeWidth[i];
-        float dist = distance(groundPos, u_visionSourcePos[i]);
+        float dist = distance(worldPos, u_visionSourcePos[i]);
         if(dist >= outer) continue;
-        float radial = outer > radius ? 1.0 - smoothstep(radius, outer, dist) : 1.0;
-        visibility = max(visibility, radial * u_spriteLos[i]);
+        zone = max(zone, outer > radius ? 1.0 - smoothstep(radius, outer, dist) : 1.0);
     }
-    return visibility;
+    return zone;
 }
 
 // Combined per-fragment live visibility: union (max) over every active
@@ -751,8 +750,19 @@ void main() {
         bool fogActive = !u_fogExempt && u_numVisionSources > 0;
         vec3 fragCellPos = v_origWorldPos / u_cellSize;
         float fogVisibility = fogActive ? computeVisibility(v_origWorldPos, fragCellPos) : 1.0;
-        float fogExplored = fogActive ? exploredAt(fragCellPos) : 1.0;
-        float fogStyleOpacity = fogActive ? mix(u_fogNeverOpacity, u_fogMemoryOpacity, fogExplored) : 1.0;
+        // Which of the two style tiers this fragment sits in, 0 = hidden,
+        // 1 = faded. Memory 'full' answers from history; the other modes answer
+        // from the current radial zone and never touch the explored texture.
+        float fogExplored = fogActive
+            ? (u_fogUseExplored ? exploredAt(fragCellPos) : computeRadialZone(v_origWorldPos))
+            : 1.0;
+        float fogStyleOpacity = fogActive ? mix(u_fogHiddenOpacity, u_fogFadedOpacity, fogExplored) : 1.0;
+        // Two different discards. The second is free correctness -- a fragment
+        // that would paint nothing. The first is dropHidden: terrain no source
+        // reaches goes away even when hiddenStyle would have painted something,
+        // which is the cheap-fog mode (pair it with a viewport background
+        // matching hiddenStyle.tint and the boundary is seamless).
+        if(fogActive && u_fogDropHidden && fogVisibility <= 0.0 && fogExplored <= 0.0) discard;
         if(fogVisibility <= 0.0 && fogStyleOpacity <= 0.0) discard;
 
         vec4 albedo;
@@ -892,7 +902,7 @@ void main() {
         // actually contributing.
         //
         // Both tiers style the SAME base color -- the fully-textured, lit
-        // cellColor -- so `memoryStyle` and `neverViewedStyle` are pure style
+        // cellColor -- so `fadedStyle` and `hiddenStyle` are pure style
         // filters and configuring them identically produces identical output.
         //
         // Remembered terrain used to substitute a flat per-material average
@@ -904,11 +914,11 @@ void main() {
         // nothing left to substitute.
         vec3 fogOutColor = cellColor;
         if(fogActive) {
-            vec3 memoryBase = cellColor;
-            float styleSaturation = mix(u_fogNeverSaturation, u_fogMemorySaturation, fogExplored);
-            vec3 styleTint = mix(u_fogNeverTint, u_fogMemoryTint, fogExplored);
-            float luminance = dot(memoryBase, vec3(0.299, 0.587, 0.114));
-            vec3 styledColor = mix(vec3(luminance), memoryBase, styleSaturation) * styleTint;
+            vec3 fadedBase = cellColor;
+            float styleSaturation = mix(u_fogHiddenSaturation, u_fogFadedSaturation, fogExplored);
+            vec3 styleTint = mix(u_fogHiddenTint, u_fogFadedTint, fogExplored);
+            float luminance = dot(fadedBase, vec3(0.299, 0.587, 0.114));
+            vec3 styledColor = mix(vec3(luminance), fadedBase, styleSaturation) * styleTint;
             vec3 nonLiveColor = mix(vec3(0.0), styledColor, fogStyleOpacity);
             fogOutColor = mix(nonLiveColor, cellColor, fogVisibility);
         }
@@ -946,14 +956,26 @@ void main() {
         // deliberately the pure-geometry term for it to build on.
         float fogVis = 1.0;
         if(u_numVisionSources > 0) {
-            // Radial term per fragment, LOS term per sprite -- see
-            // computeSpriteFragVisibility. u_spriteVisibility is the same value
-            // sampled at the anchor, and is what the DISCARD below still uses.
-            fogVis = computeSpriteFragVisibility(v_spriteGroundPos);
-            if(u_fogLightInfluence > 0.0) {
-                float lightLevel = computeLightLevel(v_spriteGroundPos);
-                fogVis = clamp(fogVis + lightLevel * u_fogLightInfluence * (1.0 - fogVis), 0.0, 1.0);
-            }
+            // EXACTLY what terrain computes, at this fragment's ground point:
+            // radial falloff AND line of sight, per fragment, plus the same
+            // light-influence boost (computeVisibility applies it itself, so it
+            // is not repeated here). A sprite and the ground it covers now
+            // resolve through one function, so they cannot disagree.
+            //
+            // Line of sight used to be sampled ONCE per sprite, at its anchor,
+            // and multiplied in as u_spriteLos. That is all-or-nothing across a
+            // whole sprite: an anchor with a clear sight line kept the sprite
+            // fully lit while the terrain around it was correctly shadowed,
+            // which read as line of sight not affecting sprites at all.
+            //
+            // The reason it was one sample was cost -- eight DDA raycasts per
+            // fragment. Terrain has always paid that per fragment; sprites
+            // cover far less of the frame, and 'distance' mode skips the rays
+            // entirely. The OTHER original reason, that a per-fragment value
+            // would be a second opinion against the CPU sweep, no longer
+            // applies: this drives COLOUR only, and every lifetime decision
+            // still goes through u_spriteVisibility below.
+            fogVis = computeVisibility(v_spriteGroundPos, v_spriteGroundPos / u_cellSize);
             // Both sides are gated on this one number, so there is never a
             // frame with neither the sprite nor its phantom visible -- the bug
             // this replaced.
@@ -1046,7 +1068,17 @@ void main() {
         // so there's no need for the fade-to-black trick the cell path uses).
         vec3 liveRgb = tinted.rgb;
         float luminance = dot(liveRgb, vec3(0.299, 0.587, 0.114));
-        vec3 memoryRgb = mix(vec3(luminance), liveRgb, u_fogMemorySaturation) * u_fogMemoryTint;
+        // Both style tiers, selected exactly as terrain selects them, so a
+        // sprite and the ground under it agree about which zone they are in.
+        // Under memory 'none' this is the ONLY thing fog does to a sprite: it
+        // is never skipped and never replaced by a phantom, just filtered --
+        // faded while in range but unseen, fading to hiddenStyle's opacity (0
+        // by default, so to transparency) as it leaves range altogether.
+        float spriteZone = u_fogUseExplored ? 1.0 : computeRadialZone(v_spriteGroundPos);
+        float styleSaturation = mix(u_fogHiddenSaturation, u_fogFadedSaturation, spriteZone);
+        vec3 styleTint = mix(u_fogHiddenTint, u_fogFadedTint, spriteZone);
+        float styleOpacity = mix(u_fogHiddenOpacity, u_fogFadedOpacity, spriteZone);
+        vec3 fadedRgb = mix(vec3(luminance), liveRgb, styleSaturation) * styleTint;
 
         // Fog COLOUR is a pure function of distance, for every live sprite,
         // entering or leaving alike. At fogVis 0 a sprite is pixel-identical to
@@ -1068,16 +1100,16 @@ void main() {
             // it, or its own dissolve timer when the sprite has moved on -- so
             // a covered pair is complementary from ONE timer rather than two
             // that have to agree.
-            finalRgb = memoryRgb;
-            fogAlpha = u_fogMemoryOpacity * u_spriteFogAlpha;
+            finalRgb = fadedRgb;
+            fogAlpha = styleOpacity * u_spriteFogAlpha;
         } else {
             // A live sprite: colour dissolves toward the memory look as it
             // leaves and back toward live as it returns, purely by distance.
             // At fogVis 0 this is pixel-identical to a phantom of the same
             // frame -- which is exactly what replaces it, so the handover
             // cannot be seen. Opacity is the timed fade-in.
-            finalRgb = mix(memoryRgb, liveRgb, fogVis);
-            fogAlpha = mix(u_fogMemoryOpacity, 1.0, fogVis) * u_spriteFogAlpha;
+            finalRgb = mix(fadedRgb, liveRgb, fogVis);
+            fogAlpha = mix(styleOpacity, 1.0, fogVis) * u_spriteFogAlpha;
         }
 
         // Apply opacity to final alpha channel

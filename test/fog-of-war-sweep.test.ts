@@ -12,7 +12,6 @@
 import {
   advanceFade,
   computeFogVisibility,
-  computeSourceLos,
   fogDiscards,
   fogDrawKind,
   fogFadeStep,
@@ -1067,7 +1066,7 @@ console.log('\ntimed fades');
     aSprite + aPhantom * (1 - aSprite);
   const mix = (a: number, b: number, t: number): number => a + (b - a) * t;
   for (const memOpacity of [1, 0.6]) {
-    // The phantom's draw: memory branch, `u_fogMemoryOpacity * u_spriteFogAlpha`.
+    // The phantom's draw: memory branch, `u_fogFadedOpacity * u_spriteFogAlpha`.
     const aPhantom = memOpacity * phantomAlpha(true, 0);
     let lowest = Infinity;
     // Sweep the sprite's fade-in against every visibility it could be seen at,
@@ -1220,73 +1219,113 @@ console.log('\nvision mode: distance');
   );
 }
 
-console.log('\nper-source LOS split');
+console.log('\nmemory modes and the draw gate');
 {
-  // unified.frag evaluates the RADIAL term per fragment and multiplies it by
-  // this per-source LOS, so `max(radial_i * los_i)` has to reconstruct exactly
-  // what computeFogVisibility folds into one number. If it ever does not, a
-  // sprite's fog stops matching the CPU's own idea of its visibility.
-  const wall = emptyMask();
-  solidAt(wall, 3, 0, 1);
-  solidAt(wall, 3, 0, 2);
+  const STATUSES = [
+    'unseen',
+    'visible',
+    'obscuring',
+    'obscured',
+    'phantom',
+  ] as const;
 
-  // Two sources, deliberately overlapping and with different sight lines: one
-  // near but walled off, one further but clear. This is the case that does NOT
-  // factor into (max radial) * (max los).
-  const srcs = [source(1.5, 0.5, 1.5, 4, 3), source(6.5, 0.5, 6.5, 5, 3)];
-  const los = new Float32Array(8);
-
-  const smooth = (e0: number, e1: number, x: number): number => {
-    const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
-    return t * t * (3 - 2 * t);
-  };
-
-  for (const useLos of [true, false]) {
-    let worst = 0;
-    for (let x = 0; x <= 7.5; x += 0.25) {
-      for (let z = 0; z <= 7.5; z += 0.25) {
-        const p = { x, y: 0.5, z };
-        const combined = computeFogVisibility(
-          p, srcs, wall, CELL_DIMS, WINDOW_ORIGIN, CELL_SIZE, useLos,
-        );
-        computeSourceLos(
-          p, srcs, wall, CELL_DIMS, WINDOW_ORIGIN, CELL_SIZE, useLos, los,
-        );
-        // The shader's loop, in TypeScript.
-        let rebuilt = 0;
-        for (let i = 0; i < srcs.length; i++) {
-          const src = srcs[i];
-          const outer = src.radius + src.fadeWidth;
-          const d = Math.hypot(p.x - src.pos.x, p.y - src.pos.y, p.z - src.pos.z);
-          if (d >= outer) continue;
-          const radial =
-            outer > src.radius ? 1 - smooth(src.radius, outer, d) : 1;
-          rebuilt = Math.max(rebuilt, radial * los[i]);
-        }
-        worst = Math.max(worst, Math.abs(rebuilt - combined));
-      }
-    }
-    check(
-      `radial x per-source LOS rebuilds visibility exactly (${
-        useLos ? 'line-of-sight' : 'distance'
-      })`,
-      worst < 1e-12,
-      `max deviation ${worst}`,
-    );
-  }
-
-  // The specific trap the per-source array exists for: pre-combining into one
-  // scalar would let a near walled-off source lend its radial to a far clear
-  // one. Assert the geometry actually exercises that -- otherwise the sweep
-  // above proves nothing.
-  const trap = { x: 5.5, y: 0.5, z: 1.5 };
-  computeSourceLos(
-    trap, srcs, wall, CELL_DIMS, WINDOW_ORIGIN, CELL_SIZE, true, los,
+  // THE BUG. A scene with vision sources but no fog-of-war component ran no
+  // sweep, so every sprite kept its 'unseen' default -- and 'unseen' is a skip.
+  // Every sprite in the scene vanished. `memory: 'none'` is the same situation
+  // by choice, and both arrive here as fogActive false.
+  // 'phantom' is excluded deliberately -- it is answered ABOVE the fogActive
+  // guard and is checked on its own below. It cannot arise in this mode anyway,
+  // since nothing spawns one without a sweep.
+  const unmanaged = STATUSES.filter(
+    (st) => st !== 'phantom' && fogDrawKind(st, false, true, false) !== 'live',
   );
   check(
-    'the fixture really does have sources disagreeing about line of sight',
-    los[0] !== los[1],
-    `los=[${los[0]}, ${los[1]}]`,
+    'with no fog-of-war component every real sprite still draws live',
+    unmanaged.length === 0,
+    `skipped/restyled: ${unmanaged.join(',') || 'none'}`,
+  );
+
+  // ...including the one that was actually broken, called out on its own so a
+  // regression names itself.
+  check(
+    "an 'unseen' sprite is NOT skipped when nothing is managing memory",
+    fogDrawKind('unseen', false, true, false) === 'live',
+    fogDrawKind('unseen', false, true, false),
+  );
+
+  // A phantom is the single exception, and deliberately so: it is answered
+  // before the fogActive guard, since a phantom is itself trackedByFog false
+  // and would otherwise draw as a live sprite.
+  check(
+    'a phantom still draws as a memory regardless',
+    fogDrawKind('phantom', false, true, false) === 'memory',
+    fogDrawKind('phantom', false, true, false),
+  );
+
+  // The regression guard on today's behaviour: with memory managed, routing is
+  // exactly as it was.
+  const managed = STATUSES.map((st) => `${st}:${fogDrawKind(st, false, true, true)}`);
+  check(
+    "'full'/'partial' routing is unchanged",
+    managed.join(' ') ===
+      'unseen:skip visible:live obscuring:memory obscured:skip phantom:memory',
+    managed.join(' '),
+  );
+}
+
+console.log('\nzone selector');
+{
+  // The radial-only term is what selects hidden vs faded under memory
+  // 'partial'/'none' -- unified.frag's computeRadialZone. Mirrored here off
+  // computeFogVisibility with an empty mask, where LOS is always 1 and the
+  // visibility IS the radial term.
+  const open = emptyMask();
+  const src = [source(4, 0.5, 4, 3, 2)]; // radius 3, fade to 5
+  const zoneAt = (d: number): number =>
+    computeFogVisibility(
+      { x: 4 + d, y: 0.5, z: 4 },
+      src, open, CELL_DIMS, WINDOW_ORIGIN, CELL_SIZE,
+    );
+
+  check('flat at 1 inside the radius', zoneAt(0) === 1 && zoneAt(2.9) === 1);
+  check('zero at and beyond the outer edge', zoneAt(5) === 0 && zoneAt(6) === 0);
+
+  let monotonic = true;
+  let prev = 1;
+  for (let d = 3; d <= 5; d += 0.1) {
+    const z = zoneAt(d);
+    if (z > prev + 1e-12) monotonic = false;
+    prev = z;
+  }
+  check(
+    'and ramps monotonically down across the fade band',
+    monotonic,
+    'the band IS the hidden-to-faded transition, so it must not reverse',
+  );
+
+  // The faded zone: in range, but nothing can see it. Zone 1, visibility 0 --
+  // which is what distinguishes it from the hidden zone, where BOTH are 0.
+  const wall = emptyMask();
+  solidAt(wall, 3, 0, 1);
+  const blocked = { x: 5.5, y: 0.5, z: 1.5 };
+  const near = [source(1.5, 0.5, 1.5, 10, 0)];
+  const zone = computeFogVisibility(
+    blocked, near, emptyMask(), CELL_DIMS, WINDOW_ORIGIN, CELL_SIZE,
+  );
+  const vis = computeFogVisibility(
+    blocked, near, wall, CELL_DIMS, WINDOW_ORIGIN, CELL_SIZE,
+  );
+  check(
+    'in range but out of sight is the faded zone: zone 1, visibility 0',
+    zone === 1 && vis === 0,
+    `zone=${zone} vis=${vis}`,
+  );
+
+  const far = { x: 7.5, y: 0.5, z: 7.5 };
+  const tiny = [source(1.5, 0.5, 1.5, 1, 0)];
+  check(
+    'out of range is the hidden zone: both 0',
+    computeFogVisibility(far, tiny, emptyMask(), CELL_DIMS, WINDOW_ORIGIN, CELL_SIZE) === 0,
   );
 }
 

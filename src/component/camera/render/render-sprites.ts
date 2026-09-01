@@ -16,16 +16,9 @@ import {
   setOrbitYawUniform,
   setLightUniforms,
 } from './light-uniforms';
-import {
-  getResolvedVisionSources,
-  MAX_VISION_SOURCES,
-  setVisionUniforms,
-} from './vision-uniforms';
-import {
-  computeFogVisibility,
-  computeSourceLos,
-  fogDrawKind,
-} from '../../fog-of-war/sweep';
+import { getResolvedVisionSources, setVisionUniforms } from './vision-uniforms';
+import { setFogUniforms } from './fog-uniforms';
+import { computeFogVisibility, fogDrawKind } from '../../fog-of-war/sweep';
 import {
   isPhantomCoveredBySprite,
   phantomFogAlpha,
@@ -262,13 +255,6 @@ function bindMaterialTexture(
  * Renders sprites directly to screen at full resolution (no pixelation).
  * Sprites are depth-sorted against cell-maps using the FBO depth texture.
  */
-/**
- * Reused per-source LOS buffer for `u_spriteLos`. Sized to the shader's
- * MAX_VISION_SOURCES; `gl.uniform1fv` copies synchronously, so one shared
- * buffer per draw is safe (same reasoning as light-uniforms.ts's scratch).
- */
-const spriteLosScratch = new Float32Array(MAX_VISION_SOURCES);
-
 export function renderSprites(
   camera: CameraT,
   viewport: ViewportT,
@@ -353,6 +339,7 @@ export function renderSprites(
   const u_zoom = gl.getUniformLocation(program, 'u_zoom');
   const u_cellSize = gl.getUniformLocation(program, 'u_cellSize');
   const u_windowSize = gl.getUniformLocation(program, 'u_windowSize');
+  const u_windowOrigin = gl.getUniformLocation(program, 'u_windowOrigin');
   const u_windowWrapOffset = gl.getUniformLocation(
     program,
     'u_windowWrapOffset',
@@ -412,7 +399,6 @@ export function renderSprites(
     'u_spriteVisibility',
   );
   const u_spriteFogAlpha = gl.getUniformLocation(program, 'u_spriteFogAlpha');
-  const u_spriteLos = gl.getUniformLocation(program, 'u_spriteLos');
 
   // Set constant uniforms (same for all sprites)
   // Sprites render at full resolution to screen (not via FBO), so they use
@@ -475,6 +461,20 @@ export function renderSprites(
       : 0,
   );
 
+  // Window origin in CELL units, for isRayBlocked's bounds check and
+  // isCellSolid's addressing. Set here for the same reason as u_worldOffset
+  // above and u_windowWrapOffset below: this pass uploads its OWN u_windowSize,
+  // and an origin inherited from the cell pass would be paired with a different
+  // size. A ray whose bounds check fails then reads as OUT OF BOUNDS, which
+  // fails OPEN -- unblocked -- so every sprite would look like line of sight
+  // simply did not apply to it. Matches render-cell-maps.ts's own computation.
+  gl.uniform3f(
+    u_windowOrigin,
+    originCellMap && windowOrigin ? windowOrigin.cx * originCellMap.chunkSize.x : 0,
+    originCellMap && windowOrigin ? windowOrigin.cy * originCellMap.chunkSize.y : 0,
+    originCellMap && windowOrigin ? windowOrigin.cz * originCellMap.chunkSize.z : 0,
+  );
+
   // Toroidal wrap offset for u_cellSolidity lookups (isCellSolid, shared with
   // the cell pass). Set here rather than inherited from renderCellMaps because
   // this pass sets its OWN u_windowSize above, and `windowSlot` takes the
@@ -520,6 +520,17 @@ export function renderSprites(
   // against, so every sprite is treated as fully visible -- matching the
   // pre-existing behaviour of a scene that has sprites but no terrain.
   const fogSources: ResolvedSource[] = [];
+  // THE GATE, and it has to mirror EXACTLY when the sweep runs -- see
+  // `fogDrawKind`. It used to omit both conditions on the fog-of-war component
+  // itself, and that made every sprite in a vision-source-only scene vanish:
+  // nothing advances `_fowStatus` off its `'unseen'` default without
+  // `FogOfWar.update`, and `'unseen'` is a skip.
+  //
+  // `memory: 'none'` is the same situation by choice rather than by omission --
+  // no sweep, so no sprite may be skipped or replaced by a phantom. Fog still
+  // FILTERS those sprites; it just does not remember them.
+  const spriteFogManagesSprites =
+    !!fogOfWar && fogOfWar.memory !== 'none' && visionSources.length > 0;
   const spriteFogActive =
     !!originCellMap && !!windowOrigin && visionSources.length > 0;
   if (spriteFogActive) {
@@ -549,12 +560,6 @@ export function renderSprites(
   // writes to WASM, so the view cannot be detached mid-use.
   const fogMask = fogSources.length > 0 ? computeSolidityMap() : null;
 
-  // Per-source line-of-sight for the sprite being drawn (u_spriteLos). In
-  // 'distance' mode every entry is 1 and stays that way, so it is filled and
-  // uploaded ONCE here rather than per sprite -- that mode's whole point is
-  // that no sprite needs a raycast.
-  spriteLosScratch.fill(1);
-  if (!fogUseLineOfSight) gl.uniform1fv(u_spriteLos, spriteLosScratch);
 
   const fogCellDims = originCellMap?.mapSize;
   const fogCellSize = originCellMap?.cellSize;
@@ -571,7 +576,10 @@ export function renderSprites(
   // renderCellMaps, since a scene with sprites but no cell-maps never runs
   // that pass at all (see the u_cellSolidity pinning comment below for the
   // same "don't rely on the other draw call having run this frame" reasoning).
-  gl.uniform1f(u_fogLightInfluence, fogOfWar?.lightInfluence ?? 0);
+  // Styles, lightInfluence, memory mode and dropHidden. Uploaded HERE and not
+  // left to renderCellMaps: a scene with sprites but no cell-maps never runs
+  // that pass at all, and the sprite path reads both style tiers.
+  setFogUniforms(gl, camera.id!, fogOfWar);
 
   // Set axonometric angle + orbit yaw uniforms (GPU computes cos/sin)
   setAngleUniform(gl, camera.id!, camera.axonometricAngle);
@@ -722,7 +730,7 @@ export function renderSprites(
       sprite._fowStatus,
       hasOwnVisionSource,
       sprite.trackedByFog !== false,
-      spriteFogActive,
+      spriteFogManagesSprites,
     );
     if (drawKind === 'skip') continue;
     const isMemory = drawKind === 'memory';
@@ -825,7 +833,7 @@ export function renderSprites(
     //
     // A COVERED phantom is fed 0 regardless. In the memory branch `fogVis`
     // drives nothing but the `u_spriteFogMemory && fogVis >= 1.0` discard
-    // (colour there is `memoryRgb` unconditionally), and a covered phantom must
+    // (colour there is `fadedRgb` unconditionally), and a covered phantom must
     // keep drawing until the sprite over it is fully opaque -- it is that
     // sprite's opaque backdrop. Without this it is discarded the moment its spot
     // reaches full vision, which on a fast approach is long before the fade-in
@@ -857,24 +865,6 @@ export function renderSprites(
         fogCellSize,
         fogUseLineOfSight,
       );
-      // The same geometry the line above folded into one number, kept split so
-      // the shader can re-evaluate the radial half across this sprite's quad
-      // while the raycast half stays sampled once, here, at its anchor. That
-      // is what lets a sprite's fog match the tile under it -- see
-      // computeSpriteFragVisibility in unified.frag.
-      if (fogUseLineOfSight) {
-        computeSourceLos(
-          spriteTransform.worldPosition,
-          fogSources,
-          fogMask,
-          fogCellDims,
-          fogWindowOriginLocalCell,
-          fogCellSize,
-          true,
-          spriteLosScratch,
-        );
-        gl.uniform1fv(u_spriteLos, spriteLosScratch);
-      }
     }
     gl.uniform1f(u_spriteVisibility, spriteVis);
 

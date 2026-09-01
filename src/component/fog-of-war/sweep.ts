@@ -178,9 +178,14 @@ export function fogDrawKind(
   // The other two guards are what keep the `'unseen'` skip below from blanking
   // the screen. A `trackedByFog: false` sprite is skipped by the sweep and so
   // stays `'unseen'` forever; so does EVERY sprite in a scene with no fog-of-war
-  // component or no enabled vision source. `fogActive` mirrors the conditions
-  // under which `FogOfWar.update` bails without sweeping at all, so the renderer
-  // and the sweep agree on when fog governs anything.
+  // component, no enabled vision source, or `memory: 'none'`.
+  //
+  // `fogActive` must mirror EXACTLY the conditions under which the sweep does
+  // not run. It did not, and that was a real bug: it was
+  // `cellMap && window && visionSources.length > 0`, which says nothing about
+  // whether a fog-of-war component exists -- and without one nothing ever
+  // advances `_fowStatus` off `'unseen'`, so every tracked sprite in the scene
+  // was skipped forever. Vision sources alone made sprites disappear.
   if (hasOwnVisionSource || !trackedByFog || !fogActive) return 'live';
   switch (status) {
     case 'unseen':
@@ -431,74 +436,6 @@ export function computeFogVisibility(
     if (best >= 1) break;
   }
   return best;
-}
-
-/**
- * Per-source line-of-sight fraction at a world point, written into `out`.
- *
- * The half of `computeFogVisibility` that costs raycasts, split out so the
- * renderer can hand it to the shader and let the CHEAP half -- the radial
- * falloff -- be recomputed per fragment against the sprite's own quad
- * (`u_spriteLos`, and `computeSpriteFragVisibility` in unified.frag).
- *
- * Kept per source rather than pre-combined because visibility is
- * `max(radial_i * los_i)` over sources, and that does not factor into
- * `max(radial) * max(los)` -- a near source with no sight line and a far one
- * with a clear one would otherwise read as fully visible.
- *
- * Entries past `sources.length` are left alone; a source whose falloff does not
- * reach `pos` gets 0, which the shader never reads (it rejects on distance
- * first) but which keeps a stale value from leaking in if that ever changes.
- */
-export function computeSourceLos(
-  pos: { x: number; y: number; z: number },
-  sources: ResolvedSource[],
-  mask: Uint8Array,
-  cellDims: { x: number; y: number; z: number },
-  windowOriginLocalCell: { x: number; y: number; z: number },
-  cellSize: { x: number; y: number; z: number },
-  useLineOfSight: boolean,
-  out: Float32Array,
-): void {
-  const localCellX = pos.x / cellSize.x - windowOriginLocalCell.x;
-  const localCellY = pos.y / cellSize.y - windowOriginLocalCell.y;
-  const localCellZ = pos.z / cellSize.z - windowOriginLocalCell.z;
-
-  for (let s = 0; s < sources.length && s < out.length; s++) {
-    const source = sources[s];
-
-    if (!useLineOfSight) {
-      out[s] = 1;
-      continue;
-    }
-
-    const dx = pos.x - source.pos.x;
-    const dy = pos.y - source.pos.y;
-    const dz = pos.z - source.pos.z;
-    if (dx * dx + dy * dy + dz * dz >= source.outerSq) {
-      out[s] = 0;
-      continue;
-    }
-
-    let hits = 0;
-    for (let i = 0; i < VISION_SCATTER_SAMPLES; i++) {
-      if (
-        !isRayBlockedTS(
-          mask,
-          cellDims,
-          source.localCell.x + scatterOffsetX[i],
-          source.localCell.y,
-          source.localCell.z + scatterOffsetZ[i],
-          localCellX,
-          localCellY,
-          localCellZ,
-        )
-      ) {
-        hits++;
-      }
-    }
-    out[s] = hits / VISION_SCATTER_SAMPLES;
-  }
 }
 
 /**

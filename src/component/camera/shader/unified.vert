@@ -174,19 +174,33 @@ void main() {
         // Scale by size and zoom
         vec2 scaledVertex = rotated * u_spriteSize * u_zoom;
 
-        // Fog sample point for THIS vertex: the anchor, slid along the ground
-        // by the vertex's horizontal offset from it. Inverting the projection
-        // for x only -- a world step of d along (cosYaw, 0, sinYaw) moves
-        // isoProjected.x by exactly d * ISO_H (isoX/isoZ above), and ISO_H is a
-        // nonzero constant, so there is no degenerate camera angle here.
+        // Fog sample point for THIS vertex: the quad's screen offset from the
+        // anchor, projected back onto the GROUND PLANE, so a sprite is fogged
+        // like the terrain it visually covers.
         //
-        // Y deliberately stays at the anchor. Recovering a world height from
-        // the quad's VERTICAL extent needs a divide by heightScale, which goes
-        // to zero at a top-down angle (see the depth note below), and matching
-        // the tile a sprite stands on is the point: a tall sprite should fog
-        // like the ground it is standing on, not like the air at its canopy.
-        v_spriteGroundPos = u_spritePosition
-            + ((rotated.x * u_spriteSize.x) / ISO_H) * vec3(cosYaw, 0.0, sinYaw);
+        // Both screen axes, not just x. Solving only for x left a sprite with a
+        // left-to-right gradient and none at all up the screen, which reads as
+        // fog "only applying horizontally" -- most obvious on anything tall.
+        //
+        // The projection above sends a ground move to
+        //   drx -> ( ISO_H,  sinA)      drz -> (-ISO_H,  sinA)
+        // so inverting the pair gives the two halves below. ISO_H is a nonzero
+        // constant; sinA goes to zero only at a fully side-on camera, where the
+        // ground plane is edge-on and no decomposition exists at all -- clamped
+        // rather than guarded, since the alternative is a division by zero
+        // reaching gl_Position through nothing but a shared varying.
+        //
+        // A tall sprite's canopy therefore samples ground some way BEHIND its
+        // feet, which is the terrain that pixel is actually drawn over -- the
+        // point being to agree with it.
+        float fogOffX = (rotated.x * u_spriteSize.x) / ISO_H;
+        float fogOffY = (rotated.y * u_spriteSize.y) / max(sinA, 0.05);
+        float fogRx = (fogOffX + fogOffY) * 0.5;
+        float fogRz = (fogOffY - fogOffX) * 0.5;
+        v_spriteGroundPos = u_spritePosition + vec3(
+            fogRx * cosYaw - fogRz * sinYaw,
+            0.0,
+            fogRx * sinYaw + fogRz * cosYaw);
 
         // Convert to view space; the anchor pixel sits at the sprite's transform position
         vec2 viewPos = (isoProjected - u_cameraPosition) * u_zoom + scaledVertex;

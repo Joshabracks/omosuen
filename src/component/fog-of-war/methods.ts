@@ -652,7 +652,7 @@ export const FogOfWar: FogOfWarMethods = {
    * not currently visible.
    */
   getMemoryStyle: (fow: FogOfWarT): FogOfWarStyle => {
-    return fow.memoryStyle;
+    return fow.fadedStyle;
   },
 
   /**
@@ -660,21 +660,21 @@ export const FogOfWar: FogOfWarMethods = {
    * not currently visible.
    */
   setMemoryStyle: (fow: FogOfWarT, style: FogOfWarStyle): void => {
-    fow.memoryStyle = style;
+    fow.fadedStyle = style;
   },
 
   /**
    * Gets the style applied to cells that have never been visible.
    */
   getNeverViewedStyle: (fow: FogOfWarT): FogOfWarStyle => {
-    return fow.neverViewedStyle;
+    return fow.hiddenStyle;
   },
 
   /**
    * Sets the style applied to cells that have never been visible.
    */
   setNeverViewedStyle: (fow: FogOfWarT, style: FogOfWarStyle): void => {
-    fow.neverViewedStyle = style;
+    fow.hiddenStyle = style;
   },
 
   /**
@@ -738,7 +738,26 @@ export const FogOfWar: FogOfWarMethods = {
     // One switch drives the sweep, the observation predicate and the shader
     // alike (see FogOfWarT.visionMode). Reading it per frame rather than
     // caching it keeps a mid-session change live.
-    const useLineOfSight = (component as FogOfWarT).visionMode !== 'distance';
+    const fow = component as FogOfWarT;
+    const useLineOfSight = fow.visionMode !== 'distance';
+
+    // `memory: 'none'` keeps no history at all, so there is nothing here to
+    // run: no sweep, no `_fowStatus` transitions, no phantoms. Fog still
+    // FILTERS sprites -- that is entirely the shader's doing, off the same
+    // vision-source uniforms -- it just does not remember them.
+    //
+    // Bailing BEFORE the predicate install matters: a deferred terrain write
+    // would otherwise wait on an observation answer nothing in this mode is
+    // maintaining. `render-sprites.ts`'s `spriteFogManagesSprites` mirrors this
+    // exact condition, and the two must stay in step -- a renderer that skips
+    // `'unseen'` sprites while nothing advances them off `'unseen'` is what
+    // made every sprite in a vision-source-only scene disappear.
+    if (fow.memory === 'none') {
+      setCellObservationPredicate(null);
+      observationContext = null;
+      return;
+    }
+
     // Installed here rather than at module load so a scene with no
     // fog-of-war component never defers terrain writes. Idempotent, and
     // cleared in `dispose` below.

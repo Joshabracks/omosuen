@@ -16,6 +16,15 @@ import type { FogOfWarMethods } from './methods';
 export type FogVisionMode = 'line-of-sight' | 'distance';
 
 /**
+ * How much history fog-of-war keeps. See `FogOfWarT.memory`.
+ *
+ * A scene with vision sources but NO fog-of-war component behaves as `'none'`
+ * with default styles -- that is what the component's absence means, rather
+ * than a special case bolted on beside it.
+ */
+export type FogMemoryMode = 'full' | 'partial' | 'none';
+
+/**
  * Fog-of-war component for scene-wide vision memory styling.
  * Uses GLOBAL uniqueness - only one fog-of-war allowed per scene hierarchy.
  *
@@ -37,11 +46,49 @@ export interface FogOfWarT
   type: 'fog-of-war';
   unique: ComponentUnique.GLOBAL;
 
-  /** Style applied to cells that have been seen before but are not currently visible. */
-  memoryStyle: FogOfWarStyle;
+  /**
+   * Style for what is known but not currently seen -- remembered ground under
+   * `memory: 'full'`, or simply "in range, out of sight" under the other modes.
+   */
+  fadedStyle: FogOfWarStyle;
 
-  /** Style applied to cells that have never been visible. */
-  neverViewedStyle: FogOfWarStyle;
+  /** Style for what is not known at all: out of range, or never seen. */
+  hiddenStyle: FogOfWarStyle;
+
+  /**
+   * How much history is kept, and therefore what selects between the two
+   * styles above.
+   *
+   * - `'full'` (the default): the persistent explored texture decides. Ground
+   *   you have visited stays `fadedStyle` however far away you walk, and
+   *   sprites get the whole memory system -- phantoms left where something was
+   *   last seen, and a never-seen sprite drawn not at all.
+   * - `'partial'`: no history. The zones are pure current geometry -- outside a
+   *   source's range is `hiddenStyle`, in range but out of sight is
+   *   `fadedStyle` -- but sprites still get memory, so something that walks
+   *   behind a wall inside the radius leaves a phantom.
+   * - `'none'`: the same zones, and no sprite memory at all. Sprites are only
+   *   ever FILTERED, never hidden or replaced: one in the faded zone keeps
+   *   behaving normally with the faded look on it, and fades to transparency as
+   *   it crosses into the hidden zone. Vision sources as a pure render filter.
+   *
+   * `'partial'` and `'none'` never read the explored texture, so its per-frame
+   * sweep is skipped outright in those modes.
+   */
+  memory: FogMemoryMode;
+
+  /**
+   * Whether fully hidden terrain is skipped instead of drawn, default `true`.
+   *
+   * A fragment that no source reaches discards before any texture or lighting
+   * work, so this is close to free. Set the viewport background to
+   * `hiddenStyle.tint` and the boundary is seamless.
+   *
+   * `false` draws it in `hiddenStyle` instead -- which at the default
+   * `opacity: 0` means solid black, useful for seeing where geometry actually
+   * is while tuning.
+   */
+  dropHidden: boolean;
 
   /** How much active light sources influence memory/never-viewed cells, 0-1. */
   lightInfluence: number;
@@ -105,8 +152,10 @@ export interface FogOfWarT
 }
 
 export interface FogOfWarOptions extends ComponentOptions {
-  memoryStyle?: FogOfWarStyle;
-  neverViewedStyle?: FogOfWarStyle;
+  fadedStyle?: FogOfWarStyle;
+  hiddenStyle?: FogOfWarStyle;
+  memory?: FogMemoryMode;
+  dropHidden?: boolean;
   lightInfluence?: number;
   visionMode?: FogVisionMode;
   exploreRequiresLineOfSight?: boolean;
@@ -140,16 +189,18 @@ export function builder(options: FogOfWarOptions): FogOfWarT {
     parent: null,
     _disposed: false,
 
-    memoryStyle: options.memoryStyle ?? {
+    fadedStyle: options.fadedStyle ?? {
       saturation: 0,
       opacity: 1,
       tint: new Vector3D(1, 1, 1),
     },
-    neverViewedStyle: options.neverViewedStyle ?? {
+    hiddenStyle: options.hiddenStyle ?? {
       saturation: 0,
       opacity: 0,
       tint: new Vector3D(0, 0, 0),
     },
+    memory: options.memory ?? 'full',
+    dropHidden: options.dropHidden ?? true,
     lightInfluence: options.lightInfluence ?? 0,
     visionMode: options.visionMode ?? 'line-of-sight',
     exploreRequiresLineOfSight: options.exploreRequiresLineOfSight ?? true,
@@ -188,8 +239,10 @@ function serialize(component: ComponentData): any {
     type: 'fog-of-war',
     name: fow.name,
     unique: ComponentUnique.GLOBAL,
-    memoryStyle: serializeStyle(fow.memoryStyle),
-    neverViewedStyle: serializeStyle(fow.neverViewedStyle),
+    fadedStyle: serializeStyle(fow.fadedStyle),
+    hiddenStyle: serializeStyle(fow.hiddenStyle),
+    memory: fow.memory,
+    dropHidden: fow.dropHidden,
     lightInfluence: fow.lightInfluence,
     visionMode: fow.visionMode,
     exploreRequiresLineOfSight: fow.exploreRequiresLineOfSight,
@@ -239,12 +292,12 @@ function deserialize(data: any): DeserializeResult<FogOfWarT> {
 
   const componentName = name as string;
 
-  const defaultMemoryStyle: FogOfWarStyle = {
+  const defaultFadedStyle: FogOfWarStyle = {
     saturation: 0,
     opacity: 1,
     tint: new Vector3D(1, 1, 1),
   };
-  const defaultNeverViewedStyle: FogOfWarStyle = {
+  const defaultHiddenStyle: FogOfWarStyle = {
     saturation: 0,
     opacity: 0,
     tint: new Vector3D(0, 0, 0),
@@ -306,23 +359,30 @@ function deserialize(data: any): DeserializeResult<FogOfWarT> {
     };
   };
 
-  const memoryStyle = parseStyle(
-    data.memoryStyle,
-    'memoryStyle',
-    defaultMemoryStyle,
-  );
-  const neverViewedStyle = parseStyle(
-    data.neverViewedStyle,
-    'neverViewedStyle',
-    defaultNeverViewedStyle,
+  const fadedStyle = parseStyle(data.fadedStyle, 'fadedStyle', defaultFadedStyle);
+  const hiddenStyle = parseStyle(
+    data.hiddenStyle,
+    'hiddenStyle',
+    defaultHiddenStyle,
   );
 
   return {
     component: builder({
       name: componentName,
-      memoryStyle,
-      neverViewedStyle,
+      fadedStyle,
+      hiddenStyle,
       lightInfluence: data.lightInfluence as number,
+      // Unrecognised values fall back to the default rather than erroring: an
+      // unknown mode is a forward-compatibility case (a scene written by a
+      // newer build), and defaulting keeps the scene loadable.
+      memory:
+        data.memory === 'partial' || data.memory === 'none'
+          ? data.memory
+          : undefined,
+      dropHidden:
+        typeof data.dropHidden === 'boolean'
+          ? (data.dropHidden as boolean)
+          : undefined,
       // Anything unrecognised falls back to the default rather than being
       // reported: an unknown mode is a forward-compatibility case (a scene
       // saved by a newer build), and defaulting keeps the scene loadable.
@@ -348,8 +408,10 @@ export const FogOfWarSerializer: ComponentSerializer = {
  * These properties can be accessed directly without triggering method lookup.
  */
 export const PROPERTY_ALLOWLIST: string[] = [
-  'memoryStyle',
-  'neverViewedStyle',
+  'fadedStyle',
+  'hiddenStyle',
+  'memory',
+  'dropHidden',
   'lightInfluence',
   'visionMode',
   'exploreRequiresLineOfSight',

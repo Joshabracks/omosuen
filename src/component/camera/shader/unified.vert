@@ -42,6 +42,12 @@ out vec3 v_worldPos;
 out vec2 v_screenPos;
 out vec3 v_worldNormal;
 out vec3 v_origWorldPos;
+// The GROUND point under this vertex, for the sprite fog block in
+// unified.frag. Unlike v_origWorldPos (pinned to the anchor in sprite mode)
+// this varies across the quad, so a sprite's fog is sampled where the tiles
+// under its footprint are sampled instead of at one point. Cell mode writes
+// the fragment position and never reads it back.
+out vec3 v_spriteGroundPos;
 out float v_emission;
 flat out vec3 v_trueFaceDir;
 
@@ -131,6 +137,7 @@ void main() {
         // shader's reveal/AO/shadow sampling depends on this being real
         // world-space.
         v_origWorldPos = a_origPosition;
+        v_spriteGroundPos = a_origPosition;
         v_emission = a_emission;
         v_trueFaceDir = a_trueFaceDir;
 
@@ -166,6 +173,20 @@ void main() {
 
         // Scale by size and zoom
         vec2 scaledVertex = rotated * u_spriteSize * u_zoom;
+
+        // Fog sample point for THIS vertex: the anchor, slid along the ground
+        // by the vertex's horizontal offset from it. Inverting the projection
+        // for x only -- a world step of d along (cosYaw, 0, sinYaw) moves
+        // isoProjected.x by exactly d * ISO_H (isoX/isoZ above), and ISO_H is a
+        // nonzero constant, so there is no degenerate camera angle here.
+        //
+        // Y deliberately stays at the anchor. Recovering a world height from
+        // the quad's VERTICAL extent needs a divide by heightScale, which goes
+        // to zero at a top-down angle (see the depth note below), and matching
+        // the tile a sprite stands on is the point: a tall sprite should fog
+        // like the ground it is standing on, not like the air at its canopy.
+        v_spriteGroundPos = u_spritePosition
+            + ((rotated.x * u_spriteSize.x) / ISO_H) * vec3(cosYaw, 0.0, sinYaw);
 
         // Convert to view space; the anchor pixel sits at the sprite's transform position
         vec2 viewPos = (isoProjected - u_cameraPosition) * u_zoom + scaledVertex;

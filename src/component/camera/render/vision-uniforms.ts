@@ -9,6 +9,7 @@ export const MAX_VISION_SOURCES = 8;
 
 // Vision-source uniform location caches — keyed by camera component ID
 const _numVisionSources = new Map<number, WebGLUniformLocation | null>();
+const _fogUseLineOfSight = new Map<number, WebGLUniformLocation | null>();
 const _visionSourcePos = new Map<number, (WebGLUniformLocation | null)[]>();
 const _visionSourceRadius = new Map<number, (WebGLUniformLocation | null)[]>();
 const _visionSourceFadeWidth = new Map<
@@ -31,6 +32,10 @@ export function cacheVisionUniformLocations(
   _numVisionSources.set(
     cameraId,
     gl.getUniformLocation(program, 'u_numVisionSources'),
+  );
+  _fogUseLineOfSight.set(
+    cameraId,
+    gl.getUniformLocation(program, 'u_fogUseLineOfSight'),
   );
 
   const pos: (WebGLUniformLocation | null)[] = [];
@@ -68,6 +73,7 @@ export function getResolvedVisionSources(): readonly {
 
 export function clearVisionUniformCache(cameraId: number): void {
   _numVisionSources.delete(cameraId);
+  _fogUseLineOfSight.delete(cameraId);
   _visionSourcePos.delete(cameraId);
   _visionSourceRadius.delete(cameraId);
   _visionSourceFadeWidth.delete(cameraId);
@@ -81,11 +87,15 @@ export function clearVisionUniformCache(cameraId: number): void {
  * — callers should treat that as "nothing is currently in view" (no implicit
  * always-visible fallback, unlike the old default-directional-light behavior
  * for lighting).
+ *
+ * `useLineOfSight` is `FogOfWarT.visionMode`, uploaded here so it always
+ * travels with the source data it applies to.
  */
 export function setVisionUniforms(
   gl: WebGL2RenderingContext,
   cameraId: number,
   visionSources: VisionSourceT[],
+  useLineOfSight = true,
 ): void {
   _sourcesArr.length = 0;
   for (const source of visionSources) {
@@ -108,6 +118,13 @@ export function setVisionUniforms(
 
   const num = Math.min(_sourcesArr.length, MAX_VISION_SOURCES);
   gl.uniform1i(locNum, num);
+  // Uploaded here rather than beside the style uniforms so it cannot get out
+  // of step with the source arrays it modifies -- both programs reach the
+  // shader's vision block through this one call.
+  gl.uniform1i(
+    _fogUseLineOfSight.get(cameraId) ?? null,
+    useLineOfSight ? 1 : 0,
+  );
   for (let i = 0; i < num; i++) {
     const { source, pos } = _sourcesArr[i];
     scratchVec3[0] = pos.x;

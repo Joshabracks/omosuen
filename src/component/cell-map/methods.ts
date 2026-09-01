@@ -106,42 +106,6 @@ function assertFiniteCoordinates(x: number, y: number, z: number): void {
 }
 
 /**
- * Resolves a WORLD chunk coordinate to the resident window's local chunk-grid
- * coordinate, or `null` if the window hasn't committed a focus yet
- * (`component.window.origin === null`) or the chunk currently falls outside
- * the resident window -- mirroring `CellWindow.worldToLocal`'s CELL-level
- * local lookup (used by `setEmissionColor`/`getEmissionColor`), but at chunk
- * granularity: there is no chunk-level `worldToLocal` helper on
- * `CellWindow` itself, so it's computed inline here from
- * `component.window.origin` and `component.chunkGridSize` (the window's
- * size in chunks).
- */
-function chunkLocalCoords(
-  component: CellMapT,
-  worldCx: number,
-  worldCy: number,
-  worldCz: number,
-): { x: number; y: number; z: number } | null {
-  const origin = component.window.origin;
-  if (!origin) return null;
-  const lx = worldCx - origin.cx;
-  const ly = worldCy - origin.cy;
-  const lz = worldCz - origin.cz;
-  const dims = component.chunkGridSize;
-  if (
-    lx < 0 ||
-    lx >= dims.x ||
-    ly < 0 ||
-    ly >= dims.y ||
-    lz < 0 ||
-    lz >= dims.z
-  ) {
-    return null;
-  }
-  return { x: lx, y: ly, z: lz };
-}
-
-/**
  * Cap on the retained per-cell emission-color dirty log; on overflow the log
  * is cleared and `emissionColorFullVersion` is bumped, forcing one full
  * `texImage3D` reupload for any straggler camera instead of growing the log
@@ -163,6 +127,21 @@ const CELL_EMISSION_COLOR_DIRTY_CAP = 2048;
  * this cap is comparatively even more generous in practice.
  */
 const CELL_EXPLORED_DIRTY_CAP = 2048;
+
+/**
+ * How far back through the explored dirty log `setCellExplored` looks for an
+ * entry naming the chunk it is about to log again.
+ *
+ * One vision sweep writes thousands of cells spread over only a handful of
+ * chunks, and the log is per chunk -- without this each of those cells would
+ * push its own duplicate entry. A vision sphere cannot touch more than about
+ * 27 chunks even when its radius exceeds a chunk, so scanning a little past
+ * that catches every repeat within a sweep. A repeat older than the tail is
+ * not a correctness problem, just one redundant chunk upload: the uploader
+ * reads the live buffer, so a second entry for the same chunk merely re-sends
+ * what is already there.
+ */
+const EXPLORED_DIRTY_TAIL_SCAN = 32;
 
 export interface CellMapMethods extends ComponentMethods {
   type: 'cell-map';
@@ -230,30 +209,34 @@ export interface CellMapMethods extends ComponentMethods {
   getEmissionColor: (component: CellMapT, coordinates: Vector3D) => Vector3D;
 
   /**
-   * Marks a chunk as explored for fog-of-war purposes (idempotent -- a
-   * no-op if the chunk is already explored, so repeated per-frame vision
-   * updates don't flood the dirty log). `worldCx`/`worldCy`/`worldCz` are
-   * WORLD CHUNK coordinates (not cell coordinates, and not window-local) --
-   * an off-window chunk is fully supported, persisted via the explored
-   * channel's own cold storage, and survives a window shift or save/load,
-   * the same as `setEmissionColor`'s off-window support for cells.
+   * Marks a cell as explored for fog-of-war purposes (idempotent -- a no-op
+   * if the cell is already explored, so repeated per-frame vision updates
+   * don't flood the dirty log). `worldX`/`worldY`/`worldZ` are WORLD CELL
+   * coordinates (not window-local) -- an off-window cell is fully supported,
+   * persisted via the explored channel's own cold storage, and survives a
+   * window shift or save/load, the same as `setEmissionColor`.
+   *
+   * Off-window support is load-bearing here, not incidental: vision sources
+   * routinely range over terrain that is in range but not yet resident, and
+   * that ground has to come back remembered rather than black when the window
+   * catches up.
    */
-  setChunkExplored: (
+  setCellExplored: (
     component: CellMapT,
-    worldCx: number,
-    worldCy: number,
-    worldCz: number,
+    worldX: number,
+    worldY: number,
+    worldZ: number,
   ) => void;
 
   /**
-   * Whether the given WORLD CHUNK coordinate has ever been explored (see
-   * `setChunkExplored`).
+   * Whether the given WORLD CELL coordinate has ever been explored (see
+   * `setCellExplored`).
    */
-  isChunkExplored: (
+  isCellExplored: (
     component: CellMapT,
-    worldCx: number,
-    worldCy: number,
-    worldCz: number,
+    worldX: number,
+    worldY: number,
+    worldZ: number,
   ) => boolean;
 
   /**
@@ -632,46 +615,79 @@ export const CellMap: CellMapMethods = {
     );
   },
 
-  setChunkExplored: (
+  setCellExplored: (
     component: CellMapT,
-    worldCx: number,
-    worldCy: number,
-    worldCz: number,
+    worldX: number,
+    worldY: number,
+    worldZ: number,
   ): void => {
-    assertFiniteCoordinates(worldCx, worldCy, worldCz);
-    const local = chunkLocalCoords(component, worldCx, worldCy, worldCz);
+    assertFiniteCoordinates(worldX, worldY, worldZ);
+    const local = component.window.worldToLocal(worldX, worldY, worldZ);
     // Idempotent no-op once already explored -- avoids flooding the dirty
     // log on repeated per-frame vision updates over already-explored ground.
-    if (cmExploredChannel!.get(worldCx, worldCy, worldCz, local) === 1) {
+    // Callers do this check themselves too (see `sweepExploredCells`), so the
+    // hot path usually never reaches here at all.
+    if (cmExploredChannel!.get(worldX, worldY, worldZ, local) === 1) {
       return;
     }
-    cmExploredChannel!.set(worldCx, worldCy, worldCz, local, 1);
-    if (local) {
-      component.exploredMap.set(new Vector3D(local.x, local.y, local.z), 1);
-      component.exploredVersion = component.exploredVersion + 1;
-      const version = component.exploredVersion;
-      component.exploredDirtyRegions.push({
-        version,
-        x: local.x,
-        y: local.y,
-        z: local.z,
-      });
-      if (component.exploredDirtyRegions.length > CELL_EXPLORED_DIRTY_CAP) {
-        component.exploredDirtyRegions = [];
-        component.exploredFullVersion = version;
+    cmExploredChannel!.set(worldX, worldY, worldZ, local, 1);
+    if (!local) return;
+    // No separate `exploredMap.set`: the map is an `Array3Du32` adopting the
+    // channel's own buffer, so the write above already stored the value --
+    // and writing through the map would be WRONG, since its indexing is plain
+    // window-local while the buffer is toroidally addressed. Same reasoning as
+    // `setEmissionColor`.
+    component.exploredVersion = component.exploredVersion + 1;
+    const version = component.exploredVersion;
+
+    // Log the CHUNK this cell falls in, in slot space, not the cell itself --
+    // see `cmExploredDirtyRegions` for why the log is coarser than the data.
+    const s = cmExploredChannel!.slotCoords(local);
+    const chunkSize = component.chunkSize;
+    const cx = Math.floor(s.x / chunkSize.x);
+    const cy = Math.floor(s.y / chunkSize.y);
+    const cz = Math.floor(s.z / chunkSize.z);
+
+    // Collapse a sweep's thousands of cell writes into one entry per chunk by
+    // checking the tail of the log. A vision sphere spans only a handful of
+    // chunks, so a short scan catches essentially every repeat; anything older
+    // than the tail simply gets a second entry, which is harmless (the uploader
+    // re-reads the live buffer, so a duplicate just re-sends the same chunk).
+    //
+    // On a hit the existing entry is RE-VERSIONED, never skipped. Skipping is
+    // what made explored state stop reaching the GPU entirely: `exploredVersion`
+    // bumps on every cell, so an entry left at its original version quickly
+    // falls below every camera's own recorded version, and the delta pass --
+    // which only replays entries NEWER than that -- silently stopped uploading
+    // the chunk. Nothing recovered until a window commit forced a full
+    // reupload, which is why remembered ground only appeared after panning far
+    // enough to cross a chunk boundary. The entry must always name the newest
+    // write to its chunk.
+    const regions = component.exploredDirtyRegions;
+    const tailStart = Math.max(0, regions.length - EXPLORED_DIRTY_TAIL_SCAN);
+    for (let i = regions.length - 1; i >= tailStart; i--) {
+      const r = regions[i];
+      if (r.x === cx && r.y === cy && r.z === cz) {
+        r.version = version;
+        return;
       }
+    }
+    regions.push({ version, x: cx, y: cy, z: cz });
+    if (regions.length > CELL_EXPLORED_DIRTY_CAP) {
+      component.exploredDirtyRegions = [];
+      component.exploredFullVersion = version;
     }
   },
 
-  isChunkExplored: (
+  isCellExplored: (
     component: CellMapT,
-    worldCx: number,
-    worldCy: number,
-    worldCz: number,
+    worldX: number,
+    worldY: number,
+    worldZ: number,
   ): boolean => {
-    assertFiniteCoordinates(worldCx, worldCy, worldCz);
-    const local = chunkLocalCoords(component, worldCx, worldCy, worldCz);
-    return cmExploredChannel!.get(worldCx, worldCy, worldCz, local) === 1;
+    assertFiniteCoordinates(worldX, worldY, worldZ);
+    const local = component.window.worldToLocal(worldX, worldY, worldZ);
+    return cmExploredChannel!.get(worldX, worldY, worldZ, local) === 1;
   },
 
   setVisible: (

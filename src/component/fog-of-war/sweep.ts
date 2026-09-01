@@ -27,7 +27,7 @@ export interface ResolvedSource {
    * `pos` expressed in window-local cell space -- the form `isRayBlockedTS`
    * actually wants. Depends only on the source, so it's computed once per
    * frame rather than re-derived per (sprite x source) inside
-   * `isPositionVisible`.
+   * `isVisibleFrom`.
    */
   localCell: { x: number; y: number; z: number };
   /** `(radius + fadeWidth)^2`, pre-squared for the distance reject. */
@@ -359,14 +359,19 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
  * The `u_fogLightInfluence` boost is deliberately NOT applied here -- it needs
  * a light-level walk but no raycasts, so it stays per-fragment in the shader
  * where it is cheap. This returns the pure-geometry term the shader boosts.
+ *
+ * `useLineOfSight` false is `FogOfWarT.visionMode: 'distance'`: the raycasts
+ * are skipped entirely and range alone decides. Both this and the shader take
+ * that branch off the same setting, so the mirror above holds in either mode.
  */
-export function computeSpriteVisibility(
+export function computeFogVisibility(
   pos: { x: number; y: number; z: number },
   sources: ResolvedSource[],
   mask: Uint8Array,
   cellDims: { x: number; y: number; z: number },
   windowOriginLocalCell: { x: number; y: number; z: number },
   cellSize: { x: number; y: number; z: number },
+  useLineOfSight = true,
 ): number {
   const localCellX = pos.x / cellSize.x - windowOriginLocalCell.x;
   const localCellY = pos.y / cellSize.y - windowOriginLocalCell.y;
@@ -389,6 +394,14 @@ export function computeSpriteVisibility(
         ? 1 - smoothstep(source.radius, outer, Math.sqrt(distSq))
         : 1;
     if (radial <= best) continue; // can't beat the running max even at full LOS
+
+    // 'distance' mode: range alone decides. Mirrors the shader's identical
+    // early return, so the two still agree term for term.
+    if (!useLineOfSight) {
+      best = radial;
+      if (best >= 1) break;
+      continue;
+    }
 
     let hits = 0;
     for (let i = 0; i < VISION_SCATTER_SAMPLES; i++) {
@@ -421,25 +434,101 @@ export function computeSpriteVisibility(
 }
 
 /**
- * Cheap single-ray "can the player see this point" test: a distance reject per
- * source, then ONE un-jittered DDA ray.
+ * Per-source line-of-sight fraction at a world point, written into `out`.
  *
- * Deliberately NOT the same test as `computeSpriteVisibility` above, and
- * deliberately not "fixed" to match it. This is what terrain deferred
- * presentation uses (cell-map/deferred-presentation.ts) to decide whether a
- * cell write is observed, and it runs on every cell write plus once per
- * deferred cell per frame -- eight times the raycasts there would be a real
- * cost for no visible benefit, because terrain observation is a binary
- * bookkeeping decision with no cross-fading counterpart to stay in step with.
- * Sprites are the case that needs exactness, and they use the function above.
+ * The half of `computeFogVisibility` that costs raycasts, split out so the
+ * renderer can hand it to the shader and let the CHEAP half -- the radial
+ * falloff -- be recomputed per fragment against the sprite's own quad
+ * (`u_spriteLos`, and `computeSpriteFragVisibility` in unified.frag).
+ *
+ * Kept per source rather than pre-combined because visibility is
+ * `max(radial_i * los_i)` over sources, and that does not factor into
+ * `max(radial) * max(los)` -- a near source with no sight line and a far one
+ * with a clear one would otherwise read as fully visible.
+ *
+ * Entries past `sources.length` are left alone; a source whose falloff does not
+ * reach `pos` gets 0, which the shader never reads (it rejects on distance
+ * first) but which keeps a stale value from leaking in if that ever changes.
  */
-export function isPositionVisible(
+export function computeSourceLos(
   pos: { x: number; y: number; z: number },
   sources: ResolvedSource[],
   mask: Uint8Array,
   cellDims: { x: number; y: number; z: number },
   windowOriginLocalCell: { x: number; y: number; z: number },
   cellSize: { x: number; y: number; z: number },
+  useLineOfSight: boolean,
+  out: Float32Array,
+): void {
+  const localCellX = pos.x / cellSize.x - windowOriginLocalCell.x;
+  const localCellY = pos.y / cellSize.y - windowOriginLocalCell.y;
+  const localCellZ = pos.z / cellSize.z - windowOriginLocalCell.z;
+
+  for (let s = 0; s < sources.length && s < out.length; s++) {
+    const source = sources[s];
+
+    if (!useLineOfSight) {
+      out[s] = 1;
+      continue;
+    }
+
+    const dx = pos.x - source.pos.x;
+    const dy = pos.y - source.pos.y;
+    const dz = pos.z - source.pos.z;
+    if (dx * dx + dy * dy + dz * dz >= source.outerSq) {
+      out[s] = 0;
+      continue;
+    }
+
+    let hits = 0;
+    for (let i = 0; i < VISION_SCATTER_SAMPLES; i++) {
+      if (
+        !isRayBlockedTS(
+          mask,
+          cellDims,
+          source.localCell.x + scatterOffsetX[i],
+          source.localCell.y,
+          source.localCell.z + scatterOffsetZ[i],
+          localCellX,
+          localCellY,
+          localCellZ,
+        )
+      ) {
+        hits++;
+      }
+    }
+    out[s] = hits / VISION_SCATTER_SAMPLES;
+  }
+}
+
+/**
+ * Whether a world point is visible AT ALL -- exactly `computeFogVisibility(...)
+ * > 0`, but stopping at the first jittered ray that gets through instead of
+ * averaging all eight.
+ *
+ * The equivalence is not approximate and must not be allowed to drift: the
+ * visibility above is `radial * (hits/8)`, so it is positive exactly when some
+ * source has the point inside its falloff AND at least one of these same eight
+ * offsets reaches it. `test/fog-of-war-sweep.test.ts` pins the two against each
+ * other across a wall fixture.
+ *
+ * This replaced a single un-jittered centre ray, which was a genuinely
+ * DIFFERENT test -- none of the eight offsets is zero, so a centre ray can
+ * thread an aperture all eight of them clip, and vice versa. That made
+ * "observed" mean one thing for terrain bookkeeping and another for everything
+ * the player actually sees. The early-out costs nothing in the common case
+ * (a visible point usually returns on the first ray) and this is now the ONE
+ * predicate behind explored marking, deferred terrain presentation, and the
+ * sprite sweep alike.
+ */
+export function isVisibleFrom(
+  pos: { x: number; y: number; z: number },
+  sources: ResolvedSource[],
+  mask: Uint8Array,
+  cellDims: { x: number; y: number; z: number },
+  windowOriginLocalCell: { x: number; y: number; z: number },
+  cellSize: { x: number; y: number; z: number },
+  useLineOfSight = true,
 ): boolean {
   const localCellX = pos.x / cellSize.x - windowOriginLocalCell.x;
   const localCellY = pos.y / cellSize.y - windowOriginLocalCell.y;
@@ -449,21 +538,29 @@ export function isPositionVisible(
     const dx = pos.x - source.pos.x;
     const dy = pos.y - source.pos.y;
     const dz = pos.z - source.pos.z;
+    // Matches computeFogVisibility's `radial > 0` bound exactly: at or beyond
+    // `outer` the smoothstep is 1 and visibility is 0.
     if (dx * dx + dy * dy + dz * dz >= source.outerSq) continue;
 
-    if (
-      !isRayBlockedTS(
-        mask,
-        cellDims,
-        source.localCell.x,
-        source.localCell.y,
-        source.localCell.z,
-        localCellX,
-        localCellY,
-        localCellZ,
-      )
-    ) {
-      return true;
+    // 'distance' mode: inside the falloff IS visible. Keeps this the exact
+    // `computeFogVisibility(...) > 0` it claims to be in both modes.
+    if (!useLineOfSight) return true;
+
+    for (let i = 0; i < VISION_SCATTER_SAMPLES; i++) {
+      if (
+        !isRayBlockedTS(
+          mask,
+          cellDims,
+          source.localCell.x + scatterOffsetX[i],
+          source.localCell.y,
+          source.localCell.z + scatterOffsetZ[i],
+          localCellX,
+          localCellY,
+          localCellZ,
+        )
+      ) {
+        return true;
+      }
     }
   }
   return false;
@@ -497,6 +594,7 @@ export function sweepFogOfWar(
   cellSize: { x: number; y: number; z: number },
   newlyObscured: ObscuredTransition[],
   revealedPhantoms: NexusT[],
+  useLineOfSight = true,
 ): void {
   const { nexuses, transforms, sprites, selfLit } = index;
 
@@ -521,7 +619,7 @@ export function sweepFogOfWar(
     // whatever fraction the source stopped at.
     if (status === 'phantom') {
       if (
-        computeSpriteVisibility(
+        computeFogVisibility(
           transforms[i].worldPosition,
           sources,
           mask,
@@ -545,13 +643,14 @@ export function sweepFogOfWar(
     if (selfLit[i]) continue;
 
     const transform = transforms[i];
-    const vis = computeSpriteVisibility(
+    const vis = computeFogVisibility(
       transform.worldPosition,
       sources,
       mask,
       cellDims,
       windowOriginLocalCell,
       cellSize,
+      useLineOfSight,
     );
 
     // `'visible'` means "has been seen at all, and so deserves a memory when

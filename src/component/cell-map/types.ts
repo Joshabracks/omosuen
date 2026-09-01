@@ -242,15 +242,21 @@ export interface CellEmissionColorDirtyRegion {
 }
 
 /**
- * A single dirty chunk in `exploredMap` (chunk-level fog-of-war "has any
- * vision source ever seen into this chunk" state), tagged with the
- * `exploredVersion` that produced it. Stored in window-LOCAL CHUNK-GRID
- * coordinates -- valid only as long as no window shift has happened since it
- * was logged (a shift bumps `exploredFullVersion` past every pre-shift
- * entry, which is what makes stale local coords safe to ignore rather than
- * something that has to be actively invalidated). Mirrors
- * `CellEmissionColorDirtyRegion`, chunk-grid coordinates instead of cell
- * coordinates.
+ * A single dirty chunk in `exploredMap` (cell-level fog-of-war "has any
+ * vision source ever come within range of this cell" state), tagged with the
+ * `exploredVersion` that produced it.
+ *
+ * The DATA is per cell; this log is per chunk because a single vision sweep
+ * dirties on the order of a thousand cells at once -- see
+ * `cmExploredDirtyRegions`. Each entry names a chunk whose cell subvolume is
+ * re-uploaded whole.
+ *
+ * Stored in SLOT-space chunk coordinates (the toroidal slot of any cell in the
+ * chunk, floor-divided by `chunkSize`), because the buffer the uploader reads
+ * and the texel it writes are both toroidally addressed -- same convention as
+ * `CellEmissionColorDirtyRegion`. Window dimensions are always a whole number
+ * of chunks, so a chunk's cells stay contiguous and chunk-aligned under the
+ * wrap and never straddle the seam.
  */
 export interface ChunkExploredDirtyRegion {
   version: number;

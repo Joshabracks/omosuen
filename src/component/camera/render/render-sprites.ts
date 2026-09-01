@@ -16,8 +16,16 @@ import {
   setOrbitYawUniform,
   setLightUniforms,
 } from './light-uniforms';
-import { getResolvedVisionSources, setVisionUniforms } from './vision-uniforms';
-import { computeSpriteVisibility, fogDrawKind } from '../../fog-of-war/sweep';
+import {
+  getResolvedVisionSources,
+  MAX_VISION_SOURCES,
+  setVisionUniforms,
+} from './vision-uniforms';
+import {
+  computeFogVisibility,
+  computeSourceLos,
+  fogDrawKind,
+} from '../../fog-of-war/sweep';
 import {
   isPhantomCoveredBySprite,
   phantomFogAlpha,
@@ -254,6 +262,13 @@ function bindMaterialTexture(
  * Renders sprites directly to screen at full resolution (no pixelation).
  * Sprites are depth-sorted against cell-maps using the FBO depth texture.
  */
+/**
+ * Reused per-source LOS buffer for `u_spriteLos`. Sized to the shader's
+ * MAX_VISION_SOURCES; `gl.uniform1fv` copies synchronously, so one shared
+ * buffer per draw is safe (same reasoning as light-uniforms.ts's scratch).
+ */
+const spriteLosScratch = new Float32Array(MAX_VISION_SOURCES);
+
 export function renderSprites(
   camera: CameraT,
   viewport: ViewportT,
@@ -397,6 +412,7 @@ export function renderSprites(
     'u_spriteVisibility',
   );
   const u_spriteFogAlpha = gl.getUniformLocation(program, 'u_spriteFogAlpha');
+  const u_spriteLos = gl.getUniformLocation(program, 'u_spriteLos');
 
   // Set constant uniforms (same for all sprites)
   // Sprites render at full resolution to screen (not via FBO), so they use
@@ -484,7 +500,15 @@ export function renderSprites(
   setLightUniforms(gl, camera.id!, lights);
 
   // Set fog-of-war vision-source uniforms (same sources as cell-maps)
-  setVisionUniforms(gl, camera.id!, visionSources);
+  // Resolved before the vision uniforms because `visionMode` travels with
+  // them -- see setVisionUniforms.
+  const fogOfWar = sceneRoot.getComponentByType(
+    'fog-of-war',
+    true,
+  ) as FogOfWarT | null;
+  const fogUseLineOfSight = fogOfWar?.visionMode !== 'distance';
+
+  setVisionUniforms(gl, camera.id!, visionSources, fogUseLineOfSight);
 
   // Per-sprite fog visibility is computed HERE, on the CPU, and uploaded as
   // u_spriteVisibility -- see the fog block in unified.frag's sprite path for
@@ -525,6 +549,13 @@ export function renderSprites(
   // writes to WASM, so the view cannot be detached mid-use.
   const fogMask = fogSources.length > 0 ? computeSolidityMap() : null;
 
+  // Per-source line-of-sight for the sprite being drawn (u_spriteLos). In
+  // 'distance' mode every entry is 1 and stays that way, so it is filled and
+  // uploaded ONCE here rather than per sprite -- that mode's whole point is
+  // that no sprite needs a raycast.
+  spriteLosScratch.fill(1);
+  if (!fogUseLineOfSight) gl.uniform1fv(u_spriteLos, spriteLosScratch);
+
   const fogCellDims = originCellMap?.mapSize;
   const fogCellSize = originCellMap?.cellSize;
   const fogWindowOriginLocalCell =
@@ -540,10 +571,6 @@ export function renderSprites(
   // renderCellMaps, since a scene with sprites but no cell-maps never runs
   // that pass at all (see the u_cellSolidity pinning comment below for the
   // same "don't rely on the other draw call having run this frame" reasoning).
-  const fogOfWar = sceneRoot.getComponentByType(
-    'fog-of-war',
-    true,
-  ) as FogOfWarT | null;
   gl.uniform1f(u_fogLightInfluence, fogOfWar?.lightInfluence ?? 0);
 
   // Set axonometric angle + orbit yaw uniforms (GPU computes cos/sin)
@@ -605,6 +632,17 @@ export function renderSprites(
     camera.glResources.cellEmissionColorTexture,
   );
   gl.uniform1i(u_cellEmissionColor, 6);
+
+  // Same reasoning again for u_exploredTexture (sampler3D) on unit 7. The
+  // sprite path never samples it, but it lives in this shared program, and a
+  // sampler uniform that is never explicitly set defaults to unit 0 -- where
+  // u_albedoTexture (sampler2D) already is. Two different sampler types on one
+  // unit is GL_INVALID_OPERATION, and a scene with sprites but no cell-map
+  // never runs renderCellMaps to set it. Binding null is fine: nothing here
+  // reads it.
+  gl.activeTexture(gl.TEXTURE7);
+  gl.bindTexture(gl.TEXTURE_3D, camera.glResources.exploredTexture);
+  gl.uniform1i(gl.getUniformLocation(program, 'u_exploredTexture'), 7);
   if (
     camera.glResources.cellEmissionColorHasAny &&
     camera.glResources.cellEmissionColorTexture
@@ -810,14 +848,33 @@ export function renderSprites(
       fogCellSize &&
       fogWindowOriginLocalCell
     ) {
-      spriteVis = computeSpriteVisibility(
+      spriteVis = computeFogVisibility(
         spriteTransform.worldPosition,
         fogSources,
         fogMask,
         fogCellDims,
         fogWindowOriginLocalCell,
         fogCellSize,
+        fogUseLineOfSight,
       );
+      // The same geometry the line above folded into one number, kept split so
+      // the shader can re-evaluate the radial half across this sprite's quad
+      // while the raycast half stays sampled once, here, at its anchor. That
+      // is what lets a sprite's fog match the tile under it -- see
+      // computeSpriteFragVisibility in unified.frag.
+      if (fogUseLineOfSight) {
+        computeSourceLos(
+          spriteTransform.worldPosition,
+          fogSources,
+          fogMask,
+          fogCellDims,
+          fogWindowOriginLocalCell,
+          fogCellSize,
+          true,
+          spriteLosScratch,
+        );
+        gl.uniform1fv(u_spriteLos, spriteLosScratch);
+      }
     }
     gl.uniform1f(u_spriteVisibility, spriteVis);
 

@@ -16,7 +16,7 @@ import { computeSolidityMap } from '../camera/render/visibility-mask';
 import {
   advanceFade,
   fogFadeStep,
-  isPositionVisible,
+  isVisibleFrom,
   isSamePhantomPlace,
   phantomAlpha,
   phantomIsSpent,
@@ -570,13 +570,17 @@ let observationContext: {
   cellDims: { x: number; y: number; z: number };
   cellSize: { x: number; y: number; z: number };
   windowOriginLocalCell: { x: number; y: number; z: number };
+  /** `FogOfWarT.visionMode`, snapshotted with the rest. */
+  useLineOfSight: boolean;
 } | null = null;
 
 /**
  * "Can the player see this world cell right now?" -- installed into cell-map's
  * deferred-presentation module so a terrain write can decide whether to show
- * itself. Uses exactly the same test as the sprite sweep, so what counts as
- * seen for terrain, for sprites and for the shader all agree.
+ * itself. Uses `isVisibleFrom`, the same predicate behind the sprite sweep and
+ * explored marking, so what counts as seen for terrain, for sprites and for the
+ * shader all agree. It used to be a single un-jittered ray -- a genuinely
+ * different test, since none of the eight scatter offsets is zero.
  *
  * Fails OPEN (returns true, meaning "visible, don't defer") whenever it cannot
  * answer: no sweep has run yet, or vision is momentarily off. Deferring on a
@@ -592,7 +596,7 @@ function isWorldCellObserved(
   if (!ctx || ctx.sources.length === 0) return true;
 
   const { cellSize } = ctx;
-  return isPositionVisible(
+  return isVisibleFrom(
     {
       x: (worldX + 0.5) * cellSize.x,
       y: (worldY + 0.5) * cellSize.y,
@@ -603,6 +607,7 @@ function isWorldCellObserved(
     ctx.cellDims,
     ctx.windowOriginLocalCell,
     cellSize,
+    ctx.useLineOfSight,
   );
 }
 
@@ -729,7 +734,11 @@ export const FogOfWar: FogOfWarMethods = {
    * not synchronously within this call -- an imperceptible one-frame delay,
    * consistent with this engine's existing frame-budgeted init elsewhere.
    */
-  update: (_component: ComponentData, deltaTime: number): void => {
+  update: (component: ComponentData, deltaTime: number): void => {
+    // One switch drives the sweep, the observation predicate and the shader
+    // alike (see FogOfWarT.visionMode). Reading it per frame rather than
+    // caching it keeps a mid-session change live.
+    const useLineOfSight = (component as FogOfWarT).visionMode !== 'distance';
     // Installed here rather than at module load so a scene with no
     // fog-of-war component never defers terrain writes. Idempotent, and
     // cleared in `dispose` below.
@@ -814,6 +823,7 @@ export const FogOfWar: FogOfWarMethods = {
         cellDims,
         cellSize,
         windowOriginLocalCell,
+        useLineOfSight,
       };
 
       // Held only for the synchronous loop below -- see the phantom-spawn note
@@ -844,6 +854,7 @@ export const FogOfWar: FogOfWarMethods = {
         cellSize,
         newlyObscured,
         revealedPhantoms,
+        useLineOfSight,
       );
 
       // REPAIR. An `'obscuring'` sprite is one waiting on a spawn to flip it to

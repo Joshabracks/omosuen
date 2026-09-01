@@ -11,14 +11,15 @@
 
 import {
   advanceFade,
-  computeSpriteVisibility,
+  computeFogVisibility,
+  computeSourceLos,
   fogDiscards,
   fogDrawKind,
   fogFadeStep,
   FOG_FADE_SECONDS,
   phantomAlpha,
   phantomIsSpent,
-  isPositionVisible,
+  isVisibleFrom,
   isSamePhantomPlace,
   PHANTOM_REVEAL_VISIBILITY,
   phantomSupersededBySprite,
@@ -136,7 +137,7 @@ function visibilityAt(
   sources: ResolvedSource[],
   mask: Uint8Array,
 ): number {
-  return computeSpriteVisibility(
+  return computeFogVisibility(
     { x, y, z },
     sources,
     mask,
@@ -474,7 +475,7 @@ console.log('\nfog-of-war sweep');
 
 // ── Sprite visibility: the number the shader is handed ─────────────────────
 //
-// `computeSpriteVisibility` mirrors unified.frag's `visionSourceVisibility`:
+// `computeFogVisibility` mirrors unified.frag's `visionSourceVisibility`:
 // a radial smoothstep times the fraction of eight jittered rays that arrive.
 // It is what `render-sprites.ts` uploads as `u_spriteVisibility`, so these
 // cases pin the contract the GPU relies on.
@@ -516,7 +517,7 @@ function visibilityAtWide(
   sources: ResolvedSource[],
   mask: Uint8Array,
 ): number {
-  return computeSpriteVisibility({ x, y: 0.5, z: 4.5 }, sources, mask, WIDE, WIDE_ORIGIN, {
+  return computeFogVisibility({ x, y: 0.5, z: 4.5 }, sources, mask, WIDE, WIDE_ORIGIN, {
     x: 1,
     y: 1,
     z: 1,
@@ -528,34 +529,37 @@ function wideVisibility(
   sources: ResolvedSource[],
   mask: Uint8Array,
 ): number {
-  return computeSpriteVisibility(target, sources, mask, WIDE, WIDE_ORIGIN, {
+  return computeFogVisibility(target, sources, mask, WIDE, WIDE_ORIGIN, {
     x: 1,
     y: 1,
     z: 1,
   });
 }
-function wideCentreRay(
+function wideVisibleFrom(
   target: { x: number; y: number; z: number },
   sources: ResolvedSource[],
   mask: Uint8Array,
 ): boolean {
-  return isPositionVisible(target, sources, mask, WIDE, WIDE_ORIGIN, {
+  return isVisibleFrom(target, sources, mask, WIDE, WIDE_ORIGIN, {
     x: 1,
     y: 1,
     z: 1,
   });
 }
 
-// 11. THE BUG. Two pillars with a sight line threading exactly between them:
-//     the single centre ray the CPU used to cast gets through, while all eight
-//     of the shader's jittered rays clip one pillar or the other. The old code
-//     disposed the phantom on the centre ray and let the shader discard the
-//     real sprite, leaving a hole where the entity should be -- with both at
-//     the same position, because the sprite never moved.
+// 11. THE BUG, now unrepresentable. Two pillars with a sight line threading
+//     exactly between them: a single un-jittered centre ray gets through while
+//     all eight of the shader's jittered rays clip one pillar or the other.
+//     When the boolean "is this observed" test was that centre ray and the
+//     smooth one was the eight, the two disagreed totally here -- the phantom
+//     was disposed on the centre ray while the shader discarded the real
+//     sprite, leaving a hole where the entity should be.
 //
-//     Minimised from a randomised search: of ~16.6k sampled configurations,
-//     3.6% disagreed at all and 0.018% disagreed this totally. Rare per
-//     sample, routine over a map full of rock faces and doorways.
+//     There is now ONE predicate: `isVisibleFrom` is exactly
+//     `computeFogVisibility > 0`, built from the same eight offsets, so this
+//     fixture can no longer split them. It is kept because it is the hardest
+//     case known to exist -- minimised from a randomised search where, of
+//     ~16.6k sampled configurations, only 0.018% disagreed this totally.
 {
   const mask = wideMask([
     [7, 7],
@@ -565,17 +569,18 @@ function wideCentreRay(
   const target = { x: 21.5, y: 0.5, z: 15.5 };
 
   check(
-    'the centre ray threads the gap between the pillars',
-    wideCentreRay(target, sources, mask),
-  );
-  check(
-    'but every jittered ray is blocked, so sprite visibility is 0',
+    'every jittered ray is blocked, so visibility is 0',
     wideVisibility(target, sources, mask) === 0,
     `got ${wideVisibility(target, sources, mask)}`,
   );
   check(
+    'and the boolean test agrees -- no centre-ray escape hatch any more',
+    !wideVisibleFrom(target, sources, mask),
+    'a single un-jittered ray threads this gap; the eight must not',
+  );
+  check(
     'with the pillars removed both agree the point is visible',
-    wideCentreRay(target, sources, emptyWide()) &&
+    wideVisibleFrom(target, sources, emptyWide()) &&
       wideVisibility(target, sources, emptyWide()) === 1,
   );
 }
@@ -1154,6 +1159,134 @@ console.log('\npartial reveal leaves a memory');
     'and leaves a phantom behind when it goes out of sight',
     left.obscured.length === 1 && left.status === 'obscuring',
     `${left.status}, ${left.obscured.length} transitions`,
+  );
+}
+
+console.log('\nvision mode: distance');
+{
+  // The same wall fixture the line-of-sight cases use: a solid cell at (3,0,1)
+  // between the source and a sprite behind it.
+  const wall = emptyMask();
+  solidAt(wall, 3, 0, 1);
+  const src = [source(1.5, 0.5, 1.5)];
+  const behindWall = { x: 5.5, y: 0.5, z: 1.5 };
+
+  const args = [src, wall, CELL_DIMS, WINDOW_ORIGIN, CELL_SIZE] as const;
+  const los = computeFogVisibility(behindWall, ...args, true);
+  const dist = computeFogVisibility(behindWall, ...args, false);
+  check('line-of-sight mode: a wall hides the point behind it', los === 0, `vis=${los}`);
+  check('distance mode: the same point is seen through the wall', dist > 0, `vis=${dist}`);
+
+  // Why distance mode fixes the sprite/tile saturation mismatch: with no LOS
+  // term, visibility is a pure function of position, so the same world point
+  // resolves identically no matter what geometry is around it or what samples it.
+  const openField = emptyMask();
+  let worst = 0;
+  for (let x = 0; x <= 8; x += 0.25) {
+    const p = { x, y: 0.5, z: 1.5 };
+    worst = Math.max(
+      worst,
+      Math.abs(
+        computeFogVisibility(p, src, wall, CELL_DIMS, WINDOW_ORIGIN, CELL_SIZE, false) -
+          computeFogVisibility(p, src, openField, CELL_DIMS, WINDOW_ORIGIN, CELL_SIZE, false),
+      ),
+    );
+  }
+  check('distance mode ignores the solidity mask entirely', worst === 0, `max deviation ${worst}`);
+
+  // `isVisibleFrom` claims to be exactly `computeFogVisibility(...) > 0`, and
+  // that equivalence is what keeps explored-marking, deferred terrain and the
+  // sprite sweep agreeing. It has to survive the new branch in BOTH modes.
+  let mismatches = 0;
+  for (const useLos of [true, false]) {
+    for (let x = 0; x <= 8; x += 0.25) {
+      for (let z = 0; z <= 3; z += 0.5) {
+        const p = { x, y: 0.5, z };
+        const v = computeFogVisibility(p, ...args, useLos);
+        if (v > 0 !== isVisibleFrom(p, ...args, useLos)) mismatches++;
+      }
+    }
+  }
+  check(
+    'isVisibleFrom stays exactly `visibility > 0` in both modes',
+    mismatches === 0,
+    `${mismatches} disagreements`,
+  );
+
+  // The default must stay the old behaviour, or every existing scene changes look.
+  check(
+    'line-of-sight is the default when the argument is omitted',
+    computeFogVisibility(behindWall, ...args) === los,
+  );
+}
+
+console.log('\nper-source LOS split');
+{
+  // unified.frag evaluates the RADIAL term per fragment and multiplies it by
+  // this per-source LOS, so `max(radial_i * los_i)` has to reconstruct exactly
+  // what computeFogVisibility folds into one number. If it ever does not, a
+  // sprite's fog stops matching the CPU's own idea of its visibility.
+  const wall = emptyMask();
+  solidAt(wall, 3, 0, 1);
+  solidAt(wall, 3, 0, 2);
+
+  // Two sources, deliberately overlapping and with different sight lines: one
+  // near but walled off, one further but clear. This is the case that does NOT
+  // factor into (max radial) * (max los).
+  const srcs = [source(1.5, 0.5, 1.5, 4, 3), source(6.5, 0.5, 6.5, 5, 3)];
+  const los = new Float32Array(8);
+
+  const smooth = (e0: number, e1: number, x: number): number => {
+    const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+    return t * t * (3 - 2 * t);
+  };
+
+  for (const useLos of [true, false]) {
+    let worst = 0;
+    for (let x = 0; x <= 7.5; x += 0.25) {
+      for (let z = 0; z <= 7.5; z += 0.25) {
+        const p = { x, y: 0.5, z };
+        const combined = computeFogVisibility(
+          p, srcs, wall, CELL_DIMS, WINDOW_ORIGIN, CELL_SIZE, useLos,
+        );
+        computeSourceLos(
+          p, srcs, wall, CELL_DIMS, WINDOW_ORIGIN, CELL_SIZE, useLos, los,
+        );
+        // The shader's loop, in TypeScript.
+        let rebuilt = 0;
+        for (let i = 0; i < srcs.length; i++) {
+          const src = srcs[i];
+          const outer = src.radius + src.fadeWidth;
+          const d = Math.hypot(p.x - src.pos.x, p.y - src.pos.y, p.z - src.pos.z);
+          if (d >= outer) continue;
+          const radial =
+            outer > src.radius ? 1 - smooth(src.radius, outer, d) : 1;
+          rebuilt = Math.max(rebuilt, radial * los[i]);
+        }
+        worst = Math.max(worst, Math.abs(rebuilt - combined));
+      }
+    }
+    check(
+      `radial x per-source LOS rebuilds visibility exactly (${
+        useLos ? 'line-of-sight' : 'distance'
+      })`,
+      worst < 1e-12,
+      `max deviation ${worst}`,
+    );
+  }
+
+  // The specific trap the per-source array exists for: pre-combining into one
+  // scalar would let a near walled-off source lend its radial to a far clear
+  // one. Assert the geometry actually exercises that -- otherwise the sweep
+  // above proves nothing.
+  const trap = { x: 5.5, y: 0.5, z: 1.5 };
+  computeSourceLos(
+    trap, srcs, wall, CELL_DIMS, WINDOW_ORIGIN, CELL_SIZE, true, los,
+  );
+  check(
+    'the fixture really does have sources disagreeing about line of sight',
+    los[0] !== los[1],
+    `los=[${los[0]}, ${los[1]}]`,
   );
 }
 

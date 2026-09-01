@@ -3,182 +3,164 @@ import { VisionSourceT } from '../../vision-source';
 import { NexusT } from '../../nexus';
 import { TransformT } from '../../transform';
 import { castTo } from '../../types';
+import { markExploredCells } from './explored-cells';
+import type { ExploredWindow } from './explored-cells';
+import type { ResolvedSource } from '../../fog-of-war/sweep';
 
 /**
- * Per-vision-source last-processed WORLD chunk coordinate, keyed by
- * component id -- throttles the sweep below to only run when a source
- * actually crosses into a new chunk (movement within a chunk is a no-op),
- * since re-marking already-explored chunks is otherwise wasted work every
- * frame.
+ * Per-vision-source last-processed WORLD cell coordinate, keyed by component
+ * id -- throttles the sweep below to only run when a source actually crosses
+ * into a new cell, since re-marking already-explored ground is otherwise
+ * wasted work every frame.
+ *
+ * Was keyed by CHUNK, which is what let a villager walk fifteen cells inside
+ * one chunk -- far further than they can see -- without the sweep ever
+ * re-running, leaving ground they had plainly walked past unexplored.
  */
-const _lastChunk = new Map<number, { cx: number; cy: number; cz: number }>();
+const lastCell = new Map<number, { x: number; y: number; z: number }>();
 
-// The DDA itself now lives in ./ray-blocked, a leaf module with no imports,
-// so fog-of-war's sweep and its tests can load it without this file's
-// cell-map barrel (and, through it, camera/init's raw shader imports).
-// Re-exported here because this module's own sweep uses it and because
-// existing callers import it from this path.
+// The DDA itself lives in ./ray-blocked, a leaf module with no imports, so
+// fog-of-war's sweep and its tests can load it without this file's cell-map
+// barrel (and, through it, camera/init's raw shader imports). Re-exported here
+// because existing callers import it from this path.
 export { isRayBlockedTS } from './ray-blocked';
-import { isRayBlockedTS } from './ray-blocked';
+
+/** Reused per-frame, so a warmed sweep allocates nothing. */
+const resolvedSources: ResolvedSource[] = [];
 
 /**
- * Throttled per-vision-source explored-chunk sweep. Only re-evaluates a
- * source's contribution when it has moved into a new WORLD chunk since last
- * checked; when it does, walks every chunk within radius+fadeWidth and marks
- * each one actually in line of sight (via `isRayBlockedTS` against the
- * resident solidity buffer, from the source to that chunk's nearest point)
- * as explored via `CellMap.setChunkExplored` -- so "explored" never leaks
- * through walls, matching the live view's own occlusion behavior.
- *
- * "Explored" is a binary per-chunk flag driving the never-viewed -> memory
- * STYLE blend, and nothing else. It used to also capture a per-cell and a
- * per-chunk material snapshot for the old flat-colour terrain memory; that
- * is gone, because remembered terrain is now the real geometry, deferred
- * rather than repainted (see cell-map/deferred-presentation.ts).
- *
- * Call once per cell-map per frame, passing the SAME solidity buffer already
- * computed for that frame's `u_cellSolidity` upload (no extra WASM call here).
+ * Resolves each enabled source to its current world position, mirroring
+ * `resolveActiveVisionSources` (fog-of-war/methods.ts) and the equivalent block
+ * in render-sprites.ts. Returns the count of valid leading entries; the array
+ * is grown to a high-water mark and never shrunk.
  */
-export function sweepExploredChunks(
-  cellMap: CellMapT,
+function resolveSources(
   visionSources: VisionSourceT[],
-  mask: Uint8Array,
-): void {
-  const origin = cellMap.window.origin;
-  if (!origin) return;
-
-  const cellDims = cellMap.mapSize; // resident window size, in cells
-  const chunkSize = cellMap.chunkSize;
-  const cellSize = cellMap.cellSize;
-  const gridDims = cellMap.chunkGridSize; // resident window size, in chunks
-
-  const chunkWorldX = chunkSize.x * cellSize.x;
-  const chunkWorldY = chunkSize.y * cellSize.y;
-  const chunkWorldZ = chunkSize.z * cellSize.z;
-
-  const originLocalCellX = origin.cx * chunkSize.x;
-  const originLocalCellY = origin.cy * chunkSize.y;
-  const originLocalCellZ = origin.cz * chunkSize.z;
+  originCell: { x: number; y: number; z: number },
+  cellSize: { x: number; y: number; z: number },
+): number {
+  let count = 0;
   for (const source of visionSources) {
     if (!source.enabled || source.id === undefined) continue;
     const parent = source.parent;
     if (!parent || parent.type !== 'nexus') continue;
-    const nexus = castTo<NexusT>(parent);
-    const transform = nexus.getComponentByType(
+    const transform = castTo<NexusT>(parent).getComponentByType(
+      'transform',
+      false,
+    ) as TransformT | null;
+    if (!transform) continue;
+    const pos = transform.worldPosition;
+    const outer = source.radius + source.fadeWidth;
+    let slot = resolvedSources[count];
+    if (!slot) {
+      slot = {
+        pos: { x: 0, y: 0, z: 0 },
+        localCell: { x: 0, y: 0, z: 0 },
+        outerSq: 0,
+        radius: 0,
+        fadeWidth: 0,
+      };
+      resolvedSources[count] = slot;
+    }
+    slot.pos.x = pos.x;
+    slot.pos.y = pos.y;
+    slot.pos.z = pos.z;
+    slot.localCell.x = pos.x / cellSize.x - originCell.x;
+    slot.localCell.y = pos.y / cellSize.y - originCell.y;
+    slot.localCell.z = pos.z / cellSize.z - originCell.z;
+    slot.outerSq = outer * outer;
+    slot.radius = source.radius;
+    slot.fadeWidth = source.fadeWidth;
+    count++;
+  }
+  return count;
+}
+
+/**
+ * Throttled per-vision-source explored-CELL sweep: resolves each source's
+ * position, skips the ones that have not crossed into a new cell, and hands the
+ * rest to `markExploredCells` (the leaf module holding the geometry, and the
+ * rationale for testing visibility rather than distance).
+ *
+ * Cells outside the resident window are fully supported and persist in the
+ * explored channel's cold storage -- see `CellMap.setCellExplored`. That is
+ * load-bearing, not incidental: vision sources routinely range over terrain
+ * that is in range but not yet resident, and that ground has to come back
+ * remembered rather than black when the window catches up.
+ *
+ * `mask` is the resident solidity buffer, already computed for that frame's
+ * `u_cellSolidity` upload -- no extra WASM call here.
+ */
+export function sweepExploredCells(
+  cellMap: CellMapT,
+  visionSources: VisionSourceT[],
+  mask: Uint8Array,
+  requireLineOfSight = true,
+): void {
+  const origin = cellMap.window.origin;
+  if (!origin) return;
+
+  const cellSize = cellMap.cellSize;
+  const chunkSize = cellMap.chunkSize;
+  const originCell = {
+    x: origin.cx * chunkSize.x,
+    y: origin.cy * chunkSize.y,
+    z: origin.cz * chunkSize.z,
+  };
+  const count = resolveSources(visionSources, originCell, cellSize);
+  if (count === 0) return;
+
+  // `isVisibleFrom` maximises over every source, so the whole resolved set is
+  // passed for each one -- a cell a DIFFERENT source can see is explored too,
+  // matching the shader's own union over sources.
+  const sources = resolvedSources.slice(0, count);
+  const window: ExploredWindow = {
+    mask,
+    originCell,
+    cellDims: cellMap.mapSize,
+  };
+
+  const isExplored = (x: number, y: number, z: number): boolean =>
+    CellMap.isCellExplored(cellMap, x, y, z);
+  const mark = (x: number, y: number, z: number): void =>
+    CellMap.setCellExplored(cellMap, x, y, z);
+
+  for (const source of visionSources) {
+    if (!source.enabled || source.id === undefined) continue;
+    const parent = source.parent;
+    if (!parent || parent.type !== 'nexus') continue;
+    const transform = castTo<NexusT>(parent).getComponentByType(
       'transform',
       false,
     ) as TransformT | null;
     if (!transform) continue;
     const pos = transform.worldPosition;
 
-    const sourceCellX = pos.x / cellSize.x;
-    const sourceCellY = pos.y / cellSize.y;
-    const sourceCellZ = pos.z / cellSize.z;
-    const sourceChunk = {
-      cx: Math.floor(sourceCellX / chunkSize.x),
-      cy: Math.floor(sourceCellY / chunkSize.y),
-      cz: Math.floor(sourceCellZ / chunkSize.z),
+    const cell = {
+      x: Math.floor(pos.x / cellSize.x),
+      y: Math.floor(pos.y / cellSize.y),
+      z: Math.floor(pos.z / cellSize.z),
     };
-
-    const last = _lastChunk.get(source.id);
-    if (
-      last &&
-      last.cx === sourceChunk.cx &&
-      last.cy === sourceChunk.cy &&
-      last.cz === sourceChunk.cz
-    ) {
+    const last = lastCell.get(source.id);
+    if (last && last.x === cell.x && last.y === cell.y && last.z === cell.z) {
       continue;
     }
-    _lastChunk.set(source.id, sourceChunk);
+    lastCell.set(source.id, cell);
 
-    const outerWorld = source.radius + source.fadeWidth;
-    const radiusChunksX = Math.ceil(outerWorld / chunkWorldX) + 1;
-    const radiusChunksY = Math.ceil(outerWorld / chunkWorldY) + 1;
-    const radiusChunksZ = Math.ceil(outerWorld / chunkWorldZ) + 1;
-
-    const localSourceCellX = sourceCellX - originLocalCellX;
-    const localSourceCellY = sourceCellY - originLocalCellY;
-    const localSourceCellZ = sourceCellZ - originLocalCellZ;
-
-    for (
-      let cz = sourceChunk.cz - radiusChunksZ;
-      cz <= sourceChunk.cz + radiusChunksZ;
-      cz++
-    ) {
-      const localCz = cz - origin.cz;
-      if (localCz < 0 || localCz >= gridDims.z) continue;
-      for (
-        let cy = sourceChunk.cy - radiusChunksY;
-        cy <= sourceChunk.cy + radiusChunksY;
-        cy++
-      ) {
-        const localCy = cy - origin.cy;
-        if (localCy < 0 || localCy >= gridDims.y) continue;
-        for (
-          let cx = sourceChunk.cx - radiusChunksX;
-          cx <= sourceChunk.cx + radiusChunksX;
-          cx++
-        ) {
-          const localCx = cx - origin.cx;
-          if (localCx < 0 || localCx >= gridDims.x) continue;
-
-          // Test against the NEAREST point in the chunk's world-space AABB
-          // to the source, not its geometric center: a chunk can be far
-          // larger than the vision radius (e.g. a 1024-unit chunk against a
-          // 384-unit radius), in which case the center is routinely outside
-          // both the radius and line of sight even while the source is
-          // standing right at the chunk's edge. Clamping to the box gives
-          // both a correct "is any part of this chunk in range" distance
-          // test and a correct "can the source see into this chunk at all"
-          // raycast target.
-          const nearestX = Math.max(
-            cx * chunkWorldX,
-            Math.min(pos.x, (cx + 1) * chunkWorldX),
-          );
-          const nearestY = Math.max(
-            cy * chunkWorldY,
-            Math.min(pos.y, (cy + 1) * chunkWorldY),
-          );
-          const nearestZ = Math.max(
-            cz * chunkWorldZ,
-            Math.min(pos.z, (cz + 1) * chunkWorldZ),
-          );
-          const dx = nearestX - pos.x;
-          const dy = nearestY - pos.y;
-          const dz = nearestZ - pos.z;
-          const nearestDist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-          if (nearestDist >= outerWorld) continue;
-
-          const destLocalCellX = nearestX / cellSize.x - originLocalCellX;
-          const destLocalCellY = nearestY / cellSize.y - originLocalCellY;
-          const destLocalCellZ = nearestZ / cellSize.z - originLocalCellZ;
-
-          if (
-            isRayBlockedTS(
-              mask,
-              cellDims,
-              localSourceCellX,
-              localSourceCellY,
-              localSourceCellZ,
-              destLocalCellX,
-              destLocalCellY,
-              destLocalCellZ,
-            )
-          ) {
-            continue;
-          }
-
-          // Explored flag (unchanged binary channel -- LINEAR-filtered for a
-          // smooth never-viewed/memory-tier blend, so it must stay a plain
-          // scalar, not carry packed material data).
-          CellMap.setChunkExplored(cellMap, cx, cy, cz);
-        }
-      }
-    }
+    markExploredCells(
+      pos,
+      sources,
+      source.radius + source.fadeWidth,
+      cellSize,
+      window,
+      isExplored,
+      mark,
+      requireLineOfSight,
+    );
   }
 }
 
 /** Clears a disposed vision source's throttle-cache entry. */
 export function clearExploredSweepCache(sourceId: number): void {
-  _lastChunk.delete(sourceId);
+  lastCell.delete(sourceId);
 }

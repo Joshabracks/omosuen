@@ -13,7 +13,7 @@ import {
   setLightUniforms,
 } from './light-uniforms';
 import { setVisionUniforms } from './vision-uniforms';
-import { sweepExploredChunks } from './explored-sweep';
+import { sweepExploredCells } from './explored-sweep';
 import { computeSolidityMap } from './visibility-mask';
 import { cellStoreGeneration } from './wasm';
 import {
@@ -438,9 +438,9 @@ function uploadCellEmissionColorDelta(
 
 /**
  * Builds the R8 fog-of-war "explored" texture data from a cell-map's
- * `exploredMap` -- one byte per CHUNK (not per cell, unlike solidity/emission
- * color), flattened in the same x + y·chunkGridX + z·chunkGridX·chunkGridY
- * order `render-cell-maps.ts`'s other chunk-grid consumers use.
+ * `exploredMap` -- one byte per CELL, same resolution and flattening order
+ * (x + y·mapX + z·mapX·mapY) as the solidity and emission-color textures, and
+ * like them toroidally addressed, so a texel's coordinate is a SLOT.
  */
 function buildExploredBytes(cellMap: CellMapT): Uint8Array {
   const values = cellMap.exploredMap.value;
@@ -455,7 +455,7 @@ function uploadExploredTexture(
   gl: WebGL2RenderingContext,
   camera: CameraT,
   bytes: Uint8Array,
-  chunkGridSize: { x: number; y: number; z: number },
+  mapSize: { x: number; y: number; z: number },
 ): void {
   if (!camera.glResources.exploredTexture) {
     camera.glResources.exploredTexture = gl.createTexture();
@@ -464,39 +464,57 @@ function uploadExploredTexture(
   // program (0: albedo, 3: solidity, 6: emission color; the sprite draw
   // path separately claims unit 4 for u_emissionTexture).
   gl.activeTexture(gl.TEXTURE7);
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.exploredTexture);
+  gl.bindTexture(gl.TEXTURE_3D, camera.glResources.exploredTexture);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   gl.texImage3D(
-    gl.TEXTURE_2D_ARRAY,
+    gl.TEXTURE_3D,
     0,
     gl.R8,
-    chunkGridSize.x,
-    chunkGridSize.y,
-    chunkGridSize.z,
+    mapSize.x,
+    mapSize.y,
+    mapSize.z,
     0,
     gl.RED,
     gl.UNSIGNED_BYTE,
     bytes,
   );
-  // Deliberately LINEAR (not NEAREST like solidity/emission color): the
-  // explored grid is already very coarse (one texel per chunk), so bilinear
-  // sampling gives a free soft transition between explored/unexplored chunks
-  // instead of a hard chunk-aligned edge in the memory/never-viewed tiers.
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+  // TEXTURE_3D, not TEXTURE_2D_ARRAY. On a 2D ARRAY, LINEAR interpolates only
+  // s and t -- layer selection is always nearest and TEXTURE_WRAP_R is inert.
+  // With the layer axis carrying world Z, that gave a smooth gradient across
+  // one horizontal axis and a hard quantized line across the other, which is
+  // exactly the artifact this fixes. Only a true 3D texture filters all three.
+  //
+  // Sampled with NEAREST all the same: the buffer is toroidal, so hardware
+  // filtering would blend the two opposite edges together across the wrap seam
+  // into a hard line INSIDE the visible window. `exploredAt` does the
+  // trilinear blend itself, wrapping each of its eight samples independently.
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
 }
 
 /**
- * Patches only the individual chunks changed since `fromVersion` into the
- * camera's existing explored texture via texSubImage3D -- the delta
- * counterpart to buildExploredBytes/uploadExploredTexture, mirroring
- * uploadCellEmissionColorDelta's structure. "Explored" only ever flips
- * false->true (see CellMap.setChunkExplored's idempotent early-out), so
- * unlike emission color there's no need to re-read a "current" value here --
- * every dirty region delta is unconditionally 255.
+ * Scratch for one chunk's worth of explored bytes, grown to the high-water
+ * chunk volume so a delta upload allocates nothing per frame.
+ */
+let exploredChunkScratch = new Uint8Array(0);
+
+/**
+ * Patches the chunks changed since `fromVersion` into the camera's existing
+ * explored texture, one `texSubImage3D` per chunk covering that chunk's whole
+ * CELL subvolume.
+ *
+ * Unlike `uploadCellEmissionColorDelta`, which writes a single texel per
+ * logged region, this uploads a whole chunk per region: the data is per cell
+ * but the dirty log is per chunk, because one vision sweep dirties on the
+ * order of a thousand cells at once (see `cmExploredDirtyRegions`). A vision
+ * sphere spans only a handful of chunks, so this is a few small uploads.
+ *
+ * Both the source buffer and the destination texels are toroidally addressed,
+ * and window dimensions are a whole number of chunks, so a chunk occupies a
+ * contiguous chunk-aligned box in slot space and never straddles the wrap.
  */
 function uploadExploredDelta(
   gl: WebGL2RenderingContext,
@@ -505,23 +523,51 @@ function uploadExploredDelta(
   fromVersion: number,
 ): void {
   gl.activeTexture(gl.TEXTURE7);
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.exploredTexture);
+  gl.bindTexture(gl.TEXTURE_3D, camera.glResources.exploredTexture);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  const texel = new Uint8Array([255]);
+
+  const { x: mx, y: my, z: mz } = cellMap.mapSize;
+  const cs = cellMap.chunkSize;
+  const values = cellMap.exploredMap.value;
+  const volume = cs.x * cs.y * cs.z;
+  if (exploredChunkScratch.length < volume) {
+    exploredChunkScratch = new Uint8Array(volume);
+  }
+  const scratch = exploredChunkScratch;
+
   for (const region of cellMap.exploredDirtyRegions) {
     if (region.version <= fromVersion) continue;
+    const ox = region.x * cs.x;
+    const oy = region.y * cs.y;
+    const oz = region.z * cs.z;
+    // A window resize can shrink the grid under a stale entry; skip rather
+    // than upload out of bounds. The matching full-version bump makes these
+    // safe to drop instead of having to invalidate them.
+    if (ox + cs.x > mx || oy + cs.y > my || oz + cs.z > mz) continue;
+
+    let w = 0;
+    for (let z = 0; z < cs.z; z++) {
+      const zBase = (oz + z) * my * mx;
+      for (let y = 0; y < cs.y; y++) {
+        let src = zBase + (oy + y) * mx + ox;
+        for (let x = 0; x < cs.x; x++) {
+          scratch[w++] = values[src++] ? 255 : 0;
+        }
+      }
+    }
     gl.texSubImage3D(
-      gl.TEXTURE_2D_ARRAY,
+      gl.TEXTURE_3D,
       0,
-      region.x,
-      region.y,
-      region.z,
-      1,
-      1,
-      1,
+      ox,
+      oy,
+      oz,
+      cs.x,
+      cs.y,
+      cs.z,
       gl.RED,
       gl.UNSIGNED_BYTE,
-      texel,
+      scratch,
+      0,
     );
   }
 }
@@ -671,7 +717,6 @@ export function renderCellMaps(
   // Per-cell-map fog-of-war opt-out -- see cellMap.revealExempt usage below.
   const uFogExempt = gl.getUniformLocation(program, 'u_fogExempt');
   const uExploredTexture = gl.getUniformLocation(program, 'u_exploredTexture');
-  const uChunkGridSize = gl.getUniformLocation(program, 'u_chunkGridSize');
   // Terrain-memory LOD: near tier (per-cell, window-cell resolution) and
   // far tier (per-chunk, chunk-grid resolution) captured material indices,
   // plus the small material-index -> flat-color lookup table both sample.
@@ -740,17 +785,21 @@ export function renderCellMaps(
   setLightUniforms(gl, camera.id!, lights);
 
   // Set fog-of-war vision-source uniforms
-  setVisionUniforms(gl, camera.id!, visionSources);
+  // Resolved before the vision uniforms because `visionMode` travels with
+  // them -- see setVisionUniforms.
+  const fogOfWar = sceneRoot.getComponentByType(
+    'fog-of-war',
+    true,
+  ) as FogOfWarT | null;
+  const fogUseLineOfSight = fogOfWar?.visionMode !== 'distance';
+
+  setVisionUniforms(gl, camera.id!, visionSources, fogUseLineOfSight);
 
   // Set fog-of-war style config (fog-of-war is a GLOBAL component -- at most
   // one per scene). No component in the scene = the shader's own defaults
   // apply only when fogActive is false anyway (u_numVisionSources gates
   // that), so falling back to the documented default style here just keeps
   // behavior identical to having a fog-of-war component with default values.
-  const fogOfWar = sceneRoot.getComponentByType(
-    'fog-of-war',
-    true,
-  ) as FogOfWarT | null;
   const memoryStyle = fogOfWar?.memoryStyle ?? {
     saturation: 0,
     opacity: 1,
@@ -1146,22 +1195,34 @@ export function renderCellMaps(
         };
         if (profiling) solidityGpuUploadMs += performance.now() - solidityT0;
       }
-      // Fog-of-war "explored" persistence: throttled per-source (a no-op
-      // for sources that haven't crossed into a new chunk since last frame)
-      // -- reuses this same solidity buffer, no extra WASM call.
+      // Fog-of-war "explored" persistence: throttled per-source (a no-op for
+      // sources that haven't crossed into a new cell since last frame).
+      //
+      // Marks a cell explored when a source can actually SEE it, through the
+      // same `isVisibleFrom` predicate the sprite sweep and deferred terrain
+      // presentation use, and a ray-for-ray mirror of what the shader computes
+      // per fragment -- so memory and the live view agree on what counts as
+      // seen. Reuses this frame's solidity buffer, no extra WASM call.
       //
       // Deliberately skipped on a frame the window just committed. The sweep's
-      // trigger (a vision source crossing into a new world chunk) and the
-      // commit's trigger (the camera crossing one) almost always fire on the
-      // SAME frame, since the camera follows the player -- so the sweep's
-      // per-cell raycast + material capture, which is substantial the first
-      // time through an area, lands squarely on the frame that's already the
-      // most expensive one. Deferring costs one frame of fog latency (~16ms,
-      // imperceptible) and is self-healing: the per-source `_lastChunk`
-      // throttle is only updated when the sweep actually runs, so skipping
-      // here leaves the source still "moved" and it sweeps next frame.
+      // trigger (a vision source crossing into a new world cell) and the
+      // commit's trigger (the camera crossing a chunk) often fire on the SAME
+      // frame, since the camera follows the player -- so the sweep's first
+      // pass through an area, which is the substantial one, would land squarely
+      // on the frame that is already the most expensive. Deferring costs one
+      // frame of fog latency (~16ms, imperceptible) and is self-healing: the
+      // per-source throttle is only updated when the sweep actually runs, so
+      // skipping here leaves the source still "moved" and it sweeps next frame.
       if (fogActive && !windowJustCommitted) {
-        sweepExploredChunks(cellMap, visionSources, solidityMap);
+        sweepExploredCells(
+          cellMap,
+          visionSources,
+          solidityMap,
+          // `visionMode: 'distance'` overrides the explore setting rather than
+          // sitting beside it: with no raycast anywhere else, marking explored
+          // by sight would remember LESS than the player can plainly see.
+          fogUseLineOfSight && fogOfWar?.exploreRequiresLineOfSight !== false,
+        );
       }
     }
     // Always keep u_cellSolidity pointed at unit 3, even on frames that don't
@@ -1221,20 +1282,14 @@ export function renderCellMaps(
           gl,
           camera,
           buildExploredBytes(cellMap),
-          cellMap.chunkGridSize,
+          cellMap.mapSize,
         );
       }
       camera.glResources.exploredVersion = cellMap.exploredVersion;
     }
     gl.activeTexture(gl.TEXTURE7);
-    gl.bindTexture(gl.TEXTURE_2D_ARRAY, camera.glResources.exploredTexture);
+    gl.bindTexture(gl.TEXTURE_3D, camera.glResources.exploredTexture);
     gl.uniform1i(uExploredTexture, 7);
-    gl.uniform3f(
-      uChunkGridSize,
-      cellMap.chunkGridSize.x,
-      cellMap.chunkGridSize.y,
-      cellMap.chunkGridSize.z,
-    );
 
     if (profiling) memoryTexUploadMs += performance.now() - memoryTexT0;
 

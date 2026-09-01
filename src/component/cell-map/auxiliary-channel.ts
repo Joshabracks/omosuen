@@ -253,11 +253,16 @@ export interface AuxiliaryChannelConfig {
    * `value` wraps too — the cell-granular GPU textures do, via `windowSlot` in
    * unified.frag, and the mesher does for `MAP_WEIGHTS`.
    *
-   * `false` for the chunk-granular fog channels. `exploredAt` samples with
-   * LINEAR filtering, and under wrapping the seam falls at an arbitrary point
-   * INSIDE the visible window, so bilinear filtering would blend the two
-   * opposite edges together into a hard line across the fog. Those channels are
-   * one texel per chunk, so re-laying them out on a shift costs almost nothing.
+   * `true` for every channel now, including the fog "explored" one. That was
+   * the last holdout: it was `false` because `exploredAt` wanted smooth
+   * filtering and, under wrapping, the seam falls at an arbitrary point INSIDE
+   * the visible window, where hardware bilinear would blend the two opposite
+   * edges together into a hard line across the fog. That reasoning held only
+   * while explored was one texel per chunk, which made re-laying it out on a
+   * shift almost free; per CELL it would be a multi-megabyte rewrite plus a
+   * full texture reupload on every camera chunk crossing. `exploredAt` now
+   * does its own trilinear blend, wrapping each of its eight samples
+   * independently, so no seam can form and this channel wraps like the rest.
    */
   toroidal: boolean;
 
@@ -426,10 +431,14 @@ export class AuxiliaryChannel {
    * cold storage restored into the newly-exposed chunks.
    *
    * Only for `toroidal: false` channels, where a shift genuinely moves every
-   * cell. Row memcpys rather than the per-chunk rebuild path, because these
-   * channels are chunk-granular (`chunkSize {1,1,1}`) and per-chunk there means
-   * per-cell -- ~80k iterations per channel per shift at a large render
-   * distance, which measurably dominated the commit frame.
+   * cell. Row memcpys rather than the per-chunk rebuild path, which at a large
+   * render distance was ~80k iterations per channel per shift and measurably
+   * dominated the commit frame.
+   *
+   * No channel is currently configured `toroidal: false` -- the fog "explored"
+   * channel was the last one and now wraps like the rest (see
+   * `AuxiliaryChannelConfig.toroidal`). Kept because the option is still
+   * supported, not because anything exercises it.
    */
   private relayoutWindowLocal(
     old: {
@@ -870,10 +879,10 @@ export class AuxiliaryChannel {
 
     // A non-toroidal channel's slots ARE window-local, so a plain shift moves
     // every cell. Re-laid-out ROW-WISE rather than through the per-chunk
-    // rebuild below: these channels are chunk-granular (chunkSize {1,1,1}), so
-    // "per chunk" degenerates to per CELL, and at a large render distance that
-    // is ~80k iterations and two function calls each, per channel, per shift.
-    // A row memcpy moves the same bytes in a fraction of the time.
+    // rebuild below, which at a large render distance is ~80k iterations and
+    // two function calls each, per channel, per shift; a row memcpy moves the
+    // same bytes in a fraction of the time. Currently unreachable in-engine --
+    // every channel is toroidal now (see `relayoutWindowLocal`).
     if (this.toroidal === false && !dimsChanged && old.origin) {
       this.relayoutWindowLocal(old, next, newTotal);
       return;

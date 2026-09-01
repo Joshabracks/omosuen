@@ -134,16 +134,19 @@ export let cmEmissionColorDirtyRegions: CellEmissionColorDirtyRegion[] = [];
 let cmEmissionColorSyncedCellCount = -1;
 /** Window cell count at the last memory-material sync; see cmEmissionColorSyncedCellCount. */
 /**
- * Chunk-level fog-of-war "explored" state: one flag per chunk (has any
- * vision source ever seen into this chunk), backed by `cmExploredChannel`
- * (an `AuxiliaryChannel` constructed with `chunkSize: {x:1,y:1,z:1}` so its
- * cell-granular coordinate math IS chunk-granular -- see
- * `syncExploredField`/`makeAuxiliaryOnReassemble`). Sized to the resident
- * window's CHUNK-GRID dims (`cmChunkGridSize`), not cell dims.
+ * Cell-level fog-of-war "explored" state: one flag per CELL (has any vision
+ * source ever come within range of this cell), backed by `cmExploredChannel`.
+ * Sized to the resident window's CELL dims (`cmMapSize`) and, like the other
+ * cell-granular channels, addressed by toroidal SLOT rather than window-local
+ * coordinate -- see `AuxiliaryChannel.slotCoords`.
+ *
+ * Was one flag per CHUNK until the chunk footprint (16x16 cells here) proved
+ * several times larger than a vision radius (4-6 cells), which made the
+ * never-viewed boundary a grid of chunk-sized blocks.
  */
 export let cmExploredMap: NumericArray3D;
 /**
- * Monotonic counter, bumped on every in-window `setChunkExplored` write and
+ * Monotonic counter, bumped on every in-window `setCellExplored` write and
  * on every full invalidation (window shift, or dirty-log cap overflow).
  * Mirrors `cmEmissionColorVersion`.
  */
@@ -156,10 +159,18 @@ export let cmExploredVersion: number = 0;
  */
 export let cmExploredFullVersion: number = 0;
 /**
- * Per-chunk dirty log (window-local chunk-grid coords + the version that
- * wrote them), capped at `CELL_EXPLORED_DIRTY_CAP` (see cell-map/methods.ts).
- * Mirrors `cmEmissionColorDirtyRegions`, one chunk per entry instead of one
- * cell.
+ * Dirty log for delta GPU uploads: SLOT-space chunk coordinates plus the
+ * version that wrote them, capped at `CELL_EXPLORED_DIRTY_CAP` (see
+ * cell-map/methods.ts).
+ *
+ * Deliberately one entry per CHUNK even though the data is now per cell --
+ * the one place this does NOT mirror `cmEmissionColorDirtyRegions`, which
+ * logs one entry per cell. A single sweep newly explores on the order of a
+ * thousand cells at once, which as per-cell entries would mean a thousand
+ * 1x1x1 `texSubImage3D` calls or an instant cap overflow into a full
+ * multi-megabyte reupload every frame. A chunk entry uploads that chunk's
+ * whole cell subvolume in one call, and a vision sphere only touches a
+ * handful of chunks.
  */
 export let cmExploredDirtyRegions: ChunkExploredDirtyRegion[] = [];
 /**
@@ -816,7 +827,7 @@ export interface CellMapT extends ComponentData {
   emissionColorFullVersion: number;
   /** Per-cell dirty log for delta GPU uploads; see cmEmissionColorDirtyRegions. */
   emissionColorDirtyRegions: CellEmissionColorDirtyRegion[];
-  /** Chunk-level fog-of-war "explored" state (one flag per chunk); see cmExploredMap. */
+  /** Cell-level fog-of-war "explored" state (one flag per cell); see cmExploredMap. */
   exploredMap: NumericArray3D;
   /** Monotonic version; see cmExploredVersion. */
   exploredVersion: number;
@@ -1684,29 +1695,24 @@ function syncAuxiliaryFields(
 
 /**
  * Resyncs the public `cmExploredMap` field from the explored channel's
- * current resident content, at the given CHUNK-GRID dimensions. Modeled on
+ * current resident content, at the given CELL dimensions. Modeled on
  * `syncAuxiliaryFields` above, but simpler: only one channel (not two), and
  * always reassigns unconditionally -- there's no `forceSmoothingReassign`-
  * style "provably unchanged" skip here, since explored state has a live
- * per-chunk setter (`CellMap.setChunkExplored`) and can diverge at any time.
+ * per-cell setter (`CellMap.setCellExplored`) and can diverge at any time.
  *
- * `chunkGridDims` -- note this is the window's size in CHUNKS
- * (`cmChunkGridSize`/`CellWindow.gridDimensions`), not cells: `exploredChannel`
- * is an `AuxiliaryChannel` constructed with `chunkSize: {x:1,y:1,z:1}`, so in
- * its own coordinate space "cell" IS "chunk" -- its `.value` already holds
- * one entry per chunk.
+ * `cellDims` is the window's size in CELLS (`cmMapSize`/
+ * `CellWindow.cellDimensions`) -- the explored channel is now cell-granular
+ * and toroidal, exactly like the emission-color and smoothing channels, so
+ * this buffer is addressed by SLOT and is the same shape as theirs.
  */
 function syncExploredField(
   exploredChannel: AuxiliaryChannel,
-  chunkGridDims: { x: number; y: number; z: number },
+  cellDims: { x: number; y: number; z: number },
 ): void {
-  const dims = new Vector3D(chunkGridDims.x, chunkGridDims.y, chunkGridDims.z);
+  const dims = new Vector3D(cellDims.x, cellDims.y, cellDims.z);
   // Zero-copy adoption, same as `syncAuxiliaryFields` -- see its comment for
-  // why the wrapper must be rebuilt on every sync rather than cached. These
-  // two channels are chunk-granular (one entry per CHUNK, not per cell), so
-  // the buffers here are ~1/20000th the size of the cell-granular ones and
-  // the copy was never the expensive part; adopting keeps the two sync paths
-  // written the same way rather than leaving one on the old idiom.
+  // why the wrapper must be rebuilt on every sync rather than cached.
   cmExploredMap = new Array3Du32(dims, exploredChannel.value);
   cmExploredVersion++;
   cmExploredFullVersion = cmExploredVersion;
@@ -1732,13 +1738,9 @@ function syncExploredField(
  * `cmSmoothingWeights`/`cmExploredMap` are never left `undefined` between
  * construction and whenever this hook first actually fires.
  *
- * `exploredChannel` is remapped when calling its own `onWindowChange`:
- * `exploredChannel` was constructed with `chunkSize: {x:1,y:1,z:1}`, so in
- * ITS coordinate space "cellDims" means the same thing `gridDims` means to
- * the primary window (one unit per chunk) -- feed it `gridDims`'s value for
- * both `cellDims` and `gridDims` so its internal eviction/assembly math
- * (which iterates `gridDims` chunks and indexes `cellDims`-shaped flat
- * arrays) operates on the chunk-grid, not the cell-grid.
+ * `exploredChannel` no longer needs the chunk-grid remapping it once did: it
+ * is cell-granular and toroidal like the other two, so it takes the window
+ * change verbatim.
  */
 function makeAuxiliaryOnReassemble(
   emissionChannel: AuxiliaryChannel,
@@ -1750,18 +1752,7 @@ function makeAuxiliaryOnReassemble(
     const channelsT0 = profiling ? performance.now() : 0;
     emissionChannel.onWindowChange(_old, next);
     smoothingChannel.onWindowChange(_old, next);
-    exploredChannel.onWindowChange(
-      {
-        origin: _old.origin,
-        gridDims: _old.gridDims,
-        cellDims: _old.gridDims,
-      },
-      {
-        origin: next.origin,
-        gridDims: next.gridDims,
-        cellDims: next.gridDims,
-      },
-    );
+    exploredChannel.onWindowChange(_old, next);
     if (profiling) {
       cmAuxWindowChangeMsAccum += performance.now() - channelsT0;
     }
@@ -1777,7 +1768,7 @@ function makeAuxiliaryOnReassemble(
       next.cellDims,
       _old.origin === null || dimsChanged,
     );
-    syncExploredField(exploredChannel, next.gridDims);
+    syncExploredField(exploredChannel, next.cellDims);
     if (profiling) {
       cmAuxFieldSyncMsAccum += performance.now() - syncT0;
     }
@@ -2009,13 +2000,6 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     y: (2 * radius.y + 1) * optChunkSize.y,
     z: (2 * radius.z + 1) * optChunkSize.z,
   };
-  // Initial CHUNK-GRID dims (not cell dims) -- for `exploredChannel` below,
-  // which tracks fog-of-war "explored" state at one flag per chunk.
-  const initialChunkGridDims = {
-    x: 2 * radius.x + 1,
-    y: 2 * radius.y + 1,
-    z: 2 * radius.z + 1,
-  };
   const emissionChannel = new AuxiliaryChannel({
     chunkSize: optChunkSize,
     baselineValue: 0,
@@ -2034,18 +2018,23 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   smoothingChannel.seedFromDense(weightsArray3D.value, mapSize);
   // Fog-of-war "explored" state starts empty/unexplored everywhere -- no
   // authored data to seed from at construction (unlike emission color/
-  // smoothing weights above).
+  // smoothing weights above). Configured exactly like the two channels above:
+  // per CELL, toroidal. It used to be `chunkSize: {x:1,y:1,z:1}` with
+  // `toroidal: false`, which collapsed its coordinate math to one flag per
+  // CHUNK -- a 16x16-cell footprint against a vision radius of 4-6 cells, so
+  // walking anywhere in a chunk revealed several times more ground than the
+  // villager could see.
   const exploredChannel = new AuxiliaryChannel({
-    chunkSize: { x: 1, y: 1, z: 1 },
+    chunkSize: optChunkSize,
     baselineValue: 0,
     trackDivergence: true,
-    toroidal: false,
-    initialCellDims: initialChunkGridDims,
+    toroidal: true,
+    initialCellDims,
   });
   // Synchronous initial assignment -- see `makeAuxiliaryOnReassemble`'s doc
   // comment for why this can't wait for the hook alone.
   syncAuxiliaryFields(emissionChannel, smoothingChannel, initialCellDims, true);
-  syncExploredField(exploredChannel, initialChunkGridDims);
+  syncExploredField(exploredChannel, initialCellDims);
 
   const window = new CellWindow(
     {
@@ -2187,12 +2176,6 @@ function builderGenerative(options: CellMapOptions): CellMapT {
   const coldStorage = new ChunkColdStorage({
     chunkCellCount: optChunkSize.x * optChunkSize.y * optChunkSize.z,
   });
-  // Initial CHUNK-GRID dims (not cell dims) -- for `exploredChannel` below.
-  const windowChunkGridDims = {
-    x: 2 * radius.x + 1,
-    y: 2 * radius.y + 1,
-    z: 2 * radius.z + 1,
-  };
   const emissionChannel = new AuxiliaryChannel({
     chunkSize: optChunkSize,
     baselineValue: 0,
@@ -2211,13 +2194,14 @@ function builderGenerative(options: CellMapOptions): CellMapT {
     smoothingChannel.seedFromDense(weightsArray3D.value, windowCellDims);
   }
   // Fog-of-war "explored" state starts empty/unexplored everywhere -- no
-  // authored data to seed from at construction.
+  // authored data to seed from at construction. Per CELL and toroidal, exactly
+  // like the two channels above; see the legacy path's matching comment.
   const exploredChannel = new AuxiliaryChannel({
-    chunkSize: { x: 1, y: 1, z: 1 },
+    chunkSize: optChunkSize,
     baselineValue: 0,
     trackDivergence: true,
-    toroidal: false,
-    initialCellDims: windowChunkGridDims,
+    toroidal: true,
+    initialCellDims: windowCellDims,
   });
   // Synchronous initial assignment -- see `makeAuxiliaryOnReassemble`'s doc
   // comment for why this can't wait for the hook alone (the default
@@ -2225,7 +2209,7 @@ function builderGenerative(options: CellMapOptions): CellMapT {
   // `onReassemble` doesn't fire synchronously here the way it does when
   // everything's cold-storage-resolvable).
   syncAuxiliaryFields(emissionChannel, smoothingChannel, windowCellDims, true);
-  syncExploredField(exploredChannel, windowChunkGridDims);
+  syncExploredField(exploredChannel, windowCellDims);
   const resolvedGenerator = resolveGeneratorOptions(options);
   const generator = wrapGenerator(
     resolvedGenerator.generateCell,
@@ -2524,12 +2508,6 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     (2 * radius.y + 1) * cks.y,
     (2 * radius.z + 1) * cks.z,
   );
-  // Initial CHUNK-GRID dims (not cell dims) -- for `dExploredChannel` below.
-  const windowChunkGridDims = {
-    x: 2 * radius.x + 1,
-    y: 2 * radius.y + 1,
-    z: 2 * radius.z + 1,
-  };
 
   // Chunk size must be configured before any mesh_build_chunk* call, before
   // the window's initial load below (mirrors builder()).
@@ -2702,11 +2680,11 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   // emissionColorData) -- see the matching comment on `exploredStorageEntries`
   // in `serialize()` above.
   const dExploredChannel = new AuxiliaryChannel({
-    chunkSize: { x: 1, y: 1, z: 1 },
+    chunkSize: cks,
     baselineValue: 0,
     trackDivergence: true,
-    toroidal: false,
-    initialCellDims: windowChunkGridDims,
+    toroidal: true,
+    initialCellDims: windowCellDims,
   });
   // Uses the channel's own `loadEntries` wrapper (delegates straight to
   // `coldStorage.loadEntries`) for consistency with `dEmissionChannel`/
@@ -2725,7 +2703,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     windowCellDims,
     true,
   );
-  syncExploredField(dExploredChannel, windowChunkGridDims);
+  syncExploredField(dExploredChannel, windowCellDims);
 
   const dWindow = new CellWindow(
     {

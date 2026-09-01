@@ -11,6 +11,11 @@ import { Vector3D } from '../../math';
 import type { FogOfWarMethods } from './methods';
 
 /**
+ * How a vision source decides what it can see. See `FogOfWarT.visionMode`.
+ */
+export type FogVisionMode = 'line-of-sight' | 'distance';
+
+/**
  * Fog-of-war component for scene-wide vision memory styling.
  * Uses GLOBAL uniqueness - only one fog-of-war allowed per scene hierarchy.
  *
@@ -42,6 +47,54 @@ export interface FogOfWarT
   lightInfluence: number;
 
   /**
+   * How a vision source decides what it can see.
+   *
+   * - `'line-of-sight'` (default): range AND an unobstructed path, from eight
+   *   jittered raycasts against the voxel solidity volume. Walls block sight.
+   * - `'distance'`: range alone. Everything inside the radius is seen, walls
+   *   included.
+   *
+   * This is a whole-system switch, not a rendering one -- it drives sprites,
+   * terrain, and what gets marked explored alike. Splitting it would put the
+   * live view and terrain memory back into disagreement, which is the class of
+   * bug the single-source-of-truth work here exists to prevent.
+   *
+   * `'distance'` also makes a sprite match the tile it stands on EXACTLY.
+   * Visibility is then a pure function of position, so a sprite fragment and a
+   * terrain fragment at the same world point resolve identically. Under
+   * `'line-of-sight'` they cannot: terrain raycasts per fragment while a sprite
+   * gets one raycast at its anchor, so the occlusion term snaps across a sprite
+   * where it gradates across a tile.
+   *
+   * It is much cheaper too -- eight DDA raycasts per terrain fragment and per
+   * sprite sample, gone -- but pick it for the look, since it is a visible
+   * gameplay change: vision passes through walls.
+   */
+  visionMode: FogVisionMode;
+
+  /**
+   * Whether marking terrain "explored" requires line of sight, or just range.
+   *
+   * Default `true`, and it should stay that way: a cell is remembered exactly
+   * when a vision source could actually SEE it, decided by `isVisibleFrom` --
+   * the same predicate behind the sprite sweep and deferred terrain
+   * presentation, and a ray-for-ray mirror of what unified.frag computes per
+   * fragment. That is what keeps terrain memory, sprite memory and the live
+   * view from disagreeing about what counts as seen.
+   *
+   * `false` marks purely by range. It is a perf lever, not a look: it makes
+   * memory appear on ground that was near but out of sight, which reads as
+   * inconsistent against the live view right beside it.
+   *
+   * Note the raycast is not a residency problem. It runs against the voxel
+   * solidity volume, which covers every resident cell whether or not its mesh
+   * has been built, and both `isRayBlockedTS` and the shader's `isRayBlocked`
+   * fail OPEN once a ray leaves that volume -- so CPU and GPU agree out there
+   * by construction.
+   */
+  exploreRequiresLineOfSight: boolean;
+
+  /**
    * @deprecated No longer has any effect. It tuned the near/far terrain-memory
    * LOD, which tiered how much detail a flat per-material colour snapshot
    * carried. Remembered terrain is now the real geometry, deferred rather
@@ -55,6 +108,8 @@ export interface FogOfWarOptions extends ComponentOptions {
   memoryStyle?: FogOfWarStyle;
   neverViewedStyle?: FogOfWarStyle;
   lightInfluence?: number;
+  visionMode?: FogVisionMode;
+  exploreRequiresLineOfSight?: boolean;
   nearBufferCells?: number;
 }
 
@@ -96,6 +151,8 @@ export function builder(options: FogOfWarOptions): FogOfWarT {
       tint: new Vector3D(0, 0, 0),
     },
     lightInfluence: options.lightInfluence ?? 0,
+    visionMode: options.visionMode ?? 'line-of-sight',
+    exploreRequiresLineOfSight: options.exploreRequiresLineOfSight ?? true,
     nearBufferCells: options.nearBufferCells ?? 0,
   };
 
@@ -134,6 +191,8 @@ function serialize(component: ComponentData): any {
     memoryStyle: serializeStyle(fow.memoryStyle),
     neverViewedStyle: serializeStyle(fow.neverViewedStyle),
     lightInfluence: fow.lightInfluence,
+    visionMode: fow.visionMode,
+    exploreRequiresLineOfSight: fow.exploreRequiresLineOfSight,
     nearBufferCells: fow.nearBufferCells,
   };
 }
@@ -264,6 +323,15 @@ function deserialize(data: any): DeserializeResult<FogOfWarT> {
       memoryStyle,
       neverViewedStyle,
       lightInfluence: data.lightInfluence as number,
+      // Anything unrecognised falls back to the default rather than being
+      // reported: an unknown mode is a forward-compatibility case (a scene
+      // saved by a newer build), and defaulting keeps the scene loadable.
+      visionMode: data.visionMode === 'distance' ? 'distance' : undefined,
+      // Absent in scenes saved before this option existed; they load on the
+      // default, which is the behaviour those scenes already had.
+      exploreRequiresLineOfSight: data.exploreRequiresLineOfSight as
+        | boolean
+        | undefined,
       nearBufferCells: data.nearBufferCells as number | undefined,
     }),
     errors,
@@ -283,5 +351,7 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'memoryStyle',
   'neverViewedStyle',
   'lightInfluence',
+  'visionMode',
+  'exploreRequiresLineOfSight',
   'nearBufferCells',
 ];

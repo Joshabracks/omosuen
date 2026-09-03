@@ -45,6 +45,24 @@ fn unpack_visible_solid(packed: u32) -> bool {
     visible == 1 && shape != 0
 }
 
+/// Whether this cell culls its neighbours' faces even though it is not solid
+/// (bit 30, `CellData.cullsNeighborFaces`).
+///
+/// Deliberately separate from `unpack_visible_solid`: a marked cell stays AIR
+/// everywhere else -- `solid_byte` is unchanged, so line of sight, the fog
+/// raycasts and pathing all still see through it. Only face culling treats it
+/// as occluding.
+///
+/// That separation is what makes it usable at a world boundary. Culling the
+/// boundary face does not hide what is behind it -- there is simply nothing
+/// drawn there, and the ray continues to whatever does emit a face. What hides
+/// it is fog, and fog only works because the rock is still opaque to the
+/// raycasts. Make this feed solidity and both halves break at once.
+#[inline]
+fn unpack_cull_neighbors(packed: u32) -> bool {
+    (packed >> 30) & 0x1 == 1
+}
+
 #[inline]
 fn unpack_material(packed: u32) -> i32 {
     (packed & 0xfff) as i32
@@ -85,7 +103,12 @@ fn cell_covers(packed: u32, face_i: usize, custom_shapes: &[CustomShape]) -> boo
 /// custom cell that does not cover a side lets the neighbor render its face there.
 #[inline]
 fn neighbor_blocks(packed: u32, face_i: usize, custom_shapes: &[CustomShape]) -> bool {
-    unpack_visible_solid(packed) && cell_covers(packed, face_i, custom_shapes)
+    // Unconditional, not per-face: a cull-neighbours cell occludes on all six
+    // sides. Every culling site in this crate funnels through here, so the four
+    // of them (greedy, custom-shape triangles, and both non-greedy cube paths)
+    // inherit it rather than each growing its own copy.
+    unpack_cull_neighbors(packed)
+        || (unpack_visible_solid(packed) && cell_covers(packed, face_i, custom_shapes))
 }
 
 /// If all three local corners (range -0.5..0.5) lie on one ±0.5 cell-face plane,

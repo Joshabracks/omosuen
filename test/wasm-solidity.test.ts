@@ -43,6 +43,12 @@ function makeCase(
         shapeIndex,
         emissionIntensity: Math.floor(rng() * 32),
         visible,
+        // Randomised, and deliberately ABSENT from `expected` below: this flag
+        // culls neighbouring faces at mesh time and must have no effect on
+        // solidity whatsoever. If it ever leaked in, line of sight, pathing and
+        // the fog raycasts would all shift at once -- so the oracle ignoring it
+        // is the assertion.
+        cullsNeighborFaces: rng() < 0.5,
       }),
     );
     expected[i] = visible && shapeIndex !== 0 ? 255 : 0;

@@ -469,6 +469,9 @@ export const CellMap: CellMapMethods = {
       shapeIndex: Math.max(0, Math.min(0xfff, data.shapeIndex)),
       emissionIntensity: Math.max(0, Math.min(0x1f, data.emissionIntensity)),
       visible: data.visible,
+      // Rebuilt field by field rather than spread, so anything added to
+      // CellData has to be listed here or it is silently dropped on write.
+      cullsNeighborFaces: data.cullsNeighborFaces,
     };
 
     const packed = packCell(clamped);
@@ -996,6 +999,10 @@ export const CellMap: CellMapMethods = {
             Math.min(0x1f, entry.data.emissionIntensity),
           ),
           visible: entry.data.visible,
+          // Listed explicitly, like `setCellData` -- this clamp block rebuilds
+          // CellData field by field, so anything added to the type is silently
+          // dropped here until it is named.
+          cullsNeighborFaces: entry.data.cullsNeighborFaces,
         };
         batch.push({
           worldX: entry.x,

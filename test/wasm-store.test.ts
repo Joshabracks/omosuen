@@ -15,6 +15,7 @@ import {
   cellStoreFlush,
   cellStoreDump,
 } from '../src/component/camera/render/wasm';
+import { packCell, unpackCell } from '../src/component/cell-map/types';
 import { buildRenderWasm } from '../build-tools/wasm.mjs';
 
 function makeRng(seed: number): () => number {
@@ -94,6 +95,54 @@ function runCase(d: Dims, seed: number, distinct: number): void {
   verifyAll(d, oracle, `seed${seed} after flush`);
 }
 
+/**
+ * The high cell-word bits survive the store, and `cullsNeighborFaces`
+ * round-trips through pack/unpack.
+ *
+ * Every other case here uses small integers, so bit 30 is never exercised --
+ * a store that masked the word down would pass all of them and silently drop
+ * the flag on load.
+ */
+function highBitCheck(): void {
+  const marked = packCell({
+    materialIndex: 0xabc,
+    shapeIndex: 0,
+    emissionIntensity: 0,
+    visible: false,
+    cullsNeighborFaces: true,
+  });
+  const plain = packCell({
+    materialIndex: 0xabc,
+    shapeIndex: 0,
+    emissionIntensity: 0,
+    visible: false,
+  });
+
+  if (!(marked & (1 << 30))) throw new Error('packCell did not set bit 30');
+  if (plain & (1 << 30)) throw new Error('packCell set bit 30 unasked');
+  // An unmarked cell must pack bit-identically to before the flag existed, or
+  // every already-saved scene quietly changes meaning.
+  if (plain !== (marked & ~(1 << 30))) {
+    throw new Error('unmarked cell is not the marked cell minus bit 30');
+  }
+  if (unpackCell(marked).cullsNeighborFaces !== true) {
+    throw new Error('unpackCell lost cullsNeighborFaces');
+  }
+  if (unpackCell(plain).cullsNeighborFaces !== false) {
+    throw new Error('unpackCell invented cullsNeighborFaces');
+  }
+
+  const d: Dims = { x: 4, y: 1, z: 1 };
+  const oracle = new Uint32Array([marked, plain, marked, 0xffffffff]);
+  loadCellStore(oracle, 4, d.x, d.y, d.z);
+  verifyAll(d, oracle, 'high-bit after load');
+  cellStoreSet(1, 0, 0, marked);
+  oracle[1] = marked;
+  verifyAll(d, oracle, 'high-bit after set');
+  cellStoreFlush();
+  verifyAll(d, oracle, 'high-bit after flush');
+}
+
 async function main(): Promise<void> {
   await initRenderWasm(buildRenderWasm());
 
@@ -111,6 +160,11 @@ async function main(): Promise<void> {
       `  ✓ seed${c.seed} [${c.d.x}x${c.d.y}x${c.d.z}] distinct=${c.distinct} — load/get/set/flush/dump OK`,
     );
   }
+
+  highBitCheck();
+  console.log(
+    '  ✓ high cell-word bits survive load/set/flush; cullsNeighborFaces round-trips',
+  );
 
   console.log(`\nWASM cell store round-trip: ${cases.length} cases PASSED ✓`);
 }

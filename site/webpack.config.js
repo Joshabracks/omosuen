@@ -78,13 +78,15 @@ module.exports = (_env, argv) => {
             to: "assets/logo-lapis-sin.svg",
           },
           ...heroTileCopies,
-          { from: "src/scenes/site.js", to: "scenes/site.js" },
-          { from: "src/scenes/hero-characters.js", to: "scenes/hero-characters.js" },
-          { from: "src/scenes/hero-texture-ids.json", to: "scenes/hero-texture-ids.json" },
+          // Scene modules are loaded by the browser's own `import()` at
+          // runtime, not bundled — the whole tree is copied verbatim, so a new
+          // scene needs no entry here.
+          { from: "src/scenes", to: "scenes" },
+          { from: "assets/textris", to: "assets/textris" },
           {
             from: "assets",
             to: "assets/characters",
-            globOptions: { ignore: ["**/tiles/**"] },
+            globOptions: { ignore: ["**/tiles/**", "**/textris/**"] },
           },
         ],
       }),
@@ -108,6 +110,11 @@ module.exports = (_env, argv) => {
           directory: path.resolve(__dirname, "assets"),
           publicPath: "/assets/characters",
           watch: true,
+        },
+        {
+          directory: path.resolve(__dirname, "assets/textris"),
+          publicPath: "/assets/textris",
+          watch: false,
         },
       ],
       watchFiles: ["src/scenes/**/*.{js,json}"],

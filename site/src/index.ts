@@ -4,9 +4,11 @@ import {
   registerStateBundle,
   stateOverlayDefinition,
 } from 'omosuen-state-overlay';
+import { demoPage } from './components/demo';
 import { docsPage } from './components/docs';
 import { landingPage, siteFooter, siteHeader } from './components/landing';
-import { siteRouter } from './components/router';
+import { setActiveScene, siteRouter } from './components/router';
+import { sceneForView } from './docs-routing';
 import { highlightSST as formatCodeBlock } from './highlight';
 import { initialState } from './state';
 
@@ -27,6 +29,7 @@ function registerSiteBundle(): void {
         <SiteHeader />
         <main class="site-main">
           <Landing />
+          <Demo />
           <Docs />
         </main>
         <SiteFooter />
@@ -41,6 +44,7 @@ function registerSiteBundle(): void {
       SiteHeader: siteHeader,
       SiteFooter: siteFooter,
       Landing: landingPage,
+      Demo: demoPage,
       Docs: docsPage,
     },
     methods: {
@@ -60,7 +64,14 @@ async function boot(): Promise<void> {
   });
   registerSiteBundle();
   Omosuen.registerSceneModule('site', absoluteScenePath('./scenes/site.js'));
-  await Omosuen.switchScene('site');
+  Omosuen.registerSceneModule('textris', absoluteScenePath('./scenes/textris/index.js'));
+
+  // Boot straight into whichever scene the URL asks for — deep-linking to
+  // #demo should not build the landing hero's cell-map first, since only one
+  // cell-map can exist at a time.
+  const initialScene = sceneForView(initialState.view);
+  setActiveScene(initialScene);
+  await Omosuen.switchScene(initialScene);
   Omosuen.start(60);
 }
 

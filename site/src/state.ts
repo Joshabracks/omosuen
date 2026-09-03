@@ -1,6 +1,6 @@
 import { parseSiteHash } from "./docs-routing";
 
-export type SiteView = "landing" | "docs";
+export type SiteView = "landing" | "docs" | "demo";
 
 export interface SiteState {
   view: SiteView;

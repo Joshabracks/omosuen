@@ -11,9 +11,13 @@ function isValidDocsId(id: string): boolean {
   return isValidComponentDocId(id) || isValidPluginDocId(id);
 }
 
-/** Parses `#landing`, `#docs`, `#docs/sprite`, etc. */
+/** Parses `#landing`, `#demo`, `#docs`, `#docs/sprite`, etc. */
 export function parseSiteHash(hash: string): ParsedSiteHash {
   const raw = hash.startsWith("#") ? hash.slice(1) : hash;
+
+  if (raw === "demo") {
+    return { view: "demo", docsComponent: null };
+  }
 
   if (raw === "docs" || raw.startsWith("docs/")) {
     const segment = raw.split("/")[1] ?? "";
@@ -31,4 +35,17 @@ export function docsComponentHref(id: string): string {
 
 export function docsOverviewHref(): string {
   return "#docs";
+}
+
+export function demoHref(): string {
+  return "#demo";
+}
+
+/**
+ * Which engine scene a view needs. The demo is its own scene because `cell-map`
+ * is a process-wide singleton — the landing hero already holds the only one, so
+ * the two cannot be resident at the same time.
+ */
+export function sceneForView(view: SiteView): string {
+  return view === "demo" ? "textris" : "site";
 }

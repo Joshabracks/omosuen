@@ -25,14 +25,13 @@ interface OmosuenGlobal {
   switchScene(name: string): Promise<unknown>;
   start(fps: number): void;
   version: string;
-  version: string;
   newComponent(
     type: string,
     options: Record<string, unknown>,
     parent?: unknown,
   ): Promise<unknown>;
   castTo<T>(component: unknown): T;
-  getActiveScene(): unknown;
+  getActiveScene(): { name?: string } | null;
   ComponentUnique: {
     FALSE: number;
     LOCAL: number;

@@ -1058,6 +1058,151 @@ button {
   justify-content: center;
 }
 
+/* ── Demo (Textris) ──
+   The game canvas is a fixed, full-window, centred element the engine appends
+   to the body, so this chrome floats over it as a left rail rather than
+   flowing in the document. */
+
+.site-main:has(.demo-page) {
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.demo-page {
+  position: fixed;
+  left: var(--space-lg);
+  top: calc(var(--header-h) + var(--space-md));
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  width: min(23rem, 30vw);
+  max-height: calc(100vh - var(--header-h) - var(--space-2xl));
+  overflow-y: auto;
+}
+
+.demo-page__panel {
+  padding: var(--space-lg);
+}
+
+.demo-page__eyebrow {
+  display: block;
+  margin-bottom: var(--space-sm);
+}
+
+.demo-page__title {
+  font-family: var(--font-display);
+  font-size: 1.75rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  margin: 0 0 var(--space-sm);
+  color: var(--parchment);
+  text-shadow: var(--text-shadow-readability), 0 0 48px var(--text-shadow-glow);
+}
+
+.demo-page__lead {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--text-muted);
+  margin: 0 0 var(--space-lg);
+}
+
+.demo-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.demo-legend__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.demo-legend__key {
+  flex: 0 0 4.5rem;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 0.15em 0.4em;
+  border: 1px solid var(--accent-soft);
+  border-radius: 3px;
+  background: var(--bg-raised);
+  color: var(--parchment);
+}
+
+.demo-page__note {
+  margin: var(--space-lg) 0 0;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-hover);
+}
+
+.demo-page__credit {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+
+/* Below this the canvas is wide enough to reach the rail, so the chrome drops
+   to a single translucent strip along the bottom and sheds its long copy. */
+@media (max-width: 1180px) {
+  .demo-page {
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 0;
+    width: 100%;
+    max-height: none;
+    padding: var(--space-sm) var(--space-md);
+    background: var(--viewport-tint);
+    backdrop-filter: blur(2px);
+  }
+
+  .demo-page__panel {
+    padding: var(--space-sm) var(--space-md);
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    clip-path: none;
+  }
+
+  .demo-page__eyebrow,
+  .demo-page__lead,
+  .demo-page__credit {
+    display: none;
+  }
+
+  .demo-page__title {
+    font-size: 1.125rem;
+    margin: 0;
+  }
+
+  .demo-legend {
+    grid-auto-flow: column;
+    grid-auto-columns: max-content;
+    justify-content: start;
+    gap: var(--space-md);
+    margin-top: var(--space-xs);
+  }
+
+  .demo-page__note {
+    display: none;
+  }
+}
+
 @media (max-width: 768px) {
   .docs-layout {
     grid-template-columns: 1fr;

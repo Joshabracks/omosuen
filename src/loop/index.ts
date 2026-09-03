@@ -16,6 +16,7 @@ export {
   isPaused,
   getFrameTime,
   getFPS,
+  getFrameCount,
   getTargetFPS,
 } from './manager';
 
@@ -71,10 +72,13 @@ export {
   isProfilingEnabled,
   getLastFrameProfile,
   getFrameHistory,
+  startSpikeCapture,
+  isSpikeCaptureActive,
 } from './profile';
 export type {
   LoopPhase,
   ComponentTypeTiming,
   ComponentInstanceTiming,
   FrameProfile,
+  SpikeCaptureResult,
 } from './profile';

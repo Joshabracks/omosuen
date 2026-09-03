@@ -280,9 +280,57 @@ function recomputeAndBubbleUpdateWork(component: ComponentData): void {
  * @param component - Raw component data object (from builder or deserializer)
  * @returns Proxy-wrapped component
  */
+/**
+ * Base ComponentData properties, readable through the proxy on every
+ * component type.
+ */
+const BASE_PROPERTIES: readonly string[] = [
+  'name',
+  'type',
+  'id',
+  'parent',
+  '_disposed',
+  'loader',
+  '_generated',
+  'unique',
+  'overrideKey',
+  'updateOverride',
+  'initOverride',
+  '_initialized',
+  '_initDefer',
+  'ready',
+  '_hasUpdateWork',
+];
+
+/**
+ * `BASE_PROPERTIES` unioned with a type's own allowlist, keyed on the
+ * allowlist array itself. `PROPERTY_ALLOWLIST[type]` is written once per type
+ * (at module load, or by `registerComponentType`, which refuses to overwrite
+ * an existing type) and never mutated, so this is stable -- and keying on
+ * identity rather than on the type name means a replaced array can't be
+ * served a stale set.
+ */
+const allowedPropertyCache = new WeakMap<readonly string[], Set<string>>();
+
+function allowedPropertiesFor(type: COMPONENT_TYPE): Set<string> {
+  const allowlist = PROPERTY_ALLOWLIST[type] || [];
+  let allowed = allowedPropertyCache.get(allowlist);
+  if (allowed === undefined) {
+    allowed = new Set(BASE_PROPERTIES);
+    for (let i = 0; i < allowlist.length; i++) allowed.add(allowlist[i]);
+    allowedPropertyCache.set(allowlist, allowed);
+  }
+  return allowed;
+}
+
 export function wrapInProxy(component: ComponentData): ComponentData {
   ensureNexusMaps();
-  const proxyKeys = Object.keys(MethodRegistry[component.type]);
+  // A Set rather than an array for the same reason as `allowedProperties`
+  // below, but snapshotted PER PROXY, not cached per type: `Object.keys` of
+  // the method registry is already a point-in-time snapshot here, and a
+  // proxy built before a later `registerMethod` has never seen the added key.
+  // Caching by type would quietly change that.
+  const proxyKeys = new Set(Object.keys(MethodRegistry[component.type]));
 
   // Computed here (not in newComponent/loader.ts) so every construction path
   // that wraps a component gets this for free -- both newComponent and scene
@@ -290,27 +338,14 @@ export function wrapInProxy(component: ComponentData): ComponentData {
   // calling this function.
   component._hasUpdateWork = computeOwnUpdateWork(component);
 
-  // Base ComponentData properties (always allowed)
-  const baseProperties = [
-    'name',
-    'type',
-    'id',
-    'parent',
-    '_disposed',
-    'loader',
-    '_generated',
-    'unique',
-    'overrideKey',
-    'updateOverride',
-    'initOverride',
-    '_initialized',
-    '_initDefer',
-    'ready',
-    '_hasUpdateWork',
-  ];
-
-  // Component-specific properties
-  const componentAllowlist = PROPERTY_ALLOWLIST[component.type] || [];
+  // Every allowed property for this type: the base ComponentData fields plus
+  // the type's own allowlist, as ONE set. The `get` trap runs on every single
+  // property read in the engine, so this used to be two linear `Array.includes`
+  // scans -- reading a sprite's `_fowStatus` (last in its allowlist) cost ~32
+  // string comparisons. Cached per allowlist ARRAY IDENTITY rather than per
+  // type name, so it needs no invalidation hook: a type whose allowlist array
+  // is ever replaced simply misses and rebuilds.
+  const allowedProperties = allowedPropertiesFor(component.type);
 
   // Per-proxy cache of method wrappers, so repeated `component.method()` calls
   // reuse a single closure instead of allocating a new one on every access.
@@ -324,14 +359,14 @@ export function wrapInProxy(component: ComponentData): ComponentData {
       }
 
       // Check if property is allowed (base or component-specific)
-      if (baseProperties.includes(prop) || componentAllowlist.includes(prop)) {
+      if (allowedProperties.has(prop)) {
         // eslint-disable-next-line @typescript-eslint/ban-ts-comment
         // @ts-expect-error
         return c[prop];
       }
 
       // Check if it's a method
-      if (proxyKeys.indexOf(prop) !== -1) {
+      if (proxyKeys.has(prop)) {
         // Return a cached wrapper so repeated calls to the same method don't
         // allocate a fresh closure on every property access. The wrapper reads
         // MethodRegistry at call time, so re-registered method bodies are still
@@ -365,7 +400,7 @@ export function wrapInProxy(component: ComponentData): ComponentData {
       }
 
       console.error(
-        `${c.type} has no method named ${prop}. Available methods: ${proxyKeys.join(', ')}`,
+        `${c.type} has no method named ${prop}. Available methods: ${[...proxyKeys].join(', ')}`,
       );
       // return do nothing func for graceful failure
       return () => {};

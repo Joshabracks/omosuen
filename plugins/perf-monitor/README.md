@@ -70,6 +70,41 @@ phase/type aggregates. No network calls; this is a static/browser-only engine,
 so the snapshot is a local artifact you can attach to a bug report or diff
 across engine versions, not telemetry sent anywhere.
 
+## Hunting jitter: `spikeLog`
+
+```js
+// From the browser console, with the browser build loaded:
+await spikeLog();        // watch 5 seconds, report the worst 10 frames
+await spikeLog(15, 25);  // watch 15 seconds, report the worst 25
+
+// Or imported:
+import { spikeLog } from 'omosuen-perf-monitor';
+// (also available as window.OmosuenPerfMonitor.spikeLog)
+```
+
+Watches the next `seconds` of frames and logs the slowest `size` of them, each
+with its full phase and per-component-type breakdown.
+
+This exists for intermittent stutter, which the other two tools here genuinely
+can't catch. The HUD's tables refresh on a 1-second average, so a single 40ms
+hitch is diluted into nothing. `exportPerfSnapshot` dumps the rolling history,
+which only holds ~5 seconds at 60fps — by the time you feel a stutter and reach
+for it, the frame that caused it has usually already been shifted out.
+`spikeLog` watches *forward* and keeps only the outliers, so the workflow is:
+start it, then reproduce the stutter while it runs.
+
+Spikes are reported against the window's **median** frame, not its average — a
+few large spikes drag an average toward themselves and make everything look
+less anomalous than it is. Each row shows absolute time, the amount over
+median, the multiple of median, and the top contributing component types; the
+collapsed group under each row has the complete breakdown.
+
+Requires profiling to be on, which the `perf-monitor` component does in its
+`init()` — if the component isn't in the scene, `spikeLog` warns and returns
+`null` rather than silently reporting nothing. The window is closed by a timer
+rather than a frame count, so it still reports if the loop stalls or stops
+outright, which is the case most worth seeing.
+
 ## Build
 
 ```

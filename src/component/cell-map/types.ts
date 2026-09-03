@@ -159,6 +159,28 @@ export interface CellData {
    * false = skip rendering this cell
    */
   visible: boolean;
+
+  /**
+   * Cull the faces of neighbouring cells that point at this one, even though
+   * this cell is not solid. Default false.
+   *
+   * Meshing ONLY. A marked cell stays air everywhere else: solidity, line of
+   * sight, the fog raycasts and pathing all still pass straight through it.
+   *
+   * The use is sealing a world boundary. Terrain at the edge of a generated
+   * map has genuinely exposed side faces, and those faces render as a
+   * cross-section of the strata -- which gives away what is buried in them.
+   * Marking the shell of air just outside the map removes those faces.
+   *
+   * That does NOT by itself hide what is behind them: with no face drawn, the
+   * view continues to whatever does emit one. What hides it is fog, and fog
+   * only works here because this flag leaves solidity alone -- the rock is
+   * still opaque to the raycasts, so everything behind reads as unseen. The
+   * two halves are load-bearing together; neither is sufficient.
+   *
+   * Sharp tool: set mid-map it will happily remove faces and leave a hole.
+   */
+  cullsNeighborFaces?: boolean;
 }
 
 /**
@@ -170,19 +192,26 @@ export function createDefaultCellData(): CellData {
     shapeIndex: 1, // Default to cube
     emissionIntensity: 0,
     visible: true,
+    cullsNeighborFaces: false,
   };
 }
 
 /**
  * Packs CellData into a single 32-bit integer
- * Bit layout: [material(12) | shape(12) | emission(5) | visible(1) | reserved(2)]
+ * Bit layout:
+ * [material(12) | shape(12) | emission(5) | visible(1) | cullsNeighborFaces(1) | reserved(1)]
+ *
+ * This is the single boundary between CellData and the packed word the WASM
+ * store holds, so anything added here rides the store, cold storage, window
+ * shifts and saves without further work.
  */
 export function packCell(data: CellData): number {
   return (
     (data.materialIndex & 0xfff) |
     ((data.shapeIndex & 0xfff) << 12) |
     ((data.emissionIntensity & 0x1f) << 24) |
-    ((data.visible ? 1 : 0) << 29)
+    ((data.visible ? 1 : 0) << 29) |
+    ((data.cullsNeighborFaces ? 1 : 0) << 30)
   );
 }
 
@@ -195,6 +224,7 @@ export function unpackCell(packed: number): CellData {
     shapeIndex: (packed >> 12) & 0xfff,
     emissionIntensity: (packed >> 24) & 0x1f,
     visible: ((packed >> 29) & 0x1) === 1,
+    cullsNeighborFaces: ((packed >> 30) & 0x1) === 1,
   };
 }
 
@@ -242,34 +272,23 @@ export interface CellEmissionColorDirtyRegion {
 }
 
 /**
- * A single dirty chunk in `exploredMap` (chunk-level fog-of-war "has any
- * vision source ever seen into this chunk" state), tagged with the
- * `exploredVersion` that produced it. Stored in window-LOCAL CHUNK-GRID
- * coordinates -- valid only as long as no window shift has happened since it
- * was logged (a shift bumps `exploredFullVersion` past every pre-shift
- * entry, which is what makes stale local coords safe to ignore rather than
- * something that has to be actively invalidated). Mirrors
- * `CellEmissionColorDirtyRegion`, chunk-grid coordinates instead of cell
- * coordinates.
+ * A single dirty chunk in `exploredMap` (cell-level fog-of-war "has any
+ * vision source ever come within range of this cell" state), tagged with the
+ * `exploredVersion` that produced it.
+ *
+ * The DATA is per cell; this log is per chunk because a single vision sweep
+ * dirties on the order of a thousand cells at once -- see
+ * `cmExploredDirtyRegions`. Each entry names a chunk whose cell subvolume is
+ * re-uploaded whole.
+ *
+ * Stored in SLOT-space chunk coordinates (the toroidal slot of any cell in the
+ * chunk, floor-divided by `chunkSize`), because the buffer the uploader reads
+ * and the texel it writes are both toroidally addressed -- same convention as
+ * `CellEmissionColorDirtyRegion`. Window dimensions are always a whole number
+ * of chunks, so a chunk's cells stay contiguous and chunk-aligned under the
+ * wrap and never straddle the seam.
  */
 export interface ChunkExploredDirtyRegion {
-  version: number;
-  x: number;
-  y: number;
-  z: number;
-}
-
-/**
- * A single dirty cell in `memoryMaterialMap` (near-tier fog-of-war "captured
- * material" snapshot -- one real material index per CELL, for cells near an
- * active vision source), tagged with the `memoryMaterialVersion` that
- * produced it. Stored in window-LOCAL CELL coordinates -- valid only as long
- * as no window shift has happened since it was logged (a shift bumps
- * `memoryMaterialFullVersion` past every pre-shift entry, which is what makes
- * stale local coords safe to ignore rather than something that has to be
- * actively invalidated). Mirrors `CellEmissionColorDirtyRegion` exactly.
- */
-export interface MemoryMaterialDirtyRegion {
   version: number;
   x: number;
   y: number;

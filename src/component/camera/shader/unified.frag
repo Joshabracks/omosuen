@@ -20,6 +20,9 @@ uniform highp vec3 u_cellSize;
     // (0,0,0)).
 uniform highp vec3 u_windowSize;
 uniform highp vec3 u_windowOrigin;
+// Toroidal wrap offset in CELLS: the window origin modulo the window size,
+// computed with integer math on the CPU. See `windowSlot`.
+uniform highp ivec3 u_windowWrapOffset;
 uniform vec4 u_normalUVBounds;
 
     // Per-side (per-triplanar-plane) frames for cells (Mode 0).
@@ -75,6 +78,18 @@ uniform float u_opacity;
     // stand-in for some other (currently obscured) tracked sprite. See
     // SpriteT._fowStatus's doc comment.
 uniform bool u_spriteFogMemory;
+    // Fog-of-war OPACITY for this draw, 0..1, supplied per draw call from the
+    // CPU. Timed, not distance-driven: a live sprite fades in over a fixed
+    // duration, and a phantom fades out over one. Distance drives COLOUR only
+    // (u_spriteVisibility). See fog-of-war/methods.ts for why.
+uniform float u_spriteFogAlpha;
+    // Fog-of-war visibility for THIS sprite, 0..1, computed once on the CPU
+    // (render-sprites.ts, via fog-of-war/sweep.ts's computeSpriteVisibility)
+    // rather than per fragment. Pure geometry -- radial falloff times the
+    // fraction of jittered rays that reach the sprite -- with the
+    // u_fogLightInfluence boost applied in the fragment shader on top.
+    // 1.0 when there are no vision sources.
+uniform float u_spriteVisibility;
 
     // Occlusion mask uniforms (sprite mode — samples cell FBO depth texture)
 uniform sampler2D u_depthTexture;
@@ -96,40 +111,39 @@ uniform highp sampler2DArray u_cellSolidity;   // R8: 0=empty, 255=solid, layer=
     // per-cell-map context, so the sprite path never reads it.
 const int MAX_VISION_SOURCES = 8;
 uniform int u_numVisionSources;
+// FogOfWarT.visionMode: true = 'line-of-sight' (raycasts), false = 'distance'
+// (range alone). Uploaded per draw alongside the source arrays.
+uniform bool u_fogUseLineOfSight;
 uniform highp vec3 u_visionSourcePos[MAX_VISION_SOURCES];
 uniform float u_visionSourceRadius[MAX_VISION_SOURCES];
 uniform float u_visionSourceFadeWidth[MAX_VISION_SOURCES];
 uniform bool u_fogExempt;
 
-    // Fog-of-war persistent "explored" state -- chunk-resolution (much
-    // coarser than u_cellSolidity: one texel per chunk, not per cell),
-    // LINEAR-filtered so explored/unexplored chunks blend smoothly instead
-    // of a hard chunk-aligned edge (see render-cell-maps.ts's
-    // uploadExploredTexture). u_chunkGridSize is the resident window's size
-    // in chunks; chunk size in cells is derived as u_windowSize/u_chunkGridSize.
-uniform highp sampler2DArray u_exploredTexture; // R8: 0=unexplored, 255=explored
-uniform highp vec3 u_chunkGridSize;
-
-    // Terrain-memory LOD: near tier (per-cell, window-cell resolution) and
-    // far tier (per-chunk, chunk-grid resolution) captured material indices.
-    // NEAREST-filtered (unlike u_exploredTexture above) -- these carry a
-    // material INDEX, not a blend-safe scalar, so bilinear filtering would
-    // blend two different materials' indices into a meaningless value.
-    // 255 = no data captured at that cell/chunk yet.
-uniform highp sampler2DArray u_nearMaterialTexture; // R8
-uniform highp sampler2DArray u_farMaterialTexture;  // R8
-const int MAX_MEMORY_MATERIALS = 64;
-uniform vec3 u_fogMaterialColors[MAX_MEMORY_MATERIALS];
+    // Fog-of-war persistent "explored" state -- one texel per CELL, the same
+    // resolution and toroidal slot addressing as u_cellSolidity, and sized by
+    // the same u_windowSize. A true 3D texture, not a 2D array: on an array
+    // only s and t are filtered and the layer axis is nearest, which put a hard
+    // quantized line across world Z while world X blended smoothly. Sampled
+    // NEAREST and blended by hand in exploredAt -- see there.
+uniform highp sampler3D u_exploredTexture; // R8: 0=unexplored, 255=explored
 
     // Fog-of-war style config (fog-of-war component). lightInfluence 0 (the
     // default) means local lighting never affects vision.
-uniform float u_fogMemorySaturation;
-uniform float u_fogMemoryOpacity;
-uniform vec3 u_fogMemoryTint;
-uniform float u_fogNeverSaturation;
-uniform float u_fogNeverOpacity;
-uniform vec3 u_fogNeverTint;
+uniform float u_fogFadedSaturation;
+uniform float u_fogFadedOpacity;
+uniform vec3 u_fogFadedTint;
+uniform float u_fogHiddenSaturation;
+uniform float u_fogHiddenOpacity;
+uniform vec3 u_fogHiddenTint;
 uniform float u_fogLightInfluence;
+// FogOfWarT.memory: true only for 'full'. Picks what selects between the two
+// style tiers -- the persistent explored texture, or the current radial zone.
+// See computeRadialZone.
+uniform bool u_fogUseExplored;
+// FogOfWarT.dropHidden. Discards terrain nothing reaches, before any texture or
+// lighting work. False still discards a fragment that would paint nothing at
+// all, which is a pure no-op optimisation rather than a policy.
+uniform bool u_fogDropHidden;
 
     // Depth cues (cell mode; each weight 0 = off, early-out → free)
 uniform float u_aoWeight;
@@ -180,6 +194,7 @@ in vec3 v_worldPos;
 in vec2 v_screenPos;
 in vec3 v_worldNormal;
 in vec3 v_origWorldPos;
+in vec3 v_spriteGroundPos;
 in float v_emission;
 flat in vec3 v_trueFaceDir;
 
@@ -285,21 +300,35 @@ vec3 computeSpecular(vec3 normal, vec3 worldPos, vec3 viewDir, float metallic, f
     return spec * metallic;
 }
 
+// Window-local cell coordinate -> texel slot in a window-sized array texture.
+//
+// The resident window is addressed toroidally: a cell's slot derives from its
+// WORLD position (`u_windowWrapOffset` is the window origin modulo the window
+// size), so panning leaves every retained cell in place and only the
+// newly-exposed slab is rewritten. Callers must bounds-check `local` FIRST —
+// this wraps unconditionally, and a coordinate outside the window would fold
+// onto the opposite edge.
+//
+// Deliberately NOT `mod(worldCell, u_windowSize)`: world cell coordinates get
+// large and highp float mod loses exactness. `local` is small and exact, and
+// the offset arrives as an integer computed on the CPU.
+ivec3 windowSlot(vec3 local) {
+    return (ivec3(local) + u_windowWrapOffset) % ivec3(u_windowSize);
+}
+
 // Check if a cell at integer coordinates is solid by sampling the solidity texture.
 // Out-of-bounds cells are empty — without this, CLAMP_TO_EDGE would fold the lookup
 // back onto a real edge cell and report false occlusion (e.g. AO at the map border).
 bool isCellSolid(vec3 cell) {
     // `cell` is a world-cell coordinate; translate into the resident grid's
-    // own local space before bounds-checking/sampling — a no-op today
-    // (u_windowOrigin is always (0,0,0) until the shiftable hot window
-    // lands), but this is the seam that makes it correct once it does.
+    // own local space before bounds-checking/sampling.
     vec3 local = cell - u_windowOrigin;
     if(local.x < 0.0 || local.x >= u_windowSize.x ||
        local.y < 0.0 || local.y >= u_windowSize.y ||
        local.z < 0.0 || local.z >= u_windowSize.z) {
         return false;
     }
-    return texelFetch(u_cellSolidity, ivec3(local), 0).r > 0.5;
+    return texelFetch(u_cellSolidity, windowSlot(local), 0).r > 0.5;
 }
 
 // Per-cell emission (highlight) color, sampled by integer cell coordinate using the
@@ -311,7 +340,7 @@ vec3 cellEmissionColorAt(vec3 cell) {
        local.z < 0.0 || local.z >= u_windowSize.z) {
         return vec3(0.0);
     }
-    return texelFetch(u_cellEmissionColor, ivec3(local), 0).rgb;
+    return texelFetch(u_cellEmissionColor, windowSlot(local), 0).rgb;
 }
 
 // Map a face fragment to the solid cell that owns it. `a_origPosition` sits on
@@ -399,76 +428,56 @@ bool isRayBlocked(vec3 origin, vec3 dest) {
 }
 
 // ── Fog-of-war ───────────────────────────────────────────────────────────────────────
-// Samples the chunk-resolution "explored" texture at a world-CELL-space
-// position, returning a smooth 0..1 value. `fragCellPos` is un-windowed
-// (world) cell coordinates, same convention as isCellSolid's `cell` param.
-// LINEAR-filtered horizontally (the texture's first two axes); the array-
-// layer axis is nearest-neighbor -- vision mostly needs to soften
-// horizontally, so this is an acceptable simplification (see
-// render-cell-maps.ts's uploadExploredTexture comment).
-float exploredAt(vec3 fragCellPos) {
-    vec3 localCell = fragCellPos - u_windowOrigin;
-    vec3 chunkSizeCells = u_windowSize / u_chunkGridSize;
-    vec3 chunkLocal = localCell / chunkSizeCells;
-    if(chunkLocal.x < 0.0 || chunkLocal.x >= u_chunkGridSize.x ||
-       chunkLocal.y < 0.0 || chunkLocal.y >= u_chunkGridSize.y ||
-       chunkLocal.z < 0.0 || chunkLocal.z >= u_chunkGridSize.z) {
-        return 0.0; // outside the resident window — conservatively unexplored
-    }
-    vec2 uv = chunkLocal.xy / u_chunkGridSize.xy;
-    float layer = floor(chunkLocal.z);
-    return texture(u_exploredTexture, vec3(uv, layer)).r;
-}
-
-// Near-tier terrain-memory lookup: a captured material index at CELL
-// resolution (window-cell indexed, same layout as u_cellSolidity). Returns
-// -1 when no data has been captured at that cell yet (texel value 255).
-// texelFetch, not texture() -- this is an exact index, never blended.
-int nearMaterialAt(vec3 fragCellPos) {
-    vec3 local = fragCellPos - u_windowOrigin;
+// One explored sample at an integer world-cell coordinate, translated through
+// the same toroidal windowSlot mapping every other cell-resolution texture
+// uses. Out-of-window reads as unexplored rather than folding onto an edge
+// texel (CLAMP_TO_EDGE would smear the window border inward), matching
+// isCellSolid's out-of-bounds handling.
+float exploredSample(vec3 cell) {
+    vec3 local = cell - u_windowOrigin;
     if(local.x < 0.0 || local.x >= u_windowSize.x ||
        local.y < 0.0 || local.y >= u_windowSize.y ||
        local.z < 0.0 || local.z >= u_windowSize.z) {
-        return -1;
+        return 0.0;
     }
-    int texel = int(texelFetch(u_nearMaterialTexture, ivec3(local), 0).r * 255.0 + 0.5);
-    return texel >= 255 ? -1 : texel;
+    ivec3 slot = windowSlot(local);
+    return texelFetch(u_exploredTexture, slot, 0).r;
 }
 
-// Far-tier terrain-memory lookup: a captured material index at CHUNK
-// resolution (same chunk-local derivation as exploredAt, but NEAREST/
-// texelFetch since this is an index, not a blend-safe scalar).
-int farMaterialAt(vec3 fragCellPos) {
-    vec3 localCell = fragCellPos - u_windowOrigin;
-    vec3 chunkSizeCells = u_windowSize / u_chunkGridSize;
-    vec3 chunkLocal = floor(localCell / chunkSizeCells);
-    if(chunkLocal.x < 0.0 || chunkLocal.x >= u_chunkGridSize.x ||
-       chunkLocal.y < 0.0 || chunkLocal.y >= u_chunkGridSize.y ||
-       chunkLocal.z < 0.0 || chunkLocal.z >= u_chunkGridSize.z) {
-        return -1;
-    }
-    int texel = int(texelFetch(u_farMaterialTexture, ivec3(chunkLocal), 0).r * 255.0 + 0.5);
-    return texel >= 255 ? -1 : texel;
-}
+// Samples the cell-resolution "explored" texture at a world-CELL-space
+// position, returning a smooth 0..1 value. `fragCellPos` is un-windowed
+// (world) cell coordinates, same convention as isCellSolid's `cell` param.
+//
+// The trilinear blend is done here rather than by the sampler. The texture is
+// toroidally addressed, so hardware filtering would blend the two opposite
+// edges of the buffer together wherever the wrap seam falls -- and the seam
+// sits at an arbitrary point INSIDE the visible window, so that would draw a
+// hard line straight across the fog. Fetching the eight neighbours
+// individually lets each one wrap on its own, so no seam can form, while the
+// weights come from the fractional world position and stay continuous across
+// it. Eight point fetches is minor next to the eight jittered DDA raycasts
+// this shader already runs per fragment.
+float exploredAt(vec3 fragCellPos) {
+    // Offset by half a cell so the interpolation nodes sit at cell CENTRES:
+    // without this the blend is shifted half a cell against the terrain and
+    // the boundary reads as misaligned with the tiles it came from.
+    vec3 p = fragCellPos - 0.5;
+    vec3 base = floor(p);
+    vec3 f = p - base;
 
-// Rendering-priority lookup for the terrain-memory LOD: near-tier capture
-// wins when present (fine detail immediately around a vision source),
-// falling back to far-tier (coarse, one color per chunk) otherwise. Returns
-// false (leaving `outColor` untouched) when neither tier has captured this
-// location yet -- callers fall back to live color in that case, matching
-// today's behavior for an explored-but-not-yet-individually-captured chunk.
-bool memoryColorAt(vec3 fragCellPos, out vec3 outColor) {
-    int near = nearMaterialAt(fragCellPos);
-    if(near >= 0) {
-        outColor = u_fogMaterialColors[near];
-        return true;
-    }
-    int far = farMaterialAt(fragCellPos);
-    if(far >= 0) {
-        outColor = u_fogMaterialColors[far];
-        return true;
-    }
-    return false;
+    float c000 = exploredSample(base + vec3(0.0, 0.0, 0.0));
+    float c100 = exploredSample(base + vec3(1.0, 0.0, 0.0));
+    float c010 = exploredSample(base + vec3(0.0, 1.0, 0.0));
+    float c110 = exploredSample(base + vec3(1.0, 1.0, 0.0));
+    float c001 = exploredSample(base + vec3(0.0, 0.0, 1.0));
+    float c101 = exploredSample(base + vec3(1.0, 0.0, 1.0));
+    float c011 = exploredSample(base + vec3(0.0, 1.0, 1.0));
+    float c111 = exploredSample(base + vec3(1.0, 1.0, 1.0));
+
+    return mix(
+        mix(mix(c000, c100, f.x), mix(c010, c110, f.x), f.y),
+        mix(mix(c001, c101, f.x), mix(c011, c111, f.x), f.y),
+        f.z);
 }
 
 // One jittered vision ray, reusing isRayBlocked. `off` is a cell-space
@@ -496,7 +505,17 @@ float visionSourceVisibility(
     float dist = distance(fragWorldPos, sourcePos);
     float outer = radius + fadeWidth;
     if(dist >= outer) return 0.0;
-    float radial = 1.0 - smoothstep(radius, outer, dist);
+    // GLSL leaves smoothstep undefined when edge0 == edge1; a zero fadeWidth
+    // is a hard-edged source, fully visible right up to `outer`. Guarded to
+    // match computeFogVisibility's identical guard on the CPU.
+    float radial = outer > radius ? 1.0 - smoothstep(radius, outer, dist) : 1.0;
+
+    // 'distance' mode (FogOfWarT.visionMode): range alone decides, walls
+    // included. Mirrored by computeFogVisibility/isVisibleFrom on the CPU off
+    // the same setting, so the two stay term for term in either mode. This is
+    // also where the mode pays for itself -- eight DDA raycasts per fragment,
+    // skipped.
+    if(!u_fogUseLineOfSight) return radial;
 
     vec3 sourceCellPos = sourcePos / u_cellSize;
     float sum = 0.0;
@@ -508,6 +527,28 @@ float visionSourceVisibility(
     }
     float los = sum / float(VISION_SCATTER_SAMPLES);
     return radial * los;
+}
+
+// How far INTO vision range a point is, ignoring line of sight entirely: 1
+// anywhere inside a source's radius, ramping to 0 across its fadeWidth.
+//
+// This is the style selector under memory 'partial'/'none' (u_fogUseExplored
+// false), and it is what makes those modes need no history: 1 is the faded
+// zone -- in range, whether or not it can actually be seen -- and 0 is the
+// hidden zone. Because radial is already flat at 1 inside the radius, the
+// source's fade band IS the hidden-to-faded transition, so there is no hard
+// step to alias along.
+float computeRadialZone(vec3 worldPos) {
+    float zone = 0.0;
+    for(int i = 0; i < MAX_VISION_SOURCES; i++) {
+        if(i >= u_numVisionSources) break;
+        float radius = u_visionSourceRadius[i];
+        float outer = radius + u_visionSourceFadeWidth[i];
+        float dist = distance(worldPos, u_visionSourcePos[i]);
+        if(dist >= outer) continue;
+        zone = max(zone, outer > radius ? 1.0 - smoothstep(radius, outer, dist) : 1.0);
+    }
+    return zone;
 }
 
 // Combined per-fragment live visibility: union (max) over every active
@@ -709,8 +750,19 @@ void main() {
         bool fogActive = !u_fogExempt && u_numVisionSources > 0;
         vec3 fragCellPos = v_origWorldPos / u_cellSize;
         float fogVisibility = fogActive ? computeVisibility(v_origWorldPos, fragCellPos) : 1.0;
-        float fogExplored = fogActive ? exploredAt(fragCellPos) : 1.0;
-        float fogStyleOpacity = fogActive ? mix(u_fogNeverOpacity, u_fogMemoryOpacity, fogExplored) : 1.0;
+        // Which of the two style tiers this fragment sits in, 0 = hidden,
+        // 1 = faded. Memory 'full' answers from history; the other modes answer
+        // from the current radial zone and never touch the explored texture.
+        float fogExplored = fogActive
+            ? (u_fogUseExplored ? exploredAt(fragCellPos) : computeRadialZone(v_origWorldPos))
+            : 1.0;
+        float fogStyleOpacity = fogActive ? mix(u_fogHiddenOpacity, u_fogFadedOpacity, fogExplored) : 1.0;
+        // Two different discards. The second is free correctness -- a fragment
+        // that would paint nothing. The first is dropHidden: terrain no source
+        // reaches goes away even when hiddenStyle would have painted something,
+        // which is the cheap-fog mode (pair it with a viewport background
+        // matching hiddenStyle.tint and the boundary is seamless).
+        if(fogActive && u_fogDropHidden && fogVisibility <= 0.0 && fogExplored <= 0.0) discard;
         if(fogVisibility <= 0.0 && fogStyleOpacity <= 0.0) discard;
 
         vec4 albedo;
@@ -847,26 +899,26 @@ void main() {
         // this pass draws fully opaque) toward the normal live-visible color
         // as fogVisibility rises. fogStyleOpacity==0 already discarded above
         // unless fogVisibility>0, so nonLiveColor only ever matters when it's
-        // actually contributing. The style's BASE color is the captured
-        // terrain-memory snapshot (near tier if captured, else far tier)
-        // when available -- a frozen "what this looked like last time",
-        // not live-recomputed triplanar color -- falling back to live color
-        // only for an explored chunk that hasn't been individually captured
-        // yet. Only sampled when it could matter (fogVisibility<1): at full
-        // live visibility the final mix below discards it anyway.
+        // actually contributing.
+        //
+        // Both tiers style the SAME base color -- the fully-textured, lit
+        // cellColor -- so `fadedStyle` and `hiddenStyle` are pure style
+        // filters and configuring them identically produces identical output.
+        //
+        // Remembered terrain used to substitute a flat per-material average
+        // color here, captured at observation time, which meant memory could
+        // never carry texture detail no matter how it was styled. "What this
+        // looked like last time" is now handled where it belongs -- by the
+        // geometry itself, which simply isn't rebuilt while a cell is
+        // unobserved (see cell-map/deferred-presentation.ts) -- so there is
+        // nothing left to substitute.
         vec3 fogOutColor = cellColor;
         if(fogActive) {
-            vec3 memoryBase = cellColor;
-            if(fogVisibility < 1.0) {
-                vec3 captured;
-                if(memoryColorAt(fragCellPos, captured)) {
-                    memoryBase = captured;
-                }
-            }
-            float styleSaturation = mix(u_fogNeverSaturation, u_fogMemorySaturation, fogExplored);
-            vec3 styleTint = mix(u_fogNeverTint, u_fogMemoryTint, fogExplored);
-            float luminance = dot(memoryBase, vec3(0.299, 0.587, 0.114));
-            vec3 styledColor = mix(vec3(luminance), memoryBase, styleSaturation) * styleTint;
+            vec3 fadedBase = cellColor;
+            float styleSaturation = mix(u_fogHiddenSaturation, u_fogFadedSaturation, fogExplored);
+            vec3 styleTint = mix(u_fogHiddenTint, u_fogFadedTint, fogExplored);
+            float luminance = dot(fadedBase, vec3(0.299, 0.587, 0.114));
+            vec3 styledColor = mix(vec3(luminance), fadedBase, styleSaturation) * styleTint;
             vec3 nonLiveColor = mix(vec3(0.0), styledColor, fogStyleOpacity);
             fogOutColor = mix(nonLiveColor, cellColor, fogVisibility);
         }
@@ -887,18 +939,63 @@ void main() {
         if(albedo.a < 0.01)
             discard;
 
-        // Fog-of-war: an ordinary sprite draw call only renders when
-        // live-visible (never in the memory tier — memory shows remembered
-        // terrain, not current entity state). A PHANTOM draw call
-        // (u_spriteFogMemory) is a different sprite entity entirely — a
-        // frozen last-seen stand-in fog-of-war/methods.ts's update() spawned
-        // for some other, currently obscured tracked sprite (see
-        // SpriteT._fowStatus) — so the live per-fragment computeVisibility
-        // discard is skipped here — always render it, styled like terrain
-        // memory below instead.
-        if(!u_spriteFogMemory && u_numVisionSources > 0) {
-            vec3 fragCellPos = v_origWorldPos / u_cellSize;
-            if(computeVisibility(v_origWorldPos, fragCellPos) <= 0.0) discard;
+        // Fog-of-war visibility for this sprite, 0..1.
+        //
+        // Supplied by the CPU as u_spriteVisibility rather than computed here.
+        // v_origWorldPos in sprite mode is u_spritePosition (see unified.vert)
+        // — constant across the whole quad — so calling computeVisibility per
+        // fragment re-ran eight DDA raycasts per pixel to produce one number
+        // per sprite. Worse, it was a SECOND opinion: fog-of-war's CPU sweep
+        // decided _fowStatus and phantom disposal from its own single-ray
+        // test, and where the two disagreed (a sight line threading a gap the
+        // jittered rays clip) the phantom was disposed while the real sprite
+        // was discarded, leaving a hole. One number now drives both.
+        //
+        // The light-influence boost stays here: it needs a light walk but no
+        // raycasts, so it is cheap per fragment, and u_spriteVisibility is
+        // deliberately the pure-geometry term for it to build on.
+        float fogVis = 1.0;
+        if(u_numVisionSources > 0) {
+            // EXACTLY what terrain computes, at this fragment's ground point:
+            // radial falloff AND line of sight, per fragment, plus the same
+            // light-influence boost (computeVisibility applies it itself, so it
+            // is not repeated here). A sprite and the ground it covers now
+            // resolve through one function, so they cannot disagree.
+            //
+            // Line of sight used to be sampled ONCE per sprite, at its anchor,
+            // and multiplied in as u_spriteLos. That is all-or-nothing across a
+            // whole sprite: an anchor with a clear sight line kept the sprite
+            // fully lit while the terrain around it was correctly shadowed,
+            // which read as line of sight not affecting sprites at all.
+            //
+            // The reason it was one sample was cost -- eight DDA raycasts per
+            // fragment. Terrain has always paid that per fragment; sprites
+            // cover far less of the frame, and 'distance' mode skips the rays
+            // entirely. The OTHER original reason, that a per-fragment value
+            // would be a second opinion against the CPU sweep, no longer
+            // applies: this drives COLOUR only, and every lifetime decision
+            // still goes through u_spriteVisibility below.
+            fogVis = computeVisibility(v_spriteGroundPos, v_spriteGroundPos / u_cellSize);
+            // Both sides are gated on this one number, so there is never a
+            // frame with neither the sprite nor its phantom visible -- the bug
+            // this replaced.
+            //
+            // A phantom discards only once vision fully covers its spot. A
+            // LIVE sprite never discards: at zero visibility it renders its
+            // memory look, identical to the phantom that replaces it.
+            //
+            // That asymmetry is load-bearing. fog-of-war's sweep runs a phase
+            // before this one, off a scene index and world transforms from the
+            // previous frame, so on the frame a sprite crosses zero the
+            // renderer sees 0.000 while the sweep still has it 'visible'.
+            // Discarding here made that one-frame disagreement a blank frame,
+            // every single time a sprite left vision. Mirrored on the CPU in
+            // fog-of-war/sweep.ts's `fogDiscards`, which is where it is tested.
+            // Anchored on u_spriteVisibility, NOT the per-fragment value. This
+            // is a lifetime decision -- it must agree with the CPU sweep, which
+            // disposes the phantom off that same number. Taken per fragment it
+            // would erase part of a phantom's quad and leave the rest.
+            if(u_spriteFogMemory && u_spriteVisibility >= 1.0) discard;
         }
 
         // Occlusion test: discard sprite fragments behind cells (or show silhouette)
@@ -966,19 +1063,56 @@ void main() {
         vec3 litColor = albedo.rgb * lighting * u_tint.rgb + specular + spriteEmission;
         vec4 tinted = vec4(litColor, albedo.a * u_tint.a);
 
-        // Fog-of-war memory styling for a frozen tracked sprite (see the
-        // discard block above) -- desaturate/tint like terrain memory, and
-        // use REAL alpha for opacity (sprites already blend, unlike cells,
+        // Fog-of-war memory styling -- desaturate/tint like terrain memory,
+        // using REAL alpha for opacity (sprites already blend, unlike cells,
         // so there's no need for the fade-to-black trick the cell path uses).
-        vec3 finalRgb = tinted.rgb;
-        float memoryOpacity = 1.0;
+        vec3 liveRgb = tinted.rgb;
+        float luminance = dot(liveRgb, vec3(0.299, 0.587, 0.114));
+        // Both style tiers, selected exactly as terrain selects them, so a
+        // sprite and the ground under it agree about which zone they are in.
+        // Under memory 'none' this is the ONLY thing fog does to a sprite: it
+        // is never skipped and never replaced by a phantom, just filtered --
+        // faded while in range but unseen, fading to hiddenStyle's opacity (0
+        // by default, so to transparency) as it leaves range altogether.
+        float spriteZone = u_fogUseExplored ? 1.0 : computeRadialZone(v_spriteGroundPos);
+        float styleSaturation = mix(u_fogHiddenSaturation, u_fogFadedSaturation, spriteZone);
+        vec3 styleTint = mix(u_fogHiddenTint, u_fogFadedTint, spriteZone);
+        float styleOpacity = mix(u_fogHiddenOpacity, u_fogFadedOpacity, spriteZone);
+        vec3 fadedRgb = mix(vec3(luminance), liveRgb, styleSaturation) * styleTint;
+
+        // Fog COLOUR is a pure function of distance, for every live sprite,
+        // entering or leaving alike. At fogVis 0 a sprite is pixel-identical to
+        // a phantom of the same frame; at 1 it is fully live. Nothing here
+        // needs to know which direction it is travelling -- OPACITY carries
+        // that, on a timer, in u_spriteFogAlpha.
+        //
+        // That is what removed the old fade-direction machinery. Telling the
+        // two apart had required latching 'visible' at FULL visibility, and
+        // since visibility is `radial * (hits/8)` with radial strictly below 1
+        // anywhere in the fade band, a sprite that never reached the inner
+        // radius could never latch -- so it faded in, faded out, and left no
+        // memory behind.
+        vec3 finalRgb;
+        float fogAlpha;
         if(u_spriteFogMemory) {
-            float luminance = dot(finalRgb, vec3(0.299, 0.587, 0.114));
-            finalRgb = mix(vec3(luminance), finalRgb, u_fogMemorySaturation) * u_fogMemoryTint;
-            memoryOpacity = u_fogMemoryOpacity;
+            // A phantom is already the memory; only its opacity changes. The
+            // CPU supplies that as `1 - presence` of the sprite standing over
+            // it, or its own dissolve timer when the sprite has moved on -- so
+            // a covered pair is complementary from ONE timer rather than two
+            // that have to agree.
+            finalRgb = fadedRgb;
+            fogAlpha = styleOpacity * u_spriteFogAlpha;
+        } else {
+            // A live sprite: colour dissolves toward the memory look as it
+            // leaves and back toward live as it returns, purely by distance.
+            // At fogVis 0 this is pixel-identical to a phantom of the same
+            // frame -- which is exactly what replaces it, so the handover
+            // cannot be seen. Opacity is the timed fade-in.
+            finalRgb = mix(fadedRgb, liveRgb, fogVis);
+            fogAlpha = mix(styleOpacity, 1.0, fogVis) * u_spriteFogAlpha;
         }
 
         // Apply opacity to final alpha channel
-        fragColor = vec4(finalRgb, tinted.a * u_opacity * memoryOpacity);
+        fragColor = vec4(finalRgb, tinted.a * u_opacity * fogAlpha);
     }
 }

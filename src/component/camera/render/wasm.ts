@@ -31,6 +31,22 @@ interface RenderExports {
   store_flush: () => void;
   store_expanded_ptr: () => number;
   store_expanded_len: () => number;
+  store_generation: () => number;
+  store_set_wrap: (wx: number, wy: number, wz: number) => void;
+  store_remember_set: (x: number, y: number, z: number, packed: number) => void;
+  store_remember_clear: (x: number, y: number, z: number) => void;
+  store_remember_clear_all: () => void;
+  store_remember_len: () => number;
+  store_remember_has: (x: number, y: number, z: number) => number;
+  store_write_box: (
+    x0: number,
+    y0: number,
+    z0: number,
+    dx: number,
+    dy: number,
+    dz: number,
+  ) => void;
+  store_dump_unwrapped: () => number;
   // Visibility
   solidity_run: () => number;
   // Meshing
@@ -142,17 +158,24 @@ export function cellStoreFlush(): void {
   ex().store_flush();
 }
 
-/** Returns a copy of the store as a flat packed array (for serialization). */
+/**
+ * Returns a copy of the store as a flat packed array in WINDOW-LOCAL raster
+ * order (for serialization and `packedData`).
+ *
+ * Goes through `store_dump_unwrapped` rather than reading the expanded buffer
+ * directly: internally the store is toroidally addressed, and every consumer
+ * here expects plain window-local order. Unwrapping at this boundary is what
+ * stops wrapped indices leaking into save files.
+ */
 export function cellStoreDump(): Uint32Array {
   const e = ex();
   const len = e.store_expanded_len();
   if (len === 0) return new Uint32Array(0);
-  // store_expanded_ptr() can lazily rebuild the Rust-side expanded buffer
-  // (Vec::resize), which may grow WASM memory and detach any ArrayBuffer
-  // reference captured before it runs — so the pointer must be captured
-  // first, and `.buffer` read fresh afterward (same pattern as solidity()
-  // and loadCellStore() below).
-  const ptr = e.store_expanded_ptr();
+  // store_dump_unwrapped() can lazily rebuild/resize Rust-side buffers, which
+  // may grow WASM memory and detach any ArrayBuffer reference captured before
+  // it runs — so the pointer must be captured first, and `.buffer` read fresh
+  // afterward (same pattern as solidity() and loadCellStore() below).
+  const ptr = e.store_dump_unwrapped();
   return new Uint32Array(e.memory.buffer, ptr, len).slice();
 }
 
@@ -210,6 +233,103 @@ let solidityView: Uint8Array | null = null;
 let solidityPtr = -1;
 let solidityBuffer: ArrayBufferLike | null = null;
 let solidityLen = -1;
+
+/**
+ * Monotonic counter over changes to cell CONTENTS (single-cell writes and bulk
+ * loads), for callers holding something derived from the store that they'd
+ * rather not rebuild when nothing changed. Deliberately unaffected by
+ * `cellStoreFlush()`, which re-encodes identical contents. Wraps on overflow;
+ * only ever compare for inequality, never ordering.
+ */
+export function cellStoreGeneration(): number {
+  return ex().store_generation();
+}
+
+/**
+ * Sets the store's per-axis toroidal wrap offset. Moves no data — it changes
+ * how window-local coordinates map to buffer slots, which is what lets a window
+ * shift leave every retained cell in place and write only the newly-exposed
+ * slab. `loadCellStore` resets it to zero.
+ */
+export function setCellStoreWrap(wx: number, wy: number, wz: number): void {
+  ex().store_set_wrap(wx, wy, wz);
+}
+
+// ── Fog-of-war deferred presentation ───────────────────────────────────────
+//
+// The store stays AUTHORITATIVE: `cellStoreGet`, the solidity map, and
+// therefore line-of-sight all read current truth. These record what the player
+// last SAW at a cell edited while unobserved, and only the mesher consults
+// them -- so the geometry reaching the GPU still shows the old terrain until
+// the cell is observed again. See `CellStore::remembered` in the Rust crate.
+//
+// Coordinates are WINDOW-LOCAL and wrapped to their toroidal slot internally,
+// exactly like `setCellStore`. Out-of-window coordinates are ignored.
+
+/**
+ * Records the cell the player last saw at a window-local coordinate.
+ * Idempotent on purpose: a second write to an already-remembered cell is
+ * ignored, so what's kept is the state at the last actual observation, not
+ * whatever the cell passed through on the way to its current value.
+ */
+export function rememberCell(
+  x: number,
+  y: number,
+  z: number,
+  packed: number,
+): void {
+  ex().store_remember_set(x, y, z, packed);
+}
+
+/** Drops the remembered value at a cell -- it has been observed again. */
+export function forgetRememberedCell(x: number, y: number, z: number): void {
+  ex().store_remember_clear(x, y, z);
+}
+
+/** Drops every remembered value (overlay cap reached, or a bulk reload). */
+export function forgetAllRememberedCells(): void {
+  ex().store_remember_clear_all();
+}
+
+/** How many cells currently diverge from what the player last saw. */
+export function rememberedCellCount(): number {
+  return ex().store_remember_len();
+}
+
+/** Whether a cell already carries a remembered value. */
+export function hasRememberedCell(x: number, y: number, z: number): boolean {
+  return ex().store_remember_has(x, y, z) === 1;
+}
+
+/**
+ * Reserves the bulk-load input buffer for `count` cells and returns a view over
+ * it, for callers that want to pack a slab and hand it to `writeCellStoreBox`.
+ * Same buffer `loadCellStore` uses; consume it before the next reserve.
+ */
+export function reserveCellStoreInput(count: number): Uint32Array {
+  const e = ex();
+  const ptr = e.store_reserve(count);
+  return new Uint32Array(e.memory.buffer, ptr, count);
+}
+
+/**
+ * Writes a box of WINDOW-LOCAL cells from the input buffer into their wrapped
+ * slots, updating solidity for exactly those cells. The toroidal replacement
+ * for a whole-window `loadCellStore` on a shift: only the newly-exposed slab
+ * is written, so the cost is O(slab) rather than O(window).
+ *
+ * The box must lie inside the window. Cells are `dx*dy*dz` in x-fastest order.
+ */
+export function writeCellStoreBox(
+  x0: number,
+  y0: number,
+  z0: number,
+  dx: number,
+  dy: number,
+  dz: number,
+): void {
+  ex().store_write_box(x0, y0, z0, dx, dy, dz);
+}
 
 /**
  * Computes the solidity map (0/255 per cell) from the resident store and returns

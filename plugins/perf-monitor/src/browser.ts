@@ -8,13 +8,16 @@
 // via a <script> tag after omosuen.js.
 
 import { perfMonitorDefinition } from './component.js';
-import { exportPerfSnapshot } from './index.js';
+import { exportPerfSnapshot, spikeLog } from './index.js';
 
 declare global {
   interface Window {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     Omosuen?: { registerPluginComponent?: (def: any) => void };
-    OmosuenPerfMonitor?: { exportPerfSnapshot: typeof exportPerfSnapshot };
+    OmosuenPerfMonitor?: {
+      exportPerfSnapshot: typeof exportPerfSnapshot;
+      spikeLog: typeof spikeLog;
+    };
   }
 }
 
@@ -28,5 +31,10 @@ if (typeof window !== 'undefined') {
         'load the Omosuen engine before this plugin file.',
     );
   }
-  window.OmosuenPerfMonitor = { exportPerfSnapshot };
+  window.OmosuenPerfMonitor = { exportPerfSnapshot, spikeLog };
+  // The bare `window.spikeLog` / `window.exportPerfSnapshot` console aliases
+  // are NOT installed here. They're installed by the perf-monitor component's
+  // init() instead (see console-helpers.ts), which covers this build and the
+  // ESM one alike -- installing them here too would only cover the path that
+  // was already covered, and would leave module consumers without them.
 }

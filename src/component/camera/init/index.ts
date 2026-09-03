@@ -14,6 +14,7 @@ import {
   cacheLightUniformLocations,
 } from '../render/light-uniforms';
 import { cacheVisionUniformLocations } from '../render/vision-uniforms';
+import { cacheFogUniformLocations } from '../render/fog-uniforms';
 import { initRenderWasm } from '../render/wasm';
 import { uploadAtlasTextures } from '../render/atlas-textures';
 
@@ -87,6 +88,7 @@ export async function init(component: ComponentData): Promise<void> {
   cacheLightUniformLocations(gl, unifiedProgram, camera.id!);
   // Cache all vision-source (fog-of-war) uniform locations for this camera
   cacheVisionUniformLocations(gl, unifiedProgram, camera.id!);
+  cacheFogUniformLocations(gl, unifiedProgram, camera.id!);
 
   // 3. Create quad geometry buffers
   // Vertex positions (centered quad -0.5 to 0.5)

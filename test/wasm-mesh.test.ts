@@ -638,6 +638,98 @@ function edgeOccludesCheck(): number {
   return fails;
 }
 
+/**
+ * `CellData.cullsNeighborFaces`: an EMPTY cell that occludes its neighbours'
+ * faces anyway, for sealing a world boundary without adding matter.
+ *
+ * The pair of assertions is the whole feature -- the same geometry with the
+ * flag off must render the face and with it on must not. If they ever agree,
+ * the bit is not being read.
+ */
+function cullNeighborsCheck(): number {
+  let fails = 0;
+
+  clearCustomShapes();
+  setMeshCellSize(1, 1, 1);
+  setMeshEdgeOccludes(true); // seal the store edge, so only the flag varies
+
+  const solid = {
+    materialIndex: 0,
+    shapeIndex: 1,
+    emissionIntensity: 0,
+    visible: true,
+  };
+  const air = (cull: boolean) => ({
+    materialIndex: 0,
+    shapeIndex: 0,
+    emissionIntensity: 0,
+    visible: false,
+    cullsNeighborFaces: cull,
+  });
+
+  // A 2x1x1 store: one solid cube with one air cell beside it. With the store
+  // edge sealed, the ONLY face that can render is the one facing that air.
+  const build = (cull: boolean): number => {
+    const packed = new Array3D<number>(new Vector3D(2, 1, 1));
+    packed.indexSet(0, packCell(solid));
+    packed.indexSet(1, packCell(air(cull)));
+    // (flat, total, mapX, mapY, mapZ) -- 2 cells, laid out 2x1x1.
+    loadCellStore(packed.value, 2, 2, 1, 1);
+    return (buildChunkMeshWasm(0, 0, 0).indices?.length ?? 0) / 6;
+  };
+
+  const plainAir = build(false);
+  if (plainAir !== 1) {
+    console.error(
+      `  ✗ cull-neighbors: plain air neighbour should leave 1 face, got ${plainAir}`,
+    );
+    fails++;
+  }
+  const cullingAir = build(true);
+  if (cullingAir !== 0) {
+    console.error(
+      `  ✗ cull-neighbors: marked air neighbour should cull that face, got ${cullingAir}`,
+    );
+    fails++;
+  }
+
+  // Custom-shape path: a different culling site in the crate sharing the same
+  // predicate. A regression in only one site would otherwise be silent.
+  const cube = uvCubeMesh();
+  const uvTris = (r: ChunkMeshResult): number => {
+    let n = 0;
+    for (const rr of r.ranges) if (rr.useMeshUV) n += rr.indexCount / 3;
+    return n;
+  };
+  const buildShape = (cull: boolean): number => {
+    const packed = new Array3D<number>(new Vector3D(2, 1, 1));
+    packed.indexSet(0, packCell({ ...solid, shapeIndex: 2 }));
+    packed.indexSet(1, packCell(air(cull)));
+    // (flat, total, mapX, mapY, mapZ) -- 2 cells, laid out 2x1x1.
+    loadCellStore(packed.value, 2, 2, 1, 1);
+    clearCustomShapes();
+    setCustomShape(2, cube.vertices, cube.indices, cube.uvs);
+    return uvTris(buildChunkMeshWasm(0, 0, 0));
+  };
+  const shapePlain = buildShape(false);
+  const shapeCulled = buildShape(true);
+  if (shapePlain <= shapeCulled) {
+    console.error(
+      `  ✗ cull-neighbors: custom-shape path ignores the flag (${shapePlain} tris vs ${shapeCulled})`,
+    );
+    fails++;
+  }
+
+  clearCustomShapes();
+  setMeshEdgeOccludes(false);
+  if (fails === 0) {
+    console.log(
+      '  ✓ cull-neighbors: marked air culls neighbour faces (default-cube + UV-cube)',
+    );
+  }
+  return fails;
+}
+
 async function main(): Promise<void> {
   await initRenderWasm(buildRenderWasm());
 
@@ -688,6 +780,7 @@ async function main(): Promise<void> {
   failed += customUvCullingCheck();
   failed += coverageCheck();
   failed += edgeOccludesCheck();
+  failed += cullNeighborsCheck();
 
   if (missing > 0) {
     console.log(

@@ -245,10 +245,13 @@ silhouette, material-driven specular and emission. *Unique: one per parent nexus
   position. Set `false` to opt a sprite out entirely (hidden outright outside live vision, no
   memory tier) — there's rarely a reason to, since UI sprites don't go through this render path
   at all. Set via `setTrackedByFog(tracked)`.
-- `_fowStatus: 'visible' | 'obscured' | 'phantom'` — read-only, engine-managed by
-  `fog-of-war`'s update (never set directly). `'obscured'` means this sprite's own draw call is
-  skipped this frame because its phantom is standing in for it; `'phantom'` means this sprite
-  *is* one of those stand-ins.
+- `_fowStatus: 'unseen' | 'visible' | 'obscured' | 'phantom'` — read-only, engine-managed by
+  `fog-of-war`'s update (never set directly). `'unseen'` (the default) means never yet confirmed
+  live-visible — renders normally, same as `'visible'`, until actually seen at least once;
+  fog-of-war never spawns a phantom for an `'unseen'` sprite, only for one genuinely going out of
+  sight after being seen. `'obscured'` means this sprite's own draw call is skipped this frame
+  because its phantom is standing in for it; `'phantom'` means this sprite *is* one of those
+  stand-ins.
 
 **`cell-map`** — Windowed/streaming voxel grid (material/shape/emission/visibility per cell);
 WASM-backed RLE store with greedy/smoothed meshing. *Unique: one per engine instance* — its state

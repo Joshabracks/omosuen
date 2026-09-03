@@ -6,7 +6,8 @@ import {
   DeserializationError,
   DeserializeResult,
 } from '../types';
-import { Array3D, Array3Di, Vector3D } from '../../math';
+import { Array3D, Array3Di, Array3Du32, Vector3D } from '../../math';
+import type { NumericArray3D } from '../../math';
 import {
   Material,
   Mesh,
@@ -16,7 +17,6 @@ import {
   DEFAULT_CHUNK_SIZE,
   CellEmissionColorDirtyRegion,
   ChunkExploredDirtyRegion,
-  MemoryMaterialDirtyRegion,
 } from './types';
 import {
   initRenderWasm,
@@ -31,6 +31,34 @@ import type { ColdStorageEntrySnapshot } from './cold-storage';
 import type { CellData } from './types';
 import { MethodRegistry } from '../registry';
 import { AuxiliaryChannel } from './auxiliary-channel';
+import { isProfilingEnabled } from '../../loop/profile';
+
+/**
+ * The `onReassemble` hook's two halves, accumulated while profiling is enabled
+ * and drained by `recordCellMapPhase` (cell-map/methods.ts) into their own
+ * buckets. Split because they fail for different reasons and have different
+ * fixes: `auxWindowChange` is the five channels' evict/assemble passes, while
+ * `auxFieldSync` is the public-field resync plus the texture version bumps it
+ * triggers. Module-level to match the rest of this file's singleton storage --
+ * the hook is a closure built before the component exists, so it has no
+ * component id to record against directly.
+ */
+let cmAuxWindowChangeMsAccum = 0;
+let cmAuxFieldSyncMsAccum = 0;
+
+/** Returns and zeros the channel-side `onReassemble` time since the last call. */
+export function drainAuxWindowChangeMs(): number {
+  const ms = cmAuxWindowChangeMsAccum;
+  cmAuxWindowChangeMsAccum = 0;
+  return ms;
+}
+
+/** Returns and zeros the field-sync `onReassemble` time since the last call. */
+export function drainAuxFieldSyncMs(): number {
+  const ms = cmAuxFieldSyncMsAccum;
+  cmAuxFieldSyncMsAccum = 0;
+  return ms;
+}
 
 /**
  * Read-only view over the canonical cell store, exposed as `cellMap.packedData`
@@ -72,7 +100,7 @@ export let cmEmissionMap: Array3D<number>;
  * 0 = black = no highlight). Sampled GPU-side as a texture keyed by cell coordinate,
  * so — unlike emissionMap (baked into vertices) — changing it needs no remesh.
  */
-export let cmEmissionColorMap: Array3D<number>;
+export let cmEmissionColorMap: NumericArray3D;
 /**
  * Monotonic counter, bumped on every in-window `setEmissionColor` write and
  * on every full invalidation (window shift, or dirty-log cap overflow).
@@ -95,16 +123,30 @@ export let cmEmissionColorFullVersion: number = 0;
  */
 export let cmEmissionColorDirtyRegions: CellEmissionColorDirtyRegion[] = [];
 /**
- * Chunk-level fog-of-war "explored" state: one flag per chunk (has any
- * vision source ever seen into this chunk), backed by `cmExploredChannel`
- * (an `AuxiliaryChannel` constructed with `chunkSize: {x:1,y:1,z:1}` so its
- * cell-granular coordinate math IS chunk-granular -- see
- * `syncExploredField`/`makeAuxiliaryOnReassemble`). Sized to the resident
- * window's CHUNK-GRID dims (`cmChunkGridSize`), not cell dims.
+ * Whether the emission channel was entirely at baseline (all black) the last
+ * time `syncAuxiliaryFields` ran, plus the window cell count at that point.
+ * Together these let a sync skip the version bump when the map is provably
+ * bit-identical to what cameras already hold -- see the skip's reasoning in
+ * `syncAuxiliaryFields`. Module-level rather than `CellMapT` fields
+ * deliberately: they're internal sync bookkeeping with no consumer outside
+ * this file, so they stay out of `PROPERTY_ALLOWLIST`.
  */
-export let cmExploredMap: Array3D<number>;
+let cmEmissionColorSyncedCellCount = -1;
+/** Window cell count at the last memory-material sync; see cmEmissionColorSyncedCellCount. */
 /**
- * Monotonic counter, bumped on every in-window `setChunkExplored` write and
+ * Cell-level fog-of-war "explored" state: one flag per CELL (has any vision
+ * source ever come within range of this cell), backed by `cmExploredChannel`.
+ * Sized to the resident window's CELL dims (`cmMapSize`) and, like the other
+ * cell-granular channels, addressed by toroidal SLOT rather than window-local
+ * coordinate -- see `AuxiliaryChannel.slotCoords`.
+ *
+ * Was one flag per CHUNK until the chunk footprint (16x16 cells here) proved
+ * several times larger than a vision radius (4-6 cells), which made the
+ * never-viewed boundary a grid of chunk-sized blocks.
+ */
+export let cmExploredMap: NumericArray3D;
+/**
+ * Monotonic counter, bumped on every in-window `setCellExplored` write and
  * on every full invalidation (window shift, or dirty-log cap overflow).
  * Mirrors `cmEmissionColorVersion`.
  */
@@ -117,81 +159,20 @@ export let cmExploredVersion: number = 0;
  */
 export let cmExploredFullVersion: number = 0;
 /**
- * Per-chunk dirty log (window-local chunk-grid coords + the version that
- * wrote them), capped at `CELL_EXPLORED_DIRTY_CAP` (see cell-map/methods.ts).
- * Mirrors `cmEmissionColorDirtyRegions`, one chunk per entry instead of one
- * cell.
+ * Dirty log for delta GPU uploads: SLOT-space chunk coordinates plus the
+ * version that wrote them, capped at `CELL_EXPLORED_DIRTY_CAP` (see
+ * cell-map/methods.ts).
+ *
+ * Deliberately one entry per CHUNK even though the data is now per cell --
+ * the one place this does NOT mirror `cmEmissionColorDirtyRegions`, which
+ * logs one entry per cell. A single sweep newly explores on the order of a
+ * thousand cells at once, which as per-cell entries would mean a thousand
+ * 1x1x1 `texSubImage3D` calls or an instant cap overflow into a full
+ * multi-megabyte reupload every frame. A chunk entry uploads that chunk's
+ * whole cell subvolume in one call, and a vision sphere only touches a
+ * handful of chunks.
  */
 export let cmExploredDirtyRegions: ChunkExploredDirtyRegion[] = [];
-/**
- * Far-tier fog-of-war representative material index, one per CHUNK, backed
- * by `cmFarMaterialChannel` (an `AuxiliaryChannel` constructed with the same
- * `{x:1,y:1,z:1}` chunk-size trick `cmExploredChannel` uses -- chunk-granular,
- * not cell-granular). Kept as a SEPARATE channel from `cmExploredMap`'s
- * binary flag rather than packed into the same payload: `cmExploredMap` is
- * sampled with linear GPU filtering (to blend the never-viewed/memory-tier
- * boundary smoothly across chunk edges), and bit-packing a material index
- * into that same texture would make bilinear filtering blend garbage bit
- * patterns together at chunk boundaries instead of a usable color. Baseline
- * `0xFFFF` means "no material ever captured for this chunk" -- material
- * index 0 is itself a legitimate captured value, same reasoning as
- * `cmMemoryMaterialMap`'s sentinel.
- */
-export let cmFarMaterialMap: Array3D<number>;
-/**
- * Monotonic counter, bumped on every in-window `setChunkFarMaterial` write
- * (that actually changes the stored value) and on every full invalidation
- * (window shift, or dirty-log cap overflow). Mirrors `cmExploredVersion`.
- */
-export let cmFarMaterialVersion: number = 0;
-/**
- * Version at/below which a camera must do a full reupload instead of
- * trusting `cmFarMaterialDirtyRegions`. Bumped alongside
- * `cmFarMaterialVersion` on every full invalidation. Mirrors
- * `cmExploredFullVersion`.
- */
-export let cmFarMaterialFullVersion: number = 0;
-/**
- * Per-chunk dirty log (window-local chunk-grid coords + the version that
- * wrote them), capped the same as `cmExploredDirtyRegions` (see
- * `CELL_EXPLORED_DIRTY_CAP` in cell-map/methods.ts). Reuses
- * `ChunkExploredDirtyRegion`'s shape -- same window-local chunk coordinates.
- */
-export let cmFarMaterialDirtyRegions: ChunkExploredDirtyRegion[] = [];
-/**
- * Near-tier fog-of-war "captured material" snapshot: one real material index
- * per CELL (not per chunk), for cells near an active vision source -- the
- * fine-grained "what did this cell look like last time it was seen"
- * counterpart to `cmExploredMap`'s coarse per-chunk representative material.
- * Backed by `cmMemoryMaterialChannel` (an `AuxiliaryChannel` at REAL chunk
- * granularity, same instantiation shape as `cmEmissionColorChannel` -- NOT
- * the `{1,1,1}` chunk-size trick `cmExploredChannel` uses). Baseline
- * `0xFFFF` (see `cmMemoryMaterialChannel`) means "never captured"; material
- * index 0 is itself a legitimate captured value, so it can't double as the
- * sentinel the way `cmEmissionColorMap`'s baseline `0` (= black = no
- * highlight) can.
- */
-export let cmMemoryMaterialMap: Array3D<number>;
-/**
- * Monotonic counter, bumped on every in-window `setCellMemoryMaterial` write
- * (that actually changes the stored value) and on every full invalidation
- * (window shift, or dirty-log cap overflow). Mirrors `cmEmissionColorVersion`.
- */
-export let cmMemoryMaterialVersion: number = 0;
-/**
- * Version at/below which a camera must do a full reupload instead of
- * trusting `cmMemoryMaterialDirtyRegions` -- the delta log doesn't cover
- * anything at or before this version. Bumped alongside
- * `cmMemoryMaterialVersion` on every full invalidation. Mirrors
- * `cmEmissionColorFullVersion`.
- */
-export let cmMemoryMaterialFullVersion: number = 0;
-/**
- * Per-cell dirty log (window-local coords + the version that wrote them),
- * capped at `CELL_MEMORY_MATERIAL_DIRTY_CAP` (see cell-map/methods.ts).
- * Mirrors `cmEmissionColorDirtyRegions`.
- */
-export let cmMemoryMaterialDirtyRegions: MemoryMaterialDirtyRegion[] = [];
 /**
  * Indices into `cmMeshes` (>= 2, custom shapes) added since the last
  * `rebuildDirtyChunks` pass and not yet pushed to WASM. Ignored (and
@@ -322,24 +303,6 @@ export let cmSmoothingWeightsChannel: AuxiliaryChannel | undefined;
  * (constructed together, always non-null together).
  */
 export let cmExploredChannel: AuxiliaryChannel | undefined;
-/**
- * Far-tier representative-material channel -- see `cmFarMaterialMap`'s doc
- * comment. Constructed with `chunkSize: {x:1,y:1,z:1}` (the same trick
- * `cmExploredChannel` uses), so it's chunk-granular, separate from and never
- * bit-packed with `cmExploredChannel`. Owned jointly with `cmWindow`
- * (constructed together, always non-null together).
- */
-export let cmFarMaterialChannel: AuxiliaryChannel | undefined;
-/**
- * Near-tier fog-of-war "captured material" channel -- see `cmMemoryMaterialMap`'s
- * doc comment. Constructed at REAL chunk granularity (mirrors
- * `cmEmissionColorChannel`'s instantiation exactly -- same `chunkSize`, NOT
- * the `{1,1,1}` trick `cmExploredChannel` uses), with `baselineValue: 0xFFFF`
- * so an unwritten cell is distinguishable from a captured material index 0.
- * Owned jointly with `cmWindow` (constructed together, always non-null
- * together).
- */
-export let cmMemoryMaterialChannel: AuxiliaryChannel | undefined;
 
 /**
  * Packed value for "nothing here" — material 0, shape 0 (air), no emission,
@@ -398,18 +361,14 @@ export function resetCellMapState(): void {
   cmEmissionColorVersion = 0;
   cmEmissionColorFullVersion = 0;
   cmEmissionColorDirtyRegions = [];
+  cmEmissionColorSyncedCellCount = -1;
+  cmMeshCacheCapacity = MESH_CACHE_MIN_CAPACITY;
+  cmAuxWindowChangeMsAccum = 0;
+  cmAuxFieldSyncMsAccum = 0;
   cmExploredMap = undefined!;
   cmExploredVersion = 0;
   cmExploredFullVersion = 0;
   cmExploredDirtyRegions = [];
-  cmFarMaterialMap = undefined!;
-  cmFarMaterialVersion = 0;
-  cmFarMaterialFullVersion = 0;
-  cmFarMaterialDirtyRegions = [];
-  cmMemoryMaterialMap = undefined!;
-  cmMemoryMaterialVersion = 0;
-  cmMemoryMaterialFullVersion = 0;
-  cmMemoryMaterialDirtyRegions = [];
   cmCustomShapesPendingIndices = [];
   cmCustomShapesFullResync = true;
   cmVisibilityMap = undefined!;
@@ -434,8 +393,6 @@ export function resetCellMapState(): void {
   cmEmissionColorChannel = undefined;
   cmSmoothingWeightsChannel = undefined;
   cmExploredChannel = undefined;
-  cmFarMaterialChannel = undefined;
-  cmMemoryMaterialChannel = undefined;
   cmPendingBufferCleanup = [];
   cmMeshCache.clear();
   // A disposed component must never leave a `setCells` caller awaiting
@@ -543,54 +500,6 @@ function makeCellMapInstance(name: string): CellMapT {
     },
     set exploredDirtyRegions(v) {
       cmExploredDirtyRegions = v;
-    },
-    get farMaterialMap() {
-      return cmFarMaterialMap;
-    },
-    set farMaterialMap(v) {
-      cmFarMaterialMap = v;
-    },
-    get farMaterialVersion() {
-      return cmFarMaterialVersion;
-    },
-    set farMaterialVersion(v) {
-      cmFarMaterialVersion = v;
-    },
-    get farMaterialFullVersion() {
-      return cmFarMaterialFullVersion;
-    },
-    set farMaterialFullVersion(v) {
-      cmFarMaterialFullVersion = v;
-    },
-    get farMaterialDirtyRegions() {
-      return cmFarMaterialDirtyRegions;
-    },
-    set farMaterialDirtyRegions(v) {
-      cmFarMaterialDirtyRegions = v;
-    },
-    get memoryMaterialMap() {
-      return cmMemoryMaterialMap;
-    },
-    set memoryMaterialMap(v) {
-      cmMemoryMaterialMap = v;
-    },
-    get memoryMaterialVersion() {
-      return cmMemoryMaterialVersion;
-    },
-    set memoryMaterialVersion(v) {
-      cmMemoryMaterialVersion = v;
-    },
-    get memoryMaterialFullVersion() {
-      return cmMemoryMaterialFullVersion;
-    },
-    set memoryMaterialFullVersion(v) {
-      cmMemoryMaterialFullVersion = v;
-    },
-    get memoryMaterialDirtyRegions() {
-      return cmMemoryMaterialDirtyRegions;
-    },
-    set memoryMaterialDirtyRegions(v) {
-      cmMemoryMaterialDirtyRegions = v;
     },
     get customShapesPendingIndices() {
       return cmCustomShapesPendingIndices;
@@ -911,15 +820,15 @@ export interface CellMapT extends ComponentData {
   meshes: Mesh[];
   emissionMap: Array3D<number>;
   /** Per-cell emission (highlight) color, packed (r<<16)|(g<<8)|b. 0 = no highlight. */
-  emissionColorMap: Array3D<number>;
+  emissionColorMap: NumericArray3D;
   /** Monotonic version; see cmEmissionColorVersion. */
   emissionColorVersion: number;
   /** Full-reupload threshold; see cmEmissionColorFullVersion. */
   emissionColorFullVersion: number;
   /** Per-cell dirty log for delta GPU uploads; see cmEmissionColorDirtyRegions. */
   emissionColorDirtyRegions: CellEmissionColorDirtyRegion[];
-  /** Chunk-level fog-of-war "explored" state (one flag per chunk); see cmExploredMap. */
-  exploredMap: Array3D<number>;
+  /** Cell-level fog-of-war "explored" state (one flag per cell); see cmExploredMap. */
+  exploredMap: NumericArray3D;
   /** Monotonic version; see cmExploredVersion. */
   exploredVersion: number;
   /** Full-reupload threshold; see cmExploredFullVersion. */
@@ -927,21 +836,11 @@ export interface CellMapT extends ComponentData {
   /** Per-chunk dirty log for delta GPU uploads; see cmExploredDirtyRegions. */
   exploredDirtyRegions: ChunkExploredDirtyRegion[];
   /** Far-tier per-chunk representative material (separate from exploredMap's binary flag); see cmFarMaterialMap. */
-  farMaterialMap: Array3D<number>;
+  farMaterialMap: NumericArray3D;
   /** Monotonic version; see cmFarMaterialVersion. */
   farMaterialVersion: number;
   /** Full-reupload threshold; see cmFarMaterialFullVersion. */
   farMaterialFullVersion: number;
-  /** Per-chunk dirty log for delta GPU uploads; see cmFarMaterialDirtyRegions. */
-  farMaterialDirtyRegions: ChunkExploredDirtyRegion[];
-  /** Near-tier per-cell captured-material snapshot; see cmMemoryMaterialMap. */
-  memoryMaterialMap: Array3D<number>;
-  /** Monotonic version; see cmMemoryMaterialVersion. */
-  memoryMaterialVersion: number;
-  /** Full-reupload threshold; see cmMemoryMaterialFullVersion. */
-  memoryMaterialFullVersion: number;
-  /** Per-cell dirty log for delta GPU uploads; see cmMemoryMaterialDirtyRegions. */
-  memoryMaterialDirtyRegions: MemoryMaterialDirtyRegion[];
   /** Indices into meshes (>= 2) pending upload to WASM; see cmCustomShapesPendingIndices. */
   customShapesPendingIndices: number[];
   /** Forces a full custom-shape re-upload on the next rebuild pass; see cmCustomShapesFullResync. */
@@ -1265,17 +1164,67 @@ export function clearPendingSetCells(): void {
  * coordinate -- sits between "evicted from the resident window" and
  * "actually discarded," so revisiting recently-seen terrain can reuse an
  * already-built mesh (and its already-uploaded GPU buffers) instead of
- * re-running WASM meshing from scratch. A fixed internal constant, not a
- * tunable field, matching this effort's established "no unnecessary
- * tunables" choice. A plain `Map` doubles as the LRU structure: re-`set`ting
- * an existing key moves it to "most recently used" (end of iteration order),
- * so the oldest entry is always `.keys().next().value`.
+ * re-running WASM meshing from scratch. A plain `Map` doubles as the LRU
+ * structure: re-`set`ting an existing key moves it to "most recently used"
+ * (end of iteration order), so the oldest entry is always
+ * `.keys().next().value`.
+ *
+ * Capacity is DERIVED from the window's dimensions rather than being a fixed
+ * constant (still not a tunable field -- see `updateMeshCacheCapacity`). A
+ * fixed 128 was actively harmful for any window bigger than a few chunks per
+ * side: a one-chunk shift evicts a whole boundary slab at once, and when that
+ * slab is larger than the cache, `cacheEvictedChunk` overflows *within its own
+ * batch* -- throwing away entries inserted microseconds earlier and deleting
+ * their GPU buffers, so the cache retained nothing and every pan re-meshed
+ * from scratch.
  */
-const MESH_CACHE_CAPACITY = 128;
 const cmMeshCache = new Map<string, ChunkMesh>();
+/**
+ * Floor for the derived capacity, so a very small window still caches a useful
+ * amount of history rather than a handful of chunks.
+ */
+const MESH_CACHE_MIN_CAPACITY = 128;
+let cmMeshCacheCapacity = MESH_CACHE_MIN_CAPACITY;
 
 function meshCacheKey(cx: number, cy: number, cz: number): string {
   return `${cx},${cy},${cz}`;
+}
+
+/**
+ * Re-derives the cache's capacity from the window's size in chunks, and trims
+ * immediately if the new capacity is smaller (a shrinking resize).
+ *
+ * Two boundary slabs' worth, where a slab is the largest face of the window's
+ * chunk grid. One slab is the exact number of chunks a single one-chunk shift
+ * evicts, so one slab guarantees a shift's evictions all survive being
+ * inserted; two guarantees that panning across a boundary and back -- the
+ * motion that most obviously should be free -- finds everything still cached.
+ * Derived rather than configurable: it's a direct consequence of the window
+ * geometry, so there's no meaningful value a caller could pick better.
+ */
+function updateMeshCacheCapacity(gridDims: {
+  x: number;
+  y: number;
+  z: number;
+}): void {
+  const slab = Math.max(
+    gridDims.y * gridDims.z,
+    gridDims.x * gridDims.z,
+    gridDims.x * gridDims.y,
+  );
+  cmMeshCacheCapacity = Math.max(MESH_CACHE_MIN_CAPACITY, slab * 2);
+  trimMeshCache();
+}
+
+/** Evicts least-recently-used entries until the cache is within capacity. */
+function trimMeshCache(): void {
+  while (cmMeshCache.size > cmMeshCacheCapacity) {
+    const oldestKey = cmMeshCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const overflow = cmMeshCache.get(oldestKey);
+    cmMeshCache.delete(oldestKey);
+    if (overflow) queueBufferCleanup([overflow]);
+  }
 }
 
 /**
@@ -1292,14 +1241,7 @@ function cacheEvictedChunk(
   const key = meshCacheKey(wcx, wcy, wcz);
   cmMeshCache.delete(key);
   cmMeshCache.set(key, chunk);
-  if (cmMeshCache.size > MESH_CACHE_CAPACITY) {
-    const oldestKey = cmMeshCache.keys().next().value;
-    if (oldestKey !== undefined) {
-      const overflow = cmMeshCache.get(oldestKey);
-      cmMeshCache.delete(oldestKey);
-      if (overflow) queueBufferCleanup([overflow]);
-    }
-  }
+  trimMeshCache();
 }
 
 /**
@@ -1367,6 +1309,10 @@ export function reassembleChunks(
   newOrigin: ChunkCoord,
   newGridDims: { x: number; y: number; z: number },
 ): ChunkMesh[] {
+  // Before any lookup or insertion below: the cache's capacity tracks the
+  // window's chunk dimensions, and this is the one place those can change.
+  updateMeshCacheCapacity(newGridDims);
+
   interface OldEntry {
     chunk: ChunkMesh;
     wcx: number;
@@ -1681,69 +1627,96 @@ function chunkDenseArrayIntoColdStorage(
  * `mesh-builder.ts` hands WASM a buffer sized for the old (smaller) window
  * while claiming the new cell count, an out-of-bounds read that traps.
  */
+/** `Array.prototype.some(v => v !== 0)` over an `ArrayLike`. */
+function hasNonZero(values: ArrayLike<number>): boolean {
+  for (let i = 0; i < values.length; i++) {
+    if (values[i] !== 0) return true;
+  }
+  return false;
+}
+
 function syncAuxiliaryFields(
   emissionChannel: AuxiliaryChannel,
   smoothingChannel: AuxiliaryChannel,
-  memoryMaterialChannel: AuxiliaryChannel,
   cellDims: { x: number; y: number; z: number },
   forceSmoothingReassign: boolean,
 ): void {
   const dims = new Vector3D(cellDims.x, cellDims.y, cellDims.z);
 
-  const emissionArr = new Array3D<number>(dims, 0);
-  emissionArr.value = Array.from(emissionChannel.value);
-  cmEmissionColorMap = emissionArr;
-  cmEmissionColorVersion++;
-  cmEmissionColorFullVersion = cmEmissionColorVersion;
-  cmEmissionColorDirtyRegions = [];
-
-  const memoryMaterialArr = new Array3D<number>(dims, 0xffff);
-  memoryMaterialArr.value = Array.from(memoryMaterialChannel.value);
-  cmMemoryMaterialMap = memoryMaterialArr;
-  cmMemoryMaterialVersion++;
-  cmMemoryMaterialFullVersion = cmMemoryMaterialVersion;
-  cmMemoryMaterialDirtyRegions = [];
+  // Adopts each channel's resident buffer by reference rather than copying it
+  // out -- `Array.from(channel.value)` used to unbox a whole-window
+  // `Uint32Array` into a plain `Array<number>` here, which on a shift commit
+  // was the single largest allocation of the frame. `AuxiliaryChannel.set`
+  // and the map's own `set` write the same value to the same slot (see
+  // `setEmissionColor` in methods.ts), so sharing the buffer is what the two
+  // copies already meant.
+  //
+  // Must be re-wrapped on EVERY sync, never cached: `onWindowChange` replaces
+  // the channel's `resident` array outright, so a wrapper held across a shift
+  // would silently keep writing into the pre-shift buffer.
+  cmEmissionColorMap = new Array3Du32(dims, emissionChannel.value);
+  // An all-baseline channel at unchanged dims is bit-identical to what every
+  // camera already holds, so bumping here would force each one through a full
+  // whole-window rebuild + texImage3D for no content change. Skipping the bump
+  // is only safe when the channel was ALSO entirely baseline at the previous
+  // sync -- otherwise a camera still holds pre-shift content that has to be
+  // replaced. `isEntirelyBaseline` is conservative (any write marks the chunk
+  // touched, even one that writes the baseline value itself), so it never
+  // returns a false positive here.
+  // Toroidally, a shift leaves every retained cell in its slot, so the texture
+  // a camera already holds stays correct unless the channel actually altered
+  // something -- which, for a sparse highlight channel, is usually not even the
+  // newly-exposed slab. `changedOnLastWindowChange` reports that, and is
+  // conservative: every path that cannot cheaply prove "unchanged" returns true.
+  //
+  // This gate matters enormously. Bumping unconditionally forces every camera
+  // through a whole-window rebuild -- a per-cell JS pass plus a multi-megabyte
+  // texImage3D -- on EVERY commit. Measured at a 3x render distance that was
+  // 24-38ms per shift, the single most expensive thing on the frame.
+  const emissionUnchanged =
+    !emissionChannel.changedOnLastWindowChange &&
+    cmEmissionColorSyncedCellCount === emissionChannel.value.length;
+  cmEmissionColorSyncedCellCount = emissionChannel.value.length;
+  if (!emissionUnchanged) {
+    cmEmissionColorVersion++;
+    cmEmissionColorFullVersion = cmEmissionColorVersion;
+    cmEmissionColorDirtyRegions = [];
+  }
 
   if (smoothingChannel.canDiverge || forceSmoothingReassign) {
-    const weightsArr = new Array3D<number>(dims, 8);
-    weightsArr.value = Array.from(smoothingChannel.value);
-    cmSmoothingWeights = new Array3Di(weightsArr, 8, [4, 4], 'clamp');
+    cmSmoothingWeights = new Array3Di(
+      new Array3Du32(dims, smoothingChannel.value),
+      8,
+      [4, 4],
+      'clamp',
+    );
   }
 }
 
 /**
  * Resyncs the public `cmExploredMap` field from the explored channel's
- * current resident content, at the given CHUNK-GRID dimensions. Modeled on
+ * current resident content, at the given CELL dimensions. Modeled on
  * `syncAuxiliaryFields` above, but simpler: only one channel (not two), and
  * always reassigns unconditionally -- there's no `forceSmoothingReassign`-
  * style "provably unchanged" skip here, since explored state has a live
- * per-chunk setter (`CellMap.setChunkExplored`) and can diverge at any time.
+ * per-cell setter (`CellMap.setCellExplored`) and can diverge at any time.
  *
- * `chunkGridDims` -- note this is the window's size in CHUNKS
- * (`cmChunkGridSize`/`CellWindow.gridDimensions`), not cells: `exploredChannel`
- * is an `AuxiliaryChannel` constructed with `chunkSize: {x:1,y:1,z:1}`, so in
- * its own coordinate space "cell" IS "chunk" -- its `.value` already holds
- * one entry per chunk.
+ * `cellDims` is the window's size in CELLS (`cmMapSize`/
+ * `CellWindow.cellDimensions`) -- the explored channel is now cell-granular
+ * and toroidal, exactly like the emission-color and smoothing channels, so
+ * this buffer is addressed by SLOT and is the same shape as theirs.
  */
 function syncExploredField(
   exploredChannel: AuxiliaryChannel,
-  farMaterialChannel: AuxiliaryChannel,
-  chunkGridDims: { x: number; y: number; z: number },
+  cellDims: { x: number; y: number; z: number },
 ): void {
-  const dims = new Vector3D(chunkGridDims.x, chunkGridDims.y, chunkGridDims.z);
-  const exploredArr = new Array3D<number>(dims, 0);
-  exploredArr.value = Array.from(exploredChannel.value);
-  cmExploredMap = exploredArr;
+  const dims = new Vector3D(cellDims.x, cellDims.y, cellDims.z);
+  // Zero-copy adoption, same as `syncAuxiliaryFields` -- see its comment for
+  // why the wrapper must be rebuilt on every sync rather than cached.
+  cmExploredMap = new Array3Du32(dims, exploredChannel.value);
   cmExploredVersion++;
   cmExploredFullVersion = cmExploredVersion;
   cmExploredDirtyRegions = [];
-
-  const farMaterialArr = new Array3D<number>(dims, 0xffff);
-  farMaterialArr.value = Array.from(farMaterialChannel.value);
-  cmFarMaterialMap = farMaterialArr;
-  cmFarMaterialVersion++;
-  cmFarMaterialFullVersion = cmFarMaterialVersion;
-  cmFarMaterialDirtyRegions = [];
 }
 
 /**
@@ -1765,52 +1738,26 @@ function syncExploredField(
  * `cmSmoothingWeights`/`cmExploredMap` are never left `undefined` between
  * construction and whenever this hook first actually fires.
  *
- * `exploredChannel` is remapped when calling its own `onWindowChange`:
- * `exploredChannel` was constructed with `chunkSize: {x:1,y:1,z:1}`, so in
- * ITS coordinate space "cellDims" means the same thing `gridDims` means to
- * the primary window (one unit per chunk) -- feed it `gridDims`'s value for
- * both `cellDims` and `gridDims` so its internal eviction/assembly math
- * (which iterates `gridDims` chunks and indexes `cellDims`-shaped flat
- * arrays) operates on the chunk-grid, not the cell-grid.
+ * `exploredChannel` no longer needs the chunk-grid remapping it once did: it
+ * is cell-granular and toroidal like the other two, so it takes the window
+ * change verbatim.
  */
 function makeAuxiliaryOnReassemble(
   emissionChannel: AuxiliaryChannel,
   smoothingChannel: AuxiliaryChannel,
   exploredChannel: AuxiliaryChannel,
-  memoryMaterialChannel: AuxiliaryChannel,
-  farMaterialChannel: AuxiliaryChannel,
 ): NonNullable<WindowConfig['onReassemble']> {
   return (_old, next) => {
+    const profiling = isProfilingEnabled();
+    const channelsT0 = profiling ? performance.now() : 0;
     emissionChannel.onWindowChange(_old, next);
     smoothingChannel.onWindowChange(_old, next);
-    memoryMaterialChannel.onWindowChange(_old, next);
-    exploredChannel.onWindowChange(
-      {
-        origin: _old.origin,
-        gridDims: _old.gridDims,
-        cellDims: _old.gridDims,
-      },
-      {
-        origin: next.origin,
-        gridDims: next.gridDims,
-        cellDims: next.gridDims,
-      },
-    );
-    // Same {1,1,1}-trick coordinate remap `exploredChannel` gets above --
-    // farMaterialChannel is chunk-granular the same way.
-    farMaterialChannel.onWindowChange(
-      {
-        origin: _old.origin,
-        gridDims: _old.gridDims,
-        cellDims: _old.gridDims,
-      },
-      {
-        origin: next.origin,
-        gridDims: next.gridDims,
-        cellDims: next.gridDims,
-      },
-    );
+    exploredChannel.onWindowChange(_old, next);
+    if (profiling) {
+      cmAuxWindowChangeMsAccum += performance.now() - channelsT0;
+    }
     cmNeedsGPUUpdate = true;
+    const syncT0 = profiling ? performance.now() : 0;
     const dimsChanged =
       _old.cellDims.x !== next.cellDims.x ||
       _old.cellDims.y !== next.cellDims.y ||
@@ -1818,11 +1765,13 @@ function makeAuxiliaryOnReassemble(
     syncAuxiliaryFields(
       emissionChannel,
       smoothingChannel,
-      memoryMaterialChannel,
       next.cellDims,
       _old.origin === null || dimsChanged,
     );
-    syncExploredField(exploredChannel, farMaterialChannel, next.gridDims);
+    syncExploredField(exploredChannel, next.cellDims);
+    if (profiling) {
+      cmAuxFieldSyncMsAccum += performance.now() - syncT0;
+    }
   };
 }
 
@@ -2051,17 +2000,11 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     y: (2 * radius.y + 1) * optChunkSize.y,
     z: (2 * radius.z + 1) * optChunkSize.z,
   };
-  // Initial CHUNK-GRID dims (not cell dims) -- for `exploredChannel` below,
-  // which tracks fog-of-war "explored" state at one flag per chunk.
-  const initialChunkGridDims = {
-    x: 2 * radius.x + 1,
-    y: 2 * radius.y + 1,
-    z: 2 * radius.z + 1,
-  };
   const emissionChannel = new AuxiliaryChannel({
     chunkSize: optChunkSize,
     baselineValue: 0,
     trackDivergence: true,
+    toroidal: true,
     initialCellDims,
   });
   emissionChannel.seedFromDense(optEmissionColorMap.value, mapSize);
@@ -2069,52 +2012,29 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     chunkSize: optChunkSize,
     baselineValue: smoothingBaselineValue,
     trackDivergence: !smoothingIsUniform,
+    toroidal: true,
     initialCellDims,
   });
   smoothingChannel.seedFromDense(weightsArray3D.value, mapSize);
   // Fog-of-war "explored" state starts empty/unexplored everywhere -- no
   // authored data to seed from at construction (unlike emission color/
-  // smoothing weights above).
+  // smoothing weights above). Configured exactly like the two channels above:
+  // per CELL, toroidal. It used to be `chunkSize: {x:1,y:1,z:1}` with
+  // `toroidal: false`, which collapsed its coordinate math to one flag per
+  // CHUNK -- a 16x16-cell footprint against a vision radius of 4-6 cells, so
+  // walking anywhere in a chunk revealed several times more ground than the
+  // villager could see.
   const exploredChannel = new AuxiliaryChannel({
-    chunkSize: { x: 1, y: 1, z: 1 },
+    chunkSize: optChunkSize,
     baselineValue: 0,
     trackDivergence: true,
-    initialCellDims: initialChunkGridDims,
-  });
-  // Far-tier representative-material channel -- same {1,1,1} trick as
-  // exploredChannel (chunk-granular), but a SEPARATE channel/texture rather
-  // than packed into exploredChannel's payload (see cmFarMaterialMap's doc
-  // comment for why: exploredChannel is linearly filtered GPU-side to blend
-  // the fog boundary smoothly, which would corrupt a bit-packed material
-  // index). Baseline 0xFFFF ("never captured"). No authored data to seed
-  // from at construction, same as exploredChannel.
-  const farMaterialChannel = new AuxiliaryChannel({
-    chunkSize: { x: 1, y: 1, z: 1 },
-    baselineValue: 0xffff,
-    trackDivergence: true,
-    initialCellDims: initialChunkGridDims,
-  });
-  // Near-tier "captured material" snapshot -- real chunk granularity (same
-  // chunkSize/initialCellDims as emissionChannel above, NOT the {1,1,1}
-  // trick), baseline 0xFFFF ("never captured") since material index 0 is a
-  // legitimate real value. No authored data to seed from at construction,
-  // same as exploredChannel.
-  const memoryMaterialChannel = new AuxiliaryChannel({
-    chunkSize: optChunkSize,
-    baselineValue: 0xffff,
-    trackDivergence: true,
+    toroidal: true,
     initialCellDims,
   });
   // Synchronous initial assignment -- see `makeAuxiliaryOnReassemble`'s doc
   // comment for why this can't wait for the hook alone.
-  syncAuxiliaryFields(
-    emissionChannel,
-    smoothingChannel,
-    memoryMaterialChannel,
-    initialCellDims,
-    true,
-  );
-  syncExploredField(exploredChannel, farMaterialChannel, initialChunkGridDims);
+  syncAuxiliaryFields(emissionChannel, smoothingChannel, initialCellDims, true);
+  syncExploredField(exploredChannel, initialCellDims);
 
   const window = new CellWindow(
     {
@@ -2125,8 +2045,6 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
         emissionChannel,
         smoothingChannel,
         exploredChannel,
-        memoryMaterialChannel,
-        farMaterialChannel,
       ),
     },
     coldStorage,
@@ -2164,8 +2082,6 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   cmEmissionColorChannel = emissionChannel;
   cmSmoothingWeightsChannel = smoothingChannel;
   cmExploredChannel = exploredChannel;
-  cmFarMaterialChannel = farMaterialChannel;
-  cmMemoryMaterialChannel = memoryMaterialChannel;
   cmMapSize = new Vector3D(
     window.cellDimensions.x,
     window.cellDimensions.y,
@@ -2260,52 +2176,31 @@ function builderGenerative(options: CellMapOptions): CellMapT {
   const coldStorage = new ChunkColdStorage({
     chunkCellCount: optChunkSize.x * optChunkSize.y * optChunkSize.z,
   });
-  // Initial CHUNK-GRID dims (not cell dims) -- for `exploredChannel` below.
-  const windowChunkGridDims = {
-    x: 2 * radius.x + 1,
-    y: 2 * radius.y + 1,
-    z: 2 * radius.z + 1,
-  };
   const emissionChannel = new AuxiliaryChannel({
     chunkSize: optChunkSize,
     baselineValue: 0,
     trackDivergence: true,
+    toroidal: true,
     initialCellDims: windowCellDims,
   });
   const smoothingChannel = new AuxiliaryChannel({
     chunkSize: optChunkSize,
     baselineValue: smoothingBaselineValue,
     trackDivergence: !smoothingIsUniform,
+    toroidal: true,
     initialCellDims: windowCellDims,
   });
   if (!smoothingIsUniform) {
     smoothingChannel.seedFromDense(weightsArray3D.value, windowCellDims);
   }
   // Fog-of-war "explored" state starts empty/unexplored everywhere -- no
-  // authored data to seed from at construction.
+  // authored data to seed from at construction. Per CELL and toroidal, exactly
+  // like the two channels above; see the legacy path's matching comment.
   const exploredChannel = new AuxiliaryChannel({
-    chunkSize: { x: 1, y: 1, z: 1 },
+    chunkSize: optChunkSize,
     baselineValue: 0,
     trackDivergence: true,
-    initialCellDims: windowChunkGridDims,
-  });
-  // Far-tier representative-material channel -- same {1,1,1} trick as
-  // exploredChannel (chunk-granular), but a SEPARATE channel/texture -- see
-  // the matching comment in builder()'s legacy path.
-  const farMaterialChannel = new AuxiliaryChannel({
-    chunkSize: { x: 1, y: 1, z: 1 },
-    baselineValue: 0xffff,
-    trackDivergence: true,
-    initialCellDims: windowChunkGridDims,
-  });
-  // Near-tier "captured material" snapshot -- real chunk granularity (same
-  // chunkSize/windowCellDims as emissionChannel above, NOT the {1,1,1}
-  // trick), baseline 0xFFFF ("never captured"). No authored data to seed
-  // from at construction, same as exploredChannel.
-  const memoryMaterialChannel = new AuxiliaryChannel({
-    chunkSize: optChunkSize,
-    baselineValue: 0xffff,
-    trackDivergence: true,
+    toroidal: true,
     initialCellDims: windowCellDims,
   });
   // Synchronous initial assignment -- see `makeAuxiliaryOnReassemble`'s doc
@@ -2313,14 +2208,8 @@ function builderGenerative(options: CellMapOptions): CellMapT {
   // windowRadius needs generation for every initial chunk, so the first
   // `onReassemble` doesn't fire synchronously here the way it does when
   // everything's cold-storage-resolvable).
-  syncAuxiliaryFields(
-    emissionChannel,
-    smoothingChannel,
-    memoryMaterialChannel,
-    windowCellDims,
-    true,
-  );
-  syncExploredField(exploredChannel, farMaterialChannel, windowChunkGridDims);
+  syncAuxiliaryFields(emissionChannel, smoothingChannel, windowCellDims, true);
+  syncExploredField(exploredChannel, windowCellDims);
   const resolvedGenerator = resolveGeneratorOptions(options);
   const generator = wrapGenerator(
     resolvedGenerator.generateCell,
@@ -2336,8 +2225,6 @@ function builderGenerative(options: CellMapOptions): CellMapT {
         emissionChannel,
         smoothingChannel,
         exploredChannel,
-        memoryMaterialChannel,
-        farMaterialChannel,
       ),
     },
     coldStorage,
@@ -2366,8 +2253,6 @@ function builderGenerative(options: CellMapOptions): CellMapT {
   cmEmissionColorChannel = emissionChannel;
   cmSmoothingWeightsChannel = smoothingChannel;
   cmExploredChannel = exploredChannel;
-  cmFarMaterialChannel = farMaterialChannel;
-  cmMemoryMaterialChannel = memoryMaterialChannel;
   cmGeneratorKey = resolvedGenerator.key;
   cmMapSize = new Vector3D(
     window.cellDimensions.x,
@@ -2457,7 +2342,9 @@ function serialize(component: ComponentData): any {
     // Per-cell emission color lives outside the packed WASM cell store (it's a
     // separate texture-side channel), so persist it as its own flat RGB-int array.
     // Omitted when entirely black (0) to keep legacy scenes byte-identical.
-    emissionColorData: cm.emissionColorMap.value.some((v) => v !== 0)
+    // `.value` is ArrayLike (it may be a typed array now, see NumericArray3D),
+    // so this is an explicit loop rather than `.some()`.
+    emissionColorData: hasNonZero(cm.emissionColorMap.value)
       ? Array.from(cm.emissionColorMap.value)
       : undefined,
     // Off-window emission-color highlights that diverge from baseline.
@@ -2467,14 +2354,6 @@ function serialize(component: ComponentData): any {
     // emissionColorData, there is deliberately no separate resident-window
     // snapshot field for explored state per the wiring spec this followed.
     exploredStorageEntries: cmExploredChannel!.dumpEntries(),
-    // Off-window far-tier representative-material chunks that diverge from
-    // baseline (0xFFFF, "never captured"). Separate channel from
-    // exploredStorageEntries -- see cmFarMaterialMap's doc comment.
-    farMaterialStorageEntries: cmFarMaterialChannel!.dumpEntries(),
-    // Off-window near-tier "captured material" cells that diverge from
-    // baseline (0xFFFF, "never captured"). Mirrors emissionColorStorageEntries/
-    // exploredStorageEntries above.
-    memoryMaterialStorageEntries: cmMemoryMaterialChannel!.dumpEntries(),
     // smoothingWeights: the common case (a uniform number, no live setter)
     // just persists the configured value; a per-cell-authored map persists
     // its resident window plus off-window entries, the same shape as the
@@ -2541,8 +2420,6 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     emissionColorData: dataEmissionColorData,
     emissionColorStorageEntries: dataEmissionColorStorageEntries,
     exploredStorageEntries: dataExploredStorageEntries,
-    farMaterialStorageEntries: dataFarMaterialStorageEntries,
-    memoryMaterialStorageEntries: dataMemoryMaterialStorageEntries,
     smoothingUniformWeight: dataSmoothingUniformWeight,
     smoothingWeightsData: dataSmoothingWeightsData,
     smoothingWeightStorageEntries: dataSmoothingWeightStorageEntries,
@@ -2631,12 +2508,6 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     (2 * radius.y + 1) * cks.y,
     (2 * radius.z + 1) * cks.z,
   );
-  // Initial CHUNK-GRID dims (not cell dims) -- for `dExploredChannel` below.
-  const windowChunkGridDims = {
-    x: 2 * radius.x + 1,
-    y: 2 * radius.y + 1,
-    z: 2 * radius.z + 1,
-  };
 
   // Chunk size must be configured before any mesh_build_chunk* call, before
   // the window's initial load below (mirrors builder()).
@@ -2766,6 +2637,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     chunkSize: cks,
     baselineValue: 0,
     trackDivergence: true,
+    toroidal: true,
     initialCellDims: windowCellDims,
   });
   if (Array.isArray(dataEmissionColorStorageEntries)) {
@@ -2787,6 +2659,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     chunkSize: cks,
     baselineValue: dSmoothingBaselineValue,
     trackDivergence: !dSmoothingIsUniform,
+    toroidal: true,
     initialCellDims: windowCellDims,
   });
   if (!dSmoothingIsUniform) {
@@ -2807,10 +2680,11 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   // emissionColorData) -- see the matching comment on `exploredStorageEntries`
   // in `serialize()` above.
   const dExploredChannel = new AuxiliaryChannel({
-    chunkSize: { x: 1, y: 1, z: 1 },
+    chunkSize: cks,
     baselineValue: 0,
     trackDivergence: true,
-    initialCellDims: windowChunkGridDims,
+    toroidal: true,
+    initialCellDims: windowCellDims,
   });
   // Uses the channel's own `loadEntries` wrapper (delegates straight to
   // `coldStorage.loadEntries`) for consistency with `dEmissionChannel`/
@@ -2821,47 +2695,15 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
       [],
   );
 
-  // Far-tier representative-material channel -- same {1,1,1}-trick pattern
-  // as dExploredChannel, but a SEPARATE channel -- see cmFarMaterialMap's
-  // doc comment for why.
-  const dFarMaterialChannel = new AuxiliaryChannel({
-    chunkSize: { x: 1, y: 1, z: 1 },
-    baselineValue: 0xffff,
-    trackDivergence: true,
-    initialCellDims: windowChunkGridDims,
-  });
-  dFarMaterialChannel.loadEntries(
-    (dataFarMaterialStorageEntries as
-      | ColdStorageEntrySnapshot[]
-      | undefined) ?? [],
-  );
-
-  // Near-tier "captured material" channel -- same pattern as the two
-  // channels above (load off-window entries at their actual saved
-  // world-chunk locations). No resident-window dense snapshot to seed from
-  // (unlike emissionColorData), same as dExploredChannel.
-  const dMemoryMaterialChannel = new AuxiliaryChannel({
-    chunkSize: cks,
-    baselineValue: 0xffff,
-    trackDivergence: true,
-    initialCellDims: windowCellDims,
-  });
-  dMemoryMaterialChannel.loadEntries(
-    (dataMemoryMaterialStorageEntries as
-      | ColdStorageEntrySnapshot[]
-      | undefined) ?? [],
-  );
-
   // Synchronous initial assignment -- see `makeAuxiliaryOnReassemble`'s doc
   // comment for why this can't wait for the hook alone.
   syncAuxiliaryFields(
     dEmissionChannel,
     dSmoothingChannel,
-    dMemoryMaterialChannel,
     windowCellDims,
     true,
   );
-  syncExploredField(dExploredChannel, dFarMaterialChannel, windowChunkGridDims);
+  syncExploredField(dExploredChannel, windowCellDims);
 
   const dWindow = new CellWindow(
     {
@@ -2873,8 +2715,6 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
         dEmissionChannel,
         dSmoothingChannel,
         dExploredChannel,
-        dMemoryMaterialChannel,
-        dFarMaterialChannel,
       ),
     },
     dColdStorage,
@@ -2925,8 +2765,6 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   cmEmissionColorChannel = dEmissionChannel;
   cmSmoothingWeightsChannel = dSmoothingChannel;
   cmExploredChannel = dExploredChannel;
-  cmFarMaterialChannel = dFarMaterialChannel;
-  cmMemoryMaterialChannel = dMemoryMaterialChannel;
   cmGeneratorKey = dGeneratorKey;
   cmMapSize = new Vector3D(
     dWindow.cellDimensions.x,

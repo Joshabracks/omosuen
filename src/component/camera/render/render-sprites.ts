@@ -16,7 +16,16 @@ import {
   setOrbitYawUniform,
   setLightUniforms,
 } from './light-uniforms';
-import { setVisionUniforms } from './vision-uniforms';
+import { getResolvedVisionSources, setVisionUniforms } from './vision-uniforms';
+import { setFogUniforms } from './fog-uniforms';
+import { computeFogVisibility, fogDrawKind } from '../../fog-of-war/sweep';
+import {
+  isPhantomCoveredBySprite,
+  phantomFogAlpha,
+  spriteFogPresence,
+} from '../../fog-of-war/methods';
+import type { ResolvedSource } from '../../fog-of-war/sweep';
+import { computeSolidityMap } from './visibility-mask';
 
 /** Default cell dimensions when no cell-maps are in the scene. */
 const DEFAULT_CELL_SIZE_X = 32;
@@ -48,6 +57,14 @@ const _drawDepths: number[] = [];
 // that's currently obscured) -- the second loop must set
 // u_spriteFogMemory=true for that draw call.
 const _drawIsMemory: boolean[] = [];
+
+/**
+ * Depth nudge applied to a memory (phantom) draw so it always sorts behind a
+ * coincident live sprite -- see where it is applied for why that ordering is
+ * load-bearing. Small enough to be a pure tie-break between two entries at the
+ * same world position, never enough to reorder genuinely distinct sprites.
+ */
+const MEMORY_DEPTH_BIAS = 1e-4;
 
 /**
  * Attempts to bind a sprite's normal texture to TEXTURE1.
@@ -322,6 +339,11 @@ export function renderSprites(
   const u_zoom = gl.getUniformLocation(program, 'u_zoom');
   const u_cellSize = gl.getUniformLocation(program, 'u_cellSize');
   const u_windowSize = gl.getUniformLocation(program, 'u_windowSize');
+  const u_windowOrigin = gl.getUniformLocation(program, 'u_windowOrigin');
+  const u_windowWrapOffset = gl.getUniformLocation(
+    program,
+    'u_windowWrapOffset',
+  );
   const u_worldOffset = gl.getUniformLocation(program, 'u_worldOffset');
   const u_spritePosition = gl.getUniformLocation(program, 'u_spritePosition');
   const u_spriteSize = gl.getUniformLocation(program, 'u_spriteSize');
@@ -372,6 +394,11 @@ export function renderSprites(
     'u_hasCellEmissionColor',
   );
   const u_spriteFogMemory = gl.getUniformLocation(program, 'u_spriteFogMemory');
+  const u_spriteVisibility = gl.getUniformLocation(
+    program,
+    'u_spriteVisibility',
+  );
+  const u_spriteFogAlpha = gl.getUniformLocation(program, 'u_spriteFogAlpha');
 
   // Set constant uniforms (same for all sprites)
   // Sprites render at full resolution to screen (not via FBO), so they use
@@ -434,21 +461,125 @@ export function renderSprites(
       : 0,
   );
 
+  // Window origin in CELL units, for isRayBlocked's bounds check and
+  // isCellSolid's addressing. Set here for the same reason as u_worldOffset
+  // above and u_windowWrapOffset below: this pass uploads its OWN u_windowSize,
+  // and an origin inherited from the cell pass would be paired with a different
+  // size. A ray whose bounds check fails then reads as OUT OF BOUNDS, which
+  // fails OPEN -- unblocked -- so every sprite would look like line of sight
+  // simply did not apply to it. Matches render-cell-maps.ts's own computation.
+  gl.uniform3f(
+    u_windowOrigin,
+    originCellMap && windowOrigin ? windowOrigin.cx * originCellMap.chunkSize.x : 0,
+    originCellMap && windowOrigin ? windowOrigin.cy * originCellMap.chunkSize.y : 0,
+    originCellMap && windowOrigin ? windowOrigin.cz * originCellMap.chunkSize.z : 0,
+  );
+
+  // Toroidal wrap offset for u_cellSolidity lookups (isCellSolid, shared with
+  // the cell pass). Set here rather than inherited from renderCellMaps because
+  // this pass sets its OWN u_windowSize above, and `windowSlot` takes the
+  // modulo against that -- an offset computed against a different size would
+  // fold lookups onto the wrong texels. Same failure shape as the u_worldOffset
+  // mismatch documented above, so it is computed here from the same cell-map.
+  const wrapMod = (v: number, d: number): number =>
+    d > 0 ? ((v % d) + d) % d : 0;
+  gl.uniform3i(
+    u_windowWrapOffset,
+    originCellMap && windowOrigin
+      ? wrapMod(windowOrigin.cx * originCellMap.chunkSize.x, maxMapWidth)
+      : 0,
+    originCellMap && windowOrigin
+      ? wrapMod(windowOrigin.cy * originCellMap.chunkSize.y, maxMapHeight)
+      : 0,
+    originCellMap && windowOrigin
+      ? wrapMod(windowOrigin.cz * originCellMap.chunkSize.z, maxMapDepth)
+      : 0,
+  );
+
   // Set dynamic light uniforms (same lights as cell-maps)
   setLightUniforms(gl, camera.id!, lights);
 
   // Set fog-of-war vision-source uniforms (same sources as cell-maps)
-  setVisionUniforms(gl, camera.id!, visionSources);
+  // Resolved before the vision uniforms because `visionMode` travels with
+  // them -- see setVisionUniforms.
+  const fogOfWar = sceneRoot.getComponentByType(
+    'fog-of-war',
+    true,
+  ) as FogOfWarT | null;
+  const fogUseLineOfSight = fogOfWar?.visionMode !== 'distance';
+
+  setVisionUniforms(gl, camera.id!, visionSources, fogUseLineOfSight);
+
+  // Per-sprite fog visibility is computed HERE, on the CPU, and uploaded as
+  // u_spriteVisibility -- see the fog block in unified.frag's sprite path for
+  // why. Resolved from the exact array setVisionUniforms just handed the
+  // shader, so the two cannot drift.
+  //
+  // `origin` is null until the cell-map's first window commit; with no
+  // cell-map (or no committed window) there is no solidity data to raycast
+  // against, so every sprite is treated as fully visible -- matching the
+  // pre-existing behaviour of a scene that has sprites but no terrain.
+  const fogSources: ResolvedSource[] = [];
+  // THE GATE, and it has to mirror EXACTLY when the sweep runs -- see
+  // `fogDrawKind`. It used to omit both conditions on the fog-of-war component
+  // itself, and that made every sprite in a vision-source-only scene vanish:
+  // nothing advances `_fowStatus` off its `'unseen'` default without
+  // `FogOfWar.update`, and `'unseen'` is a skip.
+  //
+  // `memory: 'none'` is the same situation by choice rather than by omission --
+  // no sweep, so no sprite may be skipped or replaced by a phantom. Fog still
+  // FILTERS those sprites; it just does not remember them.
+  const spriteFogManagesSprites =
+    !!fogOfWar && fogOfWar.memory !== 'none' && visionSources.length > 0;
+  const spriteFogActive =
+    !!originCellMap && !!windowOrigin && visionSources.length > 0;
+  if (spriteFogActive) {
+    const cs = originCellMap.cellSize;
+    const originLocalCell = {
+      x: windowOrigin.cx * originCellMap.chunkSize.x,
+      y: windowOrigin.cy * originCellMap.chunkSize.y,
+      z: windowOrigin.cz * originCellMap.chunkSize.z,
+    };
+    for (const { source, pos } of getResolvedVisionSources()) {
+      const outer = source.radius + source.fadeWidth;
+      fogSources.push({
+        pos: { x: pos.x, y: pos.y, z: pos.z },
+        localCell: {
+          x: pos.x / cs.x - originLocalCell.x,
+          y: pos.y / cs.y - originLocalCell.y,
+          z: pos.z / cs.z - originLocalCell.z,
+        },
+        outerSq: outer * outer,
+        radius: source.radius,
+        fadeWidth: source.fadeWidth,
+      });
+    }
+  }
+  // Cached WASM-side, so this is a flag read on frames where terrain did not
+  // change. Held only across the synchronous draw loop below -- nothing in it
+  // writes to WASM, so the view cannot be detached mid-use.
+  const fogMask = fogSources.length > 0 ? computeSolidityMap() : null;
+
+
+  const fogCellDims = originCellMap?.mapSize;
+  const fogCellSize = originCellMap?.cellSize;
+  const fogWindowOriginLocalCell =
+    originCellMap && windowOrigin
+      ? {
+          x: windowOrigin.cx * originCellMap.chunkSize.x,
+          y: windowOrigin.cy * originCellMap.chunkSize.y,
+          z: windowOrigin.cz * originCellMap.chunkSize.z,
+        }
+      : null;
   // u_fogLightInfluence feeds computeVisibility (used by both cell and
   // sprite fragment paths) -- uploaded independently here too, not just in
   // renderCellMaps, since a scene with sprites but no cell-maps never runs
   // that pass at all (see the u_cellSolidity pinning comment below for the
   // same "don't rely on the other draw call having run this frame" reasoning).
-  const fogOfWar = sceneRoot.getComponentByType(
-    'fog-of-war',
-    true,
-  ) as FogOfWarT | null;
-  gl.uniform1f(u_fogLightInfluence, fogOfWar?.lightInfluence ?? 0);
+  // Styles, lightInfluence, memory mode and dropHidden. Uploaded HERE and not
+  // left to renderCellMaps: a scene with sprites but no cell-maps never runs
+  // that pass at all, and the sprite path reads both style tiers.
+  setFogUniforms(gl, camera.id!, fogOfWar);
 
   // Set axonometric angle + orbit yaw uniforms (GPU computes cos/sin)
   setAngleUniform(gl, camera.id!, camera.axonometricAngle);
@@ -509,6 +640,17 @@ export function renderSprites(
     camera.glResources.cellEmissionColorTexture,
   );
   gl.uniform1i(u_cellEmissionColor, 6);
+
+  // Same reasoning again for u_exploredTexture (sampler3D) on unit 7. The
+  // sprite path never samples it, but it lives in this shared program, and a
+  // sampler uniform that is never explicitly set defaults to unit 0 -- where
+  // u_albedoTexture (sampler2D) already is. Two different sampler types on one
+  // unit is GL_INVALID_OPERATION, and a scene with sprites but no cell-map
+  // never runs renderCellMaps to set it. Binding null is fine: nothing here
+  // reads it.
+  gl.activeTexture(gl.TEXTURE7);
+  gl.bindTexture(gl.TEXTURE_3D, camera.glResources.exploredTexture);
+  gl.uniform1i(gl.getUniformLocation(program, 'u_exploredTexture'), 7);
   if (
     camera.glResources.cellEmissionColorHasAny &&
     camera.glResources.cellEmissionColorTexture
@@ -571,8 +713,27 @@ export function renderSprites(
       'vision-source',
       false,
     );
-    if (sprite._fowStatus === 'obscured' && !hasOwnVisionSource) continue;
-    const isMemory = sprite._fowStatus === 'phantom' && !hasOwnVisionSource;
+    // 'obscured' and 'unseen' are skipped. An 'obscuring' sprite is deliberately
+    // still drawn: it has reached zero visibility but its phantom is mid-spawn,
+    // and it holds the memory look until the swap so the handover lands on one
+    // frame instead of leaving a gap (see SpriteT._fowStatus).
+    // Which shader branch this sprite takes, per fog state. See `fogDrawKind`
+    // -- notably 'obscuring' draws as a MEMORY, because for those frames the
+    // sprite IS the memory (its phantom does not exist yet) and must match the
+    // branch the phantom will take at the swap.
+    //
+    // `spriteFogActive` and `trackedByFog` gate the 'unseen' skip: with no fog
+    // component, no vision sources, or fog opted out per sprite, nothing ever
+    // advances `_fowStatus` off its 'unseen' default and every sprite must still
+    // draw.
+    const drawKind = fogDrawKind(
+      sprite._fowStatus,
+      hasOwnVisionSource,
+      sprite.trackedByFog !== false,
+      spriteFogManagesSprites,
+    );
+    if (drawKind === 'skip') continue;
+    const isMemory = drawKind === 'memory';
 
     // World position so a sprite under a transformed parent nexus is
     // placed/sorted by its composed world transform. A phantom sprite's own
@@ -612,7 +773,15 @@ export function renderSprites(
 
     _drawSprites[drawCount] = sprite;
     _drawTransforms[drawCount] = t;
-    _drawDepths[drawCount] = pRx + heightScale * p.y + pRz;
+    // A phantom and the unmoved sprite it stands in for land at IDENTICAL
+    // depth, and the sort below is stable, so their order would otherwise be
+    // whatever collection order happened to produce. That is load-bearing
+    // now: the phantom is the opaque backdrop its sprite fades in over, and a
+    // phantom sorted after its sprite would hide that fade completely. Nudge
+    // memory draws fractionally further away so they always sort first --
+    // a pure tie-break, since the two are at the same world position.
+    _drawDepths[drawCount] =
+      pRx + heightScale * p.y + pRz - (isMemory ? MEMORY_DEPTH_BIAS : 0);
     _drawIsMemory[drawCount] = isMemory;
     drawCount++;
   }
@@ -656,6 +825,71 @@ export function renderSprites(
     // previous tracked-sprite draw this frame can never leak into an
     // unrelated untracked sprite's draw call.
     gl.uniform1i(u_spriteFogMemory, _drawIsMemory[di] ? 1 : 0);
+
+    // Fog COLOUR comes from distance -- the same point fog-of-war's sweep
+    // tests, so a phantom and the sprite it stands in for (which share a
+    // position) get the same number and therefore the same look.
+    // 1.0 when fog isn't active, which the shader reads as fully visible.
+    //
+    // A COVERED phantom is fed 0 regardless. In the memory branch `fogVis`
+    // drives nothing but the `u_spriteFogMemory && fogVis >= 1.0` discard
+    // (colour there is `fadedRgb` unconditionally), and a covered phantom must
+    // keep drawing until the sprite over it is fully opaque -- it is that
+    // sprite's opaque backdrop. Without this it is discarded the moment its spot
+    // reaches full vision, which on a fast approach is long before the fade-in
+    // finishes, and the background shows through. An UNCOVERED phantom keeps its
+    // real visibility and still discards under full vision: that is the "you
+    // looked right at the spot and nothing is there" path.
+    const phantomNexusId = spriteTransform.parent?.id;
+    const isPhantom = sprite._fowStatus === 'phantom';
+    const covered =
+      isPhantom &&
+      phantomNexusId !== undefined &&
+      isPhantomCoveredBySprite(phantomNexusId);
+
+    let spriteVis = 1;
+    if (covered) {
+      spriteVis = 0;
+    } else if (
+      fogMask &&
+      fogCellDims &&
+      fogCellSize &&
+      fogWindowOriginLocalCell
+    ) {
+      spriteVis = computeFogVisibility(
+        spriteTransform.worldPosition,
+        fogSources,
+        fogMask,
+        fogCellDims,
+        fogWindowOriginLocalCell,
+        fogCellSize,
+        fogUseLineOfSight,
+      );
+    }
+    gl.uniform1f(u_spriteVisibility, spriteVis);
+
+    // Fog OPACITY comes from a timer, not from distance. A distance-driven
+    // fade stalls part-way whenever the source stops closing and runs backwards
+    // when it retreats; a timed one always completes. See fog-of-war/methods.ts.
+    //
+    // A phantom's opacity is derived from the presence of the sprite standing
+    // over it wherever there is one, so the pair is complementary from a single
+    // timer rather than two that have to stay in agreement.
+    //
+    // Branch on `isPhantom`, NOT on `_drawIsMemory` -- the two are not the same
+    // set. An `'obscuring'` sprite also draws as a memory (it IS the memory
+    // until its phantom lands), but it is a real sprite, so `phantomNexusId`
+    // would be its own nexus and `phantomFogAlpha` would be asked about an id
+    // that is not a phantom's. It happens to answer 1, which is what the hold
+    // wants, but only by missing the lookup.
+    gl.uniform1f(
+      u_spriteFogAlpha,
+      isPhantom
+        ? phantomNexusId !== undefined
+          ? phantomFogAlpha(phantomNexusId)
+          : 1
+        : spriteFogPresence(sprite.id),
+    );
 
     // Get albedo texture map (required)
     if (!sprite.textureMapKeys.albedo) {

@@ -1,6 +1,6 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { readFileSync } from 'fs';
+import { copyFileSync, mkdirSync, readFileSync } from 'fs';
 import webpack from 'webpack';
 import {
   buildRenderWasmBase64,
@@ -14,6 +14,7 @@ const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
 
 export default (env) => {
   const isDevelopment = env.mode === 'development';
+  const outputFilename = isDevelopment ? 'omosuen.js' : 'omosuen.min.js';
 
   // Compile the hand-rolled Rust render crate to wasm and embed it as base64 via
   // DefinePlugin (same mechanism as __ENGINE_VERSION__). A cargo failure throws
@@ -36,7 +37,7 @@ export default (env) => {
     target: 'web',
     output: {
       path: path.resolve(__dirname, 'test/dev'),
-      filename: isDevelopment ? 'omosuen.js' : 'omosuen.min.js',
+      filename: outputFilename,
       library: {
         name: 'Omosuen',
         type: 'umd',
@@ -65,6 +66,27 @@ export default (env) => {
         __RENDER_WASM_BASE64__: JSON.stringify(renderWasmBase64),
         __AUDIO_WORKLET_SCRIPT__: JSON.stringify(audioWorkletScript),
       }),
+      // Webpack writes to test/dev/ for the integration server, but package.json
+      // main/exports points a symlinked consumer at dist/omosuen.min.js. Mirror
+      // it there after emit so the two cannot drift.
+      {
+        apply: (compiler) =>
+          compiler.hooks.afterEmit.tap('copy-to-dist', () => {
+            mkdirSync(path.resolve(__dirname, 'dist'), { recursive: true });
+            copyFileSync(
+              path.resolve(__dirname, 'test/dev', outputFilename),
+              path.resolve(__dirname, 'dist/omosuen.min.js'),
+            );
+            // The dev bundle's sourceMappingURL is a bare `omosuen.js.map`, so
+            // copying the map under its own name alongside resolves it as-is.
+            if (isDevelopment) {
+              copyFileSync(
+                path.resolve(__dirname, 'test/dev/omosuen.js.map'),
+                path.resolve(__dirname, 'dist/omosuen.js.map'),
+              );
+            }
+          }),
+      },
     ],
     optimization: {
       minimize: !isDevelopment,

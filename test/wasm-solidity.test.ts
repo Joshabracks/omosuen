@@ -10,6 +10,8 @@ import { packCell } from '../src/component/cell-map/types';
 import {
   initRenderWasm,
   loadCellStore,
+  cellStoreSet,
+  cellStoreFlush,
 } from '../src/component/camera/render/wasm';
 import { computeSolidityMap } from '../src/component/camera/render/visibility-mask';
 import { buildRenderWasm } from '../build-tools/wasm.mjs';
@@ -41,6 +43,12 @@ function makeCase(
         shapeIndex,
         emissionIntensity: Math.floor(rng() * 32),
         visible,
+        // Randomised, and deliberately ABSENT from `expected` below: this flag
+        // culls neighbouring faces at mesh time and must have no effect on
+        // solidity whatsoever. If it ever leaked in, line of sight, pathing and
+        // the fog raycasts would all shift at once -- so the oracle ignoring it
+        // is the assertion.
+        cullsNeighborFaces: rng() < 0.5,
       }),
     );
     expected[i] = visible && shapeIndex !== 0 ? 255 : 0;
@@ -94,6 +102,70 @@ async function main(): Promise<void> {
     const wasm = Uint8Array.from(computeSolidityMap());
     assertEqual(wasm, expected, '[reuse-after-grow 8x8x8]');
     console.log('  ✓ [reuse-after-grow 8x8x8]');
+    passed++;
+  }
+
+  // Cache invalidation: the solidity map is cached and only recomputed when a
+  // cell changes, and it is read more than once per frame (render pass +
+  // fog-of-war). A stale-cache bug is invisible to every case above -- they all
+  // load a fresh map and read it once -- so drive the mutate-then-reread path
+  // explicitly: flip cells with cellStoreSet BETWEEN two computeSolidityMap()
+  // calls and require the second result to reflect the writes. Covers both the
+  // in-place patch path and the post-flush rebuild path.
+  {
+    const size = new Vector3D(16, 12, 16);
+    const total = size.x * size.y * size.z;
+    const { flat, expected } = makeCase(size, makeRng(1234), 0.5);
+    loadCellStore(flat.value, total, size.x, size.y, size.z);
+
+    const first = Uint8Array.from(computeSolidityMap());
+    assertEqual(first, expected, '[mutate-reread: initial]');
+
+    // Toggle a deterministic scattered subset, tracking the expectation.
+    const rng = makeRng(4321);
+    const solidPacked = packCell({
+      materialIndex: 7,
+      shapeIndex: 3,
+      emissionIntensity: 0,
+      visible: true,
+    });
+    const airPacked = packCell({
+      materialIndex: 0,
+      shapeIndex: 0,
+      emissionIntensity: 0,
+      visible: true,
+    });
+    let writes = 0;
+    for (let i = 0; i < total; i++) {
+      if (rng() >= 0.02) continue;
+      const x = i % size.x;
+      const y = Math.floor(i / size.x) % size.y;
+      const z = Math.floor(i / (size.x * size.y));
+      // Index order must match the store's: z*my*mx + y*mx + x.
+      const idx = z * size.y * size.x + y * size.x + x;
+      const makeSolid = rng() < 0.5;
+      cellStoreSet(x, y, z, makeSolid ? solidPacked : airPacked);
+      expected[idx] = makeSolid ? 255 : 0;
+      writes++;
+    }
+
+    const second = Uint8Array.from(computeSolidityMap());
+    assertEqual(second, expected, '[mutate-reread: after sets]');
+
+    // Same again across an explicit flush (recompresses the RLE store without
+    // changing cell contents -- the cache must survive it, still correct).
+    cellStoreFlush();
+    const third = Uint8Array.from(computeSolidityMap());
+    assertEqual(third, expected, '[mutate-reread: after flush]');
+
+    // And a repeat read with no writes in between must be identical (the
+    // cache-hit path itself returning the right buffer).
+    const fourth = Uint8Array.from(computeSolidityMap());
+    assertEqual(fourth, expected, '[mutate-reread: cached reread]');
+
+    console.log(
+      `  ✓ [mutate-reread 16x12x16] ${writes} cell writes reflected across set/flush/cached rereads`,
+    );
     passed++;
   }
 

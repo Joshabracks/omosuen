@@ -23,6 +23,11 @@ import type { TransformT } from './data';
 import type { CameraT } from '../camera/data';
 import { resolveProjection, worldToScreen } from '../camera/screen-pick/ray';
 import type { ProjectionParams } from '../camera/screen-pick/ray';
+import {
+  beginSceneIndex,
+  endSceneIndex,
+  indexNexusComponents,
+} from '../scene-index';
 
 /**
  * Screen-pixel padding applied to each viewport edge before testing. A world
@@ -111,12 +116,13 @@ function walkOnScreen(n: NexusT): void {
   // closure, mirrors world.ts's propagate(). Unlike propagate(), no TRS to
   // compose here: worldPosition is already fresh from updateWorldTransforms,
   // this pass only reads it.
-  for (let i = 0; i < comps.length; i++) {
-    if (comps[i].type === 'transform') {
-      testOnScreen(comps[i] as unknown as TransformT);
-      break;
-    }
-  }
+  //
+  // The same scan also publishes this nexus's sprites/vision-sources/cell-maps
+  // into the shared scene index (see scene-index.ts): consumers that would
+  // otherwise each run their own recursive `getComponentsByType` get the
+  // result of this one walk instead.
+  const transform = indexNexusComponents(n);
+  if (transform) testOnScreen(transform);
 
   for (let i = 0; i < comps.length; i++) {
     if (comps[i].type === 'nexus') {
@@ -127,5 +133,7 @@ function walkOnScreen(n: NexusT): void {
 
 export function updateOnScreenFlags(root: NexusT): void {
   resolveActiveCameras(root);
+  beginSceneIndex();
   walkOnScreen(root);
+  endSceneIndex();
 }

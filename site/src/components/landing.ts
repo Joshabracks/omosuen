@@ -2,7 +2,9 @@ import type { SiteCtx } from "../types";
 
 export function siteHeader(ctx: SiteCtx): string {
   const onDocs = ctx.state.data.view === "docs";
+  const onDemo = ctx.state.data.view === "demo";
   const docsActive = onDocs ? " site-header__link--active" : "";
+  const demoActive = onDemo ? " site-header__link--active" : "";
 
   return `
     <header class="site-header">
@@ -10,6 +12,7 @@ export function siteHeader(ctx: SiteCtx): string {
         <img class="site-header__logo" src="assets/text-logo-lapis-sin.svg" alt="Omosuen" width="160" height="32" />
       </a>
       <nav class="site-header__nav" aria-label="Primary">
+        <a class="site-header__link${demoActive}" href="#demo" ${onDemo ? 'aria-current="page"' : ""}>Demo</a>
         <a class="site-header__link${docsActive}" href="#docs" ${onDocs ? 'aria-current="page"' : ""}>Docs</a>
       </nav>
     </header>
@@ -17,7 +20,7 @@ export function siteHeader(ctx: SiteCtx): string {
 }
 
 export function siteFooter(ctx: SiteCtx): string {
-  if (ctx.state.data.view === "docs") {
+  if (ctx.state.data.view !== "landing") {
     return "";
   }
   const version = ctx.state.data.engineVersion as string;

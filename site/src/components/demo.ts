@@ -17,6 +17,7 @@ export function demoPage(ctx: SiteCtx): string {
     ["↓", "Soft drop"],
     ["Z", "Rotate left"],
     ["X / ↑", "Rotate right"],
+    ["Enter", "Pause &amp; tilt"],
   ];
 
   const legend = keys
@@ -39,6 +40,11 @@ export function demoPage(ctx: SiteCtx): string {
           viewed straight down. Background, panels, text, and every falling block are
           cells; colour is driven through the per-cell emission channel, so nothing
           re-meshes while you play. All 55 colours come from the NES palette.
+        </p>
+        <p class="demo-page__lead">
+          It is not actually flat. Pause to tilt the camera and see the screen come
+          apart: the maze splits into three sheets, every panel label stands off its
+          board, and the well is scattered across ten layers.
         </p>
         <ul class="demo-legend">${legend}</ul>
         <p class="demo-page__note">Press any key to start the music.</p>

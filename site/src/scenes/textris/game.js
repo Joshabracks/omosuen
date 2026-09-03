@@ -248,6 +248,26 @@ export function reset(state) {
   state.dirty = true;
 }
 
+/**
+ * Bounding box of a piece's spawn orientation, in cells. Used wherever a piece
+ * has to be laid out relative to its own extent rather than the board — the
+ * NEXT box, the statistics minis, and the layer map that stands those minis
+ * off their board.
+ */
+export function spawnBounds(piece) {
+  let minR = Infinity;
+  let maxR = -Infinity;
+  let minC = Infinity;
+  let maxC = -Infinity;
+  for (const [r, c] of SHAPES[piece][0]) {
+    if (r < minR) minR = r;
+    if (r > maxR) maxR = r;
+    if (c < minC) minC = c;
+    if (c > maxC) maxC = c;
+  }
+  return { minR, minC, w: maxC - minC + 1, h: maxR - minR + 1 };
+}
+
 export function cellsOf(piece, rotation, row, col) {
   const shape = SHAPES[piece][rotation % SHAPES[piece].length];
   const out = [];

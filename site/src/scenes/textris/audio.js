@@ -44,7 +44,12 @@ export async function createAudio(scene) {
 
   const musicEffect = await Omosuen.newComponent(
     'audio-effect',
-    { name: 'Textris Music FX', volume: 0.5, speedShift: 1.0, transitionBuffer: 150 },
+    {
+      name: 'Textris Music FX',
+      volume: 0.5,
+      speedShift: 1.0,
+      transitionBuffer: 150,
+    },
     scene,
   );
   const sfxEffect = await Omosuen.newComponent(
@@ -70,7 +75,10 @@ export async function createAudio(scene) {
    * before the loop that would drain that queue.
    */
   function ready() {
-    return Boolean(player._audioContext) && player._bufferCache.has(tracks.theme.filePath);
+    return (
+      Boolean(player._audioContext) &&
+      player._bufferCache.has(tracks.theme.filePath)
+    );
   }
 
   return {
@@ -86,8 +94,18 @@ export async function createAudio(scene) {
     startMusic() {
       if (started || !ready()) return;
       started = true;
-      theme = new Omosuen.TrackController(player, tracks.theme, musicEffect, true);
-      ending = new Omosuen.TrackController(player, tracks.ending, musicEffect, false);
+      theme = new Omosuen.TrackController(
+        player,
+        tracks.theme,
+        musicEffect,
+        true,
+      );
+      ending = new Omosuen.TrackController(
+        player,
+        tracks.ending,
+        musicEffect,
+        false,
+      );
       theme.play();
     },
 

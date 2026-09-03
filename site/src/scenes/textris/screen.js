@@ -52,35 +52,48 @@ for (let ty = 0; ty < H / 8; ty++) {
 back.set(background);
 
 let cellMap = null;
-// let setEmissionColor = null;
+/**
+ * Y layer per pixel — which cell of the (x, *, z) column is the solid one.
+ * Static for the life of the scene: a pixel's layer is a property of the region
+ * it sits in, so it never changes as the game plays. See layers.js.
+ */
+let layers = null;
 /** Reused across every pixel write — these are read, never retained. */
 const coord = new Omosuen.Vector3D(0, 0, 0);
 const rgb = new Omosuen.Vector3D(0, 0, 0);
+
+/** The baked static screen, for layers.js to derive its rules from. */
+export function getBackground() {
+  return background;
+}
 
 /**
  * Packed `(r<<16)|(g<<8)|b` for the whole background, to seed the cell-map's
  * `emissionColorMap` at construction. Doing it this way rather than through
  * 61,440 runtime writes keeps the first frame from hitching.
- *
- * Array3D indexes as `z * sizeY * sizeX + y * sizeX + x`; with sizeY 1 that is
- * exactly this framebuffer's own `y * W + x`, so the two can be copied flat.
  */
-export function buildInitialEmissionColorMap() {
-  const map = new Omosuen.Array3D(new Omosuen.Vector3D(W, 1, H), 0);
+export function buildInitialEmissionColorMap(layerMap, layerCount) {
+  const map = new Omosuen.Array3D(new Omosuen.Vector3D(W, layerCount, H), 0);
   for (let i = 0; i < back.length; i++) {
     const c = PALETTE[back[i]];
-    map.value[i] = (c[0] << 16) | (c[1] << 8) | c[2];
+    map.value[cellIndex(i, layerMap[i], layerCount)] =
+      (c[0] << 16) | (c[1] << 8) | c[2];
   }
   // The GPU starts out holding exactly this, so the first flush is a no-op.
   front.set(back);
   return map;
 }
 
-export function attach(component) {
+/** Array3D's own addressing: `z * sizeY * sizeX + y * sizeX + x`. */
+export function cellIndex(pixel, layer, layerCount) {
+  const x = pixel % W;
+  const z = (pixel / W) | 0;
+  return z * layerCount * W + layer * W + x;
+}
+
+export function attach(component, layerMap) {
   cellMap = component;
-  // Resolved once: every read of `cellMap.setEmissionColor` goes through the
-  // component's method-dispatch Proxy, and this runs thousands of times a frame.
-  // setEmissionColor = cellMap.setEmissionColor;
+  layers = layerMap;
 }
 
 /** Restores the static screen under the dynamic layers. */
@@ -165,6 +178,7 @@ export function flush() {
     front[i] = value;
     const c = PALETTE[value];
     coord.x = i % W;
+    coord.y = layers[i];
     coord.z = (i / W) | 0;
     rgb.x = c[0] / 255;
     rgb.y = c[1] / 255;

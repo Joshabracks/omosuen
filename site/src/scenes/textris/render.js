@@ -27,8 +27,15 @@ import {
   cellsOf,
   clearedColumns,
   gameOverSecondsLeft,
+  spawnBounds,
 } from './game.js';
-import { blitMask, clearToBackground, drawNumber, drawText, fillRect } from './screen.js';
+import {
+  blitMask,
+  clearToBackground,
+  drawNumber,
+  drawText,
+  fillRect,
+} from './screen.js';
 
 const WHITE = 1;
 const BLACK = 0;
@@ -45,21 +52,6 @@ function levelColors(level) {
   return LEVEL_COLORS[level % LEVEL_COLORS.length];
 }
 
-/** Bounding box of a piece's spawn orientation, in cells. */
-function spawnBounds(piece) {
-  let minR = Infinity;
-  let maxR = -Infinity;
-  let minC = Infinity;
-  let maxC = -Infinity;
-  for (const [r, c] of SHAPES[piece][0]) {
-    if (r < minR) minR = r;
-    if (r > maxR) maxR = r;
-    if (c < minC) minC = c;
-    if (c > maxC) maxC = c;
-  }
-  return { minR, minC, w: maxC - minC + 1, h: maxR - minR + 1 };
-}
-
 function drawBlock(piece, x, y, colors) {
   slots[2] = colors[PIECE_COLOR_SLOT[piece]];
   blitMask(PIECE_HOLLOW[piece] ? BLOCK_HOLLOW : BLOCK_SOLID, 8, 8, x, y, slots);
@@ -67,7 +59,14 @@ function drawBlock(piece, x, y, colors) {
 
 function drawMini(piece, x, y, colors) {
   slots[2] = colors[PIECE_COLOR_SLOT[piece]];
-  blitMask(PIECE_HOLLOW[piece] ? MINI_HOLLOW : MINI_SOLID, MINI, MINI, x, y, slots);
+  blitMask(
+    PIECE_HOLLOW[piece] ? MINI_HOLLOW : MINI_SOLID,
+    MINI,
+    MINI,
+    x,
+    y,
+    slots,
+  );
 }
 
 function drawPlayfield(state, colors) {
@@ -88,7 +87,12 @@ function drawPlayfield(state, colors) {
   }
 
   if (state.phase !== 'falling') return;
-  for (const [r, c] of cellsOf(state.piece, state.rotation, state.row, state.col)) {
+  for (const [r, c] of cellsOf(
+    state.piece,
+    state.rotation,
+    state.row,
+    state.col,
+  )) {
     if (r < 0 || r >= ROWS || c < 0 || c >= COLS) continue;
     drawBlock(state.piece, ox + c * CELL, oy + r * CELL, colors);
   }
@@ -100,7 +104,12 @@ function drawNext(state, colors) {
   const x = cx - box.w * (CELL / 2);
   const y = cy - box.h * (CELL / 2);
   for (const [r, c] of SHAPES[state.next][0]) {
-    drawBlock(state.next, x + (c - box.minC) * CELL, y + (r - box.minR) * CELL, colors);
+    drawBlock(
+      state.next,
+      x + (c - box.minC) * CELL,
+      y + (r - box.minR) * CELL,
+      colors,
+    );
   }
 }
 
@@ -109,7 +118,12 @@ function drawStats(state, colors) {
     const row = LAYOUT.stats[piece];
     const box = spawnBounds(piece);
     for (const [r, c] of SHAPES[piece][0]) {
-      drawMini(piece, row.x + (c - box.minC) * MINI, row.y + (r - box.minR) * MINI, colors);
+      drawMini(
+        piece,
+        row.x + (c - box.minC) * MINI,
+        row.y + (r - box.minR) * MINI,
+        colors,
+      );
     }
     drawNumber(state.stats[piece], 3, row.countX, row.countY, STAT_RED);
   }
@@ -159,8 +173,26 @@ export function render(state) {
   }
 
   drawStats(state, colors);
-  drawNumber(state.lines, LAYOUT.lines.digits, LAYOUT.lines.x, LAYOUT.lines.y, WHITE);
+  drawNumber(
+    state.lines,
+    LAYOUT.lines.digits,
+    LAYOUT.lines.x,
+    LAYOUT.lines.y,
+    WHITE,
+  );
   drawNumber(state.top, LAYOUT.top.digits, LAYOUT.top.x, LAYOUT.top.y, WHITE);
-  drawNumber(state.score, LAYOUT.score.digits, LAYOUT.score.x, LAYOUT.score.y, WHITE);
-  drawNumber(state.level, LAYOUT.level.digits, LAYOUT.level.x, LAYOUT.level.y, WHITE);
+  drawNumber(
+    state.score,
+    LAYOUT.score.digits,
+    LAYOUT.score.x,
+    LAYOUT.score.y,
+    WHITE,
+  );
+  drawNumber(
+    state.level,
+    LAYOUT.level.digits,
+    LAYOUT.level.x,
+    LAYOUT.level.y,
+    WHITE,
+  );
 }

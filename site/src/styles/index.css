@@ -1059,9 +1059,16 @@ button {
 }
 
 /* ── Demo (Textris) ──
-   The game canvas is a fixed, full-window, centred element the engine appends
-   to the body, so this chrome floats over it as a left rail rather than
-   flowing in the document. */
+   The game canvas is a fixed, centred element the engine appends to the body,
+   so this chrome floats over it as a left rail rather than flowing in the
+   document. The canvas container is inset clear of the header (and, at the
+   narrow breakpoint, of the controls strip) so the board art is never hidden
+   behind either — the scene fits the canvas to this box, not to the window. */
+
+#textris-viewport {
+  top: var(--header-h) !important;
+  bottom: 0 !important;
+}
 
 .site-main:has(.demo-page) {
   max-width: none;
@@ -1159,6 +1166,11 @@ button {
 /* Below this the canvas is wide enough to reach the rail, so the chrome drops
    to a single translucent strip along the bottom and sheds its long copy. */
 @media (max-width: 1180px) {
+  /* Keep the board clear of the controls strip this breakpoint drops in. */
+  #textris-viewport {
+    bottom: 7rem !important;
+  }
+
   .demo-page {
     left: 0;
     right: 0;

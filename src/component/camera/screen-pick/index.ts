@@ -52,6 +52,8 @@ import {
   pointInConvex,
   segVsConvex,
   convexVsConvex,
+  cellWindowRange,
+  CellRange,
 } from './intersect';
 import { PickBuffer, PickKind } from './buffer';
 
@@ -98,6 +100,9 @@ const aabbSpan: Span = { tEnter: 0, tExit: 0 };
 const tmpO = new Vector3D(0, 0, 0);
 const tmpD = new Vector3D(0, 0, 0);
 const tmpPt = new Vector3D(0, 0, 0);
+const prismRange: CellRange = {
+  minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0,
+};
 
 // Self-healing per-camera texture-map lookup (rebuilt only on a cache miss).
 const spriteTmCache = new Map<number, Map<string, TextureMapT>>();
@@ -264,22 +269,32 @@ function pickPrismCells(
   buffer: PickBuffer,
 ): void {
   const cs = cellMap.cellSize;
-  const ms = cellMap.mapSize;
-  const maxx = ms.x * cs.x, maxy = ms.y * cs.y, maxz = ms.z * cs.z;
+  // World extent of the resident WINDOW — `mapSize` is the window's size and
+  // the window sits at `window.origin * chunkSize`, so neither the box nor the
+  // cell range is anchored at the world origin. See `cellWindowRange`.
+  const r = prismRange;
+  const bounds = cellWindowRange(cellMap, r);
 
-  // Broad-phase world AABB = union of each vertex-ray's clip span through the map.
-  // Each corner ray spans the map's full Y, so when ALL corner rays pass through the
-  // map AABB their entry/exit points bound the prism∩map region tightly. If any
-  // corner ray misses (e.g. a selection box larger than / off the map, whose corners
-  // project outside it), that tight bound would wrongly exclude the interior — so we
-  // fall back to the full map cell range, always a valid superset.
+  // Broad-phase world AABB = union of each vertex-ray's clip span through the window.
+  // Each corner ray spans the window's full Y, so when ALL corner rays pass through
+  // the window AABB their entry/exit points bound the prism∩window region tightly. If
+  // any corner ray misses (e.g. a selection box larger than / off the window, whose
+  // corners project outside it), that tight bound would wrongly exclude the interior —
+  // so we fall back to the full window cell range, always a valid superset.
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   viewDirInto(p, tmpD);
   let hitCount = 0;
   for (let i = 0; i < pointCount; i++) {
     screenToWorldAtHeight(p, pointsXY[i * 2], pointsXY[i * 2 + 1], 0, tmpO);
-    if (!rayAABB(tmpO.x, tmpO.y, tmpO.z, tmpD.x, tmpD.y, tmpD.z, 0, 0, 0, maxx, maxy, maxz, aabbSpan)) {
+    if (
+      !rayAABB(
+        tmpO.x, tmpO.y, tmpO.z, tmpD.x, tmpD.y, tmpD.z,
+        bounds.minX, bounds.minY, bounds.minZ,
+        bounds.maxX, bounds.maxY, bounds.maxZ,
+        aabbSpan,
+      )
+    ) {
       continue;
     }
     hitCount++;
@@ -296,18 +311,18 @@ function pickPrismCells(
 
   let x0: number, y0: number, z0: number, x1: number, y1: number, z1: number;
   if (hitCount < pointCount) {
-    // Some/all corners miss the map → scan the whole grid (prism filters below).
-    x0 = 0; y0 = 0; z0 = 0;
-    x1 = ms.x - 1; y1 = ms.y - 1; z1 = ms.z - 1;
+    // Some/all corners miss the window → scan the whole grid (prism filters below).
+    x0 = r.minX; y0 = r.minY; z0 = r.minZ;
+    x1 = r.maxX; y1 = r.maxY; z1 = r.maxZ;
   } else {
     // Pad by line thickness + one cell, then clamp to the grid.
     const pad = lineThickness / p.projScale + Math.max(cs.x, cs.y, cs.z);
-    x0 = Math.floor((minX - pad) / cs.x); if (x0 < 0) x0 = 0;
-    y0 = Math.floor((minY - pad) / cs.y); if (y0 < 0) y0 = 0;
-    z0 = Math.floor((minZ - pad) / cs.z); if (z0 < 0) z0 = 0;
-    x1 = Math.floor((maxX + pad) / cs.x); if (x1 >= ms.x) x1 = ms.x - 1;
-    y1 = Math.floor((maxY + pad) / cs.y); if (y1 >= ms.y) y1 = ms.y - 1;
-    z1 = Math.floor((maxZ + pad) / cs.z); if (z1 >= ms.z) z1 = ms.z - 1;
+    x0 = Math.floor((minX - pad) / cs.x); if (x0 < r.minX) x0 = r.minX;
+    y0 = Math.floor((minY - pad) / cs.y); if (y0 < r.minY) y0 = r.minY;
+    z0 = Math.floor((minZ - pad) / cs.z); if (z0 < r.minZ) z0 = r.minZ;
+    x1 = Math.floor((maxX + pad) / cs.x); if (x1 > r.maxX) x1 = r.maxX;
+    y1 = Math.floor((maxY + pad) / cs.y); if (y1 > r.maxY) y1 = r.maxY;
+    z1 = Math.floor((maxZ + pad) / cs.z); if (z1 > r.maxZ) z1 = r.maxZ;
   }
 
   for (let cx = x0; cx <= x1; cx++) {

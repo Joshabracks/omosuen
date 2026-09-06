@@ -166,6 +166,12 @@ function gravityFrames(level) {
   return 1;
 }
 
+/**
+ * The only thing that scores: points for 1, 2, 3 and 4 lines cleared at once,
+ * multiplied by `level + 1`. Steeply superlinear on purpose — four singles pay
+ * 160 where one tetris pays 1200 — so the reward is for holding out and
+ * clearing several rows together, not for clearing rows at all.
+ */
 const LINE_SCORES = [40, 100, 300, 1200];
 /** Frames of horizontal auto-repeat: first delay, then the repeat interval. */
 const DAS_DELAY = 16;
@@ -423,7 +429,9 @@ function stepFalling(state, input, fx) {
 
   if (!input.down) state.softDropLocked = false;
 
-  // Soft drop overrides gravity at one row per 2 frames and scores per row.
+  // Soft drop overrides gravity at one row per 2 frames. It deliberately scores
+  // nothing: clearing lines is the only thing that moves the score, so the
+  // counter cannot be run up by holding a key.
   if (input.down && !state.softDropLocked) {
     state.softDropCounter++;
     if (state.softDropCounter >= 2) {
@@ -435,8 +443,6 @@ function stepFalling(state, input, fx) {
         return;
       }
       state.row++;
-      state.score += 1;
-      state.top = Math.max(state.top, state.score);
     }
     return;
   }

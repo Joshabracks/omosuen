@@ -2,17 +2,26 @@
  * Geometry kernels for screen picking. All functions are allocation-free: they
  * operate on primitives or caller-provided scratch. Not reentrant (shared
  * module scratch is consumed synchronously).
+ *
+ * Every cell-facing entry point here speaks WORLD coordinates — see
+ * {@link cellWindowRange} for why that is worth stating out loud.
+ *
+ * Deliberately a leaf: the only runtime imports are `math`, `cell-map/types`
+ * and `./ray`. Everything cell-map- or collider-shaped is a type-only import,
+ * so this module stays loadable outside webpack. Reaching the component
+ * registry (via the `cell-map` barrel or `collider/methods`) would drag in
+ * camera/init's raw .vert/.frag shader imports, which a bare tsx test run
+ * cannot load — see test/camera-projection.test.ts's note on the same problem.
  */
 
 import { Vector3D } from '../../../math';
-import { CellMapT } from '../../cell-map/data';
-import { CellMap } from '../../cell-map';
-import { ColliderOBB } from '../../collider/methods';
-import {
-  ProjectionParams,
-  screenToWorldAtHeight,
-  viewDirInto,
-} from './ray';
+import type { CellMapT } from '../../cell-map/data';
+import { unpackCell } from '../../cell-map/types';
+import type { ColliderOBB } from '../../collider/methods';
+// ./projection-math, not ./ray — ray.ts re-exports these unchanged but also
+// pulls `castTo` from the component registry. See the module header.
+import type { ProjectionParams } from './projection-math';
+import { screenToWorldAtHeight, viewDirInto } from './projection-math';
 
 const EPS = 1e-6;
 
@@ -140,16 +149,81 @@ export function makeCellMarch(): CellMarch {
   return { x: [], y: [], z: [], t: [], count: 0 };
 }
 
-const marchSpan: Span = { tEnter: 0, tExit: 0 };
-const marchCoord = new Vector3D(0, 0, 0);
+/**
+ * Inclusive range of WORLD cell coordinates covered by a cell-map's resident
+ * window.
+ *
+ * `cellMap.mapSize` is the *window's* size, not the world's, and the window
+ * sits at `window.origin * chunkSize` — so the addressable range starts at
+ * cell (0,0,0) only until something moves the focus. Everything downstream of
+ * a pick (`CellMap.getCellData` → `window.queryCell`, the hit positions handed
+ * back to callers) speaks world coordinates, so the traversal must too.
+ */
+export interface CellRange {
+  minX: number;
+  minY: number;
+  minZ: number;
+  maxX: number;
+  maxY: number;
+  maxZ: number;
+}
 
-function cellSolid(cellMap: CellMapT, x: number, y: number, z: number): boolean {
-  const m = cellMap.mapSize;
-  if (x < 0 || y < 0 || z < 0 || x >= m.x || y >= m.y || z >= m.z) return false;
-  marchCoord.x = x;
-  marchCoord.y = y;
-  marchCoord.z = z;
-  const cell = CellMap.getCellData(cellMap, marchCoord);
+/** World-unit AABB of a cell-map's resident window. Reused, never handed out. */
+const windowBounds = {
+  minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0,
+};
+
+/**
+ * Fills `out` with the window's world cell range, and `windowBounds` (returned)
+ * with the matching world-unit AABB.
+ *
+ * This is `CellMap.getBounds` computed in place — same formula, no allocation,
+ * and no import of the cell-map barrel (see the module header). The cell range
+ * is exact because those bounds span exactly `mapSize` cells.
+ */
+export function cellWindowRange(
+  cellMap: CellMapT,
+  out: CellRange,
+): typeof windowBounds {
+  const cs = cellMap.cellSize;
+  const ms = cellMap.mapSize;
+  const cks = cellMap.chunkSize;
+  const origin = cellMap.window.origin;
+  // Null before the first `setFocus` — the window is then still at the world
+  // origin, which is exactly what the old unconditional `[0, mapSize)` assumed.
+  out.minX = (origin?.cx ?? 0) * cks.x;
+  out.minY = (origin?.cy ?? 0) * cks.y;
+  out.minZ = (origin?.cz ?? 0) * cks.z;
+  out.maxX = out.minX + ms.x - 1;
+  out.maxY = out.minY + ms.y - 1;
+  out.maxZ = out.minZ + ms.z - 1;
+
+  windowBounds.minX = out.minX * cs.x;
+  windowBounds.minY = out.minY * cs.y;
+  windowBounds.minZ = out.minZ * cs.z;
+  windowBounds.maxX = (out.maxX + 1) * cs.x;
+  windowBounds.maxY = (out.maxY + 1) * cs.y;
+  windowBounds.maxZ = (out.maxZ + 1) * cs.z;
+  return windowBounds;
+}
+
+const marchSpan: Span = { tEnter: 0, tExit: 0 };
+const marchRange: CellRange = {
+  minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0,
+};
+
+function cellSolid(
+  cellMap: CellMapT,
+  x: number,
+  y: number,
+  z: number,
+  r: CellRange,
+): boolean {
+  if (x < r.minX || y < r.minY || z < r.minZ) return false;
+  if (x > r.maxX || y > r.maxY || z > r.maxZ) return false;
+  // `window.queryCell` + `unpackCell` is exactly what `CellMap.getCellData`
+  // does, minus the barrel import and the per-cell Vector3D write.
+  const cell = unpackCell(cellMap.window.queryCell(x, y, z));
   return cell.visible && cell.shapeIndex !== 0;
 }
 
@@ -163,8 +237,9 @@ function pushCell(out: CellMarch, x: number, y: number, z: number, t: number): v
 }
 
 /**
- * Marches the ray through `cellMap`'s grid, recording solid cells into `out` in
- * near→far order. Stops after the first solid cell when `stopAtFirst`.
+ * Marches the ray through `cellMap`'s resident window, recording solid cells
+ * into `out` in near→far order, as WORLD cell coordinates. Stops after the
+ * first solid cell when `stopAtFirst`.
  */
 export function marchCells(
   origin: Vector3D,
@@ -176,15 +251,15 @@ export function marchCells(
   out.count = 0;
   const cs = cellMap.cellSize;
   const ms = cellMap.mapSize;
-  const maxx = ms.x * cs.x;
-  const maxy = ms.y * cs.y;
-  const maxz = ms.z * cs.z;
+  const r = marchRange;
+  const bounds = cellWindowRange(cellMap, r);
 
   if (
     !rayAABB(
       origin.x, origin.y, origin.z,
       dir.x, dir.y, dir.z,
-      0, 0, 0, maxx, maxy, maxz,
+      bounds.minX, bounds.minY, bounds.minZ,
+      bounds.maxX, bounds.maxY, bounds.maxZ,
       marchSpan,
     )
   ) {
@@ -202,9 +277,9 @@ export function marchCells(
   let cy = Math.floor(ey / cs.y);
   let cz = Math.floor(ez / cs.z);
   // Clamp the seed cell into range (guards floating-point edge cases).
-  if (cx < 0) cx = 0; else if (cx >= ms.x) cx = ms.x - 1;
-  if (cy < 0) cy = 0; else if (cy >= ms.y) cy = ms.y - 1;
-  if (cz < 0) cz = 0; else if (cz >= ms.z) cz = ms.z - 1;
+  if (cx < r.minX) cx = r.minX; else if (cx > r.maxX) cx = r.maxX;
+  if (cy < r.minY) cy = r.minY; else if (cy > r.maxY) cy = r.maxY;
+  if (cz < r.minZ) cz = r.minZ; else if (cz > r.maxZ) cz = r.maxZ;
 
   const stepX = dir.x > 0 ? 1 : dir.x < 0 ? -1 : 0;
   const stepY = dir.y > 0 ? 1 : dir.y < 0 ? -1 : 0;
@@ -225,13 +300,15 @@ export function marchCells(
   let tMaxZ = nextBoundary(cz, stepZ, cs.z, origin.z, dir.z);
 
   let tCur = tStart;
-  // Guard against pathological infinite loops.
+  // Guard against pathological infinite loops. The window's size still bounds
+  // the step count even though the range no longer starts at zero.
   const maxSteps = (ms.x + ms.y + ms.z) * 2 + 3;
   for (let s = 0; s < maxSteps; s++) {
-    if (cx < 0 || cy < 0 || cz < 0 || cx >= ms.x || cy >= ms.y || cz >= ms.z) break;
+    if (cx < r.minX || cy < r.minY || cz < r.minZ) break;
+    if (cx > r.maxX || cy > r.maxY || cz > r.maxZ) break;
     if (tCur > tEnd) break;
 
-    if (cellSolid(cellMap, cx, cy, cz)) {
+    if (cellSolid(cellMap, cx, cy, cz, r)) {
       pushCell(out, cx, cy, cz, tCur);
       if (stopAtFirst) return;
     }

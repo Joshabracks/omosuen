@@ -6,10 +6,26 @@
 //
 // `cellToWorldCoordinates` (methods.ts) only gives the analytic ideal cube top; use
 // these to seat sprites on the real surface of smoothed / ramp / custom cells.
+//
+// Everything here is in WORLD space. Mind the one asymmetry that makes that
+// non-trivial: chunk vertices are absolute world-space (`bakeWorldOffsetInPlace`,
+// mesh-builder.ts), but `chunk.cx/cy/cz` are the chunk's window-LOCAL slot indices
+// (`reassembleChunks`, data.ts) — a chunk's world chunk coordinate is
+// `window.origin.cx + chunk.cx`. Reading `chunk.cx` as a world coordinate offsets
+// every broad-phase AABB from its own geometry the moment the window shifts.
 
 import { Vector3D, rayTriangle } from '../../math';
 import type { CellMapT } from './data';
 import type { RaycastHit, SurfaceHit, RaycastOptions } from './types';
+
+/** The window's world-chunk origin, or all-zero before the first `setFocus`. */
+function windowOriginChunk(cellMap: CellMapT): {
+  cx: number;
+  cy: number;
+  cz: number;
+} {
+  return cellMap.window.origin ?? { cx: 0, cy: 0, cz: 0 };
+}
 
 /**
  * Extract world-space triangles from the built chunk buffers within an AABB.
@@ -34,14 +50,21 @@ export function getChunkTrianglesInBounds(
   const maxCy = Math.floor(bounds.max.y / csY);
   const maxCz = Math.floor(bounds.max.z / csZ);
 
+  // `chunk.c*` is a window-local slot index; `min/maxC*` above are world chunk
+  // coordinates. Lift the former into the latter's space before comparing.
+  const origin = windowOriginChunk(cellMap);
+
   for (const chunk of cellMap.chunks) {
+    const wcx = origin.cx + chunk.cx;
+    const wcy = origin.cy + chunk.cy;
+    const wcz = origin.cz + chunk.cz;
     if (
-      chunk.cx < minCx ||
-      chunk.cx > maxCx ||
-      chunk.cy < minCy ||
-      chunk.cy > maxCy ||
-      chunk.cz < minCz ||
-      chunk.cz > maxCz
+      wcx < minCx ||
+      wcx > maxCx ||
+      wcy < minCy ||
+      wcy > maxCy ||
+      wcz < minCz ||
+      wcz > maxCz
     )
       continue;
     if (!chunk.vertices || !chunk.indices) continue;
@@ -178,16 +201,22 @@ export function raycastCellMap(
   const chunkD = cellMap.chunkSize.z * cs.z;
   // Pad the chunk AABB by a cell so smoothing displacement at chunk borders is caught.
   const padX = cs.x, padY = cs.y, padZ = cs.z;
+  // The AABB has to be built from the chunk's WORLD chunk coordinate, because the
+  // vertices it guards are absolute world-space. `chunk.c*` alone is the local slot.
+  const windowOrigin = windowOriginChunk(cellMap);
 
   for (const chunk of cellMap.chunks) {
     if (!chunk.vertices || !chunk.indices) continue;
 
-    const minx = chunk.cx * chunkW - padX;
-    const maxx = (chunk.cx + 1) * chunkW + padX;
-    const miny = chunk.cy * chunkH - padY;
-    const maxy = (chunk.cy + 1) * chunkH + padY;
-    const minz = chunk.cz * chunkD - padZ;
-    const maxz = (chunk.cz + 1) * chunkD + padZ;
+    const wcx = windowOrigin.cx + chunk.cx;
+    const wcy = windowOrigin.cy + chunk.cy;
+    const wcz = windowOrigin.cz + chunk.cz;
+    const minx = wcx * chunkW - padX;
+    const maxx = (wcx + 1) * chunkW + padX;
+    const miny = wcy * chunkH - padY;
+    const maxy = (wcy + 1) * chunkH + padY;
+    const minz = wcz * chunkD - padZ;
+    const maxz = (wcz + 1) * chunkD + padZ;
     const tEnter = rayAABBEntry(
       origin, invx, invy, invz, minx, miny, minz, maxx, maxy, maxz,
     );
@@ -304,12 +333,18 @@ export function sampleSurfaceHeight(
   opts: RaycastOptions = {},
 ): SurfaceHit | null {
   const cs = cellMap.cellSize;
-  // Same window-size-vs-world-size heuristic shift as `raycastCellMap` above:
-  // `mapSize.y` is the resident window's height, so this cast starts just
-  // above the window's top and reaches only as far as the window's own
-  // height by default (not the whole world's) — pass `maxDistance` explicitly
-  // for a taller world.
-  const origin = new Vector3D(worldX, cellMap.mapSize.y * cs.y + cs.y, worldZ);
+  // Same window-size-vs-world-size caveat as `raycastCellMap` above: `mapSize.y`
+  // is the resident window's height, so this cast starts just above the window's
+  // OWN top — `bounds.max.y`, which folds in `window.origin`, not `mapSize.y * cs.y`,
+  // which is the window's height measured from world zero — and reaches only as far
+  // as the window's height by default (not the whole world's). Pass `maxDistance`
+  // explicitly for a taller world. (Computed here rather than via
+  // `CellMap.getBounds` — methods.ts imports this module, so the reverse would be
+  // circular.)
+  const originY =
+    windowOriginChunk(cellMap).cy * cellMap.chunkSize.y * cs.y;
+  const top = originY + cellMap.mapSize.y * cs.y;
+  const origin = new Vector3D(worldX, top + cs.y, worldZ);
   const hit = raycastCellMap(cellMap, origin, new Vector3D(0, -1, 0), {
     maxDistance: opts.maxDistance ?? cellMap.mapSize.y * cs.y + 2 * cs.y,
     smoothNormal: opts.smoothNormal,

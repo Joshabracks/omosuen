@@ -3,6 +3,8 @@ import { ComponentData, castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { clearLightUniformCache } from '../render/light-uniforms';
+import { clearVisionUniformCache } from '../render/vision-uniforms';
+import { clearFogUniformCache } from '../render/fog-uniforms';
 import { clearRenderablesCache } from '../collect-renderables/index';
 
 /**
@@ -59,6 +61,8 @@ export function dispose(component: ComponentData): void {
 
   // Clear module-level caches for this camera
   clearLightUniformCache(camera.id!);
+  clearVisionUniformCache(camera.id!);
+  clearFogUniformCache(camera.id!);
   clearRenderablesCache(camera.id!);
 
   camera._disposed = true;

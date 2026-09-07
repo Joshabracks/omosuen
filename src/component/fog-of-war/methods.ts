@@ -43,6 +43,12 @@ import { markForDisposal } from '../../loop/dispose';
  *
  * `count` is the index's valid-entry count; `sources` is grown to a high-water
  * mark and entries past `count` are stale (see scene-index.ts).
+ *
+ * Deliberately UNCAPPED, unlike the render path: `setVisionUniforms` keeps only
+ * the MAX_VISION_SOURCES nearest the camera, because that is all the shader has
+ * uniform slots for. Exploration has no such limit and must not acquire one --
+ * capping here would stop off-screen actors banking explored terrain, trading a
+ * cosmetic problem for a correctness one.
  */
 function resolveActiveVisionSources(
   sources: VisionSourceT[],

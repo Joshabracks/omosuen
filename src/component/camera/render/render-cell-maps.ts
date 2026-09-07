@@ -775,7 +775,7 @@ export function renderCellMaps(
   ) as FogOfWarT | null;
   const fogUseLineOfSight = fogOfWar?.visionMode !== 'distance';
 
-  setVisionUniforms(gl, camera.id!, visionSources, fogUseLineOfSight);
+  setVisionUniforms(gl, camera.id!, visionSources, camPos, fogUseLineOfSight);
 
   // Set fog-of-war style config (fog-of-war is a GLOBAL component -- at most
   // one per scene). No component in the scene = the shader's own defaults

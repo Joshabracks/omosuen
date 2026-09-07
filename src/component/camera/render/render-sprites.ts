@@ -508,7 +508,10 @@ export function renderSprites(
   ) as FogOfWarT | null;
   const fogUseLineOfSight = fogOfWar?.visionMode !== 'distance';
 
-  setVisionUniforms(gl, camera.id!, visionSources, fogUseLineOfSight);
+  // camPos is the same camera transform world position renderCellMaps passes,
+  // so both passes rank and truncate the sources identically -- the fogSources
+  // built from getResolvedVisionSources() below depend on that.
+  setVisionUniforms(gl, camera.id!, visionSources, camPos, fogUseLineOfSight);
 
   // Per-sprite fog visibility is computed HERE, on the CPU, and uploaded as
   // u_spriteVisibility -- see the fog block in unified.frag's sprite path for

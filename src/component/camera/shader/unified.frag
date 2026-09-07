@@ -109,7 +109,11 @@ uniform highp sampler2DArray u_cellSolidity;   // R8: 0=empty, 255=solid, layer=
     // fadeWidth). u_fogExempt opts a single cell-map draw call out entirely
     // (cellMap.revealExempt) -- not meaningful for sprites, which have no
     // per-cell-map context, so the sprite path never reads it.
-const int MAX_VISION_SOURCES = 8;
+    // This literal is OVERWRITTEN at compile time with MAX_VISION_SOURCES from
+    // camera/render/vision-uniforms.ts (see camera/init) -- that constant is
+    // the single source of truth. The value here only keeps this file valid
+    // standalone GLSL; edit it there.
+const int MAX_VISION_SOURCES = 64;
 uniform int u_numVisionSources;
 // FogOfWarT.visionMode: true = 'line-of-sight' (raycasts), false = 'distance'
 // (range alone). Uploaded per draw alongside the source arrays.

@@ -290,7 +290,21 @@ supplying `windowRadius` opts even a hand-authored map into windowed streaming.
 - `autoFocusFromCamera?: boolean` (default `true` for the generative path / any map with an explicit `windowRadius`, `false` otherwise) — the render loop drives the window's focus from the camera position every frame. Set `false` for explicit control via `setFocus(cellMap, worldX, worldY, worldZ)`.
 - `autoResizeFromZoom?: boolean` (default: mirrors `autoFocusFromCamera`) — the render loop grows/shrinks the window's radius with camera zoom, capped by `maxTerrainLoadDimensions`. Set `false` for explicit control via `setWindowRadius(cellMap, radius)`.
 - `maxTerrainLoadDimensions?: {x,y,z}` (default `{512,512,512}`, world units) — safety cap on how far auto-resize (or a direct `setWindowRadius` call) may ever grow the window, since a resize's assemble step can call `generateCell` for every newly-exposed chunk synchronously in one frame.
-- `renderDistance?: {x,y,z}` (default `{1,1,1}`, chunks) — half-extents of the render loop's axis-aligned draw/cull volume, independent of viewport/zoom/orbit. `frustumPadding?: {x,y,z}` (default `{0,0,0}`, world units) — diagnostic-only additive padding on top of that.
+- `renderDistance?: {x,y,z}` (default `{1,1,1}`, chunks) — half-extents of the render loop's axis-aligned draw/cull volume, independent of viewport/zoom/orbit. `frustumPadding?: {x,y,z}` (default `{0,0,0}`, world units) — diagnostic-only additive padding on top of that. **The default is not raised for a fully-resident map** — see below.
+
+**Fully resident (non-streaming) maps.** A hand-authored map (`mapSize` + `materialMap`) with no
+explicit `windowRadius` keeps the *whole* authored map resident: the window auto-sizes to cover it,
+`autoFocusFromCamera`/`autoResizeFromZoom` default to `false`, and nothing streams or evicts. This
+is the default — there is no option to turn on. Suitable whenever the world is hand-authored and of
+known size, and it makes `mapSize` mean the whole map again (so the windowed caveats below don't
+apply).
+
+One thing you **must** set yourself: `renderDistance` still defaults to `{1,1,1}`, a 3×3×3-chunk
+draw volume centered on the camera, so a fully-resident map is still culled at draw time. Residency
+and draw culling are independent knobs and the auto-sizing only touches the first. Set
+`renderDistance` to at least the map's half-extent in chunks (`ceil(mapSize.axis / chunkSize.axis / 2)`)
+to draw all of it, and treat it as the memory/fill ceiling — everything inside it is submitted every
+frame.
 
 **Behavior changes from the pre-windowing `cell-map`, relevant if you're upgrading:** `mapSize`
 now means the **current resident window's size**, not the whole authored/generated map — read

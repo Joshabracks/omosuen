@@ -397,10 +397,10 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("smoothingWeights", "number | Array3D<number>?", "Per-cell smoothing weight. Generative path only accepts a uniform number.", "8"),
       O("normalSmoothing", "number?", "Normal smoothing 0–1.", "0"),
       O("revealExempt", "boolean?", "Exempt this cell-map from fog-of-war entirely (always renders fully live).", "false"),
-      O("autoFocusFromCamera", "boolean?", "Render loop drives window focus from the camera every frame.", "true"),
+      O("autoFocusFromCamera", "boolean?", "Render loop drives window focus from the camera every frame. Defaults false for a fully-resident hand-authored map (no windowRadius), which needs no focus tracking.", "true (generative / explicit windowRadius), false otherwise"),
       O("autoResizeFromZoom", "boolean?", "Render loop drives window radius from camera zoom, capped by maxTerrainLoadDimensions.", "mirrors autoFocusFromCamera"),
       O("maxTerrainLoadDimensions", "{x,y,z}?", "World-unit cap on how far auto-resize/setWindowRadius may grow the window.", "{ x: 512, y: 512, z: 512 }"),
-      O("renderDistance", "{x,y,z}?", "Half-extents (chunks) of the render loop's draw/cull volume.", "{ x: 1, y: 1, z: 1 }"),
+      O("renderDistance", "{x,y,z}?", "Half-extents (chunks) of the render loop's draw/cull volume. Independent of residency: a fully-resident map is still culled to this box, so raise it to the map's half-extent in chunks to draw the whole world.", "{ x: 1, y: 1, z: 1 }"),
       O("frustumPadding", "{x,y,z}?", "Diagnostic-only additive padding (world units) on the render volume.", "{ x: 0, y: 0, z: 0 }"),
     ]),
     data: [

@@ -13,10 +13,16 @@ import {
   FBO_OVERSCAN_PX,
   cacheLightUniformLocations,
 } from '../render/light-uniforms';
-import { cacheVisionUniformLocations } from '../render/vision-uniforms';
+import {
+  MAX_VISION_SOURCES,
+  cacheVisionUniformLocations,
+} from '../render/vision-uniforms';
 import { cacheFogUniformLocations } from '../render/fog-uniforms';
 import { initRenderWasm } from '../render/wasm';
 import { uploadAtlasTextures } from '../render/atlas-textures';
+
+/** Matches unified.frag's vision-source cap declaration — see init(). */
+const MAX_VISION_SOURCES_RE = /const int MAX_VISION_SOURCES = \d+;/;
 
 /**
  * Initializes WebGL resources for the camera (shader programs, buffers).
@@ -61,11 +67,27 @@ export async function init(component: ComponentData): Promise<void> {
   // requirement — no JS fallback. Idempotent across cameras.
   await initRenderWasm();
 
+  // Substitute the vision-source cap into the fragment shader so GLSL cannot
+  // drift from the TS constant the upload path sizes its buffers and location
+  // cache against. The test is load-bearing: a silent non-match would put the
+  // two declarations back out of step, which is exactly the failure this
+  // prevents.
+  if (!MAX_VISION_SOURCES_RE.test(unifiedFragmentShader)) {
+    console.error(
+      `[camera] Camera '${camera.name}': unified.frag has no MAX_VISION_SOURCES declaration to substitute`,
+    );
+    return;
+  }
+  const unifiedFragmentSource = unifiedFragmentShader.replace(
+    MAX_VISION_SOURCES_RE,
+    `const int MAX_VISION_SOURCES = ${MAX_VISION_SOURCES};`,
+  );
+
   // Compile unified shader program
   const unifiedProgram = createShaderProgram(
     gl,
     unifiedVertexShader,
-    unifiedFragmentShader,
+    unifiedFragmentSource,
   );
   if (!unifiedProgram) {
     console.error(

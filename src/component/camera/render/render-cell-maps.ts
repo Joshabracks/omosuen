@@ -614,6 +614,19 @@ export function renderCellMaps(
   gl.enable(gl.CULL_FACE);
   gl.cullFace(gl.BACK);
 
+  // Blending, stated rather than inherited. This pass used to set no blend
+  // state at all, so what it got depended on who ran before it: the sprite pass
+  // leaves BLEND enabled and never restores it, while the post-process pass
+  // disables it. The result was that frame 1 drew cells unblended and every
+  // frame after drew them blended -- a visible first-frame difference for any
+  // material with a non-opaque albedo.
+  //
+  // Enabled (not disabled) deliberately: blended is what every frame after the
+  // first has always produced, so this pins the behaviour everyone has actually
+  // been seeing rather than changing it.
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
   gl.useProgram(program);
 
   // Set render mode to 0 (cells)

@@ -9,6 +9,7 @@ import { Camera } from '../methods';
 import { renderSprites } from './render-sprites';
 import { renderPostProcess } from './post-process';
 import { renderCellMaps, snapCameraPosition } from './render-cell-maps';
+import { allocateCameraTargets } from './framebuffers';
 import { uploadAtlasTextures, uploadAtlasDelta } from './atlas-textures';
 import {
   isProfilingEnabled,
@@ -79,6 +80,20 @@ export function render(camera: CameraT, _deltaTime: number): void {
     Camera.collectRenderables(camera);
 
   const gl = viewport.gl;
+
+  // Re-allocate the offscreen targets if the viewport has been resized since
+  // they were last sized to it. Nothing propagates a viewport resize to a
+  // camera -- Viewport.resize only updates the canvas and the GL viewport, and
+  // Camera.resize() is documented as the caller's responsibility -- so without
+  // this a resized-but-not-told camera renders a stale-sized FBO. Two integer
+  // compares per frame, the same staleness idiom as solidityDims/atlasVersion
+  // below. Must run before the FBO bind.
+  if (
+    camera.glResources.fullResolution.width !== viewport.width ||
+    camera.glResources.fullResolution.height !== viewport.height
+  ) {
+    allocateCameraTargets(gl, camera, viewport);
+  }
 
   // PHASE 1: Bind framebuffer for offscreen rendering at base resolution
   // Ensure depth texture isn't bound as a sampler on any unit before binding the FBO.

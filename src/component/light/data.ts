@@ -106,7 +106,6 @@ function deserialize(data: any): DeserializeResult<LightT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, lightType } = data;
 
   if (type !== 'light') {

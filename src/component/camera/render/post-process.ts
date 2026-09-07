@@ -1,6 +1,6 @@
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
-import { FBO_OVERSCAN_PX } from './light-uniforms';
+import { computeFboUvBridge } from './framebuffers';
 
 /**
  * Renders the offscreen framebuffer to the canvas with pixel-perfect upscaling.
@@ -51,39 +51,18 @@ export function renderPostProcess(
   gl.bindTexture(gl.TEXTURE_2D, camera.glResources.depthTexture);
   gl.uniform1i(gl.getUniformLocation(postProgram, 'u_depthTexture'), 1);
 
-  // Set UV scale and offset for world-locked pixelation with FBO overscan.
-  // The FBO is 2 pixels larger per dimension. The padding is ASYMMETRIC:
-  // - X: camera is at left edge (UV=0), +2 padding on RIGHT
-  // - Y: camera is at top edge (UV=1 due to Y-flip), +2 padding on BOTTOM (UV=0 side)
-  // u_uvScale maps the fullscreen quad to the unpadded viewport region.
-  // u_uvOffset slides the sampling into the right/bottom padding as needed.
+  // UV scale/offset for world-locked pixelation with FBO overscan — shared with
+  // the sprite pass's depth-texture sampling, which must agree exactly. See
+  // computeFboUvBridge for the asymmetric-padding reasoning.
   const uUvScale = gl.getUniformLocation(postProgram, 'u_uvScale');
   const uUvOffset = gl.getUniformLocation(postProgram, 'u_uvOffset');
 
-  const fboWidth = camera.glResources.baseResolution.width; // padded
-  const fboHeight = camera.glResources.baseResolution.height; // padded
-  const unpaddedWidth = fboWidth - FBO_OVERSCAN_PX;
-  const unpaddedHeight = fboHeight - FBO_OVERSCAN_PX;
+  const bridge = computeFboUvBridge(camera, subPixelOffset);
+  gl.uniform2f(uUvScale, bridge.scaleX, bridge.scaleY);
+  gl.uniform2f(uUvOffset, bridge.offsetX, bridge.offsetY);
 
-  // UV scale: map [0,1] quad UV to the unpadded viewport region
-  gl.uniform2f(uUvScale, unpaddedWidth / fboWidth, unpaddedHeight / fboHeight);
-
-  if (subPixelOffset && camera.pixelScale > 1) {
-    const fboOffsetX =
-      (subPixelOffset.remainderX * camera.zoom) / camera.pixelScale;
-    const fboOffsetY =
-      (subPixelOffset.remainderY * camera.zoom) / camera.pixelScale;
-    // X: no border on left (camera edge), offset slides right into right padding
-    // Y: skip 2-pixel bottom border, offset slides down into bottom padding
-    gl.uniform2f(
-      uUvOffset,
-      fboOffsetX / fboWidth,
-      (FBO_OVERSCAN_PX - fboOffsetY) / fboHeight,
-    );
-  } else {
-    // No offset; X starts at 0 (camera edge), Y skips 2-pixel bottom border
-    gl.uniform2f(uUvOffset, 0, FBO_OVERSCAN_PX / fboHeight);
-  }
+  const fboWidth = camera.glResources.baseResolution.width;
+  const fboHeight = camera.glResources.baseResolution.height;
 
   // Cliff-edge outline uniforms (post-process). null/weight 0 = plain blit.
   const outline = camera.depthCues?.outline;

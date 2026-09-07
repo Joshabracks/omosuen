@@ -6,6 +6,7 @@ import { clearLightUniformCache } from '../render/light-uniforms';
 import { clearVisionUniformCache } from '../render/vision-uniforms';
 import { clearFogUniformCache } from '../render/fog-uniforms';
 import { clearRenderablesCache } from '../collect-renderables/index';
+import { disposeCameraTargets } from '../render/framebuffers';
 
 /**
  * Disposes WebGL resources when the camera is removed.
@@ -39,13 +40,14 @@ export function dispose(component: ComponentData): void {
     if (res.quadVertexBuffer) gl.deleteBuffer(res.quadVertexBuffer);
     if (res.quadUVBuffer) gl.deleteBuffer(res.quadUVBuffer);
     if (res.fullscreenQuadBuffer) gl.deleteBuffer(res.fullscreenQuadBuffer);
-    if (res.framebuffer) gl.deleteFramebuffer(res.framebuffer);
-    if (res.renderTexture) gl.deleteTexture(res.renderTexture);
-    if (res.depthTexture) gl.deleteTexture(res.depthTexture);
     for (const tex of res.atlasTextures) {
       if (tex) gl.deleteTexture(tex);
     }
   }
+
+  // Framebuffer targets are owned by render/framebuffers.ts, which allocates
+  // them; deleting them there keeps the two halves in one place.
+  disposeCameraTargets(gl, camera);
 
   // Null all references for GC
   res.unifiedProgram = null;
@@ -54,9 +56,6 @@ export function dispose(component: ComponentData): void {
   res.quadVertexBuffer = null;
   res.quadUVBuffer = null;
   res.fullscreenQuadBuffer = null;
-  res.framebuffer = null;
-  res.renderTexture = null;
-  res.depthTexture = null;
   res.atlasTextures = [];
 
   // Clear module-level caches for this camera

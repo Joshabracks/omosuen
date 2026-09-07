@@ -25,8 +25,7 @@ import type { SpeedDialMethods } from './methods';
  * is NOT affected by a dial.
  */
 export interface SpeedDialT
-  extends ComponentData,
-    ComponentInstanceMethods<SpeedDialMethods> {
+  extends ComponentData, ComponentInstanceMethods<SpeedDialMethods> {
   type: 'speed-dial';
   unique: ComponentUnique.FALSE;
 
@@ -78,13 +77,12 @@ function deserialize(data: any): DeserializeResult<SpeedDialT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name } = data;
 
   if (type !== 'speed-dial') {
     errors.push({
       code: 'TYPE_MISMATCH',
-      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+
       message: `type ${type} does not match "speed-dial"`,
     });
   }
@@ -101,6 +99,7 @@ function deserialize(data: any): DeserializeResult<SpeedDialT> {
   return {
     component: builder({
       name: name as string,
+
       speed: data.speed as number,
     }),
     errors,

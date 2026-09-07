@@ -8,7 +8,12 @@ import { VisionSourceT } from '../vision-source/data';
 import { render } from './render';
 import { collectRenderables } from './collect-renderables';
 import { pan } from './pan';
-import { screenPick, screenToWorldRay, PickBuffer, PickOptions } from './screen-pick';
+import {
+  screenPick,
+  screenToWorldRay,
+  PickBuffer,
+  PickOptions,
+} from './screen-pick';
 import {
   setZoom,
   setPixelScale,

@@ -264,7 +264,6 @@ function deserialize(data: any): DeserializeResult<AtlasManagerT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, config } = data;
 
   if (type !== 'atlas-manager') {

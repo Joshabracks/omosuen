@@ -158,13 +158,12 @@ function deserialize(data: any): DeserializeResult<TransformT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, position, rotation, scale } = data;
 
   if (type !== 'transform') {
     errors.push({
       code: 'TYPE_MISMATCH',
-      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+
       message: `type ${type} does not match "transform"`,
     });
   }
@@ -180,7 +179,6 @@ function deserialize(data: any): DeserializeResult<TransformT> {
 
   const componentName = name as string;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const parseVec3 = (
     raw: unknown,
     field: string,

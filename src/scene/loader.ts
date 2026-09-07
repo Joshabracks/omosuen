@@ -281,7 +281,7 @@ export async function loadScript(nexus: NexusT): Promise<void> {
 
   // Import the module
   const importFunc = new Function('modulePath', 'return import(modulePath)');
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
   const module = await importFunc(importPath);
 
   if (!module || typeof module !== 'object') {
@@ -307,19 +307,17 @@ export async function loadScript(nexus: NexusT): Promise<void> {
   // Register exports
   let registered = false;
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
   if (typeof module.init === 'function') {
     const key = `${baseName}-init`;
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
     registerMethod('nexus', key, module.init);
     nexus.initOverride = key;
     registered = true;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
   if (typeof module.update === 'function') {
     const key = `${baseName}-update`;
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
     registerMethod('nexus', key, module.update);
     nexus.updateOverride = key;
     registered = true;
@@ -385,34 +383,28 @@ export async function deserializeComponentRecursive(
       const nexusComp = nexusResult.component as NexusT;
 
       // Restore generic fields BEFORE wrapping so the proxy has them
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
       if (typeof data.id === 'number') {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         nexusComp.id = data.id;
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
         if (data.id > maxId.value) {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
           maxId.value = data.id;
         }
       }
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
       if (data.overrideKey !== undefined) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         nexusComp.overrideKey = data.overrideKey;
       }
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
       if (data.updateOverride !== undefined) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         nexusComp.updateOverride = data.updateOverride;
       }
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
       if (data.initOverride !== undefined) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         nexusComp.initOverride = data.initOverride;
       }
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
       if (data.loader !== undefined) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         nexusComp.loader = data.loader;
       }
 
@@ -450,7 +442,7 @@ export async function deserializeComponentRecursive(
     if (!serializer) {
       errors.push({
         code: 'UNKNOWN_COMPONENT_TYPE',
-        // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+
         message: `Unknown component type: ${data.type}`,
       });
       return { component: null, errors };
@@ -464,39 +456,29 @@ export async function deserializeComponentRecursive(
     }
 
     // Restore generic ComponentData fields
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
     if (typeof data.id === 'number') {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
       component.id = data.id;
       // Track maximum ID
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
       if (data.id > maxId.value) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         maxId.value = data.id;
       }
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if (data.overrideKey !== undefined) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
       component.overrideKey = data.overrideKey;
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if (data.updateOverride !== undefined) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
       component.updateOverride = data.updateOverride;
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if (data.initOverride !== undefined) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
       component.initOverride = data.initOverride;
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if (data.loader !== undefined) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
       component.loader = data.loader;
     }
 

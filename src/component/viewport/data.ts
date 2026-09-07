@@ -167,7 +167,6 @@ function deserialize(data: any): DeserializeResult<ViewportT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const {
     type,
     name,
@@ -182,7 +181,6 @@ function deserialize(data: any): DeserializeResult<ViewportT> {
   if (type !== 'viewport') {
     errors.push({
       code: 'TYPE_MISMATCH',
-      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
       message: `type ${type} does not match "viewport"`,
     });
   }

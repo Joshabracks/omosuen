@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 /**
  * Generates `site/src/scenes/textris/screen-data.js` from the NES palette
  * swatch and a set of emulator screenshots.

@@ -270,7 +270,6 @@ function deserialize(data: any): DeserializeResult<FogOfWarT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name } = data;
 
   if (type !== 'fog-of-war') {
@@ -359,7 +358,11 @@ function deserialize(data: any): DeserializeResult<FogOfWarT> {
     };
   };
 
-  const fadedStyle = parseStyle(data.fadedStyle, 'fadedStyle', defaultFadedStyle);
+  const fadedStyle = parseStyle(
+    data.fadedStyle,
+    'fadedStyle',
+    defaultFadedStyle,
+  );
   const hiddenStyle = parseStyle(
     data.hiddenStyle,
     'hiddenStyle',

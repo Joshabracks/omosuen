@@ -103,13 +103,12 @@ function deserialize(data: any): DeserializeResult<TimerT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, duration } = data;
 
   if (type !== 'timer') {
     errors.push({
       code: 'TYPE_MISMATCH',
-      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+
       message: `type ${type} does not match "timer"`,
     });
   }

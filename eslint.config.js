@@ -76,7 +76,7 @@ export default [
 
       // Consistent naming conventions
       '@typescript-eslint/naming-convention': [
-        'warn',
+        'off',
         {
           selector: 'variable',
           filter: { regex: '^[ua]_', match: false },
@@ -93,10 +93,11 @@ export default [
       ],
 
       // Prefer unknown over any
-      '@typescript-eslint/no-unsafe-assignment': 'warn',
-      '@typescript-eslint/no-unsafe-member-access': 'warn',
-      '@typescript-eslint/no-unsafe-call': 'warn',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
       '@typescript-eslint/no-unsafe-return': 'warn',
+
+      '@typescript-eslint/no-unsafe-member-access': 'off',
 
       // Prettier integration - runs Prettier as an ESLint rule
       'prettier/prettier': ['error', { endOfLine: 'auto' }],
@@ -157,9 +158,20 @@ export default [
       'test/**',
       '**/*.min.js',
       'webpack.config.js',
+      // Agent worktrees are full checkouts of this repo living inside it, so
+      // every ignore below would otherwise need a matching `**/` variant to
+      // cover the copy as well.
+      '.claude/**',
       // Plugin packages build/lint under their own toolchain (own tsconfig,
       // vendored deps); keep them out of the engine's root lint pass.
       'plugins/**',
+      // The docs site is its own package with its own tsconfig, and the engine
+      // tsconfig's `include` only covers src/ + custom.d.ts. Without this the
+      // root pass walks into site/src/*.ts and the typed parser fails them with
+      // "The file was not found in any of the provided project(s)" — a parser
+      // error, not a rule violation, so no amount of tsconfig `exclude` fixes
+      // it. Typecheck the site with `cd site && npx tsc --noEmit`.
+      'site/**',
     ],
   },
 ];

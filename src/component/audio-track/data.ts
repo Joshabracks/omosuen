@@ -65,7 +65,6 @@ function deserialize(data: any): DeserializeResult<AudioTrackT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name } = data;
 
   if (type !== 'audio-track') {
@@ -87,7 +86,7 @@ function deserialize(data: any): DeserializeResult<AudioTrackT> {
   return {
     component: builder({
       name: name as string,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       overrideKey: data.overrideKey,
       filePath: data.filePath as string,
     }),

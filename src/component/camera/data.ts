@@ -187,6 +187,13 @@ export interface CameraT
 
     // Base rendering resolution (independent of canvas size, adjusted by zoom)
     baseResolution: { width: number; height: number };
+    /**
+     * Viewport size the targets were last allocated against, in pixels. Unlike
+     * baseResolution this is not scaled by zoom/pixelScale, so comparing it to
+     * the live viewport detects a resize the camera has not been told about —
+     * nothing propagates `Viewport.resize` to a camera automatically.
+     */
+    fullResolution: { width: number; height: number };
 
     // Cell solidity texture for per-fragment line-of-sight raycasting
     visibilityTexture: WebGLTexture | null;
@@ -296,6 +303,7 @@ export function builder(options: CameraOptions): CameraT {
       postProcessProgram: null,
       fullscreenQuadBuffer: null,
       baseResolution: { width: 800, height: 600 }, // Default, will be updated in init()
+      fullResolution: { width: 800, height: 600 }, // Default, will be updated in init()
       visibilityTexture: null,
       solidityGeneration: -1,
       solidityDims: null,
@@ -351,7 +359,6 @@ function deserialize(data: any): DeserializeResult<CameraT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const {
     type,
     name,

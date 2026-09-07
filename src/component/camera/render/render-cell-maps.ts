@@ -1330,9 +1330,6 @@ export function renderCellMaps(
       gl.uniform1i(uHasCellEmissionColor, 0);
     }
 
-    let totalFaces = 0;
-    let drawCalls = 0;
-
     // Caps fresh GPU uploads per frame -- reassembleChunks can mark hundreds
     // of REUSED (translated, not remeshed) chunks gpuDirty in a single call
     // (every persisting chunk moves local slot on a shift), independent of
@@ -1685,10 +1682,7 @@ export function renderCellMaps(
                 gl.UNSIGNED_INT,
                 range.indexOffset * 4, // byte offset (Uint32 = 4 bytes per index)
               );
-              drawCalls++;
             }
-
-            totalFaces += chunk.faceCount;
           }
         }
       }

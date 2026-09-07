@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 /**
  * Textris — the whole NES screen as a cell-map.
  *

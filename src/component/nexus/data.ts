@@ -68,13 +68,12 @@ function deserialize(data: any): DeserializeResult<NexusT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name } = data;
 
   if (type !== 'nexus') {
     errors.push({
       code: 'TYPE_MISMATCH',
-      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+
       message: `type ${type} does not match "nexus"`,
     });
   }
@@ -90,16 +89,13 @@ function deserialize(data: any): DeserializeResult<NexusT> {
 
   const nexus = builder({ name: name as string });
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
   if (data.script !== undefined) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if (typeof data.script !== 'string') {
       errors.push({
         code: 'INVALID_SCRIPT',
         message: `nexus "${name as string}" script field is not a string; ignored`,
       });
     } else {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
       nexus.script = data.script;
     }
   }

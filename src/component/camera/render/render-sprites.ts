@@ -11,11 +11,11 @@ import { castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import {
-  FBO_OVERSCAN_PX,
   setAngleUniform,
   setOrbitYawUniform,
   setLightUniforms,
 } from './light-uniforms';
+import { computeFboUvBridge } from './framebuffers';
 import { getResolvedVisionSources, setVisionUniforms } from './vision-uniforms';
 import { setFogUniforms } from './fog-uniforms';
 import { computeFogVisibility, fogDrawKind } from '../../fog-of-war/sweep';
@@ -381,10 +381,10 @@ export function renderSprites(
   const u_showSilhouette = gl.getUniformLocation(program, 'u_showSilhouette');
   const u_silhouetteColor = gl.getUniformLocation(program, 'u_silhouetteColor');
   const u_cellSolidity = gl.getUniformLocation(program, 'u_cellSolidity');
-  const u_fogLightInfluence = gl.getUniformLocation(
-    program,
-    'u_fogLightInfluence',
-  );
+  // const u_fogLightInfluence = gl.getUniformLocation(
+  //   program,
+  //   'u_fogLightInfluence',
+  // );
   const u_cellEmissionColor = gl.getUniformLocation(
     program,
     'u_cellEmissionColor',
@@ -470,9 +470,15 @@ export function renderSprites(
   // simply did not apply to it. Matches render-cell-maps.ts's own computation.
   gl.uniform3f(
     u_windowOrigin,
-    originCellMap && windowOrigin ? windowOrigin.cx * originCellMap.chunkSize.x : 0,
-    originCellMap && windowOrigin ? windowOrigin.cy * originCellMap.chunkSize.y : 0,
-    originCellMap && windowOrigin ? windowOrigin.cz * originCellMap.chunkSize.z : 0,
+    originCellMap && windowOrigin
+      ? windowOrigin.cx * originCellMap.chunkSize.x
+      : 0,
+    originCellMap && windowOrigin
+      ? windowOrigin.cy * originCellMap.chunkSize.y
+      : 0,
+    originCellMap && windowOrigin
+      ? windowOrigin.cz * originCellMap.chunkSize.z
+      : 0,
   );
 
   // Toroidal wrap offset for u_cellSolidity lookups (isCellSolid, shared with
@@ -563,7 +569,6 @@ export function renderSprites(
   // writes to WASM, so the view cannot be detached mid-use.
   const fogMask = fogSources.length > 0 ? computeSolidityMap() : null;
 
-
   const fogCellDims = originCellMap?.mapSize;
   const fogCellSize = originCellMap?.cellSize;
   const fogWindowOriginLocalCell =
@@ -593,31 +598,12 @@ export function renderSprites(
   gl.bindTexture(gl.TEXTURE_2D, camera.glResources.depthTexture);
   gl.uniform1i(u_depthTexture, 2);
 
-  // Pass FBO UV mapping so the sprite shader can sample the depth texture
-  // Uses the same UV transform as the post-process shader
-  const fboWidth = camera.glResources.baseResolution.width;
-  const fboHeight = camera.glResources.baseResolution.height;
-  const unpaddedWidth = fboWidth - FBO_OVERSCAN_PX;
-  const unpaddedHeight = fboHeight - FBO_OVERSCAN_PX;
-  gl.uniform2f(
-    u_fboUvScale,
-    unpaddedWidth / fboWidth,
-    unpaddedHeight / fboHeight,
-  );
-
-  const fboOffsetX =
-    camera.pixelScale > 1
-      ? (subPixelOffset.remainderX * camera.zoom) / camera.pixelScale
-      : 0;
-  const fboOffsetY =
-    camera.pixelScale > 1
-      ? (subPixelOffset.remainderY * camera.zoom) / camera.pixelScale
-      : 0;
-  gl.uniform2f(
-    u_fboUvOffset,
-    fboOffsetX / fboWidth,
-    (2 - fboOffsetY) / fboHeight,
-  );
+  // Pass FBO UV mapping so the sprite shader can sample the depth texture.
+  // Shared with the post-process blit — the two must agree exactly, and used to
+  // be computed independently here (with the overscan constant hardcoded).
+  const bridge = computeFboUvBridge(camera, subPixelOffset);
+  gl.uniform2f(u_fboUvScale, bridge.scaleX, bridge.scaleY);
+  gl.uniform2f(u_fboUvOffset, bridge.offsetX, bridge.offsetY);
   gl.uniform2f(u_screenSize, viewport.width, viewport.height);
 
   // Bind cell solidity texture and reveal target for per-fragment raycasting.

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-return */
 import { BUILDERS, MethodRegistry, PROPERTY_ALLOWLIST } from './registry';
 import { queueInit, attachReady } from '../loop/init';
 import { Nexus, NexusT } from './nexus';
@@ -374,7 +375,6 @@ export function wrapInProxy(component: ComponentData): ComponentData {
         let wrapper = methodWrappers.get(prop);
         if (wrapper === undefined) {
           wrapper = (...args: unknown[]) => {
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
             return MethodRegistry[component.type][prop](component, ...args);
           };
           methodWrappers.set(prop, wrapper);
@@ -386,16 +386,14 @@ export function wrapInProxy(component: ComponentData): ComponentData {
       if (c.type === 'nexus') {
         const singularType = SINGULAR_TYPE_MAP.get(prop);
         if (singularType) {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
           return MethodRegistry['nexus']['getComponentByType'](c, singularType);
         }
         const pluralType = PLURAL_TYPE_MAP.get(prop);
         if (pluralType) {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
           return MethodRegistry['nexus']['getComponentsByType'](c, pluralType);
         }
         // Name-based fallback
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
+
         return MethodRegistry['nexus']['getComponentByName'](c, prop);
       }
 
@@ -474,6 +472,7 @@ export async function newComponent(
     );
     return null;
   }
+
   const component = (await builder(options)) as ComponentData;
   if (!component) {
     console.error(

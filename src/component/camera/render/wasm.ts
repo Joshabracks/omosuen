@@ -18,7 +18,7 @@ import { base64ToBytes, initWasm } from '../../../wasm';
 
 // Injected by webpack DefinePlugin. Only defined in webpack builds; the Node
 // tests pass bytes to initRenderWasm() instead (the `??` short-circuits).
-// eslint-disable-next-line @typescript-eslint/naming-convention
+
 declare const __RENDER_WASM_BASE64__: string;
 
 interface RenderExports {

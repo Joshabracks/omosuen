@@ -15,7 +15,12 @@ import { pollMessages } from './messaging';
 import { pollFlags } from './flags';
 import { updateWorldTransforms } from '../component/transform/world';
 import { updateOnScreenFlags } from '../component/transform/on-screen';
-import { beginFrame, endFrame, isProfilingEnabled, recordPhase } from './profile';
+import {
+  beginFrame,
+  endFrame,
+  isProfilingEnabled,
+  recordPhase,
+} from './profile';
 
 /**
  * Whether the game loop is currently running

@@ -83,9 +83,17 @@ export interface PickOptions {
 // ============================================================
 
 const params: ProjectionParams = {
-  viewportWidth: 0, viewportHeight: 0, zoom: 1, projScale: 1,
-  sinA: 0.5, heightScale: 1, cosYaw: 1, sinYaw: 0,
-  camIsoX: 0, camIsoY: 0, degenerate: false,
+  viewportWidth: 0,
+  viewportHeight: 0,
+  zoom: 1,
+  projScale: 1,
+  sinA: 0.5,
+  heightScale: 1,
+  cosYaw: 1,
+  sinYaw: 0,
+  camIsoX: 0,
+  camIsoY: 0,
+  degenerate: false,
 };
 const rayOrigin = new Vector3D(0, 0, 0);
 const rayDir = new Vector3D(0, 0, 0);
@@ -101,14 +109,22 @@ const tmpO = new Vector3D(0, 0, 0);
 const tmpD = new Vector3D(0, 0, 0);
 const tmpPt = new Vector3D(0, 0, 0);
 const prismRange: CellRange = {
-  minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0,
+  minX: 0,
+  minY: 0,
+  minZ: 0,
+  maxX: 0,
+  maxY: 0,
+  maxZ: 0,
 };
 
 // Self-healing per-camera texture-map lookup (rebuilt only on a cache miss).
 const spriteTmCache = new Map<number, Map<string, TextureMapT>>();
 
 const DEFAULT_TARGETS: Required<PickTargets> = {
-  sprites: true, colliders: true, eventColliders: true, cells: true,
+  sprites: true,
+  colliders: true,
+  eventColliders: true,
+  cells: true,
 };
 
 // ============================================================
@@ -133,7 +149,10 @@ function frameSizeFor(
   let tm = map ? map.get(sprite.textureMapKeys.albedo) : undefined;
   if (!tm) {
     map = new Map<string, TextureMapT>();
-    const tms = sceneRoot.getComponentsByType('texture-map', true) as TextureMapT[];
+    const tms = sceneRoot.getComponentsByType(
+      'texture-map',
+      true,
+    ) as TextureMapT[];
     for (const t of tms) map.set(t.textureMapKey, t);
     spriteTmCache.set(camera.id!, map);
     tm = map.get(sprite.textureMapKeys.albedo);
@@ -181,19 +200,27 @@ function spriteScreenQuad(
 
 function addHit(
   buffer: PickBuffer,
-  kind: typeof PickKind[keyof typeof PickKind],
+  kind: (typeof PickKind)[keyof typeof PickKind],
   component: ComponentData | null,
   cellMap: CellMapT | null,
-  cx: number, cy: number, cz: number,
-  wx: number, wy: number, wz: number,
+  cx: number,
+  cy: number,
+  cz: number,
+  wx: number,
+  wy: number,
+  wz: number,
   depth: number,
 ): void {
   const hit = buffer.push();
   hit.kind = kind;
   hit.component = component;
   hit.cellMap = cellMap;
-  hit.cellX = cx; hit.cellY = cy; hit.cellZ = cz;
-  hit.worldPoint.x = wx; hit.worldPoint.y = wy; hit.worldPoint.z = wz;
+  hit.cellX = cx;
+  hit.cellY = cy;
+  hit.cellZ = cz;
+  hit.worldPoint.x = wx;
+  hit.worldPoint.y = wy;
+  hit.worldPoint.z = wz;
   hit.depth = depth;
 }
 
@@ -204,7 +231,7 @@ function addHit(
 function pickPointColliders(
   p: ProjectionParams,
   components: ComponentData[],
-  kind: typeof PickKind[keyof typeof PickKind],
+  kind: (typeof PickKind)[keyof typeof PickKind],
   buffer: PickBuffer,
 ): void {
   for (const c of components) {
@@ -213,15 +240,26 @@ function pickPointColliders(
     if (col.shape === 'sphere') {
       const r = computeWorldSphereInto(col, sphereCenter);
       t = raySphere(
-        rayOrigin.x, rayOrigin.y, rayOrigin.z,
-        rayDir.x, rayDir.y, rayDir.z,
-        sphereCenter.x, sphereCenter.y, sphereCenter.z, r,
+        rayOrigin.x,
+        rayOrigin.y,
+        rayOrigin.z,
+        rayDir.x,
+        rayDir.y,
+        rayDir.z,
+        sphereCenter.x,
+        sphereCenter.y,
+        sphereCenter.z,
+        r,
       );
     } else {
       computeWorldOBBInto(col, obbScratch);
       t = rayOBB(
-        rayOrigin.x, rayOrigin.y, rayOrigin.z,
-        rayDir.x, rayDir.y, rayDir.z,
+        rayOrigin.x,
+        rayOrigin.y,
+        rayOrigin.z,
+        rayDir.x,
+        rayDir.y,
+        rayDir.z,
         obbScratch,
       );
     }
@@ -229,7 +267,19 @@ function pickPointColliders(
     const wx = rayOrigin.x + rayDir.x * t;
     const wy = rayOrigin.y + rayDir.y * t;
     const wz = rayOrigin.z + rayDir.z * t;
-    addHit(buffer, kind, c, null, -1, -1, -1, wx, wy, wz, rawDepth(p, wx, wy, wz));
+    addHit(
+      buffer,
+      kind,
+      c,
+      null,
+      -1,
+      -1,
+      -1,
+      wx,
+      wy,
+      wz,
+      rawDepth(p, wx, wy, wz),
+    );
   }
 }
 
@@ -240,7 +290,7 @@ function pickPointColliders(
 function pickPrismColliders(
   p: ProjectionParams,
   components: ComponentData[],
-  kind: typeof PickKind[keyof typeof PickKind],
+  kind: (typeof PickKind)[keyof typeof PickKind],
   buffer: PickBuffer,
 ): void {
   for (const c of components) {
@@ -248,13 +298,29 @@ function pickPrismColliders(
     let cxw: number, cyw: number, czw: number;
     if (col.shape === 'sphere') {
       computeWorldSphereInto(col, sphereCenter);
-      cxw = sphereCenter.x; cyw = sphereCenter.y; czw = sphereCenter.z;
+      cxw = sphereCenter.x;
+      cyw = sphereCenter.y;
+      czw = sphereCenter.z;
     } else {
       computeWorldOBBInto(col, obbScratch);
-      cxw = obbScratch.center.x; cyw = obbScratch.center.y; czw = obbScratch.center.z;
+      cxw = obbScratch.center.x;
+      cyw = obbScratch.center.y;
+      czw = obbScratch.center.z;
     }
     if (pointInPrism(prism, cxw, cyw, czw)) {
-      addHit(buffer, kind, c, null, -1, -1, -1, cxw, cyw, czw, rawDepth(p, cxw, cyw, czw));
+      addHit(
+        buffer,
+        kind,
+        c,
+        null,
+        -1,
+        -1,
+        -1,
+        cxw,
+        cyw,
+        czw,
+        rawDepth(p, cxw, cyw, czw),
+      );
     }
   }
 }
@@ -281,17 +347,30 @@ function pickPrismCells(
   // any corner ray misses (e.g. a selection box larger than / off the window, whose
   // corners project outside it), that tight bound would wrongly exclude the interior —
   // so we fall back to the full window cell range, always a valid superset.
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  let minX = Infinity,
+    minY = Infinity,
+    minZ = Infinity;
+  let maxX = -Infinity,
+    maxY = -Infinity,
+    maxZ = -Infinity;
   viewDirInto(p, tmpD);
   let hitCount = 0;
   for (let i = 0; i < pointCount; i++) {
     screenToWorldAtHeight(p, pointsXY[i * 2], pointsXY[i * 2 + 1], 0, tmpO);
     if (
       !rayAABB(
-        tmpO.x, tmpO.y, tmpO.z, tmpD.x, tmpD.y, tmpD.z,
-        bounds.minX, bounds.minY, bounds.minZ,
-        bounds.maxX, bounds.maxY, bounds.maxZ,
+        tmpO.x,
+        tmpO.y,
+        tmpO.z,
+        tmpD.x,
+        tmpD.y,
+        tmpD.z,
+        bounds.minX,
+        bounds.minY,
+        bounds.minZ,
+        bounds.maxX,
+        bounds.maxY,
+        bounds.maxZ,
         aabbSpan,
       )
     ) {
@@ -303,26 +382,39 @@ function pickPrismCells(
       const px = tmpO.x + tmpD.x * t;
       const py = tmpO.y + tmpD.y * t;
       const pz = tmpO.z + tmpD.z * t;
-      if (px < minX) minX = px; if (px > maxX) maxX = px;
-      if (py < minY) minY = py; if (py > maxY) maxY = py;
-      if (pz < minZ) minZ = pz; if (pz > maxZ) maxZ = pz;
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+      if (pz < minZ) minZ = pz;
+      if (pz > maxZ) maxZ = pz;
     }
   }
 
   let x0: number, y0: number, z0: number, x1: number, y1: number, z1: number;
   if (hitCount < pointCount) {
     // Some/all corners miss the window → scan the whole grid (prism filters below).
-    x0 = r.minX; y0 = r.minY; z0 = r.minZ;
-    x1 = r.maxX; y1 = r.maxY; z1 = r.maxZ;
+    x0 = r.minX;
+    y0 = r.minY;
+    z0 = r.minZ;
+    x1 = r.maxX;
+    y1 = r.maxY;
+    z1 = r.maxZ;
   } else {
     // Pad by line thickness + one cell, then clamp to the grid.
     const pad = lineThickness / p.projScale + Math.max(cs.x, cs.y, cs.z);
-    x0 = Math.floor((minX - pad) / cs.x); if (x0 < r.minX) x0 = r.minX;
-    y0 = Math.floor((minY - pad) / cs.y); if (y0 < r.minY) y0 = r.minY;
-    z0 = Math.floor((minZ - pad) / cs.z); if (z0 < r.minZ) z0 = r.minZ;
-    x1 = Math.floor((maxX + pad) / cs.x); if (x1 > r.maxX) x1 = r.maxX;
-    y1 = Math.floor((maxY + pad) / cs.y); if (y1 > r.maxY) y1 = r.maxY;
-    z1 = Math.floor((maxZ + pad) / cs.z); if (z1 > r.maxZ) z1 = r.maxZ;
+    x0 = Math.floor((minX - pad) / cs.x);
+    if (x0 < r.minX) x0 = r.minX;
+    y0 = Math.floor((minY - pad) / cs.y);
+    if (y0 < r.minY) y0 = r.minY;
+    z0 = Math.floor((minZ - pad) / cs.z);
+    if (z0 < r.minZ) z0 = r.minZ;
+    x1 = Math.floor((maxX + pad) / cs.x);
+    if (x1 > r.maxX) x1 = r.maxX;
+    y1 = Math.floor((maxY + pad) / cs.y);
+    if (y1 > r.maxY) y1 = r.maxY;
+    z1 = Math.floor((maxZ + pad) / cs.z);
+    if (z1 > r.maxZ) z1 = r.maxZ;
   }
 
   for (let cx = x0; cx <= x1; cx++) {
@@ -332,10 +424,24 @@ function pickPrismCells(
       for (let cy = y0; cy <= y1; cy++) {
         const wy = (cy + 0.5) * cs.y;
         if (!pointInPrism(prism, wx, wy, wz)) continue;
-        tmpPt.x = cx; tmpPt.y = cy; tmpPt.z = cz;
+        tmpPt.x = cx;
+        tmpPt.y = cy;
+        tmpPt.z = cz;
         const cell = CellMap.getCellData(cellMap, tmpPt);
         if (!cell.visible || cell.shapeIndex === 0) continue;
-        addHit(buffer, PickKind.Cell, null, cellMap, cx, cy, cz, wx, wy, wz, rawDepth(p, wx, wy, wz));
+        addHit(
+          buffer,
+          PickKind.Cell,
+          null,
+          cellMap,
+          cx,
+          cy,
+          cz,
+          wx,
+          wy,
+          wz,
+          rawDepth(p, wx, wy, wz),
+        );
       }
     }
   }
@@ -382,68 +488,163 @@ export function screenPick(
     viewDirInto(params, rayDir);
 
     if (wantCells) {
-      const cellMaps = sceneRoot.getComponentsByType('cell-map', true) as CellMapT[];
+      const cellMaps = sceneRoot.getComponentsByType(
+        'cell-map',
+        true,
+      ) as CellMapT[];
       for (const cm of cellMaps) {
         marchCells(rayOrigin, rayDir, cm, cellMarch, stopAtFirst);
         for (let i = 0; i < cellMarch.count; i++) {
-          const cx = cellMarch.x[i], cy = cellMarch.y[i], cz = cellMarch.z[i];
+          const cx = cellMarch.x[i],
+            cy = cellMarch.y[i],
+            cz = cellMarch.z[i];
           const wx = (cx + 0.5) * cm.cellSize.x;
           const wy = (cy + 0.5) * cm.cellSize.y;
           const wz = (cz + 0.5) * cm.cellSize.z;
-          addHit(out, PickKind.Cell, null, cm, cx, cy, cz, wx, wy, wz, rawDepth(params, wx, wy, wz));
+          addHit(
+            out,
+            PickKind.Cell,
+            null,
+            cm,
+            cx,
+            cy,
+            cz,
+            wx,
+            wy,
+            wz,
+            rawDepth(params, wx, wy, wz),
+          );
         }
       }
     }
     if (wantColliders) {
-      pickPointColliders(params, sceneRoot.getComponentsByType('collider', true), PickKind.Collider, out);
+      pickPointColliders(
+        params,
+        sceneRoot.getComponentsByType('collider', true),
+        PickKind.Collider,
+        out,
+      );
     }
     if (wantEvent) {
-      pickPointColliders(params, sceneRoot.getComponentsByType('event-collider', true), PickKind.EventCollider, out);
+      pickPointColliders(
+        params,
+        sceneRoot.getComponentsByType('event-collider', true),
+        PickKind.EventCollider,
+        out,
+      );
     }
     if (wantSprites) {
-      const sprites = sceneRoot.getComponentsByType('sprite', true) as SpriteT[];
+      const sprites = sceneRoot.getComponentsByType(
+        'sprite',
+        true,
+      ) as SpriteT[];
       for (const sprite of sprites) {
         if (sprite.visible === false) continue;
         const t = siblingTransform(sprite);
         if (!t) continue;
         if (!frameSizeFor(camera, sceneRoot, sprite, frameSize)) continue;
-        spriteScreenQuad(params, t, frameSize.x, frameSize.y, sprite.anchor.x, sprite.anchor.y, spriteQuad);
+        spriteScreenQuad(
+          params,
+          t,
+          frameSize.x,
+          frameSize.y,
+          sprite.anchor.x,
+          sprite.anchor.y,
+          spriteQuad,
+        );
         if (pointInConvex(spriteQuad, 4, px, py)) {
           const pos = t.worldPosition;
-          addHit(out, PickKind.Sprite, sprite, null, -1, -1, -1, pos.x, pos.y, pos.z, rawDepth(params, pos.x, pos.y, pos.z) + 1);
+          addHit(
+            out,
+            PickKind.Sprite,
+            sprite,
+            null,
+            -1,
+            -1,
+            -1,
+            pos.x,
+            pos.y,
+            pos.z,
+            rawDepth(params, pos.x, pos.y, pos.z) + 1,
+          );
         }
       }
     }
   } else {
     // ---- Line / triangle / quad: prism volume + 2D sprite overlap ----
-    if (!buildPrism(params, pointsXY, pointCount, 0, lineThickness, prism)) return 0;
+    if (!buildPrism(params, pointsXY, pointCount, 0, lineThickness, prism))
+      return 0;
 
     if (wantCells) {
-      const cellMaps = sceneRoot.getComponentsByType('cell-map', true) as CellMapT[];
+      const cellMaps = sceneRoot.getComponentsByType(
+        'cell-map',
+        true,
+      ) as CellMapT[];
       for (const cm of cellMaps) {
         pickPrismCells(params, pointsXY, pointCount, cm, lineThickness, out);
       }
     }
     if (wantColliders) {
-      pickPrismColliders(params, sceneRoot.getComponentsByType('collider', true), PickKind.Collider, out);
+      pickPrismColliders(
+        params,
+        sceneRoot.getComponentsByType('collider', true),
+        PickKind.Collider,
+        out,
+      );
     }
     if (wantEvent) {
-      pickPrismColliders(params, sceneRoot.getComponentsByType('event-collider', true), PickKind.EventCollider, out);
+      pickPrismColliders(
+        params,
+        sceneRoot.getComponentsByType('event-collider', true),
+        PickKind.EventCollider,
+        out,
+      );
     }
     if (wantSprites) {
-      const sprites = sceneRoot.getComponentsByType('sprite', true) as SpriteT[];
+      const sprites = sceneRoot.getComponentsByType(
+        'sprite',
+        true,
+      ) as SpriteT[];
       for (const sprite of sprites) {
         if (sprite.visible === false) continue;
         const t = siblingTransform(sprite);
         if (!t) continue;
         if (!frameSizeFor(camera, sceneRoot, sprite, frameSize)) continue;
-        spriteScreenQuad(params, t, frameSize.x, frameSize.y, sprite.anchor.x, sprite.anchor.y, spriteQuad);
-        const overlaps = pointCount === 2
-          ? segVsConvex(pointsXY[0], pointsXY[1], pointsXY[2], pointsXY[3], spriteQuad, 4)
-          : convexVsConvex(pointsXY, pointCount, spriteQuad, 4);
+        spriteScreenQuad(
+          params,
+          t,
+          frameSize.x,
+          frameSize.y,
+          sprite.anchor.x,
+          sprite.anchor.y,
+          spriteQuad,
+        );
+        const overlaps =
+          pointCount === 2
+            ? segVsConvex(
+                pointsXY[0],
+                pointsXY[1],
+                pointsXY[2],
+                pointsXY[3],
+                spriteQuad,
+                4,
+              )
+            : convexVsConvex(pointsXY, pointCount, spriteQuad, 4);
         if (overlaps) {
           const pos = t.worldPosition;
-          addHit(out, PickKind.Sprite, sprite, null, -1, -1, -1, pos.x, pos.y, pos.z, rawDepth(params, pos.x, pos.y, pos.z) + 1);
+          addHit(
+            out,
+            PickKind.Sprite,
+            sprite,
+            null,
+            -1,
+            -1,
+            -1,
+            pos.x,
+            pos.y,
+            pos.z,
+            rawDepth(params, pos.x, pos.y, pos.z) + 1,
+          );
         }
       }
     }

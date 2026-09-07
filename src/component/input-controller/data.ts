@@ -146,7 +146,6 @@ function deserialize(data: any): DeserializeResult<InputControllerT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, bindings, preventDefault, overrideKey } = data;
 
   if (type !== 'input-controller') {
@@ -168,11 +167,11 @@ function deserialize(data: any): DeserializeResult<InputControllerT> {
   return {
     component: builder({
       name: name as string,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       bindings: bindings || [],
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       preventDefault: preventDefault ?? true,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       overrideKey,
     }),
     errors,

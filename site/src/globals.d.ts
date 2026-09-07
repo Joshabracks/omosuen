@@ -19,7 +19,10 @@ interface OmosuenVector4D {
 }
 
 interface OmosuenGlobal {
-  init(config?: { logSuppression?: number; plugins?: unknown[] }): Promise<void>;
+  init(config?: {
+    logSuppression?: number;
+    plugins?: unknown[];
+  }): Promise<void>;
   registerPluginComponent(def: unknown): void;
   registerSceneModule(name: string, path: string): void;
   switchScene(name: string): Promise<unknown>;
@@ -41,13 +44,17 @@ interface OmosuenGlobal {
   Vector2D: new (x: number, y: number) => OmosuenVector2D;
   Vector3D: new (x: number, y: number, z: number) => OmosuenVector3D;
   Vector4D: new (x: number, y: number, z: number, w: number) => OmosuenVector4D;
-  Array3D: new (size: { x: number; y: number; z: number }, fill: number) => {
+  Array3D: new (
+    size: { x: number; y: number; z: number },
+    fill: number,
+  ) => {
     set: (coords: { x: number; y: number; z: number }, value: number) => void;
   };
 }
 
 declare global {
   /** Webpack DefinePlugin — `/` locally, `/omosuen/` on GitHub Pages. */
+  // eslint-disable-next-line @typescript-eslint/naming-convention
   const __BASE_PATH__: string;
 
   interface Window {

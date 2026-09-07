@@ -276,7 +276,6 @@ function deserialize(data: any): DeserializeResult<UIOverlayT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const {
     type,
     name,
@@ -290,7 +289,6 @@ function deserialize(data: any): DeserializeResult<UIOverlayT> {
   if (type !== 'ui-overlay') {
     errors.push({
       code: 'TYPE_MISMATCH',
-      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
       message: `type ${type} does not match "ui-overlay"`,
     });
   }
@@ -307,15 +305,15 @@ function deserialize(data: any): DeserializeResult<UIOverlayT> {
   return {
     component: builder({
       name: name as string,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       cssOverrides,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       overrideKey,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       htmlConstructorKey,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       previousOverlayId,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       bindings: bindings || [],
     }),
     errors,

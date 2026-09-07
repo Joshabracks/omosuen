@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 import './styles/index.css';
 import { asepriteLoaderDefinition } from 'omosuen-aseprite-loader';
 import {
@@ -64,7 +65,10 @@ async function boot(): Promise<void> {
   });
   registerSiteBundle();
   Omosuen.registerSceneModule('site', absoluteScenePath('./scenes/site.js'));
-  Omosuen.registerSceneModule('textris', absoluteScenePath('./scenes/textris/index.js'));
+  Omosuen.registerSceneModule(
+    'textris',
+    absoluteScenePath('./scenes/textris/index.js'),
+  );
 
   // Boot straight into whichever scene the URL asks for — deep-linking to
   // #demo should not build the landing hero's cell-map first, since only one

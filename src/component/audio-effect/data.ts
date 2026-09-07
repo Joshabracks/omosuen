@@ -129,7 +129,6 @@ function deserialize(data: any): DeserializeResult<AudioEffectT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name } = data;
 
   if (type !== 'audio-effect') {
@@ -151,12 +150,11 @@ function deserialize(data: any): DeserializeResult<AudioEffectT> {
   return {
     component: builder({
       name: name as string,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       overrideKey: data.overrideKey,
       pitchShift: (data.pitchShift as number) ?? 0,
       speedShift: (data.speedShift as number) ?? 1.0,
       reverb: (data.reverb as number) ?? 0,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       mix: Array.isArray(data.mix) ? (data.mix as number[]) : [],
       volume: (data.volume as number) ?? 1.0,
       pan: (data.pan as number) ?? 0,

@@ -230,7 +230,7 @@ export async function processInitQueue(
       // Resumable init: drive the generator within the frame budget. If it
       // doesn't finish this frame, it's persisted in ACTIVE_GEN and resumed
       // next frame (the loop keeps rendering in between).
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
+
       const gen: AsyncGenerator<void> = method.initProgressive(component);
       ACTIVE_GEN = gen;
       let done: boolean;
@@ -250,16 +250,13 @@ export async function processInitQueue(
     } else {
       // Call init if it exists (async)
       if (method.init && typeof method.init === 'function') {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         await method.init(component);
       }
 
       // Call instance-specific init override if set
       if (component.initOverride) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const overrideMethod = method[component.initOverride];
         if (overrideMethod && typeof overrideMethod === 'function') {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-call
           await overrideMethod(component);
         } else {
           console.warn(

@@ -117,7 +117,6 @@ function deserialize(data: any): DeserializeResult<AudioPlayerT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name } = data;
 
   if (type !== 'audio-player') {
@@ -139,7 +138,7 @@ function deserialize(data: any): DeserializeResult<AudioPlayerT> {
   return {
     component: builder({
       name: name as string,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       overrideKey: data.overrideKey,
       masterVolume: (data.masterVolume as number) ?? 1.0,
       muted: !!data.muted,

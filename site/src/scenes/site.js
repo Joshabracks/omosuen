@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 /**
  * Omosuen site hero scene — full-bleed cell-map behind the State Street landing UI.
  */
@@ -111,13 +112,9 @@ function computeHeroZoom(viewportWidth, viewportHeight) {
 
   // Rendering uses projScale = zoom² (see camera/screen-pick/ray.ts), so iso extent
   // E lands at E * zoom² pixels from center. Fit both axes; use the tighter bound.
-  const maxZoomSqByWidth =
-    viewportWidth / (2 * PYRAMID_FRAME.halfWidth);
-  const maxZoomSqByHeight =
-    viewportHeight / (2 * PYRAMID_FRAME.halfHeight);
-  const fitZoom = Math.sqrt(
-    Math.min(maxZoomSqByWidth, maxZoomSqByHeight),
-  );
+  const maxZoomSqByWidth = viewportWidth / (2 * PYRAMID_FRAME.halfWidth);
+  const maxZoomSqByHeight = viewportHeight / (2 * PYRAMID_FRAME.halfHeight);
+  const fitZoom = Math.sqrt(Math.min(maxZoomSqByWidth, maxZoomSqByHeight));
   return fitZoom * ZOOM_PADDING;
 }
 

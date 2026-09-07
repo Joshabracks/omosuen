@@ -3,7 +3,10 @@ import { TransformT } from '../../transform';
 import { castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
-import { FBO_OVERSCAN_PX } from '../render/light-uniforms';
+import {
+  allocateCameraTargets,
+  syncTargetResolutions,
+} from '../render/framebuffers';
 
 /**
  * Sets the camera zoom level and updates framebuffer resolution.
@@ -173,49 +176,14 @@ function updateFramebufferForZoom(camera: CameraT): void {
     return;
   }
 
-  const gl = viewport.gl;
+  // Record the new size even when there is nothing allocated yet, so a camera
+  // whose init() bailed still reports a current resolution; init() computes it
+  // again for itself when it runs.
+  syncTargetResolutions(camera, viewport);
 
-  // Recalculate base resolution based on new zoom and pixel scale
-  // Add 2 pixels of overscan per dimension (1-pixel border on each side)
-  const baseWidth =
-    Math.floor(viewport.width / (camera.zoom * camera.pixelScale)) +
-    FBO_OVERSCAN_PX;
-  const baseHeight =
-    Math.floor(viewport.height / (camera.zoom * camera.pixelScale)) +
-    FBO_OVERSCAN_PX;
-
-  camera.glResources.baseResolution.width = baseWidth;
-  camera.glResources.baseResolution.height = baseHeight;
-
-  if (!camera.glResources.renderTexture || !camera.glResources.depthTexture) {
+  if (!camera.glResources.framebuffer) {
     return;
   }
 
-  // Resize render texture
-  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.renderTexture);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.RGBA,
-    baseWidth,
-    baseHeight,
-    0,
-    gl.RGBA,
-    gl.UNSIGNED_BYTE,
-    null,
-  );
-
-  // Resize depth texture
-  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.depthTexture);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.DEPTH_COMPONENT24,
-    baseWidth,
-    baseHeight,
-    0,
-    gl.DEPTH_COMPONENT,
-    gl.UNSIGNED_INT,
-    null,
-  );
+  allocateCameraTargets(viewport.gl, camera, viewport);
 }

@@ -1,6 +1,6 @@
-import { parseSiteHash } from "./docs-routing";
+import { parseSiteHash } from './docs-routing';
 
-export type SiteView = "landing" | "docs" | "demo";
+export type SiteView = 'landing' | 'docs' | 'demo';
 
 export interface SiteState {
   view: SiteView;
@@ -11,9 +11,9 @@ export interface SiteState {
   engineVersion: string;
 }
 
-function stateFromLocation(): Pick<SiteState, "view" | "docsComponent"> {
-  if (typeof window === "undefined") {
-    return { view: "landing", docsComponent: null };
+function stateFromLocation(): Pick<SiteState, 'view' | 'docsComponent'> {
+  if (typeof window === 'undefined') {
+    return { view: 'landing', docsComponent: null };
   }
   return parseSiteHash(window.location.hash);
 }
@@ -21,5 +21,5 @@ function stateFromLocation(): Pick<SiteState, "view" | "docsComponent"> {
 export const initialState: SiteState = {
   ...stateFromLocation(),
   docsSidebarOpen: false,
-  engineVersion: "0.20.0",
+  engineVersion: '0.20.0',
 };

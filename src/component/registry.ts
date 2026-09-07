@@ -140,6 +140,7 @@ import {
  * Method type registry for non-component functions.
  * Used for UI bindings, HTML constructors, message listeners, and other registered functions.
  */
+
 export type METHOD_TYPE =
   | 'ui-binding'
   | 'html-constructor'
@@ -405,7 +406,6 @@ export function registerBinding(key: string, func: (e: Event) => void): void {
  * @returns The binding function, or null if not found
  */
 export function getBinding(key: string): ((e: Event) => void) | null {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const func = MethodRegistry['ui-binding'][key];
   return typeof func === 'function' ? (func as (e: Event) => void) : null;
 }
@@ -452,7 +452,6 @@ export function getHtmlConstructor(
   key: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): ((overlay: any) => string) | null {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const func = MethodRegistry['html-constructor'][key];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return typeof func === 'function' ? (func as (overlay: any) => string) : null;

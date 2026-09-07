@@ -214,7 +214,6 @@ function deserialize(data: any): DeserializeResult<AnimationControllerT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const {
     type,
     name,

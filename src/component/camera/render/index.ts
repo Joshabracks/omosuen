@@ -9,6 +9,7 @@ import { Camera } from '../methods';
 import { renderSprites } from './render-sprites';
 import { renderUpscale } from './post-process';
 import { renderPresent } from './present';
+import { renderPostChain } from './post-chain';
 import { renderCellMaps, snapCameraPosition } from './render-cell-maps';
 import { allocateCameraTargets } from './framebuffers';
 import { uploadAtlasTextures, uploadAtlasDelta } from './atlas-textures';
@@ -32,6 +33,9 @@ const EMPTY_TEXTURE_MAP_CACHE: Map<string, TextureMapT> = new Map();
  * per frame in the render path is exactly the GC churn this file avoids
  * elsewhere.
  */
+/** Cell size handed to post-effects when a scene has no cell-map. */
+const DEFAULT_CELL_SIZE = { x: 32, y: 16, z: 32 };
+
 const clearColorScratch = new Float32Array(4);
 const clearIdsScratch = new Uint32Array(4);
 const clearDepthScratch = new Float32Array([1]);
@@ -325,9 +329,30 @@ export function render(camera: CameraT, _deltaTime: number): void {
     );
   }
 
-  // PHASE 4: Blit the finished composite to the screen.
+  // PHASE 4: Run the post-effect chain over the finished composite, then blit
+  // the result to the screen. A null return means no chain ran, in which case
+  // renderPresent falls back to the composite itself.
+  const chainT0 = profiling ? performance.now() : 0;
+  const cellSize =
+    cellMaps.length > 0 ? cellMaps[0].cellSize : DEFAULT_CELL_SIZE;
+  const chainOutput = renderPostChain(
+    gl,
+    camera,
+    camPos,
+    cellSize,
+    subPixelOffset,
+  );
+  if (profiling) {
+    recordComponentUpdate(
+      cameraId,
+      camera.name,
+      'camera:postChain',
+      performance.now() - chainT0,
+    );
+  }
+
   const presentT0 = profiling ? performance.now() : 0;
-  renderPresent(camera, viewport, gl);
+  renderPresent(camera, viewport, gl, chainOutput);
   if (profiling) {
     recordComponentUpdate(
       cameraId,

@@ -2,7 +2,12 @@ import { NexusT } from '../../nexus';
 import { TransformT } from '../../transform';
 import { castTo } from '../../types';
 import { ViewportT } from '../../viewport';
-import { CameraT } from '../data';
+import {
+  CameraT,
+  PostEffectOptions,
+  PostEffectUniformValue,
+  resolvePostEffects,
+} from '../data';
 import {
   allocateCameraTargets,
   syncTargetResolutions,
@@ -186,4 +191,61 @@ function updateFramebufferForZoom(camera: CameraT): void {
   }
 
   allocateCameraTargets(viewport.gl, camera, viewport);
+}
+
+/**
+ * Replaces the camera's post-effect chain.
+ *
+ * Triggers a target reallocation when the chain goes from empty to non-empty or
+ * back, since the ping-pong colour targets are only allocated while a chain
+ * exists. Compilation itself is lazy — the next frame builds any stage whose
+ * source changed.
+ */
+export function setPostEffects(
+  camera: CameraT,
+  effects: PostEffectOptions[] | null,
+): void {
+  const had = (camera.postEffects?.length ?? 0) > 0;
+  camera.postEffects = resolvePostEffects(effects ?? undefined);
+  const has = (camera.postEffects?.length ?? 0) > 0;
+  if (had !== has) updateFramebufferForZoom(camera);
+}
+
+/** Enables or disables one stage by name, leaving the rest of the chain running. */
+export function setPostEffectEnabled(
+  camera: CameraT,
+  name: string,
+  enabled: boolean,
+): void {
+  const effect = camera.postEffects?.find((e) => e.name === name);
+  if (!effect) {
+    console.warn(`[camera] No post-effect named '${name}' on '${camera.name}'`);
+    return;
+  }
+  effect.enabled = enabled;
+}
+
+/**
+ * Sets one stage-private uniform. Takes effect on the next frame with no
+ * recompile — locations are cached by name at compile time and the value is
+ * re-uploaded every frame.
+ */
+export function setPostEffectUniform(
+  camera: CameraT,
+  name: string,
+  key: string,
+  value: PostEffectUniformValue,
+): void {
+  const effect = camera.postEffects?.find((e) => e.name === name);
+  if (!effect) {
+    console.warn(`[camera] No post-effect named '${name}' on '${camera.name}'`);
+    return;
+  }
+  if (key.startsWith('u_')) {
+    console.warn(
+      `[camera] post-effect uniform '${key}' uses the reserved u_ prefix`,
+    );
+    return;
+  }
+  effect.uniforms[key] = value;
 }

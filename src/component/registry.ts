@@ -145,7 +145,8 @@ export type METHOD_TYPE =
   | 'ui-binding'
   | 'html-constructor'
   | 'message-listener'
-  | 'cell-map-generator';
+  | 'cell-map-generator'
+  | 'post-effect';
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
 export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
@@ -215,6 +216,9 @@ export const MethodRegistry: Record<
   'html-constructor': {},
   'message-listener': {},
   'cell-map-generator': {},
+  // Values here are GLSL source strings, not functions -- a keyed post-effect
+  // is what lets a camera's chain survive save/load.
+  'post-effect': {},
 };
 
 /**

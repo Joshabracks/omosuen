@@ -7,6 +7,7 @@ import { clearVisionUniformCache } from '../render/vision-uniforms';
 import { clearFogUniformCache } from '../render/fog-uniforms';
 import { clearRenderablesCache } from '../collect-renderables/index';
 import { disposeCameraTargets } from '../render/framebuffers';
+import { clearPostChainCache } from '../render/post-chain';
 
 /**
  * Disposes WebGL resources when the camera is removed.
@@ -65,6 +66,7 @@ export function dispose(component: ComponentData): void {
   clearVisionUniformCache(camera.id!);
   clearFogUniformCache(camera.id!);
   clearRenderablesCache(camera.id!);
+  clearPostChainCache(gl, camera.id!);
 
   camera._disposed = true;
 }

@@ -401,6 +401,68 @@ export function allocateCameraTargets(
     return false;
   }
 
+  // ── Post-effect chain ping-pong targets ─────────────────────────────────
+  // Allocated only while a chain is configured, so a camera without one pays
+  // nothing. Two full-res colour targets regardless of chain length: only
+  // colour ping-pongs, the mask attachments are read-only inputs throughout.
+  const wantsChain = (camera.postEffects?.length ?? 0) > 0;
+  for (let i = 0; i < 2; i++) {
+    if (!wantsChain) {
+      if (res.postChainFramebuffers[i]) {
+        gl.deleteFramebuffer(res.postChainFramebuffers[i]);
+        res.postChainFramebuffers[i] = null;
+      }
+      if (res.postChainTextures[i]) {
+        gl.deleteTexture(res.postChainTextures[i]);
+        res.postChainTextures[i] = null;
+      }
+      continue;
+    }
+
+    const tex = allocateColorTexture(
+      gl,
+      res.postChainTextures[i],
+      fullWidth,
+      fullHeight,
+      gl.RGBA8,
+    );
+    if (!tex) {
+      console.error(
+        `[camera] Camera '${camera.name}' failed to create post-chain texture ${i}`,
+      );
+      return false;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, null);
+
+    const fb = res.postChainFramebuffers[i] ?? gl.createFramebuffer();
+    if (!fb) {
+      console.error(
+        `[camera] Camera '${camera.name}' failed to create post-chain framebuffer ${i}`,
+      );
+      return false;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      tex,
+      0,
+    );
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+    const statusP = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (statusP !== gl.FRAMEBUFFER_COMPLETE) {
+      console.error(
+        `[camera] Camera '${camera.name}' post-chain framebuffer ${i} is not complete ` +
+          `(status 0x${statusP.toString(16)})`,
+      );
+      return false;
+    }
+    res.postChainFramebuffers[i] = fb;
+    res.postChainTextures[i] = tex;
+  }
+
   // Only publish the handles once both framebuffers are known good, matching
   // the original init ordering.
   res.framebuffer = framebuffer;
@@ -433,6 +495,9 @@ export function disposeCameraTargets(
     if (res.renderTexture) gl.deleteTexture(res.renderTexture);
     if (res.depthTexture) gl.deleteTexture(res.depthTexture);
     if (res.cellIdTexture) gl.deleteTexture(res.cellIdTexture);
+    for (const fb of res.postChainFramebuffers)
+      if (fb) gl.deleteFramebuffer(fb);
+    for (const t of res.postChainTextures) if (t) gl.deleteTexture(t);
     if (res.framebufferB) gl.deleteFramebuffer(res.framebufferB);
     if (res.compositeTexture) gl.deleteTexture(res.compositeTexture);
     if (res.compositeIdTexture) gl.deleteTexture(res.compositeIdTexture);
@@ -443,6 +508,10 @@ export function disposeCameraTargets(
   res.renderTexture = null;
   res.depthTexture = null;
   res.cellIdTexture = null;
+  for (let i = 0; i < res.postChainFramebuffers.length; i++) {
+    res.postChainFramebuffers[i] = null;
+    res.postChainTextures[i] = null;
+  }
   res.framebufferB = null;
   res.compositeTexture = null;
   res.compositeIdTexture = null;

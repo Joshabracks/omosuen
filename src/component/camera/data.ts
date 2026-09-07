@@ -185,6 +185,17 @@ export interface CameraT
     postProcessProgram: WebGLProgram | null;
     fullscreenQuadBuffer: WebGLBuffer | null;
 
+    /**
+     * Composite target (FBO_B), at full viewport resolution. The upscale pass
+     * blits the base-resolution cell FBO into it and the sprite pass then draws
+     * on top, so the whole frame exists in one sampleable texture before it
+     * reaches the screen. `renderPresent` blits it to the default framebuffer.
+     */
+    framebufferB: WebGLFramebuffer | null;
+    compositeTexture: WebGLTexture | null;
+    /** Program for the final composite → screen blit (`post-present.frag`). */
+    presentProgram: WebGLProgram | null;
+
     // Base rendering resolution (independent of canvas size, adjusted by zoom)
     baseResolution: { width: number; height: number };
     /**
@@ -302,6 +313,9 @@ export function builder(options: CameraOptions): CameraT {
       depthTexture: null,
       postProcessProgram: null,
       fullscreenQuadBuffer: null,
+      framebufferB: null,
+      compositeTexture: null,
+      presentProgram: null,
       baseResolution: { width: 800, height: 600 }, // Default, will be updated in init()
       fullResolution: { width: 800, height: 600 }, // Default, will be updated in init()
       visibilityTexture: null,

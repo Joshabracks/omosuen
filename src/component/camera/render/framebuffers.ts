@@ -71,12 +71,20 @@ export function syncTargetResolutions(
   camera.glResources.fullResolution.height = viewport.height;
 }
 
-/** Creates the texture if absent, then (re)allocates its storage at `w`x`h`. */
+/**
+ * Creates the texture if absent, then (re)allocates its storage at `w`x`h`.
+ *
+ * `internalFormat` defaults to the unsized `gl.RGBA` the cell FBO has always
+ * used. The composite target passes the sized `gl.RGBA8` instead; the two are
+ * equivalent in practice, but the cell FBO is deliberately left on the unsized
+ * form so no pixel comparison against previous behaviour has to account for it.
+ */
 function allocateColorTexture(
   gl: WebGL2RenderingContext,
   existing: WebGLTexture | null,
   width: number,
   height: number,
+  internalFormat: number = gl.RGBA,
 ): WebGLTexture | null {
   const texture = existing ?? gl.createTexture();
   if (!texture) return null;
@@ -85,7 +93,7 @@ function allocateColorTexture(
   gl.texImage2D(
     gl.TEXTURE_2D,
     0,
-    gl.RGBA,
+    internalFormat,
     width,
     height,
     0,
@@ -230,11 +238,67 @@ export function allocateCameraTargets(
     return false;
   }
 
-  // Only publish the handles once the framebuffer is known good, matching the
-  // original init ordering.
+  // ── Composite target (FBO_B) ────────────────────────────────────────────
+  // Full viewport resolution, not base: the upscale blit lands here already
+  // scaled up, and the sprite pass then draws into it at full resolution. That
+  // ordering is what keeps pixelated terrain under crisp sprites.
+  //
+  // No depth attachment. The sprite pass disables the hardware depth test and
+  // resolves occlusion in the fragment shader against the cell FBO's depth
+  // texture, so there is nothing here to depth-test against.
+  const fullWidth = viewport.width;
+  const fullHeight = viewport.height;
+
+  const framebufferB = res.framebufferB ?? gl.createFramebuffer();
+  if (!framebufferB) {
+    console.error(
+      `[camera] Camera '${camera.name}' failed to create composite framebuffer`,
+    );
+    return false;
+  }
+
+  const compositeTexture = allocateColorTexture(
+    gl,
+    res.compositeTexture,
+    fullWidth,
+    fullHeight,
+    gl.RGBA8,
+  );
+  if (!compositeTexture) {
+    console.error(
+      `[camera] Camera '${camera.name}' failed to create composite texture`,
+    );
+    return false;
+  }
+
+  gl.bindTexture(gl.TEXTURE_2D, null);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, framebufferB);
+  gl.framebufferTexture2D(
+    gl.FRAMEBUFFER,
+    gl.COLOR_ATTACHMENT0,
+    gl.TEXTURE_2D,
+    compositeTexture,
+    0,
+  );
+
+  const statusB = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  if (statusB !== gl.FRAMEBUFFER_COMPLETE) {
+    console.error(
+      `[camera] Camera '${camera.name}' composite framebuffer is not complete (status 0x${statusB.toString(16)}, ${fullWidth}x${fullHeight})`,
+    );
+    return false;
+  }
+
+  // Only publish the handles once both framebuffers are known good, matching
+  // the original init ordering.
   res.framebuffer = framebuffer;
   res.renderTexture = renderTexture;
   res.depthTexture = depthTexture;
+  res.framebufferB = framebufferB;
+  res.compositeTexture = compositeTexture;
 
   return true;
 }
@@ -256,11 +320,15 @@ export function disposeCameraTargets(
     if (res.framebuffer) gl.deleteFramebuffer(res.framebuffer);
     if (res.renderTexture) gl.deleteTexture(res.renderTexture);
     if (res.depthTexture) gl.deleteTexture(res.depthTexture);
+    if (res.framebufferB) gl.deleteFramebuffer(res.framebufferB);
+    if (res.compositeTexture) gl.deleteTexture(res.compositeTexture);
   }
 
   res.framebuffer = null;
   res.renderTexture = null;
   res.depthTexture = null;
+  res.framebufferB = null;
+  res.compositeTexture = null;
 }
 
 /**

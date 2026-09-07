@@ -37,6 +37,7 @@ export function dispose(component: ComponentData): void {
   if (gl) {
     if (res.unifiedProgram) gl.deleteProgram(res.unifiedProgram);
     if (res.postProcessProgram) gl.deleteProgram(res.postProcessProgram);
+    if (res.presentProgram) gl.deleteProgram(res.presentProgram);
     if (res.quadVertexBuffer) gl.deleteBuffer(res.quadVertexBuffer);
     if (res.quadUVBuffer) gl.deleteBuffer(res.quadUVBuffer);
     if (res.fullscreenQuadBuffer) gl.deleteBuffer(res.fullscreenQuadBuffer);
@@ -53,6 +54,7 @@ export function dispose(component: ComponentData): void {
   res.unifiedProgram = null;
   res.renderModeLocation = null;
   res.postProcessProgram = null;
+  res.presentProgram = null;
   res.quadVertexBuffer = null;
   res.quadUVBuffer = null;
   res.fullscreenQuadBuffer = null;

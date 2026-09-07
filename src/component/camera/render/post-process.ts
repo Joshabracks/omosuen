@@ -3,26 +3,33 @@ import { CameraT } from '../data';
 import { computeFboUvBridge } from './framebuffers';
 
 /**
- * Renders the offscreen framebuffer to the canvas with pixel-perfect upscaling.
- * This creates the retro pixel-art zoom effect.
+ * Upscales the base-resolution cell framebuffer into the full-resolution
+ * composite target, applying the cliff-edge outline on the way. This is what
+ * creates the retro pixel-art zoom effect.
+ *
+ * Runs BEFORE the sprite pass, which then draws into the same composite target
+ * at full resolution — that ordering is what gives pixelated terrain under
+ * crisp sprites, and it is also why the outline lives here rather than in the
+ * post-effect chain: it is a cell-space cue, computed from the cell FBO's depth
+ * buffer, and sprites are meant to draw over it.
  *
  * @param camera - The camera component
- * @param viewport - The viewport to render to
+ * @param viewport - The viewport being rendered for
  * @param gl - WebGL2 rendering context
  */
-export function renderPostProcess(
+export function renderUpscale(
   camera: CameraT,
   viewport: ViewportT,
   gl: WebGL2RenderingContext,
   subPixelOffset?: { remainderX: number; remainderY: number },
 ): void {
-  // Bind default framebuffer (screen)
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  // Target the composite framebuffer rather than the screen.
+  gl.bindFramebuffer(gl.FRAMEBUFFER, camera.glResources.framebufferB);
 
-  // Reset viewport to full canvas size
+  // Full canvas size — the composite target is allocated at that resolution.
   gl.viewport(0, 0, viewport.width, viewport.height);
 
-  // Clear screen with viewport background color so edge gaps blend seamlessly
+  // Clear with the viewport background color so edge gaps blend seamlessly
   gl.clearColor(
     viewport.backgroundColor.x,
     viewport.backgroundColor.y,

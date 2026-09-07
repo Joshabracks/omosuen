@@ -280,8 +280,11 @@ export function renderSprites(
     return;
   }
 
-  // Bind default framebuffer (screen) and set full-resolution viewport
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  // Draw into the composite target, over the already-upscaled cell image, at
+  // full resolution — sprites are deliberately not pixelated. Safe to sample
+  // the cell FBO's depth texture here (TEXTURE2, below): that FBO is not the
+  // bound one, so there is no feedback loop.
+  gl.bindFramebuffer(gl.FRAMEBUFFER, camera.glResources.framebufferB);
   gl.viewport(0, 0, viewport.width, viewport.height);
 
   // Calculate unified map bounds from all cell-maps for consistent depth sorting

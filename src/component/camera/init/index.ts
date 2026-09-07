@@ -7,6 +7,8 @@ import { CameraT } from '../data';
 import { createShaderProgram } from '../shader/create-shader-program';
 import postProcessVertexShader from '../shader/post.vert';
 import postProcessFragmentShader from '../shader/post.frag';
+import postEffectVertexShader from '../shader/post-effect.vert';
+import postPresentFragmentShader from '../shader/post-present.frag';
 import unifiedVertexShader from '../shader/unified.vert';
 import unifiedFragmentShader from '../shader/unified.frag';
 import { cacheLightUniformLocations } from '../render/light-uniforms';
@@ -207,6 +209,22 @@ export async function init(component: ComponentData): Promise<void> {
     return;
   }
   camera.glResources.postProcessProgram = postProcessProgram;
+
+  // Present program: the final composite → screen blit. GLSL ES 3.00, so it
+  // uses post-effect.vert rather than the 1.00 post.vert above (a 3.00 fragment
+  // shader cannot link against a 1.00 vertex shader).
+  const presentProgram = createShaderProgram(
+    gl,
+    postEffectVertexShader,
+    postPresentFragmentShader,
+  );
+  if (!presentProgram) {
+    console.error(
+      `[camera] Camera '${camera.name}' failed to create present shader program`,
+    );
+    return;
+  }
+  camera.glResources.presentProgram = presentProgram;
 
   // Create fullscreen quad buffer for post-processing
   const fullscreenQuad = new Float32Array([

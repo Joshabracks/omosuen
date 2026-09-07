@@ -7,7 +7,8 @@ import { AtlasManagerT } from '../../atlas-manager';
 import { CameraT } from '../data';
 import { Camera } from '../methods';
 import { renderSprites } from './render-sprites';
-import { renderPostProcess } from './post-process';
+import { renderUpscale } from './post-process';
+import { renderPresent } from './present';
 import { renderCellMaps, snapCameraPosition } from './render-cell-maps';
 import { allocateCameraTargets } from './framebuffers';
 import { uploadAtlasTextures, uploadAtlasDelta } from './atlas-textures';
@@ -153,7 +154,8 @@ export function render(camera: CameraT, _deltaTime: number): void {
   // Early return if nothing to render
   if (sprites.length === 0 && cellMaps.length === 0) {
     // Still need to display the empty framebuffer
-    renderPostProcess(camera, viewport, gl, subPixelOffset);
+    renderUpscale(camera, viewport, gl, subPixelOffset);
+    renderPresent(camera, viewport, gl);
     return;
   }
 
@@ -262,9 +264,10 @@ export function render(camera: CameraT, _deltaTime: number): void {
     }
   }
 
-  // PHASE 2: Post-process cells to screen with pixel-perfect upscaling
+  // PHASE 2: Upscale cells into the composite target with pixel-perfect
+  // scaling, applying the cliff-edge outline. Sprites draw over this next.
   const postT0 = profiling ? performance.now() : 0;
-  renderPostProcess(camera, viewport, gl, subPixelOffset);
+  renderUpscale(camera, viewport, gl, subPixelOffset);
   if (profiling) {
     recordComponentUpdate(
       cameraId,
@@ -274,7 +277,8 @@ export function render(camera: CameraT, _deltaTime: number): void {
     );
   }
 
-  // PHASE 3: Render sprites directly to screen at full resolution (no pixelation)
+  // PHASE 3: Render sprites into the composite target at full resolution (no
+  // pixelation), over the upscaled cell image.
   const spritesT0 = profiling ? performance.now() : 0;
   if (sprites.length > 0) {
     renderSprites(
@@ -301,6 +305,18 @@ export function render(camera: CameraT, _deltaTime: number): void {
       camera.name,
       'camera:renderSprites',
       performance.now() - spritesT0,
+    );
+  }
+
+  // PHASE 4: Blit the finished composite to the screen.
+  const presentT0 = profiling ? performance.now() : 0;
+  renderPresent(camera, viewport, gl);
+  if (profiling) {
+    recordComponentUpdate(
+      cameraId,
+      camera.name,
+      'camera:present',
+      performance.now() - presentT0,
     );
   }
 }

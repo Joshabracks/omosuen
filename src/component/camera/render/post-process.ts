@@ -29,14 +29,11 @@ export function renderUpscale(
   // Full canvas size — the composite target is allocated at that resolution.
   gl.viewport(0, 0, viewport.width, viewport.height);
 
-  // Clear with the viewport background color so edge gaps blend seamlessly
-  gl.clearColor(
-    viewport.backgroundColor.x,
-    viewport.backgroundColor.y,
-    viewport.backgroundColor.z,
-    viewport.backgroundColor.w,
-  );
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  // No clear. The fullscreen quad below writes all three attachments over
+  // every texel, so a clear would be pure overdraw -- and with a mixed-format
+  // FBO it could not be expressed as one gl.clear anyway (clear colour never
+  // reaches an integer attachment). This is also what makes sprite coverage
+  // and sprite id default to 0: the quad lays those down, not a clear.
 
   // Use post-process shader
   const postProgram = camera.glResources.postProcessProgram;
@@ -57,6 +54,13 @@ export function renderUpscale(
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, camera.glResources.depthTexture);
   gl.uniform1i(gl.getUniformLocation(postProgram, 'u_depthTexture'), 1);
+
+  // Cell id attachment, carried base -> full resolution by this pass. Unit 8 by
+  // convention: an integer sampler sharing a unit with a float sampler is
+  // GL_INVALID_OPERATION, so it gets one of its own.
+  gl.activeTexture(gl.TEXTURE8);
+  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.cellIdTexture);
+  gl.uniform1i(gl.getUniformLocation(postProgram, 'u_idTexture'), 8);
 
   // UV scale/offset for world-locked pixelation with FBO overscan — shared with
   // the sprite pass's depth-texture sampling, which must agree exactly. See

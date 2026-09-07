@@ -26,6 +26,16 @@ const EMPTY_TEXTURE_MAP_CACHE: Map<string, TextureMapT> = new Map();
  * @param camera - The camera component
  * @param deltaTime - Time elapsed since last frame in milliseconds
  */
+/**
+ * Scratch buffers for the per-attachment clears in `render`. Module-level so a
+ * frame allocates nothing: `clearBuffer*v` takes a typed array, and building one
+ * per frame in the render path is exactly the GC churn this file avoids
+ * elsewhere.
+ */
+const clearColorScratch = new Float32Array(4);
+const clearIdsScratch = new Uint32Array(4);
+const clearDepthScratch = new Float32Array([1]);
+
 export function render(camera: CameraT, _deltaTime: number): void {
   // Skip rendering if camera hasn't finished initializing
   // This is normal during progressive initialization
@@ -101,7 +111,11 @@ export function render(camera: CameraT, _deltaTime: number): void {
   // The FBO has this texture as its depth attachment — if it's also bound as a sampler,
   // WebGL detects a feedback loop and silently fails all draw calls.
   // This can happen from: sprite rendering (TEXTURE2), zoom resize (set/index.ts), etc.
+  // TEXTURE8 is the same hazard for the FBO's id attachment, which the sprite
+  // pass samples so it can carry the cell id underneath it into the composite.
   gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  gl.activeTexture(gl.TEXTURE8);
   gl.bindTexture(gl.TEXTURE_2D, null);
   gl.bindFramebuffer(gl.FRAMEBUFFER, camera.glResources.framebuffer);
 
@@ -110,15 +124,18 @@ export function render(camera: CameraT, _deltaTime: number): void {
   const baseHeight = camera.glResources.baseResolution.height;
   gl.viewport(0, 0, baseWidth, baseHeight);
 
-  // Clear framebuffer with depth buffer reset
-  gl.clearColor(
-    viewport.backgroundColor.x,
-    viewport.backgroundColor.y,
-    viewport.backgroundColor.z,
-    viewport.backgroundColor.w,
-  );
-  gl.clearDepth(1.0); // Ensure depth buffer clears to far plane
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  // Per-attachment clears. gl.clearColor/gl.clear cannot express this: clear
+  // colour is float-typed and simply does not reach an integer attachment, and
+  // COLOR_BUFFER_BIT over a mixed-format FBO leaves the integer buffer
+  // undefined rather than zeroed. clearBuffer*v selects by draw-buffer index,
+  // so the drawBuffers set by allocateCameraTargets has to already be in place.
+  clearColorScratch[0] = viewport.backgroundColor.x;
+  clearColorScratch[1] = viewport.backgroundColor.y;
+  clearColorScratch[2] = viewport.backgroundColor.z;
+  clearColorScratch[3] = viewport.backgroundColor.w;
+  gl.clearBufferfv(gl.COLOR, 0, clearColorScratch);
+  gl.clearBufferuiv(gl.COLOR, 1, clearIdsScratch);
+  gl.clearBufferfv(gl.DEPTH, 0, clearDepthScratch);
 
   // Compute axonometric projection parameters from camera angle + orbit yaw
   // (matches screen-pick/ray.ts's resolveProjection).

@@ -16,6 +16,7 @@ import {
   setLightUniforms,
 } from './light-uniforms';
 import { computeFboUvBridge } from './framebuffers';
+import { warnOversizedId } from './render-cell-maps';
 import { getResolvedVisionSources, setVisionUniforms } from './vision-uniforms';
 import { setFogUniforms } from './fog-uniforms';
 import { computeFogVisibility, fogDrawKind } from '../../fog-of-war/sweep';
@@ -382,6 +383,7 @@ export function renderSprites(
   const u_fboUvOffset = gl.getUniformLocation(program, 'u_fboUvOffset');
   const u_screenSize = gl.getUniformLocation(program, 'u_screenSize');
   const u_showSilhouette = gl.getUniformLocation(program, 'u_showSilhouette');
+  const u_spriteIndex = gl.getUniformLocation(program, 'u_spriteIndex');
   const u_silhouetteColor = gl.getUniformLocation(program, 'u_silhouetteColor');
   const u_cellSolidity = gl.getUniformLocation(program, 'u_cellSolidity');
   // const u_fogLightInfluence = gl.getUniformLocation(
@@ -600,6 +602,14 @@ export function renderSprites(
   gl.activeTexture(gl.TEXTURE2);
   gl.bindTexture(gl.TEXTURE_2D, camera.glResources.depthTexture);
   gl.uniform1i(u_depthTexture, 2);
+
+  // Cell id attachment on unit 8. Pinned unconditionally, exactly like the
+  // solidity/emission/explored samplers below: an unset sampler defaults to
+  // unit 0, where a float sampler2D lives, and an integer sampler colliding
+  // with a float one on a single unit is GL_INVALID_OPERATION.
+  gl.activeTexture(gl.TEXTURE8);
+  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.cellIdTexture);
+  gl.uniform1i(gl.getUniformLocation(program, 'u_cellIdTexture'), 8);
 
   // Pass FBO UV mapping so the sprite shader can sample the depth texture.
   // Shared with the post-process blit — the two must agree exactly, and used to
@@ -1009,6 +1019,7 @@ export function renderSprites(
     );
 
     // Set silhouette uniforms
+    gl.uniform1ui(u_spriteIndex, warnOversizedId(sprite.shaderId));
     gl.uniform1i(u_showSilhouette, sprite.showSilhouette ? 1 : 0);
     if (sprite.showSilhouette) {
       gl.uniform4f(
@@ -1027,9 +1038,12 @@ export function renderSprites(
   // Restore depth mask state
   gl.depthMask(true);
 
-  // Unbind depth texture from TEXTURE2 to prevent feedback loop on next frame.
-  // The FBO uses this same texture as its depth attachment — if it's still bound
-  // as a sampler when we bindFramebuffer for cell rendering, WebGL silently fails.
+  // Unbind the cell FBO's textures to prevent a feedback loop on the next
+  // frame. That FBO uses these as its depth (TEXTURE2) and id (TEXTURE8)
+  // attachments — if either is still bound as a sampler when we bindFramebuffer
+  // for cell rendering, WebGL silently fails every draw call.
   gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  gl.activeTexture(gl.TEXTURE8);
   gl.bindTexture(gl.TEXTURE_2D, null);
 }

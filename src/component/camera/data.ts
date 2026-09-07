@@ -191,8 +191,30 @@ export interface CameraT
      * on top, so the whole frame exists in one sampleable texture before it
      * reaches the screen. `renderPresent` blits it to the default framebuffer.
      */
+    /**
+     * Cell FBO's id attachment (COLOR1, RG16UI, base resolution).
+     * R = cell material index, G = fogVisibility quantised to 16 bits — the
+     * only carrier the cell pass has for a fog value that must survive the
+     * upscale into the composite's aux channel.
+     */
+    cellIdTexture: WebGLTexture | null;
+
     framebufferB: WebGLFramebuffer | null;
     compositeTexture: WebGLTexture | null;
+    /**
+     * Composite id attachment (COLOR1, RG16UI, full resolution).
+     * R = cell material index, G = sprite `shaderId`. Integer format, so the
+     * sprite pass's alpha blend cannot smear two ids into a meaningless third
+     * along a soft edge — the value is simply the frontmost writer's.
+     */
+    compositeIdTexture: WebGLTexture | null;
+    /**
+     * Composite aux attachment (COLOR2, RGBA8, full resolution).
+     * R = sprite coverage 0..1, G = fogVisibility. Unorm precisely because
+     * these SHOULD blend: coverage accumulates through the sprite pass's
+     * existing alpha blend rather than being computed separately.
+     */
+    compositeAuxTexture: WebGLTexture | null;
     /** Program for the final composite → screen blit (`post-present.frag`). */
     presentProgram: WebGLProgram | null;
 
@@ -313,8 +335,11 @@ export function builder(options: CameraOptions): CameraT {
       depthTexture: null,
       postProcessProgram: null,
       fullscreenQuadBuffer: null,
+      cellIdTexture: null,
       framebufferB: null,
       compositeTexture: null,
+      compositeIdTexture: null,
+      compositeAuxTexture: null,
       presentProgram: null,
       baseResolution: { width: 800, height: 600 }, // Default, will be updated in init()
       fullResolution: { width: 800, height: 600 }, // Default, will be updated in init()

@@ -10,9 +10,11 @@ import { FBO_OVERSCAN_PX } from './light-uniforms';
  * the same defense at the top of `render/index.ts`.
  *
  * Unit 2 is the cell FBO's depth texture, sampled by the sprite pass for its
- * occlusion/silhouette test (`render-sprites.ts`).
+ * occlusion/silhouette test (`render-sprites.ts`); unit 8 is that FBO's id
+ * attachment, which the sprite pass samples so it can carry the cell id
+ * underneath it through into the composite.
  */
-const OWNED_TEXTURE_UNITS = [2];
+const OWNED_TEXTURE_UNITS = [2, 8];
 
 /** Sub-pixel remainder from the world-locked pixel snap; see `computeFboUvBridge`. */
 export interface SubPixelOffset {
@@ -104,6 +106,47 @@ function allocateColorTexture(
 
   // NEAREST is required, not stylistic: the upscale blit relies on exact texel
   // reads for pixel-perfect scaling.
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  return texture;
+}
+
+/**
+ * Creates the RG16UI id texture if absent, then (re)allocates its storage.
+ *
+ * Unsigned-integer format on purpose. ES 3.0 skips blending entirely for
+ * integer color buffers, so ids written here cannot be corrupted by the sprite
+ * pass's alpha blend the way they would be in a unorm attachment — the hardware
+ * enforces "ids don't blend" rather than a comment asking nicely.
+ *
+ * `NEAREST` is mandatory, not a preference: an integer texture with any linear
+ * filter is INCOMPLETE and samples as (0,0,0,1) with no error and no warning.
+ */
+function allocateIdTexture(
+  gl: WebGL2RenderingContext,
+  existing: WebGLTexture | null,
+  width: number,
+  height: number,
+): WebGLTexture | null {
+  const texture = existing ?? gl.createTexture();
+  if (!texture) return null;
+
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RG16UI,
+    width,
+    height,
+    0,
+    gl.RG_INTEGER,
+    gl.UNSIGNED_SHORT,
+    null,
+  );
+
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -210,6 +253,14 @@ export function allocateCameraTargets(
     return false;
   }
 
+  const cellIdTexture = allocateIdTexture(gl, res.cellIdTexture, width, height);
+  if (!cellIdTexture) {
+    console.error(
+      `[camera] Camera '${camera.name}' failed to create cell id texture`,
+    );
+    return false;
+  }
+
   gl.bindTexture(gl.TEXTURE_2D, null);
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
@@ -222,11 +273,21 @@ export function allocateCameraTargets(
   );
   gl.framebufferTexture2D(
     gl.FRAMEBUFFER,
+    gl.COLOR_ATTACHMENT1,
+    gl.TEXTURE_2D,
+    cellIdTexture,
+    0,
+  );
+  gl.framebufferTexture2D(
+    gl.FRAMEBUFFER,
     gl.DEPTH_ATTACHMENT,
     gl.TEXTURE_2D,
     depthTexture,
     0,
   );
+  // Per-FBO state, so setting it once per allocation is enough — no per-frame
+  // drawBuffers calls anywhere in the render path.
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
 
   const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -271,6 +332,35 @@ export function allocateCameraTargets(
     return false;
   }
 
+  const compositeIdTexture = allocateIdTexture(
+    gl,
+    res.compositeIdTexture,
+    fullWidth,
+    fullHeight,
+  );
+  if (!compositeIdTexture) {
+    console.error(
+      `[camera] Camera '${camera.name}' failed to create composite id texture`,
+    );
+    return false;
+  }
+
+  // Aux is unorm, not integer, precisely because its contents SHOULD blend:
+  // sprite coverage accumulates through the sprite pass's alpha blend.
+  const compositeAuxTexture = allocateColorTexture(
+    gl,
+    res.compositeAuxTexture,
+    fullWidth,
+    fullHeight,
+    gl.RGBA8,
+  );
+  if (!compositeAuxTexture) {
+    console.error(
+      `[camera] Camera '${camera.name}' failed to create composite aux texture`,
+    );
+    return false;
+  }
+
   gl.bindTexture(gl.TEXTURE_2D, null);
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, framebufferB);
@@ -281,6 +371,25 @@ export function allocateCameraTargets(
     compositeTexture,
     0,
   );
+  gl.framebufferTexture2D(
+    gl.FRAMEBUFFER,
+    gl.COLOR_ATTACHMENT1,
+    gl.TEXTURE_2D,
+    compositeIdTexture,
+    0,
+  );
+  gl.framebufferTexture2D(
+    gl.FRAMEBUFFER,
+    gl.COLOR_ATTACHMENT2,
+    gl.TEXTURE_2D,
+    compositeAuxTexture,
+    0,
+  );
+  gl.drawBuffers([
+    gl.COLOR_ATTACHMENT0,
+    gl.COLOR_ATTACHMENT1,
+    gl.COLOR_ATTACHMENT2,
+  ]);
 
   const statusB = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -297,8 +406,11 @@ export function allocateCameraTargets(
   res.framebuffer = framebuffer;
   res.renderTexture = renderTexture;
   res.depthTexture = depthTexture;
+  res.cellIdTexture = cellIdTexture;
   res.framebufferB = framebufferB;
   res.compositeTexture = compositeTexture;
+  res.compositeIdTexture = compositeIdTexture;
+  res.compositeAuxTexture = compositeAuxTexture;
 
   return true;
 }
@@ -320,15 +432,21 @@ export function disposeCameraTargets(
     if (res.framebuffer) gl.deleteFramebuffer(res.framebuffer);
     if (res.renderTexture) gl.deleteTexture(res.renderTexture);
     if (res.depthTexture) gl.deleteTexture(res.depthTexture);
+    if (res.cellIdTexture) gl.deleteTexture(res.cellIdTexture);
     if (res.framebufferB) gl.deleteFramebuffer(res.framebufferB);
     if (res.compositeTexture) gl.deleteTexture(res.compositeTexture);
+    if (res.compositeIdTexture) gl.deleteTexture(res.compositeIdTexture);
+    if (res.compositeAuxTexture) gl.deleteTexture(res.compositeAuxTexture);
   }
 
   res.framebuffer = null;
   res.renderTexture = null;
   res.depthTexture = null;
+  res.cellIdTexture = null;
   res.framebufferB = null;
   res.compositeTexture = null;
+  res.compositeIdTexture = null;
+  res.compositeAuxTexture = null;
 }
 
 /**

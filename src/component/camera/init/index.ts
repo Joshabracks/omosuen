@@ -5,7 +5,6 @@ import { ComponentData, castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { createShaderProgram } from '../shader/create-shader-program';
-import postProcessVertexShader from '../shader/post.vert';
 import postProcessFragmentShader from '../shader/post.frag';
 import postEffectVertexShader from '../shader/post-effect.vert';
 import postPresentFragmentShader from '../shader/post-present.frag';
@@ -197,9 +196,11 @@ export async function init(component: ComponentData): Promise<void> {
 
   // 5. Create post-processing shader
 
+  // post.frag is GLSL ES 3.00 (it samples the integer id attachment), so it
+  // pairs with post-effect.vert rather than the old 1.00 post.vert.
   const postProcessProgram = createShaderProgram(
     gl,
-    postProcessVertexShader,
+    postEffectVertexShader,
     postProcessFragmentShader,
   );
   if (!postProcessProgram) {

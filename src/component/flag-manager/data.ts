@@ -97,13 +97,12 @@ function deserialize(data: any): DeserializeResult<FlagManagerT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, flags } = data;
 
   if (type !== 'flag-manager') {
     errors.push({
       code: 'TYPE_MISMATCH',
-      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+
       message: `type ${type} does not match "flag-manager"`,
     });
   }

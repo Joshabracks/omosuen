@@ -5,18 +5,23 @@ import { ComponentData, castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { createShaderProgram } from '../shader/create-shader-program';
-import postProcessVertexShader from '../shader/post.vert';
 import postProcessFragmentShader from '../shader/post.frag';
+import postEffectVertexShader from '../shader/post-effect.vert';
+import postPresentFragmentShader from '../shader/post-present.frag';
 import unifiedVertexShader from '../shader/unified.vert';
 import unifiedFragmentShader from '../shader/unified.frag';
+import { cacheLightUniformLocations } from '../render/light-uniforms';
+import { allocateCameraTargets } from '../render/framebuffers';
 import {
-  FBO_OVERSCAN_PX,
-  cacheLightUniformLocations,
-} from '../render/light-uniforms';
-import { cacheVisionUniformLocations } from '../render/vision-uniforms';
+  MAX_VISION_SOURCES,
+  cacheVisionUniformLocations,
+} from '../render/vision-uniforms';
 import { cacheFogUniformLocations } from '../render/fog-uniforms';
 import { initRenderWasm } from '../render/wasm';
 import { uploadAtlasTextures } from '../render/atlas-textures';
+
+/** Matches unified.frag's vision-source cap declaration — see init(). */
+const MAX_VISION_SOURCES_RE = /const int MAX_VISION_SOURCES = \d+;/;
 
 /**
  * Initializes WebGL resources for the camera (shader programs, buffers).
@@ -61,11 +66,27 @@ export async function init(component: ComponentData): Promise<void> {
   // requirement — no JS fallback. Idempotent across cameras.
   await initRenderWasm();
 
+  // Substitute the vision-source cap into the fragment shader so GLSL cannot
+  // drift from the TS constant the upload path sizes its buffers and location
+  // cache against. The test is load-bearing: a silent non-match would put the
+  // two declarations back out of step, which is exactly the failure this
+  // prevents.
+  if (!MAX_VISION_SOURCES_RE.test(unifiedFragmentShader)) {
+    console.error(
+      `[camera] Camera '${camera.name}': unified.frag has no MAX_VISION_SOURCES declaration to substitute`,
+    );
+    return;
+  }
+  const unifiedFragmentSource = unifiedFragmentShader.replace(
+    MAX_VISION_SOURCES_RE,
+    `const int MAX_VISION_SOURCES = ${MAX_VISION_SOURCES};`,
+  );
+
   // Compile unified shader program
   const unifiedProgram = createShaderProgram(
     gl,
     unifiedVertexShader,
-    unifiedFragmentShader,
+    unifiedFragmentSource,
   );
   if (!unifiedProgram) {
     console.error(
@@ -166,124 +187,20 @@ export async function init(component: ComponentData): Promise<void> {
     uploadAtlasTextures(gl, camera, atlasManager);
   }
 
-  // 4. Create framebuffer for pixel-perfect post-processing
-  // Determine base resolution based on current zoom level and pixel scale
-  // Add 2 pixels of overscan per dimension (1-pixel border on each side)
-  // so the post-process UV offset has room to slide without exceeding texture bounds
-  const baseWidth =
-    Math.floor(viewport.width / (camera.zoom * camera.pixelScale)) +
-    FBO_OVERSCAN_PX;
-  const baseHeight =
-    Math.floor(viewport.height / (camera.zoom * camera.pixelScale)) +
-    FBO_OVERSCAN_PX;
-
-  camera.glResources.baseResolution = {
-    width: baseWidth,
-    height: baseHeight,
-  };
-
-  // Create framebuffer
-  const framebuffer = gl.createFramebuffer();
-  if (!framebuffer) {
-    console.error(
-      `[camera] Camera '${camera.name}' failed to create framebuffer`,
-    );
+  // 4. Create framebuffer targets for pixel-perfect post-processing.
+  // Shared with the zoom/resize path so the two cannot disagree about what
+  // allocation means — see render/framebuffers.ts.
+  if (!allocateCameraTargets(gl, camera, viewport)) {
     return;
   }
-
-  // Create render texture (where scene renders to)
-  const renderTexture = gl.createTexture();
-  if (!renderTexture) {
-    console.error(
-      `[camera] Camera '${camera.name}' failed to create render texture`,
-    );
-    return;
-  }
-
-  gl.bindTexture(gl.TEXTURE_2D, renderTexture);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.RGBA,
-    baseWidth,
-    baseHeight,
-    0,
-    gl.RGBA,
-    gl.UNSIGNED_BYTE,
-    null,
-  );
-
-  // CRITICAL: Use NEAREST filtering for pixel-perfect scaling
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-  // Create depth texture (sampleable for sprite occlusion masking)
-  const depthTexture = gl.createTexture();
-  if (!depthTexture) {
-    console.error(
-      `[camera] Camera '${camera.name}' failed to create depth texture`,
-    );
-    return;
-  }
-
-  gl.bindTexture(gl.TEXTURE_2D, depthTexture);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.DEPTH_COMPONENT24,
-    baseWidth,
-    baseHeight,
-    0,
-    gl.DEPTH_COMPONENT,
-    gl.UNSIGNED_INT,
-    null,
-  );
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.NONE);
-
-  // Attach to framebuffer
-  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-  gl.framebufferTexture2D(
-    gl.FRAMEBUFFER,
-    gl.COLOR_ATTACHMENT0,
-    gl.TEXTURE_2D,
-    renderTexture,
-    0,
-  );
-  gl.framebufferTexture2D(
-    gl.FRAMEBUFFER,
-    gl.DEPTH_ATTACHMENT,
-    gl.TEXTURE_2D,
-    depthTexture,
-    0,
-  );
-
-  // Check framebuffer completeness
-  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
-    console.error(
-      `[camera] Camera '${camera.name}' framebuffer is not complete`,
-    );
-    return;
-  }
-
-  // Unbind framebuffer
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
-  // Store framebuffer resources
-  camera.glResources.framebuffer = framebuffer;
-  camera.glResources.renderTexture = renderTexture;
-  camera.glResources.depthTexture = depthTexture;
 
   // 5. Create post-processing shader
 
+  // post.frag is GLSL ES 3.00 (it samples the integer id attachment), so it
+  // pairs with post-effect.vert rather than the old 1.00 post.vert.
   const postProcessProgram = createShaderProgram(
     gl,
-    postProcessVertexShader,
+    postEffectVertexShader,
     postProcessFragmentShader,
   );
   if (!postProcessProgram) {
@@ -293,6 +210,22 @@ export async function init(component: ComponentData): Promise<void> {
     return;
   }
   camera.glResources.postProcessProgram = postProcessProgram;
+
+  // Present program: the final composite → screen blit. GLSL ES 3.00, so it
+  // uses post-effect.vert rather than the 1.00 post.vert above (a 3.00 fragment
+  // shader cannot link against a 1.00 vertex shader).
+  const presentProgram = createShaderProgram(
+    gl,
+    postEffectVertexShader,
+    postPresentFragmentShader,
+  );
+  if (!presentProgram) {
+    console.error(
+      `[camera] Camera '${camera.name}' failed to create present shader program`,
+    );
+    return;
+  }
+  camera.glResources.presentProgram = presentProgram;
 
   // Create fullscreen quad buffer for post-processing
   const fullscreenQuad = new Float32Array([

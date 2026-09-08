@@ -578,6 +578,23 @@ function uploadExploredDelta(
  * Each chunk has a pre-built mesh with hidden face culling and greedy meshing applied.
  * Indices are grouped by material for efficient multi-material draw calls.
  */
+/**
+ * Ids live in a 16-bit channel of the camera's id attachment, so anything at or
+ * above 65536 silently truncates. Warned once rather than per draw call —
+ * per-frame logging would bury the message it is trying to deliver.
+ */
+let oversizedIdWarned = false;
+export function warnOversizedId(id: number): number {
+  if (id > 0xffff && !oversizedIdWarned) {
+    oversizedIdWarned = true;
+    console.warn(
+      `[camera] id ${id} exceeds the 16-bit per-texel id mask and will wrap; ` +
+        'keep material indices and sprite shaderIds below 65536.',
+    );
+  }
+  return id;
+}
+
 export function renderCellMaps(
   camera: CameraT,
   cellMaps: CellMapT[],
@@ -614,7 +631,38 @@ export function renderCellMaps(
   gl.enable(gl.CULL_FACE);
   gl.cullFace(gl.BACK);
 
+  // Blending, stated rather than inherited. This pass used to set no blend
+  // state at all, so what it got depended on who ran before it: the sprite pass
+  // leaves BLEND enabled and never restores it, while the post-process pass
+  // disables it. The result was that frame 1 drew cells unblended and every
+  // frame after drew them blended -- a visible first-frame difference for any
+  // material with a non-opaque albedo.
+  //
+  // Enabled (not disabled) deliberately: blended is what every frame after the
+  // first has always produced, so this pins the behaviour everyone has actually
+  // been seeing rather than changing it.
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
   gl.useProgram(program);
+
+  // Pin the integer id sampler to its own texture unit. This pass never samples
+  // it, but leaving it at its default of 0 puts a usampler2D on the same unit as
+  // u_albedoTexture (a float sampler2D) -- two sampler types on one unit is
+  // invalid, and the result is that every cell draw call silently fails: no GL
+  // error, no warning, just an empty framebuffer.
+  //
+  // It went unnoticed at first because a scene WITH sprites hides it: the sprite
+  // pass sets this uniform to 8, and the value persists on the program, so only
+  // frame 1 was affected. A scene with no sprites never sets it and renders
+  // nothing at all.
+  //
+  // Bound to null deliberately -- the cell FBO's id attachment IS the render
+  // target here, so binding the real texture would be the feedback loop that
+  // PHASE 1 in render/index.ts exists to prevent.
+  gl.activeTexture(gl.TEXTURE8);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  gl.uniform1i(gl.getUniformLocation(program, 'u_cellIdTexture'), 8);
 
   // Set render mode to 0 (cells)
   if (camera.glResources.renderModeLocation) {
@@ -703,6 +751,7 @@ export function renderCellMaps(
   // UV-mode uniforms: when a draw range carries mesh UVs, sample the material's
   // base frame by v_uv instead of triplanar.
   const uUseMeshUV = gl.getUniformLocation(program, 'u_useMeshUV');
+  const uCellIndex = gl.getUniformLocation(program, 'u_cellIndex');
   const uAlbedoBoundsBase = gl.getUniformLocation(
     program,
     'u_albedoBoundsBase',
@@ -775,7 +824,7 @@ export function renderCellMaps(
   ) as FogOfWarT | null;
   const fogUseLineOfSight = fogOfWar?.visionMode !== 'distance';
 
-  setVisionUniforms(gl, camera.id!, visionSources, fogUseLineOfSight);
+  setVisionUniforms(gl, camera.id!, visionSources, camPos, fogUseLineOfSight);
 
   // Set fog-of-war style config (fog-of-war is a GLOBAL component -- at most
   // one per scene). No component in the scene = the shader's own defaults
@@ -1330,9 +1379,6 @@ export function renderCellMaps(
       gl.uniform1i(uHasCellEmissionColor, 0);
     }
 
-    let totalFaces = 0;
-    let drawCalls = 0;
-
     // Caps fresh GPU uploads per frame -- reassembleChunks can mark hundreds
     // of REUSED (translated, not remeshed) chunks gpuDirty in a single call
     // (every persisting chunk moves local slot on a shift), independent of
@@ -1583,6 +1629,9 @@ export function renderCellMaps(
 
               // UV mode (custom shapes with mesh UVs): sample the base frame by v_uv.
               gl.uniform1i(uUseMeshUV, range.useMeshUV ? 1 : 0);
+              // Per-texel id mask. Material is a draw-range property, not a
+              // vertex attribute, so this needs nothing from the mesher.
+              gl.uniform1ui(uCellIndex, warnOversizedId(range.materialIndex));
               gl.uniform4f(uAlbedoBoundsBase, ...baseAlbedo.bounds);
 
               // Bind normal texture if available
@@ -1685,10 +1734,7 @@ export function renderCellMaps(
                 gl.UNSIGNED_INT,
                 range.indexOffset * 4, // byte offset (Uint32 = 4 bytes per index)
               );
-              drawCalls++;
             }
-
-            totalFaces += chunk.faceCount;
           }
         }
       }

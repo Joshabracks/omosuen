@@ -63,6 +63,17 @@ export interface SpriteT
   opacity: number;
 
   /**
+   * Identifier this sprite writes into the camera's per-texel id mask, so a
+   * post-process effect can tell which sprite painted a pixel (0 = none, the
+   * default). Purely a tag — the renderer never interprets it — so it can be a
+   * material index, an entity class, or any per-sprite key the game assigns.
+   *
+   * Stored in a 16-bit channel: values above 65535 truncate, and the renderer
+   * warns once when it sees one.
+   */
+  shaderId: number;
+
+  /**
    * When true, renders a flat-color silhouette when the sprite is
    * occluded by cell geometry instead of discarding the fragment.
    */
@@ -162,6 +173,7 @@ export interface SpriteOptions extends ComponentOptions {
   anchor?: Vector2D;
   tint?: Vector4D;
   opacity?: number;
+  shaderId?: number;
   showSilhouette?: boolean;
   silhouetteColor?: Vector4D;
   visible?: boolean;
@@ -201,6 +213,7 @@ export function builder(options: SpriteOptions): SpriteT {
     anchor: options.anchor ?? new Vector2D(0, 0),
     tint: options.tint ?? new Vector4D(1, 1, 1, 1),
     opacity: options.opacity ?? 1.0,
+    shaderId: options.shaderId ?? 0,
     showSilhouette: options.showSilhouette ?? false,
     silhouetteColor:
       options.silhouetteColor ?? new Vector4D(0.2, 0.4, 0.8, 0.5),
@@ -251,6 +264,7 @@ function serialize(component: ComponentData): any {
       w: s.tint.w,
     },
     opacity: s.opacity,
+    shaderId: s.shaderId,
     showSilhouette: s.showSilhouette,
     silhouetteColor: {
       _vectorType: 'Vector4D',
@@ -291,7 +305,6 @@ function deserialize(data: any): DeserializeResult<SpriteT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const {
     type,
     name,
@@ -300,6 +313,7 @@ function deserialize(data: any): DeserializeResult<SpriteT> {
     anchor,
     tint,
     opacity,
+    shaderId,
     showSilhouette,
     silhouetteColor,
     visible,
@@ -421,6 +435,7 @@ function deserialize(data: any): DeserializeResult<SpriteT> {
       anchor: anchorVec,
       tint: tintVec,
       opacity: opacity as number,
+      shaderId: shaderId as number | undefined,
       showSilhouette: showSilhouette as boolean | undefined,
       silhouetteColor: silhouetteColorVec,
       visible: visible as boolean | undefined,
@@ -447,6 +462,7 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'anchor',
   'tint',
   'opacity',
+  'shaderId',
   'showSilhouette',
   'silhouetteColor',
   'visible',

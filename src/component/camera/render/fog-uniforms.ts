@@ -112,7 +112,10 @@ export function setFogUniforms(
     hidden.tint.y,
     hidden.tint.z,
   );
-  gl.uniform1f(_lightInfluence.get(cameraId) ?? null, fogOfWar?.lightInfluence ?? 0);
+  gl.uniform1f(
+    _lightInfluence.get(cameraId) ?? null,
+    fogOfWar?.lightInfluence ?? 0,
+  );
   gl.uniform1i(
     _useExplored.get(cameraId) ?? null,
     fogUsesExploredHistory(fogOfWar) ? 1 : 0,
@@ -124,4 +127,3 @@ export function setFogUniforms(
     fogOfWar?.dropHidden !== false ? 1 : 0,
   );
 }
-

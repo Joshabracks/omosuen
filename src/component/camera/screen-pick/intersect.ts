@@ -36,10 +36,18 @@ export interface Span {
 
 /** Slab test of the infinite line against an axis-aligned box. */
 export function rayAABB(
-  ox: number, oy: number, oz: number,
-  dx: number, dy: number, dz: number,
-  minx: number, miny: number, minz: number,
-  maxx: number, maxy: number, maxz: number,
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  minx: number,
+  miny: number,
+  minz: number,
+  maxx: number,
+  maxy: number,
+  maxz: number,
   out: Span,
 ): boolean {
   let tmin = -Infinity;
@@ -51,7 +59,11 @@ export function rayAABB(
   } else {
     let t1 = (minx - ox) / dx;
     let t2 = (maxx - ox) / dx;
-    if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+    if (t1 > t2) {
+      const t = t1;
+      t1 = t2;
+      t2 = t;
+    }
     if (t1 > tmin) tmin = t1;
     if (t2 < tmax) tmax = t2;
   }
@@ -61,7 +73,11 @@ export function rayAABB(
   } else {
     let t1 = (miny - oy) / dy;
     let t2 = (maxy - oy) / dy;
-    if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+    if (t1 > t2) {
+      const t = t1;
+      t1 = t2;
+      t2 = t;
+    }
     if (t1 > tmin) tmin = t1;
     if (t2 < tmax) tmax = t2;
   }
@@ -71,7 +87,11 @@ export function rayAABB(
   } else {
     let t1 = (minz - oz) / dz;
     let t2 = (maxz - oz) / dz;
-    if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+    if (t1 > t2) {
+      const t = t1;
+      t1 = t2;
+      t2 = t;
+    }
     if (t1 > tmin) tmin = t1;
     if (t2 < tmax) tmax = t2;
   }
@@ -84,8 +104,12 @@ export function rayAABB(
 
 /** Entry `t` where the line enters the OBB, or NaN if it misses. */
 export function rayOBB(
-  ox: number, oy: number, oz: number,
-  dx: number, dy: number, dz: number,
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
   obb: ColliderOBB,
 ): number {
   let tmin = -Infinity;
@@ -103,7 +127,11 @@ export function rayOBB(
     if (Math.abs(f) > EPS) {
       let t1 = (e - half) / f;
       let t2 = (e + half) / f;
-      if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+      if (t1 > t2) {
+        const t = t1;
+        t1 = t2;
+        t2 = t;
+      }
       if (t1 > tmin) tmin = t1;
       if (t2 < tmax) tmax = t2;
       if (tmin > tmax) return NaN;
@@ -117,9 +145,15 @@ export function rayOBB(
 
 /** Entry `t` where the line enters the sphere, or NaN if it misses. */
 export function raySphere(
-  ox: number, oy: number, oz: number,
-  dx: number, dy: number, dz: number,
-  cx: number, cy: number, cz: number,
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  cx: number,
+  cy: number,
+  cz: number,
   r: number,
 ): number {
   const ocx = cx - ox;
@@ -170,7 +204,12 @@ export interface CellRange {
 
 /** World-unit AABB of a cell-map's resident window. Reused, never handed out. */
 const windowBounds = {
-  minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0,
+  minX: 0,
+  minY: 0,
+  minZ: 0,
+  maxX: 0,
+  maxY: 0,
+  maxZ: 0,
 };
 
 /**
@@ -209,7 +248,12 @@ export function cellWindowRange(
 
 const marchSpan: Span = { tEnter: 0, tExit: 0 };
 const marchRange: CellRange = {
-  minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0,
+  minX: 0,
+  minY: 0,
+  minZ: 0,
+  maxX: 0,
+  maxY: 0,
+  maxZ: 0,
 };
 
 function cellSolid(
@@ -227,12 +271,24 @@ function cellSolid(
   return cell.visible && cell.shapeIndex !== 0;
 }
 
-function pushCell(out: CellMarch, x: number, y: number, z: number, t: number): void {
+function pushCell(
+  out: CellMarch,
+  x: number,
+  y: number,
+  z: number,
+  t: number,
+): void {
   const i = out.count;
   if (i >= out.x.length) {
-    out.x.push(0); out.y.push(0); out.z.push(0); out.t.push(0);
+    out.x.push(0);
+    out.y.push(0);
+    out.z.push(0);
+    out.t.push(0);
   }
-  out.x[i] = x; out.y[i] = y; out.z[i] = z; out.t[i] = t;
+  out.x[i] = x;
+  out.y[i] = y;
+  out.z[i] = z;
+  out.t[i] = t;
   out.count++;
 }
 
@@ -256,10 +312,18 @@ export function marchCells(
 
   if (
     !rayAABB(
-      origin.x, origin.y, origin.z,
-      dir.x, dir.y, dir.z,
-      bounds.minX, bounds.minY, bounds.minZ,
-      bounds.maxX, bounds.maxY, bounds.maxZ,
+      origin.x,
+      origin.y,
+      origin.z,
+      dir.x,
+      dir.y,
+      dir.z,
+      bounds.minX,
+      bounds.minY,
+      bounds.minZ,
+      bounds.maxX,
+      bounds.maxY,
+      bounds.maxZ,
       marchSpan,
     )
   ) {
@@ -277,9 +341,12 @@ export function marchCells(
   let cy = Math.floor(ey / cs.y);
   let cz = Math.floor(ez / cs.z);
   // Clamp the seed cell into range (guards floating-point edge cases).
-  if (cx < r.minX) cx = r.minX; else if (cx > r.maxX) cx = r.maxX;
-  if (cy < r.minY) cy = r.minY; else if (cy > r.maxY) cy = r.maxY;
-  if (cz < r.minZ) cz = r.minZ; else if (cz > r.maxZ) cz = r.maxZ;
+  if (cx < r.minX) cx = r.minX;
+  else if (cx > r.maxX) cx = r.maxX;
+  if (cy < r.minY) cy = r.minY;
+  else if (cy > r.maxY) cy = r.maxY;
+  if (cz < r.minZ) cz = r.minZ;
+  else if (cz > r.maxZ) cz = r.maxZ;
 
   const stepX = dir.x > 0 ? 1 : dir.x < 0 ? -1 : 0;
   const stepY = dir.y > 0 ? 1 : dir.y < 0 ? -1 : 0;
@@ -290,7 +357,13 @@ export function marchCells(
   const tDeltaZ = stepZ !== 0 ? Math.abs(cs.z / dir.z) : Infinity;
 
   // Distance (in t) from the entry point to the next cell boundary per axis.
-  const nextBoundary = (cell: number, step: number, size: number, o: number, d: number): number => {
+  const nextBoundary = (
+    cell: number,
+    step: number,
+    size: number,
+    o: number,
+    d: number,
+  ): number => {
     if (step === 0) return Infinity;
     const boundary = (step > 0 ? cell + 1 : cell) * size;
     return tStart + (boundary - (o + d * tStart)) / d;
@@ -314,11 +387,17 @@ export function marchCells(
     }
 
     if (tMaxX <= tMaxY && tMaxX <= tMaxZ) {
-      cx += stepX; tCur = tMaxX; tMaxX += tDeltaX;
+      cx += stepX;
+      tCur = tMaxX;
+      tMaxX += tDeltaX;
     } else if (tMaxY <= tMaxZ) {
-      cy += stepY; tCur = tMaxY; tMaxY += tDeltaY;
+      cy += stepY;
+      tCur = tMaxY;
+      tMaxY += tDeltaY;
     } else {
-      cz += stepZ; tCur = tMaxZ; tMaxZ += tDeltaZ;
+      cz += stepZ;
+      tCur = tMaxZ;
+      tMaxZ += tDeltaZ;
     }
   }
 }
@@ -342,15 +421,33 @@ export function makePrism(): Prism {
 }
 
 // Scratch for prism construction.
-const pP = [new Vector3D(0, 0, 0), new Vector3D(0, 0, 0), new Vector3D(0, 0, 0), new Vector3D(0, 0, 0)];
+const pP = [
+  new Vector3D(0, 0, 0),
+  new Vector3D(0, 0, 0),
+  new Vector3D(0, 0, 0),
+  new Vector3D(0, 0, 0),
+];
 const pView = new Vector3D(0, 0, 0);
 const pCentroid = new Vector3D(0, 0, 0);
 
-function setPlane(out: Prism, i: number, nx: number, ny: number, nz: number, d: number): void {
+function setPlane(
+  out: Prism,
+  i: number,
+  nx: number,
+  ny: number,
+  nz: number,
+  d: number,
+): void {
   if (i >= out.nx.length) {
-    out.nx.push(0); out.ny.push(0); out.nz.push(0); out.d.push(0);
+    out.nx.push(0);
+    out.ny.push(0);
+    out.nz.push(0);
+    out.d.push(0);
   }
-  out.nx[i] = nx; out.ny[i] = ny; out.nz[i] = nz; out.d[i] = d;
+  out.nx[i] = nx;
+  out.ny[i] = ny;
+  out.nz[i] = nz;
+  out.d[i] = d;
 }
 
 /**
@@ -369,33 +466,52 @@ export function buildPrism(
 ): boolean {
   viewDirInto(p, pView);
   for (let i = 0; i < pointCount; i++) {
-    screenToWorldAtHeight(p, pointsXY[i * 2], pointsXY[i * 2 + 1], refHeight, pP[i]);
+    screenToWorldAtHeight(
+      p,
+      pointsXY[i * 2],
+      pointsXY[i * 2 + 1],
+      refHeight,
+      pP[i],
+    );
   }
 
   if (pointCount >= 3) {
     // Centroid (in world) to orient side-plane normals inward.
-    pCentroid.x = 0; pCentroid.y = 0; pCentroid.z = 0;
+    pCentroid.x = 0;
+    pCentroid.y = 0;
+    pCentroid.z = 0;
     for (let i = 0; i < pointCount; i++) {
-      pCentroid.x += pP[i].x; pCentroid.y += pP[i].y; pCentroid.z += pP[i].z;
+      pCentroid.x += pP[i].x;
+      pCentroid.y += pP[i].y;
+      pCentroid.z += pP[i].z;
     }
-    pCentroid.x /= pointCount; pCentroid.y /= pointCount; pCentroid.z /= pointCount;
+    pCentroid.x /= pointCount;
+    pCentroid.y /= pointCount;
+    pCentroid.z /= pointCount;
 
     out.count = 0;
     for (let i = 0; i < pointCount; i++) {
       const a = pP[i];
       const b = pP[(i + 1) % pointCount];
       // n = (b - a) × view
-      const ex = b.x - a.x, ey = b.y - a.y, ez = b.z - a.z;
+      const ex = b.x - a.x,
+        ey = b.y - a.y,
+        ez = b.z - a.z;
       let nx = ey * pView.z - ez * pView.y;
       let ny = ez * pView.x - ex * pView.z;
       let nz = ex * pView.y - ey * pView.x;
       const len = Math.hypot(nx, ny, nz);
       if (len < EPS) continue; // degenerate edge
-      nx /= len; ny /= len; nz /= len;
+      nx /= len;
+      ny /= len;
+      nz /= len;
       let d = nx * a.x + ny * a.y + nz * a.z;
       // Orient so the centroid is inside (n·C ≤ d).
       if (nx * pCentroid.x + ny * pCentroid.y + nz * pCentroid.z > d) {
-        nx = -nx; ny = -ny; nz = -nz; d = -d;
+        nx = -nx;
+        ny = -ny;
+        nz = -nz;
+        d = -d;
       }
       setPlane(out, out.count++, nx, ny, nz, d);
     }
@@ -406,16 +522,22 @@ export function buildPrism(
     const a = pP[0];
     const b = pP[1];
     // Wall normal ⟂ to both the screen edge (in world) and the view dir.
-    const ex = b.x - a.x, ey = b.y - a.y, ez = b.z - a.z;
+    const ex = b.x - a.x,
+      ey = b.y - a.y,
+      ez = b.z - a.z;
     let nx = ey * pView.z - ez * pView.y;
     let ny = ez * pView.x - ex * pView.z;
     let nz = ex * pView.y - ey * pView.x;
     const nlen = Math.hypot(nx, ny, nz);
     if (nlen < EPS) return false;
-    nx /= nlen; ny /= nlen; nz /= nlen;
+    nx /= nlen;
+    ny /= nlen;
+    nz /= nlen;
     const elen = Math.hypot(ex, ey, ez);
     if (elen < EPS) return false;
-    const ux = ex / elen, uy = ey / elen, uz = ez / elen; // along-segment unit
+    const ux = ex / elen,
+      uy = ey / elen,
+      uz = ez / elen; // along-segment unit
     const ht = lineThickness / (2 * p.projScale); // world half-thickness (approx)
 
     const da = nx * a.x + ny * a.y + nz * a.z;
@@ -424,7 +546,14 @@ export function buildPrism(
     setPlane(out, out.count++, nx, ny, nz, da + ht);
     setPlane(out, out.count++, -nx, -ny, -nz, -da + ht);
     // Two end caps (X between a and b along the segment direction).
-    setPlane(out, out.count++, -ux, -uy, -uz, -(ux * a.x + uy * a.y + uz * a.z));
+    setPlane(
+      out,
+      out.count++,
+      -ux,
+      -uy,
+      -uz,
+      -(ux * a.x + uy * a.y + uz * a.z),
+    );
     setPlane(out, out.count++, ux, uy, uz, ux * b.x + uy * b.y + uz * b.z);
     return true;
   }
@@ -432,9 +561,17 @@ export function buildPrism(
   return false;
 }
 
-export function pointInPrism(prism: Prism, x: number, y: number, z: number): boolean {
+export function pointInPrism(
+  prism: Prism,
+  x: number,
+  y: number,
+  z: number,
+): boolean {
   for (let i = 0; i < prism.count; i++) {
-    if (prism.nx[i] * x + prism.ny[i] * y + prism.nz[i] * z > prism.d[i] + EPS) {
+    if (
+      prism.nx[i] * x + prism.ny[i] * y + prism.nz[i] * z >
+      prism.d[i] + EPS
+    ) {
       return false;
     }
   }
@@ -446,11 +583,18 @@ export function pointInPrism(prism: Prism, x: number, y: number, z: number): boo
 // ============================================================
 
 /** Point inside a convex polygon (CCW or CW); `poly` is flat [x0,y0,x1,y1,...]. */
-export function pointInConvex(poly: number[], n: number, px: number, py: number): boolean {
+export function pointInConvex(
+  poly: number[],
+  n: number,
+  px: number,
+  py: number,
+): boolean {
   let sign = 0;
   for (let i = 0; i < n; i++) {
-    const ax = poly[i * 2], ay = poly[i * 2 + 1];
-    const bx = poly[((i + 1) % n) * 2], by = poly[((i + 1) % n) * 2 + 1];
+    const ax = poly[i * 2],
+      ay = poly[i * 2 + 1];
+    const bx = poly[((i + 1) % n) * 2],
+      by = poly[((i + 1) % n) * 2 + 1];
     const cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
     if (cross > EPS) {
       if (sign < 0) return false;
@@ -464,14 +608,23 @@ export function pointInConvex(poly: number[], n: number, px: number, py: number)
 }
 
 function segSeg(
-  ax: number, ay: number, bx: number, by: number,
-  cx: number, cy: number, dx: number, dy: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  cx: number,
+  cy: number,
+  dx: number,
+  dy: number,
 ): boolean {
-  const d1x = bx - ax, d1y = by - ay;
-  const d2x = dx - cx, d2y = dy - cy;
+  const d1x = bx - ax,
+    d1y = by - ay;
+  const d2x = dx - cx,
+    d2y = dy - cy;
   const denom = d1x * d2y - d1y * d2x;
   if (Math.abs(denom) < EPS) return false; // parallel
-  const sx = cx - ax, sy = cy - ay;
+  const sx = cx - ax,
+    sy = cy - ay;
   const t = (sx * d2y - sy * d2x) / denom;
   const u = (sx * d1y - sy * d1x) / denom;
   return t >= 0 && t <= 1 && u >= 0 && u <= 1;
@@ -479,30 +632,42 @@ function segSeg(
 
 /** Segment vs convex polygon: endpoint inside, or crosses any edge. */
 export function segVsConvex(
-  ax: number, ay: number, bx: number, by: number,
-  poly: number[], n: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  poly: number[],
+  n: number,
 ): boolean {
   if (pointInConvex(poly, n, ax, ay)) return true;
   if (pointInConvex(poly, n, bx, by)) return true;
   for (let i = 0; i < n; i++) {
-    const ex = poly[i * 2], ey = poly[i * 2 + 1];
-    const fx = poly[((i + 1) % n) * 2], fy = poly[((i + 1) % n) * 2 + 1];
+    const ex = poly[i * 2],
+      ey = poly[i * 2 + 1];
+    const fx = poly[((i + 1) % n) * 2],
+      fy = poly[((i + 1) % n) * 2 + 1];
     if (segSeg(ax, ay, bx, by, ex, ey, fx, fy)) return true;
   }
   return false;
 }
 
 function projOverlap(
-  axisX: number, axisY: number,
-  a: number[], na: number, b: number[], nb: number,
+  axisX: number,
+  axisY: number,
+  a: number[],
+  na: number,
+  b: number[],
+  nb: number,
 ): boolean {
-  let minA = Infinity, maxA = -Infinity;
+  let minA = Infinity,
+    maxA = -Infinity;
   for (let i = 0; i < na; i++) {
     const proj = a[i * 2] * axisX + a[i * 2 + 1] * axisY;
     if (proj < minA) minA = proj;
     if (proj > maxA) maxA = proj;
   }
-  let minB = Infinity, maxB = -Infinity;
+  let minB = Infinity,
+    maxB = -Infinity;
   for (let i = 0; i < nb; i++) {
     const proj = b[i * 2] * axisX + b[i * 2 + 1] * axisY;
     if (proj < minB) minB = proj;
@@ -512,15 +677,24 @@ function projOverlap(
 }
 
 /** Convex-vs-convex overlap (2D SAT). */
-export function convexVsConvex(a: number[], na: number, b: number[], nb: number): boolean {
+export function convexVsConvex(
+  a: number[],
+  na: number,
+  b: number[],
+  nb: number,
+): boolean {
   for (let i = 0; i < na; i++) {
-    const ax = a[i * 2], ay = a[i * 2 + 1];
-    const bx = a[((i + 1) % na) * 2], by = a[((i + 1) % na) * 2 + 1];
+    const ax = a[i * 2],
+      ay = a[i * 2 + 1];
+    const bx = a[((i + 1) % na) * 2],
+      by = a[((i + 1) % na) * 2 + 1];
     if (!projOverlap(-(by - ay), bx - ax, a, na, b, nb)) return false;
   }
   for (let i = 0; i < nb; i++) {
-    const ax = b[i * 2], ay = b[i * 2 + 1];
-    const bx = b[((i + 1) % nb) * 2], by = b[((i + 1) % nb) * 2 + 1];
+    const ax = b[i * 2],
+      ay = b[i * 2 + 1];
+    const bx = b[((i + 1) % nb) * 2],
+      by = b[((i + 1) % nb) * 2 + 1];
     if (!projOverlap(-(by - ay), bx - ax, a, na, b, nb)) return false;
   }
   return true;

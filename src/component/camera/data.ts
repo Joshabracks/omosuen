@@ -8,6 +8,7 @@ import {
   DeserializeResult,
 } from '../types';
 import type { CameraMethods } from './methods';
+import { MethodRegistry } from '../registry';
 
 type RGB = { x: number; y: number; z: number };
 
@@ -111,6 +112,90 @@ function resolveDepthCues(o: DepthCuesOptions | undefined): DepthCues | null {
   };
 }
 
+/** Value types a post-effect stage can pass to its own uniforms. */
+export type PostEffectUniformValue = number | number[] | boolean;
+
+/**
+ * One resolved stage of the camera's post-process chain.
+ *
+ * Stages run in array order over the composited frame, each reading the
+ * previous stage's colour plus the per-texel mask channels. See
+ * `render/post-chain.ts` for the uniform contract handed to every stage.
+ */
+export interface PostEffect {
+  /** Identifies the stage for `setPostEffectEnabled`/`setPostEffectUniform`. */
+  name: string;
+  /** Resolved GLSL ES 3.00 fragment source. */
+  fragment: string;
+  /**
+   * Set when `fragment` came from `registerMethod('post-effect', key, source)`.
+   * Only keyed stages survive save/load — `serialize` has no way to emit a raw
+   * source string it did not put there, the same tradeoff `cell-map`'s
+   * `generateCell` documents.
+   */
+  fragmentKey?: string;
+  /** Skipped entirely when false; the rest of the chain still runs. */
+  enabled: boolean;
+  /** Stage-private uniforms, uploaded by name. `u_`-prefixed names are reserved. */
+  uniforms: Record<string, PostEffectUniformValue>;
+}
+
+/** Partial form accepted in CameraOptions; see PostEffect. */
+export interface PostEffectOptions {
+  name: string;
+  /** Raw GLSL source. Mutually exclusive with `fragmentKey`. */
+  fragment?: string;
+  /** Registry key registered via `registerMethod('post-effect', key, source)`. */
+  fragmentKey?: string;
+  enabled?: boolean;
+  uniforms?: Record<string, PostEffectUniformValue>;
+}
+
+/**
+ * Resolve the partial options into full PostEffects, or null when absent —
+ * null (not an empty array) is "no chain", which is what lets the render path
+ * and the ping-target allocation skip the whole feature at zero cost.
+ *
+ * A `fragmentKey` naming an unregistered effect THROWS here, deliberately:
+ * construction is the point where the caller can still fix it. Deserialization
+ * degrades instead (see `deserialize`), matching `cell-map`'s generator
+ * handling.
+ */
+export function resolvePostEffects(
+  o: PostEffectOptions[] | undefined,
+): PostEffect[] | null {
+  if (!o || o.length === 0) return null;
+  return o.map((e) => {
+    let fragment = e.fragment;
+    if (e.fragmentKey !== undefined) {
+      const registered = MethodRegistry['post-effect'][e.fragmentKey] as
+        | string
+        | undefined;
+      if (typeof registered !== 'string') {
+        throw new Error(
+          `Camera: post-effect key "${e.fragmentKey}" is not registered in ` +
+            `MethodRegistry['post-effect'] -- call registerMethod('post-effect', ` +
+            `'${e.fragmentKey}', source) before constructing/loading this camera`,
+        );
+      }
+      fragment = registered;
+    }
+    if (typeof fragment !== 'string' || fragment.length === 0) {
+      throw new Error(
+        `Camera: post-effect "${e.name}" needs either a 'fragment' source or a ` +
+          "registered 'fragmentKey'",
+      );
+    }
+    return {
+      name: e.name,
+      fragment,
+      fragmentKey: e.fragmentKey,
+      enabled: e.enabled ?? true,
+      uniforms: e.uniforms ?? {},
+    };
+  });
+}
+
 /**
  * Camera component for axonometric 3D rendering that appears 2D.
  * Renders cell maps and billboard sprites within the render tree.
@@ -168,6 +253,13 @@ export interface CameraT
   depthCues: DepthCues | null;
 
   /**
+   * Ordered post-process chain applied to the composited frame. null = no
+   * chain (default), which skips the whole feature including its render
+   * targets. See PostEffect.
+   */
+  postEffects: PostEffect[] | null;
+
+  /**
    * WebGL rendering resources (shader programs, buffers, etc.)
    */
   glResources: {
@@ -185,8 +277,58 @@ export interface CameraT
     postProcessProgram: WebGLProgram | null;
     fullscreenQuadBuffer: WebGLBuffer | null;
 
+    /**
+     * Composite target (FBO_B), at full viewport resolution. The upscale pass
+     * blits the base-resolution cell FBO into it and the sprite pass then draws
+     * on top, so the whole frame exists in one sampleable texture before it
+     * reaches the screen. `renderPresent` blits it to the default framebuffer.
+     */
+    /**
+     * Cell FBO's id attachment (COLOR1, RG16UI, base resolution).
+     * R = cell material index, G = fogVisibility quantised to 16 bits — the
+     * only carrier the cell pass has for a fog value that must survive the
+     * upscale into the composite's aux channel.
+     */
+    cellIdTexture: WebGLTexture | null;
+
+    /**
+     * Ping-pong colour targets for the post-effect chain, full resolution.
+     * Allocated only while a chain is configured — a camera with no chain
+     * pays nothing for the feature. Masks are NOT ping-ponged: they are
+     * written once and read by every stage, so a five-stage chain still
+     * costs two colour targets rather than ten.
+     */
+    postChainFramebuffers: (WebGLFramebuffer | null)[];
+    postChainTextures: (WebGLTexture | null)[];
+
+    framebufferB: WebGLFramebuffer | null;
+    compositeTexture: WebGLTexture | null;
+    /**
+     * Composite id attachment (COLOR1, RG16UI, full resolution).
+     * R = cell material index, G = sprite `shaderId`. Integer format, so the
+     * sprite pass's alpha blend cannot smear two ids into a meaningless third
+     * along a soft edge — the value is simply the frontmost writer's.
+     */
+    compositeIdTexture: WebGLTexture | null;
+    /**
+     * Composite aux attachment (COLOR2, RGBA8, full resolution).
+     * R = sprite coverage 0..1, G = fogVisibility. Unorm precisely because
+     * these SHOULD blend: coverage accumulates through the sprite pass's
+     * existing alpha blend rather than being computed separately.
+     */
+    compositeAuxTexture: WebGLTexture | null;
+    /** Program for the final composite → screen blit (`post-present.frag`). */
+    presentProgram: WebGLProgram | null;
+
     // Base rendering resolution (independent of canvas size, adjusted by zoom)
     baseResolution: { width: number; height: number };
+    /**
+     * Viewport size the targets were last allocated against, in pixels. Unlike
+     * baseResolution this is not scaled by zoom/pixelScale, so comparing it to
+     * the live viewport detects a resize the camera has not been told about —
+     * nothing propagates `Viewport.resize` to a camera automatically.
+     */
+    fullResolution: { width: number; height: number };
 
     // Cell solidity texture for per-fragment line-of-sight raycasting
     visibilityTexture: WebGLTexture | null;
@@ -255,6 +397,13 @@ export interface CameraOptions extends ComponentOptions {
    * weights you want. See DepthCues for each effect.
    */
   depthCues?: DepthCuesOptions;
+
+  /**
+   * Post-process stages applied to the finished frame, in order. Omit for no
+   * chain (default). See PostEffect for the per-stage shape and
+   * `render/post-chain.ts` for the uniform contract each stage receives.
+   */
+  postEffects?: PostEffectOptions[];
 }
 
 /**
@@ -281,6 +430,7 @@ export function builder(options: CameraOptions): CameraT {
     zoomTarget: null,
 
     depthCues: resolveDepthCues(options.depthCues),
+    postEffects: resolvePostEffects(options.postEffects),
 
     glResources: {
       unifiedProgram: null,
@@ -295,7 +445,16 @@ export function builder(options: CameraOptions): CameraT {
       depthTexture: null,
       postProcessProgram: null,
       fullscreenQuadBuffer: null,
+      cellIdTexture: null,
+      postChainFramebuffers: [null, null],
+      postChainTextures: [null, null],
+      framebufferB: null,
+      compositeTexture: null,
+      compositeIdTexture: null,
+      compositeAuxTexture: null,
+      presentProgram: null,
       baseResolution: { width: 800, height: 600 }, // Default, will be updated in init()
+      fullResolution: { width: 800, height: 600 }, // Default, will be updated in init()
       visibilityTexture: null,
       solidityGeneration: -1,
       solidityDims: null,
@@ -308,6 +467,32 @@ export function builder(options: CameraOptions): CameraT {
   };
 
   return camera as unknown as CameraT;
+}
+
+/**
+ * Emit only registry-keyed stages. A raw-source stage has no key to write, so
+ * it cannot come back on load — warned rather than dropped silently, because
+ * the alternative is a user discovering at load time that half their chain
+ * vanished with no explanation.
+ */
+function serializePostEffects(c: CameraT): PostEffectOptions[] | null {
+  if (!c.postEffects) return null;
+  const keyed = c.postEffects.filter((e) => e.fragmentKey !== undefined);
+  const dropped = c.postEffects.length - keyed.length;
+  if (dropped > 0) {
+    console.warn(
+      `[camera] Camera '${c.name}': ${dropped} post-effect stage(s) use a raw ` +
+        'fragment source and will not survive save/load. Register them with ' +
+        "registerMethod('post-effect', key, source) and reference them by " +
+        'fragmentKey to make them serializable.',
+    );
+  }
+  return keyed.map((e) => ({
+    name: e.name,
+    fragmentKey: e.fragmentKey,
+    enabled: e.enabled,
+    uniforms: e.uniforms,
+  }));
 }
 
 /**
@@ -328,6 +513,7 @@ function serialize(component: ComponentData): any {
     orbitYaw: c.orbitYaw,
     viewportRef: c.viewportRef,
     depthCues: c.depthCues,
+    postEffects: serializePostEffects(c),
   };
 }
 
@@ -351,7 +537,6 @@ function deserialize(data: any): DeserializeResult<CameraT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const {
     type,
     name,
@@ -361,6 +546,7 @@ function deserialize(data: any): DeserializeResult<CameraT> {
     orbitYaw,
     viewportRef,
     depthCues,
+    postEffects,
   } = data;
 
   if (type !== 'camera') {
@@ -395,6 +581,7 @@ function deserialize(data: any): DeserializeResult<CameraT> {
       orbitYaw: orbitYaw as number | undefined,
       viewportRef: viewportRef as string,
       depthCues: depthCues as DepthCuesOptions | undefined,
+      postEffects: postEffects as PostEffectOptions[] | undefined,
     }),
     errors,
   };
@@ -417,4 +604,5 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'zoomTarget',
   'glResources',
   'depthCues',
+  'postEffects',
 ];

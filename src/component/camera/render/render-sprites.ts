@@ -11,11 +11,12 @@ import { castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import {
-  FBO_OVERSCAN_PX,
   setAngleUniform,
   setOrbitYawUniform,
   setLightUniforms,
 } from './light-uniforms';
+import { computeFboUvBridge } from './framebuffers';
+import { warnOversizedId } from './render-cell-maps';
 import { getResolvedVisionSources, setVisionUniforms } from './vision-uniforms';
 import { setFogUniforms } from './fog-uniforms';
 import { computeFogVisibility, fogDrawKind } from '../../fog-of-war/sweep';
@@ -280,8 +281,11 @@ export function renderSprites(
     return;
   }
 
-  // Bind default framebuffer (screen) and set full-resolution viewport
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  // Draw into the composite target, over the already-upscaled cell image, at
+  // full resolution — sprites are deliberately not pixelated. Safe to sample
+  // the cell FBO's depth texture here (TEXTURE2, below): that FBO is not the
+  // bound one, so there is no feedback loop.
+  gl.bindFramebuffer(gl.FRAMEBUFFER, camera.glResources.framebufferB);
   gl.viewport(0, 0, viewport.width, viewport.height);
 
   // Calculate unified map bounds from all cell-maps for consistent depth sorting
@@ -379,12 +383,13 @@ export function renderSprites(
   const u_fboUvOffset = gl.getUniformLocation(program, 'u_fboUvOffset');
   const u_screenSize = gl.getUniformLocation(program, 'u_screenSize');
   const u_showSilhouette = gl.getUniformLocation(program, 'u_showSilhouette');
+  const u_spriteIndex = gl.getUniformLocation(program, 'u_spriteIndex');
   const u_silhouetteColor = gl.getUniformLocation(program, 'u_silhouetteColor');
   const u_cellSolidity = gl.getUniformLocation(program, 'u_cellSolidity');
-  const u_fogLightInfluence = gl.getUniformLocation(
-    program,
-    'u_fogLightInfluence',
-  );
+  // const u_fogLightInfluence = gl.getUniformLocation(
+  //   program,
+  //   'u_fogLightInfluence',
+  // );
   const u_cellEmissionColor = gl.getUniformLocation(
     program,
     'u_cellEmissionColor',
@@ -470,9 +475,15 @@ export function renderSprites(
   // simply did not apply to it. Matches render-cell-maps.ts's own computation.
   gl.uniform3f(
     u_windowOrigin,
-    originCellMap && windowOrigin ? windowOrigin.cx * originCellMap.chunkSize.x : 0,
-    originCellMap && windowOrigin ? windowOrigin.cy * originCellMap.chunkSize.y : 0,
-    originCellMap && windowOrigin ? windowOrigin.cz * originCellMap.chunkSize.z : 0,
+    originCellMap && windowOrigin
+      ? windowOrigin.cx * originCellMap.chunkSize.x
+      : 0,
+    originCellMap && windowOrigin
+      ? windowOrigin.cy * originCellMap.chunkSize.y
+      : 0,
+    originCellMap && windowOrigin
+      ? windowOrigin.cz * originCellMap.chunkSize.z
+      : 0,
   );
 
   // Toroidal wrap offset for u_cellSolidity lookups (isCellSolid, shared with
@@ -508,7 +519,10 @@ export function renderSprites(
   ) as FogOfWarT | null;
   const fogUseLineOfSight = fogOfWar?.visionMode !== 'distance';
 
-  setVisionUniforms(gl, camera.id!, visionSources, fogUseLineOfSight);
+  // camPos is the same camera transform world position renderCellMaps passes,
+  // so both passes rank and truncate the sources identically -- the fogSources
+  // built from getResolvedVisionSources() below depend on that.
+  setVisionUniforms(gl, camera.id!, visionSources, camPos, fogUseLineOfSight);
 
   // Per-sprite fog visibility is computed HERE, on the CPU, and uploaded as
   // u_spriteVisibility -- see the fog block in unified.frag's sprite path for
@@ -560,7 +574,6 @@ export function renderSprites(
   // writes to WASM, so the view cannot be detached mid-use.
   const fogMask = fogSources.length > 0 ? computeSolidityMap() : null;
 
-
   const fogCellDims = originCellMap?.mapSize;
   const fogCellSize = originCellMap?.cellSize;
   const fogWindowOriginLocalCell =
@@ -590,31 +603,20 @@ export function renderSprites(
   gl.bindTexture(gl.TEXTURE_2D, camera.glResources.depthTexture);
   gl.uniform1i(u_depthTexture, 2);
 
-  // Pass FBO UV mapping so the sprite shader can sample the depth texture
-  // Uses the same UV transform as the post-process shader
-  const fboWidth = camera.glResources.baseResolution.width;
-  const fboHeight = camera.glResources.baseResolution.height;
-  const unpaddedWidth = fboWidth - FBO_OVERSCAN_PX;
-  const unpaddedHeight = fboHeight - FBO_OVERSCAN_PX;
-  gl.uniform2f(
-    u_fboUvScale,
-    unpaddedWidth / fboWidth,
-    unpaddedHeight / fboHeight,
-  );
+  // Cell id attachment on unit 8. Pinned unconditionally, exactly like the
+  // solidity/emission/explored samplers below: an unset sampler defaults to
+  // unit 0, where a float sampler2D lives, and an integer sampler colliding
+  // with a float one on a single unit is GL_INVALID_OPERATION.
+  gl.activeTexture(gl.TEXTURE8);
+  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.cellIdTexture);
+  gl.uniform1i(gl.getUniformLocation(program, 'u_cellIdTexture'), 8);
 
-  const fboOffsetX =
-    camera.pixelScale > 1
-      ? (subPixelOffset.remainderX * camera.zoom) / camera.pixelScale
-      : 0;
-  const fboOffsetY =
-    camera.pixelScale > 1
-      ? (subPixelOffset.remainderY * camera.zoom) / camera.pixelScale
-      : 0;
-  gl.uniform2f(
-    u_fboUvOffset,
-    fboOffsetX / fboWidth,
-    (2 - fboOffsetY) / fboHeight,
-  );
+  // Pass FBO UV mapping so the sprite shader can sample the depth texture.
+  // Shared with the post-process blit — the two must agree exactly, and used to
+  // be computed independently here (with the overscan constant hardcoded).
+  const bridge = computeFboUvBridge(camera, subPixelOffset);
+  gl.uniform2f(u_fboUvScale, bridge.scaleX, bridge.scaleY);
+  gl.uniform2f(u_fboUvOffset, bridge.offsetX, bridge.offsetY);
   gl.uniform2f(u_screenSize, viewport.width, viewport.height);
 
   // Bind cell solidity texture and reveal target for per-fragment raycasting.
@@ -1017,6 +1019,7 @@ export function renderSprites(
     );
 
     // Set silhouette uniforms
+    gl.uniform1ui(u_spriteIndex, warnOversizedId(sprite.shaderId));
     gl.uniform1i(u_showSilhouette, sprite.showSilhouette ? 1 : 0);
     if (sprite.showSilhouette) {
       gl.uniform4f(
@@ -1035,9 +1038,12 @@ export function renderSprites(
   // Restore depth mask state
   gl.depthMask(true);
 
-  // Unbind depth texture from TEXTURE2 to prevent feedback loop on next frame.
-  // The FBO uses this same texture as its depth attachment — if it's still bound
-  // as a sampler when we bindFramebuffer for cell rendering, WebGL silently fails.
+  // Unbind the cell FBO's textures to prevent a feedback loop on the next
+  // frame. That FBO uses these as its depth (TEXTURE2) and id (TEXTURE8)
+  // attachments — if either is still bound as a sampler when we bindFramebuffer
+  // for cell rendering, WebGL silently fails every draw call.
   gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  gl.activeTexture(gl.TEXTURE8);
   gl.bindTexture(gl.TEXTURE_2D, null);
 }

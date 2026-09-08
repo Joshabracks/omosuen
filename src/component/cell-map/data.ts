@@ -2405,7 +2405,6 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const {
     type,
     name,
@@ -2488,19 +2487,17 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   }
 
   // Reconstruct Vector3D for cellSize/chunkSize/windowRadius.
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
   const cs = new Vector3D(dataCellSize.x, dataCellSize.y, dataCellSize.z);
   const cks =
     dataChunkSize && typeof dataChunkSize === 'object'
-      ? // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        new Vector3D(dataChunkSize.x, dataChunkSize.y, dataChunkSize.z)
+      ? new Vector3D(dataChunkSize.x, dataChunkSize.y, dataChunkSize.z)
       : DEFAULT_CHUNK_SIZE;
   const radius = {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     x: dataWindowRadius.x as number,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
     y: dataWindowRadius.y as number,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
     z: dataWindowRadius.z as number,
   };
   const windowCellDims = new Vector3D(
@@ -2528,9 +2525,8 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     | ((cx: number, cy: number, cz: number) => CellData[])
     | undefined;
   if (dataGeneratorKey && typeof dataGeneratorKey === 'object') {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     const cellKey = dataGeneratorKey.generateCell as string | undefined;
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
     const chunkKey = dataGeneratorKey.generateChunk as string | undefined;
     dGeneratorKey = {};
     if (cellKey) {

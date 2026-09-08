@@ -25,9 +25,15 @@ export function updateWorldTransforms(root: NexusT): void {
 
 function propagate(
   nexus: NexusT,
-  px: number, py: number, pz: number,
-  sx: number, sy: number, sz: number,
-  rx: number, ry: number, rz: number,
+  px: number,
+  py: number,
+  pz: number,
+  sx: number,
+  sy: number,
+  sz: number,
+  rx: number,
+  ry: number,
+  rz: number,
 ): void {
   const comps = nexus.components;
 
@@ -42,9 +48,15 @@ function propagate(
 
   // World TRS to pass to children: this transform composed with the parent's, or
   // the parent's unchanged when this nexus has no transform.
-  let wpx = px, wpy = py, wpz = pz;
-  let wsx = sx, wsy = sy, wsz = sz;
-  let wrx = rx, wry = ry, wrz = rz;
+  let wpx = px,
+    wpy = py,
+    wpz = pz;
+  let wsx = sx,
+    wsy = sy,
+    wsz = sz;
+  let wrx = rx,
+    wry = ry,
+    wrz = rz;
 
   if (t) {
     const lp = t.position;
@@ -63,16 +75,30 @@ function propagate(
     const wp = t.worldPosition;
     const ws = t.worldScale;
     const wr = t.worldRotation;
-    wp.x = wpx; wp.y = wpy; wp.z = wpz;
-    ws.x = wsx; ws.y = wsy; ws.z = wsz;
-    wr.x = wrx; wr.y = wry; wr.z = wrz;
+    wp.x = wpx;
+    wp.y = wpy;
+    wp.z = wpz;
+    ws.x = wsx;
+    ws.y = wsy;
+    ws.z = wsz;
+    wr.x = wrx;
+    wr.y = wry;
+    wr.z = wrz;
   }
 
   for (let i = 0; i < comps.length; i++) {
     if (comps[i].type === 'nexus') {
       propagate(
         comps[i] as unknown as NexusT,
-        wpx, wpy, wpz, wsx, wsy, wsz, wrx, wry, wrz,
+        wpx,
+        wpy,
+        wpz,
+        wsx,
+        wsy,
+        wsz,
+        wrx,
+        wry,
+        wrz,
       );
     }
   }

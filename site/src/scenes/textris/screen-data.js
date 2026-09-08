@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 /**
  * GENERATED FILE — do not edit by hand.
  * Regenerate with site/scripts/build-textris-screen-data.mjs.

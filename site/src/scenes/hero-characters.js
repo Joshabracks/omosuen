@@ -95,6 +95,7 @@ function forEachShellCell(callback) {
   }
 }
 
+// eslint-disable-next-line no-unused-vars
 function scaledEmissionColor(color) {
   return new Omosuen.Vector3D(
     color.x * EMISSION_COLOR_SCALE,
@@ -106,11 +107,7 @@ function scaledEmissionColor(color) {
 /** World position for a per-cell point light (top-face center + small lift). */
 function cellLightPosition(x, y, z) {
   const w = cellWorld(cellMapRef, x, y, z);
-  return new Omosuen.Vector3D(
-    w.x,
-    w.y + cellSize * CELL_LIGHT_HEIGHT,
-    w.z,
-  );
+  return new Omosuen.Vector3D(w.x, w.y + cellSize * CELL_LIGHT_HEIGHT, w.z);
 }
 
 function activateCellLight(cell, color) {
@@ -303,7 +300,7 @@ function landCharacter(char, cell) {
   const world = cellWorld(cellMapRef, cell.x, cell.y, cell.z);
   char.transform.setPosition(world.x, world.y, world.z);
 
-  const coord = new Omosuen.Vector3D(cell.x, cell.y, cell.z);
+  // const coord = new Omosuen.Vector3D(cell.x, cell.y, cell.z);
   // cellMapRef.setEmissionColor(coord, scaledEmissionColor(char.emissionColor));
   activateCellLight(cell, char.emissionColor);
 

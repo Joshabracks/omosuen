@@ -20,5 +20,5 @@
     "newLine": "LF"
   },
   "include": ["src/**/*", "custom.d.ts"],
-  "exclude": ["node_modules", "dist", "dev", "test"]
+  "exclude": ["node_modules", "dist", "dev", "test", "site"]
 }

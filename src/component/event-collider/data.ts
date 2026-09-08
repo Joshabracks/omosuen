@@ -114,7 +114,6 @@ function deserialize(data: any): DeserializeResult<EventColliderT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, shape, size, radius, offset } = data;
 
   if (type !== 'event-collider') {

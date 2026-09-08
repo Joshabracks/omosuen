@@ -1,6 +1,6 @@
 import { ComponentData, ComponentMethods } from '../types';
 import { Vector3D } from '../../math';
-import { CameraT } from './data';
+import { CameraT, PostEffectOptions, PostEffectUniformValue } from './data';
 import { SpriteT } from '../sprite/data';
 import { CellMapT } from '../cell-map/data';
 import { LightT } from '../light/data';
@@ -8,7 +8,12 @@ import { VisionSourceT } from '../vision-source/data';
 import { render } from './render';
 import { collectRenderables } from './collect-renderables';
 import { pan } from './pan';
-import { screenPick, screenToWorldRay, PickBuffer, PickOptions } from './screen-pick';
+import {
+  screenPick,
+  screenToWorldRay,
+  PickBuffer,
+  PickOptions,
+} from './screen-pick';
 import {
   setZoom,
   setPixelScale,
@@ -17,6 +22,9 @@ import {
   setOrbitYaw,
   orbitBy,
   resize,
+  setPostEffects,
+  setPostEffectEnabled,
+  setPostEffectUniform,
 } from './set';
 import { init } from './init';
 import { dispose } from './dispose';
@@ -38,6 +46,24 @@ export interface CameraMethods extends ComponentMethods {
   /** Rotates orbit yaw by a relative amount (degrees) — drag / keyboard. */
   orbitBy: (camera: CameraT, deltaDegrees: number) => void;
   setPixelScale: (camera: CameraT, pixelScale: number) => void;
+  /** Replace the post-effect chain. */
+  setPostEffects: (
+    camera: CameraT,
+    effects: PostEffectOptions[] | null,
+  ) => void;
+  /** Enable/disable one stage by name. */
+  setPostEffectEnabled: (
+    camera: CameraT,
+    name: string,
+    enabled: boolean,
+  ) => void;
+  /** Set one stage-private uniform; takes effect next frame, no recompile. */
+  setPostEffectUniform: (
+    camera: CameraT,
+    name: string,
+    key: string,
+    value: PostEffectUniformValue,
+  ) => void;
   /** Re-syncs the offscreen framebuffer to the current viewport size. */
   resize: (camera: CameraT) => void;
   /**
@@ -80,6 +106,9 @@ export const Camera: CameraMethods = {
   setOrbitYaw,
   orbitBy,
   setPixelScale,
+  setPostEffects,
+  setPostEffectEnabled,
+  setPostEffectUniform,
   resize,
   screenPick,
   screenToWorldRay,

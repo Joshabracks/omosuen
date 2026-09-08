@@ -116,7 +116,6 @@ function deserialize(data: any): DeserializeResult<AnimationMapT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, animationMapKey, animations } = data;
 
   if (type !== 'animation-map') {

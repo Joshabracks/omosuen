@@ -1,10 +1,35 @@
 #version 300 es
 precision mediump float;
+    // Ids are 16-bit. mediump int only reaches +-32767 and mediump float is
+    // exact only to 2048, so anything touching an id must be highp.
+precision highp int;
 
-out vec4 fragColor;
+    // Locations are explicit because this program writes to framebuffers with
+    // different attachment sets: the cell FBO has COLOR0/COLOR1 only, so
+    // DRAW_BUFFER2 is NONE there and fragAux is discarded (legal, and why no
+    // separate shader variant is needed).
+layout(location = 0) out vec4 fragColor;
+    // R = cell material index. G = sprite id in the composite; in the cell FBO
+    // it instead carries fogVisibility quantised to 16 bits, which the upscale
+    // unpacks into the composite's aux channel.
+layout(location = 1) out uvec2 fragIds;
+    // R = sprite coverage, G = fogVisibility, A = the same alpha written to
+    // fragColor. That alpha is load-bearing: MRT blending uses each draw
+    // buffer's OWN output alpha, so a zero here would make the blend
+    // dst = src*0 + dst*1 and freeze this attachment at its cleared value.
+layout(location = 2) out vec4 fragAux;
 
     // Render mode selector
 uniform lowp int u_renderMode;  // 0 = cells, 1 = sprites
+    // Per-draw id written into fragIds.r (cells) / fragIds.g (sprites).
+uniform highp uint u_cellIndex;
+uniform highp uint u_spriteIndex;
+    // Cell FBO's id attachment, sampled by the sprite pass through the same UV
+    // bridge it uses for depth, so a sprite fragment can carry the cell id
+    // underneath it forward instead of clobbering it (integer attachments do
+    // not blend, and the composite cannot be read while it is the render
+    // target).
+uniform highp usampler2D u_cellIdTexture;
 
     // Shared uniforms
 uniform sampler2D u_albedoTexture;
@@ -109,7 +134,11 @@ uniform highp sampler2DArray u_cellSolidity;   // R8: 0=empty, 255=solid, layer=
     // fadeWidth). u_fogExempt opts a single cell-map draw call out entirely
     // (cellMap.revealExempt) -- not meaningful for sprites, which have no
     // per-cell-map context, so the sprite path never reads it.
-const int MAX_VISION_SOURCES = 8;
+    // This literal is OVERWRITTEN at compile time with MAX_VISION_SOURCES from
+    // camera/render/vision-uniforms.ts (see camera/init) -- that constant is
+    // the single source of truth. The value here only keeps this file valid
+    // standalone GLSL; edit it there.
+const int MAX_VISION_SOURCES = 64;
 uniform int u_numVisionSources;
 // FogOfWarT.visionMode: true = 'line-of-sight' (raycasts), false = 'distance'
 // (range alone). Uploaded per draw alongside the source arrays.
@@ -735,6 +764,13 @@ float computeCastShadow(vec3 worldPos, vec3 worldNormal) {
 }
 
 void main() {
+    // Initialise every output before branching. A write path that forgets one
+    // then yields a deterministic zero instead of undefined attachment
+    // contents -- by far the cheapest insurance in this file.
+    fragColor = vec4(0.0);
+    fragIds = uvec2(0u);
+    fragAux = vec4(0.0);
+
     if(u_renderMode == 0) {
         // ============================================================
         // MODE 0: CELL RENDERING (Triplanar world-space texture mapping)
@@ -923,6 +959,9 @@ void main() {
             fogOutColor = mix(nonLiveColor, cellColor, fogVisibility);
         }
         fragColor = vec4(fogOutColor, albedo.a);
+        // G carries fogVisibility through the upscale: the cell FBO has no aux
+        // attachment, so this is the only channel available to it.
+        fragIds = uvec2(u_cellIndex, uint(clamp(fogVisibility, 0.0, 1.0) * 65535.0 + 0.5));
 
     } else {
         // ============================================================
@@ -1005,6 +1044,10 @@ void main() {
         if(cellDepth < gl_FragCoord.z) {
             if(u_showSilhouette) {
                 fragColor = u_silhouetteColor;
+                // Returns before the shared tail below, so it has to write the
+                // masks itself.
+                fragIds = uvec2(texture(u_cellIdTexture, fboUV).r, u_spriteIndex);
+                fragAux = vec4(1.0, fogVis, 0.0, u_silhouetteColor.a);
                 return;
             }
             discard;
@@ -1113,6 +1156,13 @@ void main() {
         }
 
         // Apply opacity to final alpha channel
-        fragColor = vec4(finalRgb, tinted.a * u_opacity * fogAlpha);
+        float outAlpha = tinted.a * u_opacity * fogAlpha;
+        fragColor = vec4(finalRgb, outAlpha);
+        // Cell id is READ from the cell FBO rather than re-derived: integer
+        // attachments do not blend, so this fragment owns the whole texel and
+        // would otherwise erase what is behind it.
+        fragIds = uvec2(texture(u_cellIdTexture, fboUV).r, u_spriteIndex);
+        // .a must match fragColor's alpha -- see the fragAux declaration.
+        fragAux = vec4(1.0, fogVis, 0.0, outAlpha);
     }
 }

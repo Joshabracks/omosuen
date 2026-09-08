@@ -1,4 +1,4 @@
-import type { SiteState, SiteView } from "./state";
+import type { SiteState, SiteView } from './state';
 
 export interface SiteCtx {
   state: { data: SiteState };

@@ -279,7 +279,6 @@ function deserialize(data: any): DeserializeResult<TextureMapT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const {
     type,
     name,
@@ -310,14 +309,12 @@ function deserialize(data: any): DeserializeResult<TextureMapT> {
 
   if (imageTypeData && typeof imageTypeData === 'object') {
     if (
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       imageTypeData.mode === 'framemap' &&
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       Array.isArray(imageTypeData.frames)
     ) {
       // Reconstruct FrameMap (Vector4D[]), recording per-frame errors for
       // malformed entries. These will be tallied before returning.
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+
       const frames = imageTypeData.frames as unknown[];
       const vectors: Vector4D[] = [];
       for (let i = 0; i < frames.length; i += 1) {
@@ -358,7 +355,6 @@ function deserialize(data: any): DeserializeResult<TextureMapT> {
         vectors.push(new Vector4D(values[0], values[1], values[2], values[3]));
       }
       imageType = vectors;
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     } else if (imageTypeData.mode === 'grid') {
       const g = imageTypeData as {
         cellWidth?: unknown;

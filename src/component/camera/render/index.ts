@@ -7,8 +7,11 @@ import { AtlasManagerT } from '../../atlas-manager';
 import { CameraT } from '../data';
 import { Camera } from '../methods';
 import { renderSprites } from './render-sprites';
-import { renderPostProcess } from './post-process';
+import { renderUpscale } from './post-process';
+import { renderPresent } from './present';
+import { renderPostChain } from './post-chain';
 import { renderCellMaps, snapCameraPosition } from './render-cell-maps';
+import { allocateCameraTargets } from './framebuffers';
 import { uploadAtlasTextures, uploadAtlasDelta } from './atlas-textures';
 import {
   isProfilingEnabled,
@@ -24,6 +27,19 @@ const EMPTY_TEXTURE_MAP_CACHE: Map<string, TextureMapT> = new Map();
  * @param camera - The camera component
  * @param deltaTime - Time elapsed since last frame in milliseconds
  */
+/**
+ * Scratch buffers for the per-attachment clears in `render`. Module-level so a
+ * frame allocates nothing: `clearBuffer*v` takes a typed array, and building one
+ * per frame in the render path is exactly the GC churn this file avoids
+ * elsewhere.
+ */
+/** Cell size handed to post-effects when a scene has no cell-map. */
+const DEFAULT_CELL_SIZE = { x: 32, y: 16, z: 32 };
+
+const clearColorScratch = new Float32Array(4);
+const clearIdsScratch = new Uint32Array(4);
+const clearDepthScratch = new Float32Array([1]);
+
 export function render(camera: CameraT, _deltaTime: number): void {
   // Skip rendering if camera hasn't finished initializing
   // This is normal during progressive initialization
@@ -80,12 +96,30 @@ export function render(camera: CameraT, _deltaTime: number): void {
 
   const gl = viewport.gl;
 
+  // Re-allocate the offscreen targets if the viewport has been resized since
+  // they were last sized to it. Nothing propagates a viewport resize to a
+  // camera -- Viewport.resize only updates the canvas and the GL viewport, and
+  // Camera.resize() is documented as the caller's responsibility -- so without
+  // this a resized-but-not-told camera renders a stale-sized FBO. Two integer
+  // compares per frame, the same staleness idiom as solidityDims/atlasVersion
+  // below. Must run before the FBO bind.
+  if (
+    camera.glResources.fullResolution.width !== viewport.width ||
+    camera.glResources.fullResolution.height !== viewport.height
+  ) {
+    allocateCameraTargets(gl, camera, viewport);
+  }
+
   // PHASE 1: Bind framebuffer for offscreen rendering at base resolution
   // Ensure depth texture isn't bound as a sampler on any unit before binding the FBO.
   // The FBO has this texture as its depth attachment — if it's also bound as a sampler,
   // WebGL detects a feedback loop and silently fails all draw calls.
   // This can happen from: sprite rendering (TEXTURE2), zoom resize (set/index.ts), etc.
+  // TEXTURE8 is the same hazard for the FBO's id attachment, which the sprite
+  // pass samples so it can carry the cell id underneath it into the composite.
   gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  gl.activeTexture(gl.TEXTURE8);
   gl.bindTexture(gl.TEXTURE_2D, null);
   gl.bindFramebuffer(gl.FRAMEBUFFER, camera.glResources.framebuffer);
 
@@ -94,15 +128,18 @@ export function render(camera: CameraT, _deltaTime: number): void {
   const baseHeight = camera.glResources.baseResolution.height;
   gl.viewport(0, 0, baseWidth, baseHeight);
 
-  // Clear framebuffer with depth buffer reset
-  gl.clearColor(
-    viewport.backgroundColor.x,
-    viewport.backgroundColor.y,
-    viewport.backgroundColor.z,
-    viewport.backgroundColor.w,
-  );
-  gl.clearDepth(1.0); // Ensure depth buffer clears to far plane
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  // Per-attachment clears. gl.clearColor/gl.clear cannot express this: clear
+  // colour is float-typed and simply does not reach an integer attachment, and
+  // COLOR_BUFFER_BIT over a mixed-format FBO leaves the integer buffer
+  // undefined rather than zeroed. clearBuffer*v selects by draw-buffer index,
+  // so the drawBuffers set by allocateCameraTargets has to already be in place.
+  clearColorScratch[0] = viewport.backgroundColor.x;
+  clearColorScratch[1] = viewport.backgroundColor.y;
+  clearColorScratch[2] = viewport.backgroundColor.z;
+  clearColorScratch[3] = viewport.backgroundColor.w;
+  gl.clearBufferfv(gl.COLOR, 0, clearColorScratch);
+  gl.clearBufferuiv(gl.COLOR, 1, clearIdsScratch);
+  gl.clearBufferfv(gl.DEPTH, 0, clearDepthScratch);
 
   // Compute axonometric projection parameters from camera angle + orbit yaw
   // (matches screen-pick/ray.ts's resolveProjection).
@@ -138,7 +175,8 @@ export function render(camera: CameraT, _deltaTime: number): void {
   // Early return if nothing to render
   if (sprites.length === 0 && cellMaps.length === 0) {
     // Still need to display the empty framebuffer
-    renderPostProcess(camera, viewport, gl, subPixelOffset);
+    renderUpscale(camera, viewport, gl, subPixelOffset);
+    renderPresent(camera, viewport, gl);
     return;
   }
 
@@ -247,9 +285,10 @@ export function render(camera: CameraT, _deltaTime: number): void {
     }
   }
 
-  // PHASE 2: Post-process cells to screen with pixel-perfect upscaling
+  // PHASE 2: Upscale cells into the composite target with pixel-perfect
+  // scaling, applying the cliff-edge outline. Sprites draw over this next.
   const postT0 = profiling ? performance.now() : 0;
-  renderPostProcess(camera, viewport, gl, subPixelOffset);
+  renderUpscale(camera, viewport, gl, subPixelOffset);
   if (profiling) {
     recordComponentUpdate(
       cameraId,
@@ -259,7 +298,8 @@ export function render(camera: CameraT, _deltaTime: number): void {
     );
   }
 
-  // PHASE 3: Render sprites directly to screen at full resolution (no pixelation)
+  // PHASE 3: Render sprites into the composite target at full resolution (no
+  // pixelation), over the upscaled cell image.
   const spritesT0 = profiling ? performance.now() : 0;
   if (sprites.length > 0) {
     renderSprites(
@@ -286,6 +326,39 @@ export function render(camera: CameraT, _deltaTime: number): void {
       camera.name,
       'camera:renderSprites',
       performance.now() - spritesT0,
+    );
+  }
+
+  // PHASE 4: Run the post-effect chain over the finished composite, then blit
+  // the result to the screen. A null return means no chain ran, in which case
+  // renderPresent falls back to the composite itself.
+  const chainT0 = profiling ? performance.now() : 0;
+  const cellSize =
+    cellMaps.length > 0 ? cellMaps[0].cellSize : DEFAULT_CELL_SIZE;
+  const chainOutput = renderPostChain(
+    gl,
+    camera,
+    camPos,
+    cellSize,
+    subPixelOffset,
+  );
+  if (profiling) {
+    recordComponentUpdate(
+      cameraId,
+      camera.name,
+      'camera:postChain',
+      performance.now() - chainT0,
+    );
+  }
+
+  const presentT0 = profiling ? performance.now() : 0;
+  renderPresent(camera, viewport, gl, chainOutput);
+  if (profiling) {
+    recordComponentUpdate(
+      cameraId,
+      camera.name,
+      'camera:present',
+      performance.now() - presentT0,
     );
   }
 }

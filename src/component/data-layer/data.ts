@@ -305,13 +305,12 @@ function deserialize(data: any): DeserializeResult<DataLayerT> {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { type, name, storage, typeMap } = data;
 
   if (type !== 'data-layer') {
     errors.push({
       code: 'TYPE_MISMATCH',
-      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+
       message: `type ${type} does not match "data-layer"`,
     });
   }

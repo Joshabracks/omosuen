@@ -128,7 +128,6 @@ function traverseAndUpdate(
 
   // Then call instance-specific update override if set
   if (component.updateOverride) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const overrideMethod = method[component.updateOverride];
     if (overrideMethod && typeof overrideMethod === 'function') {
       overrideMethod(component, dt);

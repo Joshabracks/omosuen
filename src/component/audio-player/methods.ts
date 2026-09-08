@@ -8,7 +8,7 @@ import type { TrackController } from './track-controller';
 
 // Fully-processed AudioWorklet shell source (worklet shell + inlined audio wasm
 // base64), injected by webpack DefinePlugin from audioWorklet.script.js.
-// eslint-disable-next-line @typescript-eslint/naming-convention
+
 declare const __AUDIO_WORKLET_SCRIPT__: string;
 
 export interface AudioPlayerMethods extends ComponentMethods {

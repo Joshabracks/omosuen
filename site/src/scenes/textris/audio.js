@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 /**
  * Music and sound effects for Textris.
  *

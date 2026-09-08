@@ -193,14 +193,32 @@ export function raycastCellMap(
   let bestV = 0;
   let found = false;
   // Winning triangle positions (+ vertex normals when smoothNormal).
-  let ax = 0, ay = 0, az = 0, bx = 0, by = 0, bz = 0, cx2 = 0, cy2 = 0, cz2 = 0;
-  let anx = 0, any0 = 0, anz = 0, bnx = 0, bny = 0, bnz = 0, cnx = 0, cny = 0, cnz = 0;
+  let ax = 0,
+    ay = 0,
+    az = 0,
+    bx = 0,
+    by = 0,
+    bz = 0,
+    cx2 = 0,
+    cy2 = 0,
+    cz2 = 0;
+  let anx = 0,
+    any0 = 0,
+    anz = 0,
+    bnx = 0,
+    bny = 0,
+    bnz = 0,
+    cnx = 0,
+    cny = 0,
+    cnz = 0;
 
   const chunkW = cellMap.chunkSize.x * cs.x;
   const chunkH = cellMap.chunkSize.y * cs.y;
   const chunkD = cellMap.chunkSize.z * cs.z;
   // Pad the chunk AABB by a cell so smoothing displacement at chunk borders is caught.
-  const padX = cs.x, padY = cs.y, padZ = cs.z;
+  const padX = cs.x,
+    padY = cs.y,
+    padZ = cs.z;
   // The AABB has to be built from the chunk's WORLD chunk coordinate, because the
   // vertices it guards are absolute world-space. `chunk.c*` alone is the local slot.
   const windowOrigin = windowOriginChunk(cellMap);
@@ -218,7 +236,16 @@ export function raycastCellMap(
     const minz = wcz * chunkD - padZ;
     const maxz = (wcz + 1) * chunkD + padZ;
     const tEnter = rayAABBEntry(
-      origin, invx, invy, invz, minx, miny, minz, maxx, maxy, maxz,
+      origin,
+      invx,
+      invy,
+      invz,
+      minx,
+      miny,
+      minz,
+      maxx,
+      maxy,
+      maxz,
     );
     if (tEnter === null || tEnter > Math.min(bestT, maxDist)) continue;
 
@@ -229,9 +256,15 @@ export function raycastCellMap(
       const i0 = indices[i] * stride;
       const i1 = indices[i + 1] * stride;
       const i2 = indices[i + 2] * stride;
-      va.x = verts[i0]; va.y = verts[i0 + 1]; va.z = verts[i0 + 2];
-      vb.x = verts[i1]; vb.y = verts[i1 + 1]; vb.z = verts[i1 + 2];
-      vc.x = verts[i2]; vc.y = verts[i2 + 1]; vc.z = verts[i2 + 2];
+      va.x = verts[i0];
+      va.y = verts[i0 + 1];
+      va.z = verts[i0 + 2];
+      vb.x = verts[i1];
+      vb.y = verts[i1 + 1];
+      vb.z = verts[i1 + 2];
+      vc.x = verts[i2];
+      vc.y = verts[i2 + 1];
+      vc.z = verts[i2 + 2];
 
       const hit = rayTriangle(origin, ndir, va, vb, vc);
       if (hit && hit.t < bestT && hit.t <= maxDist) {
@@ -239,13 +272,25 @@ export function raycastCellMap(
         bestU = hit.u;
         bestV = hit.v;
         found = true;
-        ax = va.x; ay = va.y; az = va.z;
-        bx = vb.x; by = vb.y; bz = vb.z;
-        cx2 = vc.x; cy2 = vc.y; cz2 = vc.z;
+        ax = va.x;
+        ay = va.y;
+        az = va.z;
+        bx = vb.x;
+        by = vb.y;
+        bz = vb.z;
+        cx2 = vc.x;
+        cy2 = vc.y;
+        cz2 = vc.z;
         if (opts.smoothNormal) {
-          anx = verts[i0 + 3]; any0 = verts[i0 + 4]; anz = verts[i0 + 5];
-          bnx = verts[i1 + 3]; bny = verts[i1 + 4]; bnz = verts[i1 + 5];
-          cnx = verts[i2 + 3]; cny = verts[i2 + 4]; cnz = verts[i2 + 5];
+          anx = verts[i0 + 3];
+          any0 = verts[i0 + 4];
+          anz = verts[i0 + 5];
+          bnx = verts[i1 + 3];
+          bny = verts[i1 + 4];
+          bnz = verts[i1 + 5];
+          cnx = verts[i2 + 3];
+          cny = verts[i2 + 4];
+          cnz = verts[i2 + 5];
         }
       }
     }
@@ -265,16 +310,24 @@ export function raycastCellMap(
     nz = w * anz + bestU * bnz + bestV * cnz;
   } else {
     // Geometric normal = (b-a) × (c-a).
-    const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
-    const e2x = cx2 - ax, e2y = cy2 - ay, e2z = cz2 - az;
+    const e1x = bx - ax,
+      e1y = by - ay,
+      e1z = bz - az;
+    const e2x = cx2 - ax,
+      e2y = cy2 - ay,
+      e2z = cz2 - az;
     nx = e1y * e2z - e1z * e2y;
     ny = e1z * e2x - e1x * e2z;
     nz = e1x * e2y - e1y * e2x;
   }
   const nl = Math.hypot(nx, ny, nz) || 1;
-  nx /= nl; ny /= nl; nz /= nl;
+  nx /= nl;
+  ny /= nl;
+  nz /= nl;
   if (nx * dx + ny * dy + nz * dz > 0) {
-    nx = -nx; ny = -ny; nz = -nz; // orient to oppose the ray
+    nx = -nx;
+    ny = -ny;
+    nz = -nz; // orient to oppose the ray
   }
 
   // Owning cell = floor of a point nudged past the surface, INTO the solid, along the
@@ -341,8 +394,7 @@ export function sampleSurfaceHeight(
   // explicitly for a taller world. (Computed here rather than via
   // `CellMap.getBounds` — methods.ts imports this module, so the reverse would be
   // circular.)
-  const originY =
-    windowOriginChunk(cellMap).cy * cellMap.chunkSize.y * cs.y;
+  const originY = windowOriginChunk(cellMap).cy * cellMap.chunkSize.y * cs.y;
   const top = originY + cellMap.mapSize.y * cs.y;
   const origin = new Vector3D(worldX, top + cs.y, worldZ);
   const hit = raycastCellMap(cellMap, origin, new Vector3D(0, -1, 0), {

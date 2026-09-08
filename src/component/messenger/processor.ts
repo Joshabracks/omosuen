@@ -39,6 +39,7 @@ function findMatchingListeners(message: string): ListenerEntry[] {
   matches.length = 0;
 
   // Iterate through all registered listeners
+
   for (const [_messengerId, listeners] of MESSAGE_LISTENERS) {
     for (const listener of listeners) {
       // ALL_MESSAGES: Always match (greedy listener)

@@ -2,8 +2,16 @@ import { NexusT } from '../../nexus';
 import { TransformT } from '../../transform';
 import { castTo } from '../../types';
 import { ViewportT } from '../../viewport';
-import { CameraT } from '../data';
-import { FBO_OVERSCAN_PX } from '../render/light-uniforms';
+import {
+  CameraT,
+  PostEffectOptions,
+  PostEffectUniformValue,
+  resolvePostEffects,
+} from '../data';
+import {
+  allocateCameraTargets,
+  syncTargetResolutions,
+} from '../render/framebuffers';
 
 /**
  * Sets the camera zoom level and updates framebuffer resolution.
@@ -173,49 +181,71 @@ function updateFramebufferForZoom(camera: CameraT): void {
     return;
   }
 
-  const gl = viewport.gl;
+  // Record the new size even when there is nothing allocated yet, so a camera
+  // whose init() bailed still reports a current resolution; init() computes it
+  // again for itself when it runs.
+  syncTargetResolutions(camera, viewport);
 
-  // Recalculate base resolution based on new zoom and pixel scale
-  // Add 2 pixels of overscan per dimension (1-pixel border on each side)
-  const baseWidth =
-    Math.floor(viewport.width / (camera.zoom * camera.pixelScale)) +
-    FBO_OVERSCAN_PX;
-  const baseHeight =
-    Math.floor(viewport.height / (camera.zoom * camera.pixelScale)) +
-    FBO_OVERSCAN_PX;
-
-  camera.glResources.baseResolution.width = baseWidth;
-  camera.glResources.baseResolution.height = baseHeight;
-
-  if (!camera.glResources.renderTexture || !camera.glResources.depthTexture) {
+  if (!camera.glResources.framebuffer) {
     return;
   }
 
-  // Resize render texture
-  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.renderTexture);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.RGBA,
-    baseWidth,
-    baseHeight,
-    0,
-    gl.RGBA,
-    gl.UNSIGNED_BYTE,
-    null,
-  );
+  allocateCameraTargets(viewport.gl, camera, viewport);
+}
 
-  // Resize depth texture
-  gl.bindTexture(gl.TEXTURE_2D, camera.glResources.depthTexture);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.DEPTH_COMPONENT24,
-    baseWidth,
-    baseHeight,
-    0,
-    gl.DEPTH_COMPONENT,
-    gl.UNSIGNED_INT,
-    null,
-  );
+/**
+ * Replaces the camera's post-effect chain.
+ *
+ * Triggers a target reallocation when the chain goes from empty to non-empty or
+ * back, since the ping-pong colour targets are only allocated while a chain
+ * exists. Compilation itself is lazy — the next frame builds any stage whose
+ * source changed.
+ */
+export function setPostEffects(
+  camera: CameraT,
+  effects: PostEffectOptions[] | null,
+): void {
+  const had = (camera.postEffects?.length ?? 0) > 0;
+  camera.postEffects = resolvePostEffects(effects ?? undefined);
+  const has = (camera.postEffects?.length ?? 0) > 0;
+  if (had !== has) updateFramebufferForZoom(camera);
+}
+
+/** Enables or disables one stage by name, leaving the rest of the chain running. */
+export function setPostEffectEnabled(
+  camera: CameraT,
+  name: string,
+  enabled: boolean,
+): void {
+  const effect = camera.postEffects?.find((e) => e.name === name);
+  if (!effect) {
+    console.warn(`[camera] No post-effect named '${name}' on '${camera.name}'`);
+    return;
+  }
+  effect.enabled = enabled;
+}
+
+/**
+ * Sets one stage-private uniform. Takes effect on the next frame with no
+ * recompile — locations are cached by name at compile time and the value is
+ * re-uploaded every frame.
+ */
+export function setPostEffectUniform(
+  camera: CameraT,
+  name: string,
+  key: string,
+  value: PostEffectUniformValue,
+): void {
+  const effect = camera.postEffects?.find((e) => e.name === name);
+  if (!effect) {
+    console.warn(`[camera] No post-effect named '${name}' on '${camera.name}'`);
+    return;
+  }
+  if (key.startsWith('u_')) {
+    console.warn(
+      `[camera] post-effect uniform '${key}' uses the reserved u_ prefix`,
+    );
+    return;
+  }
+  effect.uniforms[key] = value;
 }

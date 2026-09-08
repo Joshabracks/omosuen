@@ -1,6 +1,6 @@
-import { isValidComponentDocId } from "./data/engine-components";
-import { isValidPluginDocId } from "./data/plugin-components";
-import type { SiteView } from "./state";
+import { isValidComponentDocId } from './data/engine-components';
+import { isValidPluginDocId } from './data/plugin-components';
+import type { SiteView } from './state';
 
 export interface ParsedSiteHash {
   view: SiteView;
@@ -13,20 +13,19 @@ function isValidDocsId(id: string): boolean {
 
 /** Parses `#landing`, `#demo`, `#docs`, `#docs/sprite`, etc. */
 export function parseSiteHash(hash: string): ParsedSiteHash {
-  const raw = hash.startsWith("#") ? hash.slice(1) : hash;
+  const raw = hash.startsWith('#') ? hash.slice(1) : hash;
 
-  if (raw === "demo") {
-    return { view: "demo", docsComponent: null };
+  if (raw === 'demo') {
+    return { view: 'demo', docsComponent: null };
   }
 
-  if (raw === "docs" || raw.startsWith("docs/")) {
-    const segment = raw.split("/")[1] ?? "";
-    const docsComponent =
-      segment && isValidDocsId(segment) ? segment : null;
-    return { view: "docs", docsComponent };
+  if (raw === 'docs' || raw.startsWith('docs/')) {
+    const segment = raw.split('/')[1] ?? '';
+    const docsComponent = segment && isValidDocsId(segment) ? segment : null;
+    return { view: 'docs', docsComponent };
   }
 
-  return { view: "landing", docsComponent: null };
+  return { view: 'landing', docsComponent: null };
 }
 
 export function docsComponentHref(id: string): string {
@@ -34,11 +33,11 @@ export function docsComponentHref(id: string): string {
 }
 
 export function docsOverviewHref(): string {
-  return "#docs";
+  return '#docs';
 }
 
 export function demoHref(): string {
-  return "#demo";
+  return '#demo';
 }
 
 /**
@@ -47,5 +46,5 @@ export function demoHref(): string {
  * the two cannot be resident at the same time.
  */
 export function sceneForView(view: SiteView): string {
-  return view === "demo" ? "textris" : "site";
+  return view === 'demo' ? 'textris' : 'site';
 }

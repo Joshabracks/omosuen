@@ -3,7 +3,11 @@ import { ComponentData, castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
 import { clearLightUniformCache } from '../render/light-uniforms';
+import { clearVisionUniformCache } from '../render/vision-uniforms';
+import { clearFogUniformCache } from '../render/fog-uniforms';
 import { clearRenderablesCache } from '../collect-renderables/index';
+import { disposeCameraTargets } from '../render/framebuffers';
+import { clearPostChainCache } from '../render/post-chain';
 
 /**
  * Disposes WebGL resources when the camera is removed.
@@ -34,32 +38,35 @@ export function dispose(component: ComponentData): void {
   if (gl) {
     if (res.unifiedProgram) gl.deleteProgram(res.unifiedProgram);
     if (res.postProcessProgram) gl.deleteProgram(res.postProcessProgram);
+    if (res.presentProgram) gl.deleteProgram(res.presentProgram);
     if (res.quadVertexBuffer) gl.deleteBuffer(res.quadVertexBuffer);
     if (res.quadUVBuffer) gl.deleteBuffer(res.quadUVBuffer);
     if (res.fullscreenQuadBuffer) gl.deleteBuffer(res.fullscreenQuadBuffer);
-    if (res.framebuffer) gl.deleteFramebuffer(res.framebuffer);
-    if (res.renderTexture) gl.deleteTexture(res.renderTexture);
-    if (res.depthTexture) gl.deleteTexture(res.depthTexture);
     for (const tex of res.atlasTextures) {
       if (tex) gl.deleteTexture(tex);
     }
   }
 
+  // Framebuffer targets are owned by render/framebuffers.ts, which allocates
+  // them; deleting them there keeps the two halves in one place.
+  disposeCameraTargets(gl, camera);
+
   // Null all references for GC
   res.unifiedProgram = null;
   res.renderModeLocation = null;
   res.postProcessProgram = null;
+  res.presentProgram = null;
   res.quadVertexBuffer = null;
   res.quadUVBuffer = null;
   res.fullscreenQuadBuffer = null;
-  res.framebuffer = null;
-  res.renderTexture = null;
-  res.depthTexture = null;
   res.atlasTextures = [];
 
   // Clear module-level caches for this camera
   clearLightUniformCache(camera.id!);
+  clearVisionUniformCache(camera.id!);
+  clearFogUniformCache(camera.id!);
   clearRenderablesCache(camera.id!);
+  clearPostChainCache(gl, camera.id!);
 
   camera._disposed = true;
 }

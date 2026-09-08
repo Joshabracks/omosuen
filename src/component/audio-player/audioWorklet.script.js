@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 // WSOLA Pitch/Speed Separation — AudioWorklet shell over the omosuen-audio WASM crate.
 //
 // This is a standalone worklet script (its own realm: AudioWorkletGlobalScope).
@@ -14,9 +15,10 @@
 // ── omosuen-audio WASM (one instance per AudioWorkletGlobalScope realm) ──
 // atob/fetch are unavailable here, so the base64 (injected by webpack) is decoded
 // inline. The string literal below is replaced at build time.
-const __AUDIO_WASM_B64 = "__AUDIO_WASM_BASE64__";
+const __AUDIO_WASM_B64 = '__AUDIO_WASM_BASE64__';
 function __b64ToBytes(s) {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const chars =
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   const lut = new Int16Array(256).fill(-1);
   for (let i = 0; i < chars.length; i++) lut[chars.charCodeAt(i)] = i;
   const len = s.length;
@@ -27,8 +29,10 @@ function __b64ToBytes(s) {
   const out = new Uint8Array(outLen);
   let o = 0;
   for (let i = 0; i < len; i += 4) {
-    const a = lut[s.charCodeAt(i)], b = lut[s.charCodeAt(i + 1)];
-    const c = lut[s.charCodeAt(i + 2)], d = lut[s.charCodeAt(i + 3)];
+    const a = lut[s.charCodeAt(i)],
+      b = lut[s.charCodeAt(i + 1)];
+    const c = lut[s.charCodeAt(i + 2)],
+      d = lut[s.charCodeAt(i + 3)];
     const n = (a << 18) | (b << 12) | ((c & 63) << 6) | (d & 63);
     if (o < outLen) out[o++] = (n >> 16) & 255;
     if (o < outLen) out[o++] = (n >> 8) & 255;
@@ -51,13 +55,19 @@ function __failWasm(stage, e) {
 }
 (function () {
   try {
-    WebAssembly.instantiate(__b64ToBytes(__AUDIO_WASM_B64), {}).then((res) => {
-      __wasm = res.instance.exports;
-      __wasmReady = true;
-      for (const p of __pending) p._onWasmReady();
-      __pending.length = 0;
-    }).catch((e) => { __failWasm('instantiate', e); });
-  } catch (e) { __failWasm('decode', e); }
+    WebAssembly.instantiate(__b64ToBytes(__AUDIO_WASM_B64), {})
+      .then((res) => {
+        __wasm = res.instance.exports;
+        __wasmReady = true;
+        for (const p of __pending) p._onWasmReady();
+        __pending.length = 0;
+      })
+      .catch((e) => {
+        __failWasm('instantiate', e);
+      });
+  } catch (e) {
+    __failWasm('decode', e);
+  }
 })();
 
 class StretcherProcessor extends AudioWorkletProcessor {
@@ -83,7 +93,10 @@ class StretcherProcessor extends AudioWorkletProcessor {
       else __pending.push(this);
       return;
     }
-    if (!this.created) { this.queued.push(msg); return; }
+    if (!this.created) {
+      this.queued.push(msg);
+      return;
+    }
     this._apply(msg);
   }
 
@@ -100,11 +113,19 @@ class StretcherProcessor extends AudioWorkletProcessor {
       Math.pow(2, m.pitchShift / 12),
       m.tempo,
       m.repeat ? 1 : 0,
-      m.transitionBuffer
+      m.transitionBuffer,
     );
     __wasm.stretcher_alloc_channels(this.id, frames);
-    new Float32Array(__wasm.memory.buffer, __wasm.stretcher_channel_l_ptr(this.id), frames).set(m.channelL);
-    new Float32Array(__wasm.memory.buffer, __wasm.stretcher_channel_r_ptr(this.id), frames).set(m.channelR);
+    new Float32Array(
+      __wasm.memory.buffer,
+      __wasm.stretcher_channel_l_ptr(this.id),
+      frames,
+    ).set(m.channelL);
+    new Float32Array(
+      __wasm.memory.buffer,
+      __wasm.stretcher_channel_r_ptr(this.id),
+      frames,
+    ).set(m.channelR);
     this.created = true;
     for (const qm of this.queued) this._apply(qm);
     this.queued.length = 0;
@@ -112,10 +133,18 @@ class StretcherProcessor extends AudioWorkletProcessor {
 
   _apply(msg) {
     switch (msg.type) {
-      case 'pitch': __wasm.stretcher_set_pitch(this.id, Math.pow(2, msg.value / 12)); break;
-      case 'tempo': __wasm.stretcher_set_tempo(this.id, msg.value); break;
-      case 'repeat': __wasm.stretcher_set_repeat(this.id, msg.value ? 1 : 0); break;
-      case 'stop': __wasm.stretcher_stop(this.id); break;
+      case 'pitch':
+        __wasm.stretcher_set_pitch(this.id, Math.pow(2, msg.value / 12));
+        break;
+      case 'tempo':
+        __wasm.stretcher_set_tempo(this.id, msg.value);
+        break;
+      case 'repeat':
+        __wasm.stretcher_set_repeat(this.id, msg.value ? 1 : 0);
+        break;
+      case 'stop':
+        __wasm.stretcher_stop(this.id);
+        break;
     }
   }
 
@@ -134,7 +163,11 @@ class StretcherProcessor extends AudioWorkletProcessor {
       // Rebuild the cached view only when linear memory grew (buffer swapped).
       if (this.outView === null || this.outBuf !== __wasm.memory.buffer) {
         this.outBuf = __wasm.memory.buffer;
-        this.outView = new Float32Array(this.outBuf, __wasm.stretcher_output_ptr(this.id), n * 2);
+        this.outView = new Float32Array(
+          this.outBuf,
+          __wasm.stretcher_output_ptr(this.id),
+          n * 2,
+        );
       }
       const mem = this.outView;
       for (let i = 0; i < n; i++) {
@@ -145,7 +178,10 @@ class StretcherProcessor extends AudioWorkletProcessor {
       this.posCounter++;
       if (this.posCounter >= 8) {
         this.posCounter = 0;
-        this.port.postMessage({ type: 'position', value: __wasm.stretcher_position(this.id) });
+        this.port.postMessage({
+          type: 'position',
+          value: __wasm.stretcher_position(this.id),
+        });
       }
     }
 

@@ -37,34 +37,41 @@ async function init(component: ComponentData): Promise<void> {
   const ic = component as InputControllerT;
 
   // Keyboard event handlers
-  const keydownHandler = (e: Event) => handleKeyDown(ic, e as KeyboardEvent);
-  const keyupHandler = (e: Event) => handleKeyUp(ic, e as KeyboardEvent);
+  const keydownHandler = (e: Event): void =>
+    handleKeyDown(ic, e as KeyboardEvent);
+  const keyupHandler = (e: Event): void => handleKeyUp(ic, e as KeyboardEvent);
 
   // Mouse event handlers
-  const mousedownHandler = (e: Event) => handleMouseDown(ic, e as MouseEvent);
-  const mouseupHandler = (e: Event) => handleMouseUp(ic, e as MouseEvent);
-  const mousemoveHandler = (e: Event) => handleMouseMove(ic, e as MouseEvent);
-  const wheelHandler = (e: Event) => handleWheel(ic, e as WheelEvent);
-  const clickHandler = (e: Event) => handleClick(ic, e as MouseEvent);
-  const contextmenuHandler = (e: Event) =>
+  const mousedownHandler = (e: Event): void =>
+    handleMouseDown(ic, e as MouseEvent);
+  const mouseupHandler = (e: Event): void => handleMouseUp(ic, e as MouseEvent);
+  const mousemoveHandler = (e: Event): void =>
+    handleMouseMove(ic, e as MouseEvent);
+  const wheelHandler = (e: Event): void => handleWheel(ic, e as WheelEvent);
+  const clickHandler = (e: Event): void => handleClick(ic, e as MouseEvent);
+  const contextmenuHandler = (e: Event): void =>
     handleContextMenu(ic, e as MouseEvent);
 
   // Pointer event handlers
-  const pointerdownHandler = (e: Event) =>
+  const pointerdownHandler = (e: Event): void =>
     handlePointerDown(ic, e as PointerEvent);
-  const pointerupHandler = (e: Event) => handlePointerUp(ic, e as PointerEvent);
-  const pointermoveHandler = (e: Event) =>
+  const pointerupHandler = (e: Event): void =>
+    handlePointerUp(ic, e as PointerEvent);
+  const pointermoveHandler = (e: Event): void =>
     handlePointerMove(ic, e as PointerEvent);
 
   // Touch event handlers
-  const touchstartHandler = (e: Event) => handleTouchStart(ic, e as TouchEvent);
-  const touchendHandler = (e: Event) => handleTouchEnd(ic, e as TouchEvent);
-  const touchmoveHandler = (e: Event) => handleTouchMove(ic, e as TouchEvent);
+  const touchstartHandler = (e: Event): void =>
+    handleTouchStart(ic, e as TouchEvent);
+  const touchendHandler = (e: Event): void =>
+    handleTouchEnd(ic, e as TouchEvent);
+  const touchmoveHandler = (e: Event): void =>
+    handleTouchMove(ic, e as TouchEvent);
 
   // Gamepad event handlers
-  const gamepadconnectedHandler = (e: Event) =>
+  const gamepadconnectedHandler = (e: Event): void =>
     handleGamepadConnected(ic, e as GamepadEvent);
-  const gamepaddisconnectedHandler = (e: Event) =>
+  const gamepaddisconnectedHandler = (e: Event): void =>
     handleGamepadDisconnected(ic, e as GamepadEvent);
 
   // Attach event listeners to target (defaults to window)

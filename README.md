@@ -222,10 +222,77 @@ colliders overlap it. Same geometry options as `collider`:
   orthographic projection; `0` matches the original fixed-azimuth view. Set via
   `setOrbitYaw(degrees)` or `orbitBy(deltaDegrees)`. Still no perspective/FOV or free
   6DOF — the projection stays orthographic-axonometric, only the azimuth moves.
+- `postEffects?: PostEffectOptions[]` (default: none) — an ordered post-process chain applied
+  to the finished frame. See **Post-process effects** below. Nothing is allocated when no
+  chain is configured.
 - The camera's offscreen framebuffer (used for pixel-perfect zoom) is only recomputed on
   `setZoom`/`setPixelScale`, not automatically when the viewport resizes. Call
   `resize()` after resizing the viewport (e.g. from a `window.resize` listener) to
   re-sync it — otherwise the rendered image stretches/squashes to the new canvas size.
+
+**Post-process effects.** `camera.postEffects` is an ordered array of fragment shaders run over
+the composited frame (terrain + sprites) before it reaches the screen. Each stage reads the
+previous stage's colour plus a set of per-texel mask channels, and writes one colour.
+
+```js
+camera.setPostEffects([
+  { name: 'tint', fragment: mySource, uniforms: { strength: 0.5 } },
+]);
+camera.setPostEffectUniform('tint', 'strength', 0.8); // next frame, no recompile
+camera.setPostEffectEnabled('tint', false);           // skip this stage
+camera.setPostEffects(null);                          // drop the chain, free its targets
+```
+
+Each `PostEffectOptions` is `{ name, fragment? | fragmentKey?, enabled?, uniforms? }`. Supply
+**either** `fragment` (raw GLSL) **or** `fragmentKey` (a key registered via
+`registerMethod('post-effect', key, source)`). Only keyed stages survive save/load — the same
+tradeoff `cell-map`'s `generateCell` documents — and `serialize()` warns about any raw-source
+stage it has to drop. A stage that fails to compile is skipped with a console error; it never
+black-screens the frame.
+
+Stages are GLSL ES 3.00 (`#version 300 es` is prepended if you omit it) and receive:
+
+| Uniform | Type | Meaning |
+| --- | --- | --- |
+| `u_color` | `sampler2D` | previous stage's output; the composited frame at stage 0 |
+| `u_ids` | `highp usampler2D` | `.r` = cell material index, `.g` = sprite `shaderId` |
+| `u_aux` | `sampler2D` | `.r` = sprite coverage 0–1, `.g` = fog-of-war visibility 0–1 |
+| `u_depth` | `sampler2D` | linear depth, at **base** resolution — sample via the bridge below |
+| `u_depthUvScale` / `u_depthUvOffset` | `vec2` | maps a full-res UV into `u_depth` |
+| `u_resolution` / `u_texelSize` | `vec2` | full-res size, and `1.0 / size` |
+| `u_time` / `u_frame` / `u_stageIndex` | `float` / `int` / `int` | seconds, frame counter, position in the chain |
+| `u_orbitYaw` / `u_axonometricAngle` / `u_zoom` / `u_pixelScale` | `float` | camera state |
+| `u_cameraWorldPos` / `u_cellSize` | `vec3` | for world-space reconstruction |
+| `v_uv` | `in vec2` | fullscreen quad UV |
+| `fragColor` | `out vec4` | the stage's output |
+
+Uniform names starting with `u_` are reserved; your own uniforms must use any other prefix.
+Camera state is provided so a screen-space effect can stay locked to the world as the camera
+orbits — much harder to retrofit than to use.
+
+Three things that are easy to get wrong:
+
+- **Ids are 16-bit, so compare them as `highp` integers.** `mediump int` only reaches ±32767 and
+  `mediump float` is exact only to 2048; round-tripping an id through a `mediump float` corrupts
+  it silently. Declare `precision highp int;`.
+- **`cell_index` is the literal material index**, so material 0 is real and reads as 0 just like
+  empty space. To ask *"is there terrain here?"* use depth: `u_depth >= 1.0` means nothing was
+  drawn. Likewise, sprite id **0 means "no sprite"** — a per-id rule like `id % 2u == 0u` matches
+  every terrain texel unless you guard it with `id > 0u`.
+- **`sprite_index` and sprite coverage answer different questions and can disagree.** Ids live on
+  an integer attachment and do not blend, so a sprite fragment stamps its id whatever its alpha;
+  coverage blends, so a nearly-transparent fragment contributes ~0 coverage while still owning
+  the id. Key off the id for *which* sprite, off coverage for *how much of it is visible* —
+  using coverage as a mix factor is also what makes soft sprite edges fade rather than clip.
+
+A copyable starting point that references every input and is a provable no-op ships at
+[`src/component/camera/shader/post-effect-template.frag`](src/component/camera/shader/post-effect-template.frag).
+Worked examples, plus a 22-assertion conformance suite, live in
+[`test/scenes/post-process-test.js`](test/scenes/post-process-test.js) (Post-Process Chain Test
+in the browser harness).
+
+Memory: a configured chain allocates two full-resolution colour targets plus the mask
+attachments. Nothing is allocated while `postEffects` is unset.
 
 **`sprite`** — Multi-channel billboard; per-channel frame selection, tint, opacity, optional
 silhouette, material-driven specular and emission. *Unique: one per parent nexus.*
@@ -234,6 +301,7 @@ silhouette, material-driven specular and emission. *Unique: one per parent nexus
 - `anchor?: Vector2D` (default `(0,0)`)
 - `tint?: Vector4D` (default `(1,1,1,1)`), `opacity?: number` (default `1.0`)
 - `showSilhouette?: boolean` (default `false`), `silhouetteColor?: Vector4D` (default `(0.2,0.4,0.8,0.5)`)
+- `shaderId?: number` (default `0`) — an identifier this sprite stamps into the camera's per-texel id mask, so a post-process effect can tell which sprite painted a pixel. Purely a tag the renderer never interprets: use it for a material index, an entity class, a stripe state, or any per-sprite key. `0` means "no sprite here", so start real ids at 1. Stored in a 16-bit channel — values at or above 65536 truncate, and the renderer warns once when it sees one. Only meaningful alongside `camera.postEffects`; see **Post-process effects** under `camera`.
 - `emissionIntensity?: number` (default `0`, clamped 0–1) — scales the emission texture (or albedo as a fallback when no emission texture is assigned) into a self-illuminating glow. Set via `setEmissionIntensity(intensity)`.
 - `emissionColor?: Vector3D` (default `(0,0,0)`, no-op) — flat additive RGB highlight, added independent of `emissionIntensity`. Set via `setEmissionColor(r,g,b)`, read via `getEmissionColor()`.
 - `trackedByFog?: boolean` (default `true`) — fog-of-war tracking gate. When true,

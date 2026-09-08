@@ -323,6 +323,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("orbitYaw", "number?", "Orbit yaw (degrees), rotates world X/Z around +Y before projection. Default 0.", "0"),
       O("viewportRef", "string", "Viewport component name (required).", "'MainViewport'"),
       O("depthCues", "DepthCuesOptions?", "Partial depth-cue weights."),
+      O("postEffects", "PostEffectOptions[]?", "Ordered post-process chain over the composited frame. Each stage is { name, fragment | fragmentKey, enabled?, uniforms? }. Only fragmentKey stages (registered via registerMethod('post-effect', key, source)) survive save/load. Nothing is allocated when unset."),
     ]),
     data: [
       O("zoom", "number", "Current zoom."),
@@ -333,6 +334,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("zoomTarget", "{x,y} | null", "Viewport-local zoom anchor."),
       O("glResources", "object", "WebGL programs, buffers, FBOs."),
       O("depthCues", "DepthCues | null", "Resolved depth-cue weights."),
+      O("postEffects", "PostEffect[] | null", "Resolved post-process chain; null = no chain."),
     ],
     methods: [
       M("render", "render(dt)", "Render cell-maps and sprites.", [
@@ -359,6 +361,18 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       ]),
       M("setPixelScale", "setPixelScale(scale)", "Set pixelation scale.", [
         A("scale", "number", "Pixelation scale factor."),
+      ]),
+      M("setPostEffects", "setPostEffects(effects)", "Replace the post-process chain. Pass null to drop it and free its render targets. Compilation is lazy -- the next frame builds any stage whose source changed.", [
+        A("effects", "PostEffectOptions[] | null", "Ordered stages, or null for no chain."),
+      ]),
+      M("setPostEffectEnabled", "setPostEffectEnabled(name, enabled)", "Enable/disable one stage by name; the rest of the chain still runs.", [
+        A("name", "string", "Stage name."),
+        A("enabled", "boolean", "Whether the stage runs."),
+      ]),
+      M("setPostEffectUniform", "setPostEffectUniform(name, key, value)", "Set one stage-private uniform. Takes effect next frame with no recompile. Names starting with u_ are reserved for the engine contract.", [
+        A("name", "string", "Stage name."),
+        A("key", "string", "Uniform name as declared in the stage source."),
+        A("value", "number | number[] | boolean", "Value to upload."),
       ]),
       M("resize", "resize()", "Re-sync the offscreen framebuffer to the current viewport size. Call after resizing the viewport."),
       M("screenPick", "screenPick(points, count, out, opts?)", "Screen shape to world hits.", [
@@ -527,6 +541,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("tint", "Vector4D?", "RGBA tint 0–1.", "new Omosuen.Vector4D(1, 1, 1, 1)"),
       O("opacity", "number?", "Alpha 0–1.", "1"),
       O("showSilhouette", "boolean?", "Flat silhouette when occluded.", "false"),
+      O("shaderId", "number?", "Identifier stamped into the camera's per-texel id mask so a post-effect can tell which sprite painted a pixel. 0 means 'no sprite', so start real ids at 1. 16-bit: values >= 65536 truncate.", "0"),
       O("silhouetteColor", "Vector4D?", "Silhouette color.", "new Omosuen.Vector4D(0.2, 0.4, 0.8, 0.5)"),
       O("visible", "boolean?", "Whether renderer draws sprite.", "true"),
       O("renderOrder", "number?", "Sibling draw order.", "0"),
@@ -541,6 +556,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       O("tint", "Vector4D", "Color tint."),
       O("opacity", "number", "Alpha."),
       O("showSilhouette", "boolean", "Silhouette when occluded."),
+      O("shaderId", "number", "Per-texel id mask tag; 0 = no sprite."),
       O("silhouetteColor", "Vector4D", "Silhouette color."),
       O("visible", "boolean", "Render visibility."),
       O("renderOrder", "number", "Draw order among siblings."),

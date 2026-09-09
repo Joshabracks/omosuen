@@ -59,6 +59,7 @@ async function initGame() {
     Omosuen.registerSceneModule('depth-cues-test', '/scenes/depth-cues-test.js');
     Omosuen.registerSceneModule('post-process-test', '/scenes/post-process-test.js');
     Omosuen.registerSceneModule('channel-pack-test', '/scenes/channel-pack-test.js');
+    Omosuen.registerSceneModule('cell-region-test', '/scenes/cell-region-test.js');
     Omosuen.registerSceneModule('screen-pick-test', '/scenes/screen-pick-test.js');
     Omosuen.registerSceneModule('audio-test', '/scenes/audio-test.js');
     Omosuen.registerSceneModule('speed-dial-test', '/scenes/speed-dial-test.js');

@@ -25,6 +25,7 @@ Omosuen.registerHtmlConstructor('mainMenu', (overlay) => {
                 <button id="btn-depth-cues-test" class="menu-button">Depth Cues Test</button>
                 <button id="btn-post-process-test" class="menu-button">Post-Process Chain Test</button>
                 <button id="btn-channel-pack-test" class="menu-button">Channel Pack Test</button>
+                <button id="btn-cell-region-test" class="menu-button">Cell Region Test</button>
                 <button id="btn-screen-pick-test" class="menu-button">Screen Pick Test</button>
                 <button id="btn-audio-test" class="menu-button">Audio Test Scene</button>
                 <button id="btn-speed-dial-test" class="menu-button">Speed-Dial Test</button>
@@ -94,6 +95,11 @@ Omosuen.registerBinding('loadPostProcessTest', async (event) => {
 Omosuen.registerBinding('loadChannelPackTest', async (event) => {
     console.log('Loading Channel Pack Test scene...');
     await Omosuen.switchScene('channel-pack-test');
+});
+
+Omosuen.registerBinding('loadCellRegionTest', async (event) => {
+    console.log('Loading Cell Region Test scene...');
+    await Omosuen.switchScene('cell-region-test');
 });
 
 Omosuen.registerBinding('loadScreenPickTest', async (event) => {
@@ -189,6 +195,11 @@ export async function createScene() {
                 selector: '#btn-channel-pack-test',
                 onActions: ['click'],
                 methodKey: 'loadChannelPackTest'
+            },
+            {
+                selector: '#btn-cell-region-test',
+                onActions: ['click'],
+                methodKey: 'loadCellRegionTest'
             },
             {
                 selector: '#btn-screen-pick-test',

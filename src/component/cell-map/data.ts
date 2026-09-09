@@ -16,6 +16,7 @@ import {
   createDefaultCellData,
   DEFAULT_CHUNK_SIZE,
   CellEmissionColorDirtyRegion,
+  CellRegionIndexDirtyRegion,
   ChunkExploredDirtyRegion,
 } from './types';
 import {
@@ -132,6 +133,26 @@ export let cmEmissionColorDirtyRegions: CellEmissionColorDirtyRegion[] = [];
  * this file, so they stay out of `PROPERTY_ALLOWLIST`.
  */
 let cmEmissionColorSyncedCellCount = -1;
+/**
+ * Per-cell REGION INDEX (0-255; 0 = "no region"). A small integer an author
+ * assigns per cell so a post effect can recolour that region — the terrain
+ * counterpart to the sprite material channel's mask, and independent of the
+ * cell's material type (which post effects already get as `u_ids.r`).
+ *
+ * Sampled GPU-side by cell coordinate like `cmEmissionColorMap`, so changing it
+ * needs no remesh. Stored as its own channel rather than packed into the
+ * emission colour's spare byte: they are versioned independently and a shared
+ * buffer would make one setter invalidate the other's uploads.
+ */
+export let cmRegionIndexMap: NumericArray3D;
+/** Monotonic counter; mirrors `cmEmissionColorVersion`. */
+export let cmRegionIndexVersion: number = 0;
+/** Full-reupload threshold; mirrors `cmEmissionColorFullVersion`. */
+export let cmRegionIndexFullVersion: number = 0;
+/** Per-cell dirty log; mirrors `cmEmissionColorDirtyRegions`. */
+export let cmRegionIndexDirtyRegions: CellRegionIndexDirtyRegion[] = [];
+/** Sync bookkeeping; mirrors `cmEmissionColorSyncedCellCount`. */
+let cmRegionIndexSyncedCellCount = -1;
 /** Window cell count at the last memory-material sync; see cmEmissionColorSyncedCellCount. */
 /**
  * Cell-level fog-of-war "explored" state: one flag per CELL (has any vision
@@ -293,6 +314,8 @@ export let cmGeneratorKey:
  * together).
  */
 export let cmEmissionColorChannel: AuxiliaryChannel | undefined;
+/** Per-cell region index channel; same windowing/persistence as the above. */
+export let cmRegionIndexChannel: AuxiliaryChannel | undefined;
 export let cmSmoothingWeightsChannel: AuxiliaryChannel | undefined;
 /**
  * Chunk-level fog-of-war "explored" channel -- see `cmExploredMap`'s doc
@@ -362,6 +385,11 @@ export function resetCellMapState(): void {
   cmEmissionColorFullVersion = 0;
   cmEmissionColorDirtyRegions = [];
   cmEmissionColorSyncedCellCount = -1;
+  cmRegionIndexMap = undefined!;
+  cmRegionIndexVersion = 0;
+  cmRegionIndexFullVersion = 0;
+  cmRegionIndexDirtyRegions = [];
+  cmRegionIndexSyncedCellCount = -1;
   cmMeshCacheCapacity = MESH_CACHE_MIN_CAPACITY;
   cmAuxWindowChangeMsAccum = 0;
   cmAuxFieldSyncMsAccum = 0;
@@ -391,6 +419,7 @@ export function resetCellMapState(): void {
   cmColdStorage = undefined;
   cmGeneratorKey = undefined;
   cmEmissionColorChannel = undefined;
+  cmRegionIndexChannel = undefined;
   cmSmoothingWeightsChannel = undefined;
   cmExploredChannel = undefined;
   cmPendingBufferCleanup = [];
@@ -476,6 +505,30 @@ function makeCellMapInstance(name: string): CellMapT {
     },
     set emissionColorDirtyRegions(v) {
       cmEmissionColorDirtyRegions = v;
+    },
+    get regionIndexMap() {
+      return cmRegionIndexMap;
+    },
+    set regionIndexMap(v) {
+      cmRegionIndexMap = v;
+    },
+    get regionIndexVersion() {
+      return cmRegionIndexVersion;
+    },
+    set regionIndexVersion(v) {
+      cmRegionIndexVersion = v;
+    },
+    get regionIndexFullVersion() {
+      return cmRegionIndexFullVersion;
+    },
+    set regionIndexFullVersion(v) {
+      cmRegionIndexFullVersion = v;
+    },
+    get regionIndexDirtyRegions() {
+      return cmRegionIndexDirtyRegions;
+    },
+    set regionIndexDirtyRegions(v) {
+      cmRegionIndexDirtyRegions = v;
     },
     get exploredMap() {
       return cmExploredMap;
@@ -662,6 +715,8 @@ export interface CellMapOptions extends ComponentOptions {
    * RGB as (r<<16)|(g<<8)|b (0-255/channel). Defaults to 0 (black = no highlight).
    */
   emissionColorMap?: Array3D<number>;
+  /** Per-cell region index (0-255). Defaults to all-zero ("no region"). */
+  regionIndexMap?: Array3D<number>;
 
   /**
    * Map of visibility flags per cell (optional)
@@ -827,6 +882,14 @@ export interface CellMapT extends ComponentData {
   emissionColorFullVersion: number;
   /** Per-cell dirty log for delta GPU uploads; see cmEmissionColorDirtyRegions. */
   emissionColorDirtyRegions: CellEmissionColorDirtyRegion[];
+  /** Per-cell region index for post-effect recolouring; see cmRegionIndexMap. */
+  regionIndexMap: NumericArray3D;
+  /** Monotonic version; see cmRegionIndexVersion. */
+  regionIndexVersion: number;
+  /** Full-reupload threshold; see cmRegionIndexFullVersion. */
+  regionIndexFullVersion: number;
+  /** Per-cell dirty log for delta GPU uploads; see cmRegionIndexDirtyRegions. */
+  regionIndexDirtyRegions: CellRegionIndexDirtyRegion[];
   /** Cell-level fog-of-war "explored" state (one flag per cell); see cmExploredMap. */
   exploredMap: NumericArray3D;
   /** Monotonic version; see cmExploredVersion. */
@@ -994,6 +1057,10 @@ export const PROPERTY_ALLOWLIST = [
   'emissionColorVersion',
   'emissionColorFullVersion',
   'emissionColorDirtyRegions',
+  'regionIndexMap',
+  'regionIndexVersion',
+  'regionIndexFullVersion',
+  'regionIndexDirtyRegions',
   'exploredMap',
   'exploredVersion',
   'exploredFullVersion',
@@ -1638,6 +1705,7 @@ function hasNonZero(values: ArrayLike<number>): boolean {
 function syncAuxiliaryFields(
   emissionChannel: AuxiliaryChannel,
   smoothingChannel: AuxiliaryChannel,
+  regionChannel: AuxiliaryChannel,
   cellDims: { x: number; y: number; z: number },
   forceSmoothingReassign: boolean,
 ): void {
@@ -1681,6 +1749,21 @@ function syncAuxiliaryFields(
     cmEmissionColorVersion++;
     cmEmissionColorFullVersion = cmEmissionColorVersion;
     cmEmissionColorDirtyRegions = [];
+  }
+
+  // Region index: same treatment as emission colour above, and for the same
+  // reason. Regions are as sparse as highlights, so the "provably unchanged"
+  // skip is what keeps a window shift from forcing every camera through a
+  // whole-window rebuild + texImage3D it does not need.
+  cmRegionIndexMap = new Array3Du32(dims, regionChannel.value);
+  const regionUnchanged =
+    !regionChannel.changedOnLastWindowChange &&
+    cmRegionIndexSyncedCellCount === regionChannel.value.length;
+  cmRegionIndexSyncedCellCount = regionChannel.value.length;
+  if (!regionUnchanged) {
+    cmRegionIndexVersion++;
+    cmRegionIndexFullVersion = cmRegionIndexVersion;
+    cmRegionIndexDirtyRegions = [];
   }
 
   if (smoothingChannel.canDiverge || forceSmoothingReassign) {
@@ -1746,6 +1829,7 @@ function makeAuxiliaryOnReassemble(
   emissionChannel: AuxiliaryChannel,
   smoothingChannel: AuxiliaryChannel,
   exploredChannel: AuxiliaryChannel,
+  regionChannel: AuxiliaryChannel,
 ): NonNullable<WindowConfig['onReassemble']> {
   return (_old, next) => {
     const profiling = isProfilingEnabled();
@@ -1753,6 +1837,7 @@ function makeAuxiliaryOnReassemble(
     emissionChannel.onWindowChange(_old, next);
     smoothingChannel.onWindowChange(_old, next);
     exploredChannel.onWindowChange(_old, next);
+    regionChannel.onWindowChange(_old, next);
     if (profiling) {
       cmAuxWindowChangeMsAccum += performance.now() - channelsT0;
     }
@@ -1765,6 +1850,7 @@ function makeAuxiliaryOnReassemble(
     syncAuxiliaryFields(
       emissionChannel,
       smoothingChannel,
+      regionChannel,
       next.cellDims,
       _old.origin === null || dimsChanged,
     );
@@ -1870,6 +1956,19 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     optEmissionColorMap.size.z !== mapSize.z
   ) {
     throw new Error('emissionColorMap dimensions must match mapSize');
+  }
+
+  // Create default regionIndexMap if not provided (0 = "no region" everywhere)
+  const optRegionIndexMap =
+    options.regionIndexMap || new Array3D<number>(mapSize, 0);
+
+  // Validate regionIndexMap dimensions if provided
+  if (
+    optRegionIndexMap.size.x !== mapSize.x ||
+    optRegionIndexMap.size.y !== mapSize.y ||
+    optRegionIndexMap.size.z !== mapSize.z
+  ) {
+    throw new Error('regionIndexMap dimensions must match mapSize');
   }
 
   // Create default visibilityMap if not provided (all visible)
@@ -2031,9 +2130,25 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
     toroidal: true,
     initialCellDims,
   });
+  // Per-cell region index. Baseline 0 = "no region", which a post effect reads
+  // as "leave this texel alone", so an untouched map costs nothing anywhere.
+  const regionChannel = new AuxiliaryChannel({
+    chunkSize: optChunkSize,
+    baselineValue: 0,
+    trackDivergence: true,
+    toroidal: true,
+    initialCellDims,
+  });
+  regionChannel.seedFromDense(optRegionIndexMap.value, mapSize);
   // Synchronous initial assignment -- see `makeAuxiliaryOnReassemble`'s doc
   // comment for why this can't wait for the hook alone.
-  syncAuxiliaryFields(emissionChannel, smoothingChannel, initialCellDims, true);
+  syncAuxiliaryFields(
+    emissionChannel,
+    smoothingChannel,
+    regionChannel,
+    initialCellDims,
+    true,
+  );
   syncExploredField(exploredChannel, initialCellDims);
 
   const window = new CellWindow(
@@ -2045,6 +2160,7 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
         emissionChannel,
         smoothingChannel,
         exploredChannel,
+        regionChannel,
       ),
     },
     coldStorage,
@@ -2080,6 +2196,7 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   cmWindow = window;
   cmColdStorage = coldStorage;
   cmEmissionColorChannel = emissionChannel;
+  cmRegionIndexChannel = regionChannel;
   cmSmoothingWeightsChannel = smoothingChannel;
   cmExploredChannel = exploredChannel;
   cmMapSize = new Vector3D(
@@ -2203,12 +2320,26 @@ function builderGenerative(options: CellMapOptions): CellMapT {
     toroidal: true,
     initialCellDims: windowCellDims,
   });
+  // Region index — nothing to seed on the generative path, same as explored.
+  const regionChannel = new AuxiliaryChannel({
+    chunkSize: optChunkSize,
+    baselineValue: 0,
+    trackDivergence: true,
+    toroidal: true,
+    initialCellDims: windowCellDims,
+  });
   // Synchronous initial assignment -- see `makeAuxiliaryOnReassemble`'s doc
   // comment for why this can't wait for the hook alone (the default
   // windowRadius needs generation for every initial chunk, so the first
   // `onReassemble` doesn't fire synchronously here the way it does when
   // everything's cold-storage-resolvable).
-  syncAuxiliaryFields(emissionChannel, smoothingChannel, windowCellDims, true);
+  syncAuxiliaryFields(
+    emissionChannel,
+    smoothingChannel,
+    regionChannel,
+    windowCellDims,
+    true,
+  );
   syncExploredField(exploredChannel, windowCellDims);
   const resolvedGenerator = resolveGeneratorOptions(options);
   const generator = wrapGenerator(
@@ -2225,6 +2356,7 @@ function builderGenerative(options: CellMapOptions): CellMapT {
         emissionChannel,
         smoothingChannel,
         exploredChannel,
+        regionChannel,
       ),
     },
     coldStorage,
@@ -2251,6 +2383,7 @@ function builderGenerative(options: CellMapOptions): CellMapT {
   cmWindow = window;
   cmColdStorage = coldStorage;
   cmEmissionColorChannel = emissionChannel;
+  cmRegionIndexChannel = regionChannel;
   cmSmoothingWeightsChannel = smoothingChannel;
   cmExploredChannel = exploredChannel;
   cmGeneratorKey = resolvedGenerator.key;
@@ -2349,6 +2482,14 @@ function serialize(component: ComponentData): any {
       : undefined,
     // Off-window emission-color highlights that diverge from baseline.
     emissionColorStorageEntries: cmEmissionColorChannel!.dumpEntries(),
+    // Per-cell region index, same shape as emissionColorData above. Omitted
+    // when entirely 0 ("no region" everywhere) so a scene that never touched
+    // the channel stays byte-identical to a pre-feature save.
+    regionIndexData: hasNonZero(cm.regionIndexMap.value)
+      ? Array.from(cm.regionIndexMap.value)
+      : undefined,
+    // Off-window region indices that diverge from baseline.
+    regionIndexStorageEntries: cmRegionIndexChannel!.dumpEntries(),
     // Off-window fog-of-war "explored" chunks that diverge from baseline
     // (unexplored). Mirrors emissionColorStorageEntries above; unlike
     // emissionColorData, there is deliberately no separate resident-window
@@ -2419,6 +2560,8 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     emissionColorData: dataEmissionColorData,
     emissionColorStorageEntries: dataEmissionColorStorageEntries,
     exploredStorageEntries: dataExploredStorageEntries,
+    regionIndexData: dataRegionIndexData,
+    regionIndexStorageEntries: dataRegionIndexStorageEntries,
     smoothingUniformWeight: dataSmoothingUniformWeight,
     smoothingWeightsData: dataSmoothingWeightsData,
     smoothingWeightStorageEntries: dataSmoothingWeightStorageEntries,
@@ -2691,11 +2834,35 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
       [],
   );
 
+  // Region index -- both halves, like the emission-colour channel: off-window
+  // entries at their saved world-chunk locations, then the resident window's
+  // dense snapshot. `originChunk` is what keeps the reloaded window anchored
+  // where it was saved rather than at the origin.
+  const dRegionChannel = new AuxiliaryChannel({
+    chunkSize: cks,
+    baselineValue: 0,
+    trackDivergence: true,
+    toroidal: true,
+    initialCellDims: windowCellDims,
+  });
+  dRegionChannel.loadEntries(
+    (dataRegionIndexStorageEntries as ColdStorageEntrySnapshot[] | undefined) ??
+      [],
+  );
+  if (Array.isArray(dataRegionIndexData)) {
+    dRegionChannel.seedFromDense(
+      dataRegionIndexData as number[],
+      windowCellDims,
+      originChunk,
+    );
+  }
+
   // Synchronous initial assignment -- see `makeAuxiliaryOnReassemble`'s doc
   // comment for why this can't wait for the hook alone.
   syncAuxiliaryFields(
     dEmissionChannel,
     dSmoothingChannel,
+    dRegionChannel,
     windowCellDims,
     true,
   );
@@ -2711,6 +2878,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
         dEmissionChannel,
         dSmoothingChannel,
         dExploredChannel,
+        dRegionChannel,
       ),
     },
     dColdStorage,
@@ -2759,6 +2927,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   cmWindow = dWindow;
   cmColdStorage = dColdStorage;
   cmEmissionColorChannel = dEmissionChannel;
+  cmRegionIndexChannel = dRegionChannel;
   cmSmoothingWeightsChannel = dSmoothingChannel;
   cmExploredChannel = dExploredChannel;
   cmGeneratorKey = dGeneratorKey;

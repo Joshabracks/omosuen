@@ -473,15 +473,17 @@ function readColor(gl, fbo, w, h) {
 }
 
 /**
- * Reads the RG16UI id attachment: `.r` is the cell index, `.g` the sprite index
- * (unified.frag:1049). Note the integer format and type — asking for RGBA /
- * UNSIGNED_BYTE here is a format mismatch, not a conversion.
+ * Reads the RGBA16UI id attachment: `.r` cell index, `.g` sprite index,
+ * `.b` cell region index, `.a` reserved. Note the integer format and type —
+ * asking for RGBA / UNSIGNED_BYTE here is a format mismatch, not a conversion,
+ * and asking for RG_INTEGER (what this read before the attachment widened)
+ * leaves the buffer silently unpopulated rather than erroring visibly.
  */
 function readIds(gl, fbo, w, h) {
-    const buf = new Uint16Array(w * h * 2);
+    const buf = new Uint16Array(w * h * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.readPixels(0, 0, w, h, gl.RG_INTEGER, gl.UNSIGNED_SHORT, buf);
+    gl.readPixels(0, 0, w, h, gl.RGBA_INTEGER, gl.UNSIGNED_SHORT, buf);
     gl.readBuffer(gl.COLOR_ATTACHMENT0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return buf;
@@ -508,7 +510,7 @@ function specularOf(color, ids, spriteId, keyChannel, width) {
     let n = 0;
     let minX = Infinity, maxX = -1, minY = Infinity, maxY = -1;
     for (let p = 0; p < ids.length / 2; p++) {
-        if (ids[p * 2 + 1] !== spriteId) continue;
+        if (ids[p * 4 + 1] !== spriteId) continue;
         const i = p * 4;
         sum += (color[i + others[0]] + color[i + others[1]]) / 2;
         n++;
@@ -692,7 +694,7 @@ async function checkMaskChannel(gl, camera) {
         // Within a quarter-band of a real level; anything further out is an
         // edge texel where the float attachment blended toward the background.
         const onBand = Math.abs(exact - band) < 0.25;
-        const isDoor = coverage > 0 && ids[p * 2 + 1] === 0;
+        const isDoor = coverage > 0 && ids[p * 4 + 1] === 0;
 
         if (isDoor) {
             doorTexels++;

@@ -255,7 +255,7 @@ Stages are GLSL ES 3.00 (`#version 300 es` is prepended if you omit it) and rece
 | Uniform | Type | Meaning |
 | --- | --- | --- |
 | `u_color` | `sampler2D` | previous stage's output; the composited frame at stage 0 |
-| `u_ids` | `highp usampler2D` | `.r` = cell material index, `.g` = sprite `shaderId` |
+| `u_ids` | `highp usampler2D` | `.r` = cell material index, `.g` = sprite `shaderId`, `.b` = cell region index (see below), `.a` = reserved |
 | `u_aux` | `sampler2D` | `.r` = sprite coverage 0–1, `.g` = fog-of-war visibility 0–1, `.b` = sprite material mask (the `material` texture's B channel — see below) |
 | `u_depth` | `sampler2D` | linear depth, at **base** resolution — sample via the bridge below |
 | `u_depthUvScale` / `u_depthUvOffset` | `vec2` | maps a full-res UV into `u_depth` |
@@ -338,7 +338,7 @@ auto-sized to keep the whole authored map resident (today's pre-windowing behavi
 supplying `windowRadius` opts even a hand-authored map into windowed streaming.
 
 - `materials: Material[]` (**required**) — each `Material` bundles `{ albedoTextureKey, normalTextureKey, emissionTextureKey, materialTextureKey: string }` and a frame index per channel `{ albedoFrame, normalFrame, emissionFrame, materialFrame?: number (default 0) }`
-  - `sides?: { up?, southEast?, southWest?: { albedoFrame?, normalFrame?: number } }` — per-visible-side texture override (`up` = +Y, `southEast` = +X, `southWest` = +Z — the three faces the camera shows at `orbitYaw = 0`). Omitted sides/channels fall back to the base frame, so a material with no `sides` renders unchanged. Per-side frames must be frames of the **same** texture-map as the base (single atlas page); albedo + normal only. These names assume `orbitYaw` near `0`/`90`/`180`/`270`; at other yaws the camera sees faces these overrides don't cover, so authors relying on `sides` should snap orbit to those angles (a yaw-aware per-side remap is a possible follow-up, not implemented here).
+  - `sides?: { up?, southEast?, southWest?: { albedoFrame?, normalFrame?, emissionFrame?: number } }` — per-visible-side texture override (`up` = +Y, `southEast` = +X, `southWest` = +Z — the three faces the camera shows at `orbitYaw = 0`). Omitted sides/channels fall back to the base frame, so a material with no `sides` renders unchanged. Per-side frames must be frames of the **same** texture-map as the base (single atlas page); albedo, normal and emission. These names assume `orbitYaw` near `0`/`90`/`180`/`270`; at other yaws the camera sees faces these overrides don't cover, so authors relying on `sides` should snap orbit to those angles (a yaw-aware per-side remap is a possible follow-up, not implemented here).
   - `smoothness?: number` (0–15) — per-cell-type smoothing weight that overrides `smoothingWeights` for cells of this material; omit to use the map/per-cell weight.
 - `cellSize: Vector3D` (**required**)
 - `mapSize?: Vector3D`, `materialMap?: Array3D<number>` — together, the hand-authored path (both or neither; **required** for that path, omit both for the generative path)
@@ -388,6 +388,11 @@ through cold storage rather than the live WASM store, and comes back exactly as 
 time the window shifts there, **including through save/load** (`coldStorageEntries` in the
 serialized scene). A `generateCell`/`generateChunk` **registered via a `'cell-map-generator'`
 key** also survives save/load; a raw function passed directly does not.
+
+`regionIndexMap` is a third channel of the same kind: `setRegionIndex(coords, 0-255)` /
+`getRegionIndex(coords)` tag a cell with a region a post effect can recolour (read as `u_ids.b` —
+see **Post-process effects**), with identical windowing, off-window and save/load behaviour to the
+emission colour below. An untouched map serializes exactly as before the channel existed.
 
 `emissionColorMap`/`smoothingWeights` get the same windowed treatment: `setEmissionColor`/
 `getEmissionColor` take a **world** cell coordinate (matching `setCellData`) and fully support an
@@ -518,6 +523,45 @@ float steps = maskBands - 1.0;
 float band  = floor(texture(u_aux, v_uv).b * steps + 0.5);
 if (band < 0.5) { fragColor = texture(u_color, v_uv); return; }  // band 0 = no region
 ```
+
+**Cells have the same idea, in a better channel.** Terrain regions reach a post effect as
+`u_ids.b`, from either of two sources:
+
+- **Per-texel** — a cell `Material`'s `materialTextureKey` texture packs `R = metallic,
+  G = roughness, B = region`, exactly like a sprite's. Build it with the same `packMaterial`. The
+  region can vary *within* one cell face, so a single 16×16 file can paint three different regions
+  across every tile.
+- **Per-cell** — `cellMap.setRegionIndex(coords, 0-255)` sets a flat index for a whole cell,
+  settable at runtime like `setEmissionColor` (no remesh; off-window writes persist through cold
+  storage and save/load). This is the fallback for materials with no texture.
+
+Per-texel wins where a material texture exists; they share one channel because they answer the same
+question. Reading it:
+
+```glsl
+uint region = texture(u_ids, v_uv).b;
+if (region == 0u) { fragColor = texture(u_color, v_uv); return; }   // 0 = no region
+// A quantised mask arrives as its authored byte: for `maskLevels: 4` that is
+// 0 / 85 / 170 / 255, so divide by 255/(N-1) to get a small band index.
+```
+
+**`u_ids.b` is exact; `u_aux.b` blends.** The id attachment is an integer target and integer targets
+never blend in ES 3.0, so a cell's region reads back precisely as written even under a partially
+transparent sprite — compare it with `==`. The sprite mask lives in a float attachment that does
+blend, so its values fray at antialiased edges and must be thresholded. That asymmetry is why the
+two live where they do, and it means a sprite over terrain carries **both** masks at once: its own
+in `u_aux.b`, the ground's in `u_ids.b`.
+
+Two traps specific to the per-texel path, both silent:
+
+- **A region index must not be interpolated.** Cell albedo is sampled with a bilinear blend across
+  three triplanar planes to stop it shimmering; doing that to an index turns a quantised
+  `0/85/170/255` mask into all 256 values. The engine therefore point-samples the B channel from the
+  dominant plane only. If you write your own sampling, do the same.
+- **`quantize` must match the levels the art uses** — see the channel-packing note above.
+
+For "recolour every cell of material 3" you need none of this: `u_ids.r` already carries the
+material index on every cell texel.
 
 Band 0 means "no region", which is what every unmasked sprite and every cell writes — so a stage
 like this is a no-op on the rest of the scene by construction. Two caveats: the aux attachment is

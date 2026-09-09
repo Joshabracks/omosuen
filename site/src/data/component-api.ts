@@ -475,6 +475,13 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
       M("getEmissionColor", "getEmissionColor(coords)", "Get highlight color at a world cell coordinate.", [
         A("coords", "Vector3D", "World cell coordinates."),
       ]),
+      M("setRegionIndex", "setRegionIndex(coords, index)", "Set this cell's region index (0-255; 0 = no region). A post effect reads it as u_ids.b and can recolour that region. No remesh; off-window writes persist via cold storage.", [
+        A("coords", "Vector3D", "World cell coordinates."),
+        A("index", "number", "Region index 0-255; clamped."),
+      ]),
+      M("getRegionIndex", "getRegionIndex(coords)", "Get this cell's region index.", [
+        A("coords", "Vector3D", "World cell coordinates."),
+      ]),
       M("setVisible", "setVisible(coords, visible)", "Set cell visibility.", [
         A("coords", "Vector3D", "Cell grid coordinates."),
         A("visible", "boolean", "Whether cell is visible."),

@@ -241,12 +241,15 @@ function readColor(gl, fbo, attachment, w, h) {
     return buf;
 }
 
-/** Reads the RG16UI id attachment. Note the integer format/type. */
+/**
+ * Reads the RGBA16UI id attachment. Note the integer format/type, and the
+ * stride of 4: `.r` cell index, `.g` sprite index, `.b` cell region index.
+ */
 function readIds(gl, fbo, w, h) {
-    const buf = new Uint16Array(w * h * 2);
+    const buf = new Uint16Array(w * h * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.readPixels(0, 0, w, h, gl.RG_INTEGER, gl.UNSIGNED_SHORT, buf);
+    gl.readPixels(0, 0, w, h, gl.RGBA_INTEGER, gl.UNSIGNED_SHORT, buf);
     gl.readBuffer(gl.COLOR_ATTACHMENT0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return buf;
@@ -322,8 +325,8 @@ function checkMaskAssertions(m, offset = 0) {
     const fogValues = new Set();
 
     for (let p = 0; p < W * H; p++) {
-        const cid = ids[p * 2];
-        const sid = ids[p * 2 + 1];
+        const cid = ids[p * 4];
+        const sid = ids[p * 4 + 1];
         const mix = aux[p * 4];
         const fog = aux[p * 4 + 1];
         cellHist[cid] = (cellHist[cid] || 0) + 1;
@@ -379,7 +382,7 @@ function checkMaskAssertions(m, offset = 0) {
     let idWithoutCoverage = 0;
     for (let p = 0; p < W * H; p++) {
         const hasCoverage = aux[p * 4] > 0;
-        const hasId = ids[p * 2 + 1] !== 0;
+        const hasId = ids[p * 4 + 1] !== 0;
         if (hasCoverage && !hasId) coverageWithoutId++;
         if (!hasCoverage && hasId) idWithoutCoverage++;
     }
@@ -638,7 +641,7 @@ async function runAssertions() {
     let terrainOk = 0, terrainBad = 0; // no sprite: must NOT invert
     for (let p = 0; p < W * H; p++) {
         const coverage = invAux[p * 4];
-        const id = ids[p * 2 + 1];
+        const id = ids[p * 4 + 1];
         if (coverage === 0) {
             if (same(p)) terrainOk++; else terrainBad++;
         } else if (coverage === 255) {
@@ -677,7 +680,7 @@ async function runAssertions() {
         let minX = Infinity, maxX = -1, minY = Infinity, maxY = -1, covered = 0;
         for (let p = 0; p < W * H; p++) {
             if (invAux[p * 4] === 0) continue;          // no coverage here
-            if (ids[p * 2 + 1] !== wanted) continue;    // a different sprite
+            if (ids[p * 4 + 1] !== wanted) continue;    // a different sprite
             const x = p % W, y = (p / W) | 0;
             if (x < minX) minX = x;
             if (x > maxX) maxX = x;

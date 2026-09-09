@@ -32,6 +32,7 @@ export type {
   ChunkMesh,
   DrawRange,
   CellEmissionColorDirtyRegion,
+  CellRegionIndexDirtyRegion,
 } from './types';
 export type { RaycastHit, SurfaceHit, RaycastOptions } from './types';
 export {

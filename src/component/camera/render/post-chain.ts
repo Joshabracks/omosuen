@@ -44,11 +44,19 @@ const CONTRACT_UNIFORMS = [
   'u_cellSize',
 ];
 
-/** Texture units the chain binds. Kept clear of the geometry passes' units. */
+/**
+ * Texture units the chain binds. Kept clear of the geometry passes' units --
+ * unit 9 now carries the cell region-index array texture in the unified
+ * program, so aux/depth moved up rather than sharing it. Sharing would not
+ * have thrown (these are separate programs, and a unit has independent binding
+ * points per target), but it makes the ownership of a unit ambiguous at a
+ * glance, which is exactly how the sampler-collision bugs in this renderer
+ * happened.
+ */
 const UNIT_COLOR = 0;
 const UNIT_IDS = 8;
-const UNIT_AUX = 9;
-const UNIT_DEPTH = 10;
+const UNIT_AUX = 10;
+const UNIT_DEPTH = 11;
 
 const startTime =
   typeof performance !== 'undefined' ? performance.now() : Date.now();

@@ -14,6 +14,8 @@ export interface MaterialSideFrames {
   normalFrame?: number;
   /** Frame index into the emission TextureMap for this side. */
   emissionFrame?: number;
+  /** Frame index into the material (PBR) TextureMap for this side. */
+  materialFrame?: number;
 }
 
 /**
@@ -265,6 +267,22 @@ export interface DrawRange {
  * (atlas-manager/types.ts), one cell instead of one rect.
  */
 export interface CellEmissionColorDirtyRegion {
+  version: number;
+  x: number;
+  y: number;
+  z: number;
+}
+
+/**
+ * A single dirty cell in `regionIndexMap` (per-cell region index for post-effect
+ * recolouring), tagged with the `regionIndexVersion` that produced it.
+ *
+ * Structurally identical to `CellEmissionColorDirtyRegion` and kept separate on
+ * purpose: one log per channel is the house style here, and the two are versioned
+ * independently. Coordinates are SLOTS (toroidally addressed), not window-local —
+ * see `setRegionIndex` in methods.ts.
+ */
+export interface CellRegionIndexDirtyRegion {
   version: number;
   x: number;
   y: number;

@@ -11,8 +11,16 @@ precision highp int;
 layout(location = 0) out vec4 fragColor;
     // R = cell material index. G = sprite id in the composite; in the cell FBO
     // it instead carries fogVisibility quantised to 16 bits, which the upscale
-    // unpacks into the composite's aux channel.
-layout(location = 1) out uvec2 fragIds;
+    // unpacks into the composite's aux channel. B = the cell's region index,
+    // an author-assigned value a post effect recolours (see cellRegionAt).
+    // A = reserved.
+    //
+    // Integer attachments do NOT blend, so every channel here is exact -- the
+    // region index reads back precisely as written even under a partially
+    // transparent sprite, unlike the sprite mask in fragAux.b which blends.
+    // Every component must be written: an unwritten component of an RGBA
+    // attachment is undefined, not zero.
+layout(location = 1) out uvec4 fragIds;
     // R = sprite coverage, G = fogVisibility, B = sprite material mask
     // (the material texture's own B channel -- a per-region index a post
     // effect can recolour), A = the same alpha written to fragColor. That
@@ -83,10 +91,37 @@ uniform vec4 u_emissionBoundsXY;
 uniform vec2 u_emissionSizeYZ;
 uniform vec2 u_emissionSizeXZ;
 uniform vec2 u_emissionSizeXY;
+    // Per-side material (PBR) frames for cells (Mode 0). R = metallic,
+    // G = roughness -- the same packing the sprite channel uses, and built by the
+    // same packMaterial() helper. The sampler itself is u_materialTexture,
+    // declared with the sprite uniforms below and rebound per pass, exactly as
+    // u_emissionTexture is.
+    //
+    // When u_hasCellMaterial is false the defaults (metallic 0, roughness 1)
+    // make computeSpecular a no-op, so terrain with no material texture renders
+    // bit-identically to before this channel existed.
+uniform bool u_hasCellMaterial;
+uniform vec4 u_materialBoundsYZ;
+uniform vec4 u_materialBoundsXZ;
+uniform vec4 u_materialBoundsXY;
+uniform vec2 u_materialSizeYZ;
+uniform vec2 u_materialSizeXZ;
+uniform vec2 u_materialSizeXY;
+
     // Per-cell emission (highlight) color: RGB texture keyed by cell coordinate
     // (Mode 0). Added flat, independent of v_emission. Default black = no-op.
 uniform bool u_hasCellEmissionColor;
 uniform highp sampler2DArray u_cellEmissionColor;  // layer=z
+
+    // Per-cell REGION INDEX (Mode 0): a small integer an author assigns per
+    // cell so a post effect can recolour that region, read back as u_ids.b.
+    // An INTEGER texture, so the value round-trips exactly with no float step
+    // and NEAREST is enforced by the format rather than by convention -- which
+    // matters because a region index is precisely the kind of value bilinear
+    // filtering turns into a different region (see AGENTS.md on not putting
+    // non-interpolatable values in filtered textures).
+uniform bool u_hasCellRegionIndex;
+uniform highp usampler2DArray u_cellRegionIndex;  // R8UI, layer=z
 
     // Optional per-vertex UV mode (custom shapes): sample the base frame by v_uv
     // instead of triplanar. u_useMeshUV is set per draw range.
@@ -371,6 +406,21 @@ bool isCellSolid(vec3 cell) {
 
 // Per-cell emission (highlight) color, sampled by integer cell coordinate using the
 // same array-layer lookup as isCellSolid. Out-of-bounds cells contribute nothing.
+/**
+ * This cell's region index, or 0 ("no region") outside the resident window.
+ * Structurally identical to cellEmissionColorAt below -- same toroidal
+ * windowSlot addressing, same texelFetch (which ignores filtering entirely).
+ */
+uint cellRegionAt(vec3 cell) {
+    vec3 local = cell - u_windowOrigin;
+    if(local.x < 0.0 || local.x >= u_windowSize.x ||
+       local.y < 0.0 || local.y >= u_windowSize.y ||
+       local.z < 0.0 || local.z >= u_windowSize.z) {
+        return 0u;
+    }
+    return texelFetch(u_cellRegionIndex, windowSlot(local), 0).r;
+}
+
 vec3 cellEmissionColorAt(vec3 cell) {
     vec3 local = cell - u_windowOrigin;
     if(local.x < 0.0 || local.x >= u_windowSize.x ||
@@ -777,7 +827,7 @@ void main() {
     // then yields a deterministic zero instead of undefined attachment
     // contents -- by far the cheapest insurance in this file.
     fragColor = vec4(0.0);
-    fragIds = uvec2(0u);
+    fragIds = uvec4(0u);
     fragAux = vec4(0.0);
 
     if(u_renderMode == 0) {
@@ -821,6 +871,21 @@ void main() {
         // material provides an emission texture; otherwise falls back to albedo below.
         vec3 emissionTexColor = vec3(0.0);
 
+        // Material (PBR) accumulators. These defaults are the sprite branch's
+        // defaults verbatim, and they are load-bearing: metallic 0 makes
+        // computeSpecular early-out, and roughness 1 is MATTE. Roughness 0 is a
+        // mirror finish, which is also the value an unwritten channel gives you
+        // for free -- see the header of test/scenes/channel-pack-test.js, which
+        // documents that trap at length for sprites. Terrain inherits the same
+        // convention rather than re-creating the bug.
+        float cellMetallic = 0.0;
+        float cellRoughness = 1.0;
+        // The material texture's B channel: a PER-TEXEL region index, so a
+        // region can vary within one cell face rather than colouring the whole
+        // cell. That is the thing the per-cell channel cannot do -- and a solid
+        // per-cell colour is already expressible with setEmissionColor.
+        float cellRegionMask = 0.0;
+
         if(u_useMeshUV) {
             // Per-vertex UV mode (custom shapes): sample by the mesh's own UVs, but
             // pick the per-side frame by the dominant axis of the world normal so an
@@ -837,6 +902,13 @@ void main() {
             if(u_hasEmissionTexture) {
                 vec4 eb = axis == 0 ? u_emissionBoundsYZ : axis == 1 ? u_emissionBoundsXZ : u_emissionBoundsXY;
                 emissionTexColor = texture(u_emissionTexture, mix(eb.xy, eb.zw, v_uv)).rgb;
+            }
+            if(u_hasCellMaterial) {
+                vec4 mb = axis == 0 ? u_materialBoundsYZ : axis == 1 ? u_materialBoundsXZ : u_materialBoundsXY;
+                vec4 ms = texture(u_materialTexture, mix(mb.xy, mb.zw, v_uv));
+                cellMetallic = ms.r;
+                cellRoughness = ms.g;
+                cellRegionMask = ms.b;
             }
             if(u_hasNormal) {
                 vec2 nUV = mix(nb.xy, nb.zw, v_uv);
@@ -881,6 +953,48 @@ void main() {
                 vec4 emXZ = sampleBilinear(u_emissionTexture, vec2(v_worldPos.x, v_worldPos.z), u_emissionSizeXZ, u_emissionBoundsXZ);
                 vec4 emXY = sampleBilinear(u_emissionTexture, vec2(v_worldPos.x, -v_worldPos.y), u_emissionSizeXY, u_emissionBoundsXY);
                 emissionTexColor = (emYZ * blendWeights.x + emXZ * blendWeights.y + emXY * blendWeights.z).rgb;
+            }
+
+            // Triplanar material sampling (same planes/weights as albedo).
+            // Metallic and roughness are scalars, so blending the raw samples is
+            // well-defined -- unlike normals below, which have to be converted to
+            // world space before blending because each plane maps onto different
+            // world axes. Guarded so terrain without a material texture never
+            // samples unit 5, which in cell mode still holds whatever the sprite
+            // pass bound there.
+            if(u_hasCellMaterial) {
+                vec4 mtYZ = sampleBilinear(u_materialTexture, vec2(v_worldPos.z, -v_worldPos.y), u_materialSizeYZ, u_materialBoundsYZ);
+                vec4 mtXZ = sampleBilinear(u_materialTexture, vec2(v_worldPos.x, v_worldPos.z), u_materialSizeXZ, u_materialBoundsXZ);
+                vec4 mtXY = sampleBilinear(u_materialTexture, vec2(v_worldPos.x, -v_worldPos.y), u_materialSizeXY, u_materialBoundsXY);
+                vec4 mt = mtYZ * blendWeights.x + mtXZ * blendWeights.y + mtXY * blendWeights.z;
+                cellMetallic = mt.r;
+                cellRoughness = mt.g;
+
+                // The region index needs a POINT sample, and picking the
+                // dominant plane is only half of that.
+                //
+                // Metallic and roughness are scalars: blending them across the
+                // three planes above is meaningful, and `sampleBilinear`'s
+                // 4-tap blend within a plane is what keeps them from shimmering.
+                // A region index survives neither. Blending region 1 and region
+                // 3 across a corner yields 2 -- a real region the artist never
+                // painted there -- and bilinear filtering inside one plane
+                // smears the authored levels into a continuum. Measured: the
+                // quantised 0/85/170/255 mask came back as all 256 values.
+                //
+                // So: dominant plane only, and a floor-based UV so the fetch
+                // lands on exactly one texel. Same trick the normal-map path
+                // uses for its own reasons, and the atlas is NEAREST-filtered,
+                // so the value arrives exactly as authored.
+                bool domX = blendWeights.x >= blendWeights.y && blendWeights.x >= blendWeights.z;
+                bool domY = !domX && blendWeights.y >= blendWeights.z;
+                vec2 maskWorldUV = domX ? vec2(v_worldPos.z, -v_worldPos.y)
+                                 : domY ? vec2(v_worldPos.x, v_worldPos.z)
+                                        : vec2(v_worldPos.x, -v_worldPos.y);
+                vec2 maskSize = domX ? u_materialSizeYZ : domY ? u_materialSizeXZ : u_materialSizeXY;
+                vec4 maskBounds = domX ? u_materialBoundsYZ : domY ? u_materialBoundsXZ : u_materialBoundsXY;
+                vec2 maskUV = (mod(floor(maskWorldUV), maskSize) + 0.5) / maskSize;
+                cellRegionMask = texture(u_materialTexture, mix(maskBounds.xy, maskBounds.zw, maskUV)).b;
             }
 
             // Triplanar normal mapping (if available). Each plane's tangent-space
@@ -935,9 +1049,22 @@ void main() {
         vec3 highlight = u_hasCellEmissionColor
             ? cellEmissionColorAt(emissionCellFromFace(v_origWorldPos, v_trueFaceDir))
             : vec3(0.0);
+        // Material-driven specular. Sits inside cellColor rather than after the
+        // fog block so terrain specular is fog-styled along with everything else
+        // -- otherwise a metallic surface glints through fog-of-war at full
+        // brightness. The sprite branch folds its specular into litColor for the
+        // same reason.
+        //
+        // Zero cost when unset: cellMetallic defaults to 0.0 and computeSpecular
+        // returns vec3(0.0) on its first line, so every material without a
+        // materialTextureKey is bit-identical to before this channel existed.
+        vec3 cellViewDir = normalize(u_cameraWorldPos - v_worldPos);
+        vec3 cellSpecular = computeSpecular(finalNormal, v_worldPos, cellViewDir, cellMetallic, cellRoughness);
+
         vec3 cellColor = albedo.rgb * lighting
                        + emissionSample * v_emission
-                       + highlight;
+                       + highlight
+                       + cellSpecular;
 
         // Fog-of-war tiered styling: blend from the never-viewed/memory style
         // (desaturation + tint + opacity-as-fade-to-black, no real alpha —
@@ -970,7 +1097,23 @@ void main() {
         fragColor = vec4(fogOutColor, albedo.a);
         // G carries fogVisibility through the upscale: the cell FBO has no aux
         // attachment, so this is the only channel available to it.
-        fragIds = uvec2(u_cellIndex, uint(clamp(fogVisibility, 0.0, 1.0) * 65535.0 + 0.5));
+        // Region index for this texel, from whichever source the material
+        // actually declares. A material texture's B channel is per-TEXEL and
+        // takes precedence, because it is strictly more expressive: it can vary
+        // within one face, where the per-cell channel paints the whole cell one
+        // value. The per-cell index is the fallback for materials with no
+        // texture. Both answer the same question -- "which region is this
+        // texel" -- so they share one channel rather than competing for two.
+        uint cellRegion = u_hasCellMaterial
+            ? uint(cellRegionMask * 255.0 + 0.5)
+            : (u_hasCellRegionIndex
+                ? cellRegionAt(emissionCellFromFace(v_origWorldPos, v_trueFaceDir))
+                : 0u);
+        fragIds = uvec4(
+            u_cellIndex,
+            uint(clamp(fogVisibility, 0.0, 1.0) * 65535.0 + 0.5),
+            cellRegion,
+            0u);
 
     } else {
         // ============================================================
@@ -1055,7 +1198,11 @@ void main() {
                 fragColor = u_silhouetteColor;
                 // Returns before the shared tail below, so it has to write the
                 // masks itself.
-                fragIds = uvec2(texture(u_cellIdTexture, fboUV).r, u_spriteIndex);
+                uvec4 cellIds = texture(u_cellIdTexture, fboUV);
+                // Carries the TERRAIN region under the sprite through, exactly
+                // as .r carries the cell id. The sprite's own mask is a
+                // different thing and lives in fragAux.b.
+                fragIds = uvec4(cellIds.r, u_spriteIndex, cellIds.b, 0u);
                 // Mask stays 0: this exit runs BEFORE the material is sampled,
                 // and a silhouette is a flat stand-in for an obscured sprite --
                 // there is no visible surface for a region effect to recolour.
@@ -1177,7 +1324,8 @@ void main() {
         // Cell id is READ from the cell FBO rather than re-derived: integer
         // attachments do not blend, so this fragment owns the whole texel and
         // would otherwise erase what is behind it.
-        fragIds = uvec2(texture(u_cellIdTexture, fboUV).r, u_spriteIndex);
+        uvec4 cellIds = texture(u_cellIdTexture, fboUV);
+        fragIds = uvec4(cellIds.r, u_spriteIndex, cellIds.b, 0u);
         // .a must match fragColor's alpha -- see the fragAux declaration.
         fragAux = vec4(1.0, fogVis, materialMask, outAlpha);
     }

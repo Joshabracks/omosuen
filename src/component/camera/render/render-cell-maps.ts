@@ -7,6 +7,8 @@ import { NexusT } from '../../nexus';
 import { TextureMapT } from '../../texture-map';
 import { TransformT } from '../../transform';
 import { CameraT } from '../data';
+import { resolveClipPlane, aabbFullyClipped } from '../cell-clip';
+import type { ClipPlane } from '../cell-clip';
 import {
   setAngleUniform,
   setOrbitYawUniform,
@@ -915,6 +917,9 @@ export function renderCellMaps(
   const uCellSolidity = gl.getUniformLocation(program, 'u_cellSolidity');
   // Per-cell-map fog-of-war opt-out -- see cellMap.revealExempt usage below.
   const uFogExempt = gl.getUniformLocation(program, 'u_fogExempt');
+  const uClipPlane = gl.getUniformLocation(program, 'u_clipPlane');
+  const uClipWeight = gl.getUniformLocation(program, 'u_clipWeight');
+  const uClipExempt = gl.getUniformLocation(program, 'u_clipExempt');
   const uExploredTexture = gl.getUniformLocation(program, 'u_exploredTexture');
   // Terrain-memory LOD: near tier (per-cell, window-cell resolution) and
   // far tier (per-chunk, chunk-grid resolution) captured material indices,
@@ -1102,6 +1107,11 @@ export function renderCellMaps(
   for (const cellMap of cellMaps) {
     let gpuUploadMs = 0;
     let emissionColorGpuUploadMs = 0;
+    // Cutaway accounting. `clippedChunks` is the whole point of the feature's
+    // performance story -- a chunk counted here cost one comparison instead of
+    // a buffer bind, ~6 attribute pointers and every draw range it owns.
+    let clippedChunks = 0;
+    let drawnChunks = 0;
     let regionIndexGpuUploadMs = 0;
     let solidityGpuUploadMs = 0;
     let memoryTexUploadMs = 0;
@@ -1301,6 +1311,22 @@ export function renderCellMaps(
     // upload/bind it whenever either needs it.
     const hasVisionSources = visionSources.some((v) => v.enabled);
     const fogActive = hasVisionSources && !cellMap.revealExempt;
+
+    // Cutaway: one plane for the whole cell-map, resolved from the camera's
+    // own projection so the CPU chunk test below and the shader agree exactly.
+    // null = off, which also skips the chunk test entirely.
+    const clipPlane: ClipPlane | null = cellMap.clipExempt
+      ? null
+      : resolveClipPlane(camera);
+    const clipWeight = clipPlane ? (camera.cellClip?.weight ?? 0) : 0;
+    // Smoothed maps displace vertices off the cell lattice, so a chunk's
+    // geometry can reach past its nominal bounds. Dilating the conservative
+    // test by a cell keeps a straddling chunk in the draw rather than dropping
+    // it and leaving a seam at the cut.
+    const clipDilate =
+      cellMap.smoothing > 0
+        ? Math.max(cellMap.cellSize.x, cellMap.cellSize.y, cellMap.cellSize.z)
+        : 0;
     const cues = camera.depthCues;
     const needSolidity =
       hasVisionSources ||
@@ -1410,6 +1436,21 @@ export function renderCellMaps(
     // per-cell-map loop), so exemption is applied as a separate per-cell-map
     // gate the shader checks before running the vision-source loop at all.
     gl.uniform1i(uFogExempt, fogActive ? 0 : 1);
+    // Always written, so a camera that turns the cutaway off mid-frame cannot
+    // inherit the previous cell-map's plane (uniforms persist across draws).
+    if (clipPlane) {
+      gl.uniform4f(
+        uClipPlane,
+        clipPlane.x,
+        clipPlane.y,
+        clipPlane.z,
+        clipPlane.w,
+      );
+    } else {
+      gl.uniform4f(uClipPlane, 0, 0, 0, 0);
+    }
+    gl.uniform1f(uClipWeight, clipWeight);
+    gl.uniform1i(uClipExempt, cellMap.clipExempt ? 1 : 0);
 
     // The fog-of-war "explored" texture's upload, reported as
     // 'cell-map:memoryTexUpload'. It was previously unattributed entirely,
@@ -1643,6 +1684,21 @@ export function renderCellMaps(
               z: chunkMin.z + cellMap.chunkSize.z * cellMap.cellSize.z,
             };
             if (aabbOutsideVolume(chunkMin, chunkMax, volumeAABB)) continue;
+            // Cutaway, tier 1 and the one that actually pays: a chunk entirely
+            // between the camera and the target is skipped outright, saving its
+            // buffer binds, ~6 vertexAttribPointer calls and every draw range
+            // it owns -- not just the drawElements. Straddling chunks fall
+            // through to the shader's per-fragment test.
+            if (
+              clipPlane &&
+              clipWeight >= 1 &&
+              aabbFullyClipped(clipPlane, chunkMin, chunkMax, clipDilate)
+            ) {
+              clippedChunks++;
+              continue;
+            }
+
+            drawnChunks++;
 
             // Only a chunk that's NEVER been uploaded (no glVertexBuffer
             // yet) can be safely skipped this frame when the budget's
@@ -2043,6 +2099,18 @@ export function renderCellMaps(
         cellMap.name,
         'cell-map:drawLoop',
         drawLoopMs,
+      );
+      recordComponentUpdate(
+        cellMap.id ?? -1,
+        cellMap.name,
+        'cell-map:chunksDrawn',
+        drawnChunks,
+      );
+      recordComponentUpdate(
+        cellMap.id ?? -1,
+        cellMap.name,
+        'cell-map:chunksClipped',
+        clippedChunks,
       );
       recordComponentUpdate(
         cellMap.id ?? -1,

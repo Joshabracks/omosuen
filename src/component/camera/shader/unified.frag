@@ -120,6 +120,21 @@ uniform highp sampler2DArray u_cellEmissionColor;  // layer=z
     // matters because a region index is precisely the kind of value bilinear
     // filtering turns into a different region (see AGENTS.md on not putting
     // non-interpolatable values in filtered textures).
+    // Cutaway (cell mode). xyz = the camera-ward axis, w = the threshold along
+    // it; a fragment with dot(worldPos, xyz) > w stands between the camera and
+    // the target and is removed. The axis comes straight out of the vertex
+    // shader's own depth formula (see camera/cell-clip.ts), so the cut lands
+    // exactly where the depth buffer thinks it does.
+    //
+    // u_clipWeight 0 = off and costs one compare. Between 0 and 1 fades the
+    // clipped region instead of cutting it, which is what an animated cutaway
+    // wants on the way in.
+uniform vec4 u_clipPlane;
+uniform float u_clipWeight;
+    // Per-cell-map opt-out (cellMap.clipExempt) -- a backdrop or UI map that
+    // should stay whole. Same shape as u_fogExempt.
+uniform bool u_clipExempt;
+
 uniform bool u_hasCellRegionIndex;
 uniform highp usampler2DArray u_cellRegionIndex;  // R8UI, layer=z
 
@@ -859,6 +874,26 @@ void main() {
         // matching hiddenStyle.tint and the boundary is seamless).
         if(fogActive && u_fogDropHidden && fogVisibility <= 0.0 && fogExplored <= 0.0) discard;
         if(fogVisibility <= 0.0 && fogStyleOpacity <= 0.0) discard;
+
+        // Cutaway. Sits here, beside the fog discards, for the reason the block
+        // above gives: the predicate is cheap uniforms and an interpolated
+        // position, so a removed fragment costs nothing further -- no triplanar
+        // sampling, no lighting, no AO.
+        //
+        // Uses v_origWorldPos rather than v_worldPos so the cut is stable under
+        // smoothing: the Laplacian mesher displaces vertices off the lattice,
+        // and clipping on displaced positions makes the cut wobble against the
+        // geometry it is cutting.
+        float clipAmount = 0.0;
+        if(u_clipWeight > 0.0 && !u_clipExempt) {
+            float clipDepth = dot(v_origWorldPos, u_clipPlane.xyz);
+            if(clipDepth > u_clipPlane.w) {
+                clipAmount = u_clipWeight;
+                // Fully-weighted cut removes the fragment outright; a partial
+                // weight falls through and fades it below.
+                if(clipAmount >= 1.0) discard;
+            }
+        }
 
         vec4 albedo;
         vec3 finalNormal;

@@ -229,6 +229,8 @@ export let cmChunkGridSize: { x: number; y: number; z: number } = {
   z: 0,
 };
 export let cmRevealExempt: boolean = false;
+/** Per-cell-map cutaway opt-out; mirrors `cmRevealExempt`'s wiring exactly. */
+export let cmClipExempt: boolean = false;
 /**
  * When true (default), the render loop drives `CellMap.setFocus` from the
  * camera position every frame, so the window follows the camera with no
@@ -410,6 +412,7 @@ export function resetCellMapState(): void {
   cmChunks = [];
   cmChunkGridSize = { x: 0, y: 0, z: 0 };
   cmRevealExempt = false;
+  cmClipExempt = false;
   cmAutoFocusFromCamera = true;
   cmAutoResizeFromZoom = true;
   cmMaxTerrainLoadDimensions = { x: 512, y: 512, z: 512 };
@@ -641,6 +644,12 @@ function makeCellMapInstance(name: string): CellMapT {
     set revealExempt(v) {
       cmRevealExempt = v;
     },
+    get clipExempt() {
+      return cmClipExempt;
+    },
+    set clipExempt(v) {
+      cmClipExempt = v;
+    },
     get autoFocusFromCamera() {
       return cmAutoFocusFromCamera;
     },
@@ -806,8 +815,22 @@ export interface CellMapOptions extends ComponentOptions {
    */
   normalSmoothing?: number;
 
-  /** If true, this cell-map is exempt from Y-slice reveal clipping (default: false) */
+  /**
+   * If true, this cell-map opts out of fog-of-war entirely (default: false).
+   *
+   * Despite the name this has nothing to do with slicing or clipping — an
+   * exempt map pays nothing for fog: no explored-texture upload, no CPU sweep,
+   * and the shader skips the vision-source loop. For the cutaway opt-out see
+   * `clipExempt`.
+   */
   revealExempt?: boolean;
+
+  /**
+   * If true, this cell-map is never cut away by `camera.cellClip` (default:
+   * false). For a backdrop or UI map that should stay whole regardless of the
+   * camera's cutaway.
+   */
+  clipExempt?: boolean;
 
   /**
    * When true (default), the render loop drives the window's focus from the
@@ -940,8 +963,11 @@ export interface CellMapT extends ComponentData {
   chunks: ChunkMesh[];
   chunkGridSize: { x: number; y: number; z: number };
 
-  /** If true, this cell-map is exempt from Y-slice reveal clipping. Default: false */
+  /** If true, this cell-map opts out of fog-of-war entirely. See CellMapOptions. */
   revealExempt: boolean;
+
+  /** If true, this cell-map is never cut away by `camera.cellClip`. Default: false */
+  clipExempt: boolean;
 
   /** See `CellMapOptions.autoFocusFromCamera`. */
   autoFocusFromCamera: boolean;
@@ -1088,6 +1114,7 @@ export const PROPERTY_ALLOWLIST = [
   'smoothingWeights',
   'normalSmoothing',
   'revealExempt',
+  'clipExempt',
   'autoFocusFromCamera',
   'autoResizeFromZoom',
   'maxTerrainLoadDimensions',
@@ -2207,6 +2234,7 @@ export async function builder(options: CellMapOptions): Promise<CellMapT> {
   cmChunkGridSize = window.gridDimensions;
   cmChunks = initChunks(window.gridDimensions);
   cmRevealExempt = options.revealExempt ?? false;
+  cmClipExempt = options.clipExempt ?? false;
   cmAutoFocusFromCamera = options.autoFocusFromCamera ?? !usingCoverageRadius;
   cmAutoResizeFromZoom = options.autoResizeFromZoom ?? cmAutoFocusFromCamera;
   cmMaxTerrainLoadDimensions = options.maxTerrainLoadDimensions ?? {
@@ -2395,6 +2423,7 @@ function builderGenerative(options: CellMapOptions): CellMapT {
   cmChunkGridSize = window.gridDimensions;
   cmChunks = initChunks(window.gridDimensions);
   cmRevealExempt = options.revealExempt ?? false;
+  cmClipExempt = options.clipExempt ?? false;
   cmAutoFocusFromCamera = options.autoFocusFromCamera ?? true;
   cmAutoResizeFromZoom = options.autoResizeFromZoom ?? cmAutoFocusFromCamera;
   cmMaxTerrainLoadDimensions = options.maxTerrainLoadDimensions ?? {
@@ -2511,6 +2540,7 @@ function serialize(component: ComponentData): any {
     smoothing: cm.smoothing,
     normalSmoothing: cm.normalSmoothing,
     revealExempt: cm.revealExempt,
+    clipExempt: cm.clipExempt,
     // Custom shape meshes (index 0 = air, 1 = default cube are auto-filled on
     // load, so serialize them as null). Indices 2+ are persisted as plain arrays.
     meshes: cm.meshes.map((m, i) =>
@@ -2568,6 +2598,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
     smoothing: dataSmoothing,
     normalSmoothing: dataNormalSmoothing,
     revealExempt: dataRevealExempt,
+    clipExempt: dataClipExempt,
     meshes: dataMeshes,
   } = data;
 
@@ -2939,6 +2970,7 @@ async function deserialize(data: any): Promise<DeserializeResult<CellMapT>> {
   cmChunkGridSize = dWindow.gridDimensions;
   cmChunks = initChunks(dWindow.gridDimensions);
   cmRevealExempt = (dataRevealExempt as boolean) ?? false;
+  cmClipExempt = (dataClipExempt as boolean) ?? false;
   cmAutoFocusFromCamera = true;
   cmAutoResizeFromZoom = true;
   cmMaxTerrainLoadDimensions = { x: 512, y: 512, z: 512 };

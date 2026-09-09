@@ -112,6 +112,112 @@ function resolveDepthCues(o: DepthCuesOptions | undefined): DepthCues | null {
   };
 }
 
+/**
+ * Which shape names the region a cutaway reveals.
+ *
+ * - `slab` — a depth along an axis. The cheapest, and the classic cutaway.
+ * - `box` — a world AABB. Because the camera is orthographic, "in front of the
+ *   box" is a sweep rather than a perspective frustum, so this stays cheap.
+ * - `volume` — an arbitrary per-cell set, for non-flat cutaway shapes. Needs a
+ *   per-fragment march, so it is materially more expensive than the other two.
+ */
+export type CellClipMode = 'slab' | 'box' | 'volume';
+
+/**
+ * Whether the clip is measured along the view axis or a fixed world axis.
+ *
+ * `view` re-derives from `orbitYaw` every frame, which is what a cutaway
+ * actually wants ("everything between the camera and X"). `world` is the escape
+ * hatch for a fixed plane — a dungeon floor slice, say — and does not move with
+ * the camera.
+ */
+export type CellClipSpace = 'view' | 'world';
+
+/**
+ * Resolved cutaway configuration for cell rendering.
+ *
+ * The model throughout is: the developer names a TARGET region, and the engine
+ * removes whatever stands between the camera and it. That is one concept across
+ * all three modes rather than three different rules.
+ *
+ * Weight-gated like the depth cues: `weight` 0 is off and costs nothing. Values
+ * between 0 and 1 fade the clipped region out rather than cutting it, which is
+ * what an animated cutaway wants on the way in.
+ */
+export interface CellClip {
+  /** 0 = off (zero cost), 1 = fully removed. Between = faded. */
+  weight: number;
+  /** Which target shape is in use; the others' fields are ignored. */
+  mode: CellClipMode;
+  /** View-relative (follows `orbitYaw`) or a fixed world axis. */
+  space: CellClipSpace;
+  /** `slab`: the target's near face along `axis`, in world units. */
+  slab: { distance: number; axis: RGB };
+  /** `box`: the target AABB, in world units. */
+  box: { min: RGB; max: RGB };
+  /** Also hide everything BEYOND the target, so only the target renders. */
+  isolate: boolean;
+  /**
+   * Soft-edge jitter width in world units; 0 = a hard cut. The STYLE comes from
+   * the camera's `depthCues.scatterType`, deliberately shared so the cut edge
+   * matches AO and shadows — three different noise styles on one screen reads
+   * as broken.
+   */
+  scatter: number;
+  /**
+   * The cut surface. Interior faces between two solid cells are never meshed,
+   * so a clip on its own reveals a hollow shell rather than a cross-section;
+   * the cap fills it by sampling the per-cell solidity grid at the cut plane.
+   * `weight` 0 leaves the hole, which is correct when the clip removes whole
+   * objects rather than slicing through one.
+   */
+  cap: { weight: number; color: RGB };
+}
+
+/** Partial form accepted in CameraOptions; missing fields fall back to defaults. */
+export interface CellClipOptions {
+  weight?: number;
+  mode?: CellClipMode;
+  space?: CellClipSpace;
+  slab?: { distance?: number; axis?: Partial<RGB> };
+  box?: { min?: Partial<RGB>; max?: Partial<RGB> };
+  isolate?: boolean;
+  scatter?: number;
+  cap?: { weight?: number; color?: Partial<RGB> };
+}
+
+/**
+ * Resolve the partial option into a full CellClip (filling defaults), or null
+ * when the option is absent — null is the default and keeps the whole feature
+ * off, including its uniform uploads and chunk-level tests.
+ */
+function resolveCellClip(o: CellClipOptions | undefined): CellClip | null {
+  if (!o) return null;
+  return {
+    weight: o.weight ?? 0,
+    mode: o.mode ?? 'slab',
+    space: o.space ?? 'view',
+    slab: {
+      distance: o.slab?.distance ?? 0,
+      // World-space default is +Y (a floor slice); ignored in view space, where
+      // the axis is derived from the camera each frame.
+      axis: rgb(o.slab?.axis, 0, 1, 0),
+    },
+    box: {
+      min: rgb(o.box?.min, 0, 0, 0),
+      max: rgb(o.box?.max, 0, 0, 0),
+    },
+    isolate: o.isolate ?? false,
+    scatter: o.scatter ?? 0,
+    // Cap on by default: a clip that slices a solid mass looks broken without
+    // one, and the cost is a single extra draw.
+    cap: {
+      weight: o.cap?.weight ?? 1,
+      color: rgb(o.cap?.color, 0.18, 0.18, 0.2),
+    },
+  };
+}
+
 /** Value types a post-effect stage can pass to its own uniforms. */
 export type PostEffectUniformValue = number | number[] | boolean;
 
@@ -251,6 +357,12 @@ export interface CameraT
    * height ramp). null = all off (default). See DepthCues.
    */
   depthCues: DepthCues | null;
+
+  /**
+   * Cutaway configuration — removes cells standing between the camera and a
+   * named target region. null = off (default). See CellClip.
+   */
+  cellClip: CellClip | null;
 
   /**
    * Ordered post-process chain applied to the composited frame. null = no
@@ -405,6 +517,12 @@ export interface CameraOptions extends ComponentOptions {
   depthCues?: DepthCuesOptions;
 
   /**
+   * Cutaway. Omit to disable (default). `weight` defaults to 0 (off), so set it
+   * to reveal the target. See CellClip for the target-region model.
+   */
+  cellClip?: CellClipOptions;
+
+  /**
    * Post-process stages applied to the finished frame, in order. Omit for no
    * chain (default). See PostEffect for the per-stage shape and
    * `render/post-chain.ts` for the uniform contract each stage receives.
@@ -436,6 +554,7 @@ export function builder(options: CameraOptions): CameraT {
     zoomTarget: null,
 
     depthCues: resolveDepthCues(options.depthCues),
+    cellClip: resolveCellClip(options.cellClip),
     postEffects: resolvePostEffects(options.postEffects),
 
     glResources: {
@@ -522,6 +641,9 @@ function serialize(component: ComponentData): any {
     orbitYaw: c.orbitYaw,
     viewportRef: c.viewportRef,
     depthCues: c.depthCues,
+    // Plain JSON, and the resolved form is structurally a valid options form,
+    // so resolve-on-load is idempotent and needs no custom deserializer.
+    cellClip: c.cellClip,
     postEffects: serializePostEffects(c),
   };
 }
@@ -555,6 +677,7 @@ function deserialize(data: any): DeserializeResult<CameraT> {
     orbitYaw,
     viewportRef,
     depthCues,
+    cellClip,
     postEffects,
   } = data;
 
@@ -590,6 +713,7 @@ function deserialize(data: any): DeserializeResult<CameraT> {
       orbitYaw: orbitYaw as number | undefined,
       viewportRef: viewportRef as string,
       depthCues: depthCues as DepthCuesOptions | undefined,
+      cellClip: cellClip as CellClipOptions | undefined,
       postEffects: postEffects as PostEffectOptions[] | undefined,
     }),
     errors,
@@ -613,5 +737,6 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'zoomTarget',
   'glResources',
   'depthCues',
+  'cellClip',
   'postEffects',
 ];

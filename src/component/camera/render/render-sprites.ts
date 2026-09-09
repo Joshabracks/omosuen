@@ -10,6 +10,7 @@ import { TransformT } from '../../transform';
 import { castTo } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
+import { resolveClipPlane, isPointClipped } from '../cell-clip';
 import {
   setAngleUniform,
   setOrbitYawUniform,
@@ -419,6 +420,12 @@ export function renderSprites(
   // Camera uses its cached WORLD position (composed up the ancestry by
   // updateWorldTransforms), so a nested camera nexus offsets the view.
   const camPos = transform.worldPosition;
+  // Cutaway: a sprite standing between the camera and the target goes with the
+  // cells around it. Resolved once per frame from the same helper the cell pass
+  // and the picking predicate use, so all three agree about where the cut is.
+  const spriteClipPlane = resolveClipPlane(camera);
+  const spriteClipActive =
+    spriteClipPlane !== null && (camera.cellClip?.weight ?? 0) >= 1;
   const camRx = camPos.x * cosYaw + camPos.z * sinYaw;
   const camRz = -camPos.x * sinYaw + camPos.z * cosYaw;
   const camIsoX = camRx * ISO_H - camRz * ISO_H;
@@ -742,6 +749,18 @@ export function renderSprites(
     // transform is a frozen clone (see fog-of-war/methods.ts), so this is
     // its last-seen position without any extra handling needed here.
     const p = t.worldPosition;
+
+    // Whole-object decision, deliberately not a per-fragment discard: a sprite
+    // is a billboard, and testing its fragments individually would cut the quad
+    // in half and leave the rest floating. Same reasoning as the fog phantom
+    // discard, which is anchored on a uniform for exactly this reason.
+    //
+    // Skipping here rather than in the shader also means the sprite costs
+    // nothing at all -- no uniforms, no draw call.
+    if (spriteClipActive && isPointClipped(spriteClipPlane!, p.x, p.y, p.z)) {
+      continue;
+    }
+
     const pRx = p.x * cosYaw + p.z * sinYaw;
     const pRz = -p.x * sinYaw + p.z * cosYaw;
 

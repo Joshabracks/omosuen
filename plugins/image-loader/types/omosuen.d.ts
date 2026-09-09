@@ -70,6 +70,28 @@ declare module 'omosuen' {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   export function getActiveScene(): any;
 
+  // Core channel/frame packing helpers, used by the plain-image import path to
+  // build a `material` texture (R=metallic, G=roughness, B=mask) and to lay
+  // separate per-frame files out as one strip.
+  export function packMaterial(
+    maps: {
+      metallic?: unknown;
+      roughness?: unknown;
+      mask?: unknown;
+    },
+    options?: { label?: string },
+  ): Promise<HTMLCanvasElement>;
+
+  export function packFrameStrip(
+    frames: unknown[],
+    options?: { label?: string; align?: 'top' | 'bottom' | 'center' },
+  ): Promise<{
+    canvas: HTMLCanvasElement;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    frames: any[];
+    size: Vector2D;
+  }>;
+
   export enum ComponentUnique {
     FALSE = 0,
     LOCAL = 1,

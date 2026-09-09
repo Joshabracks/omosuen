@@ -13,10 +13,19 @@ layout(location = 0) out vec4 fragColor;
     // it instead carries fogVisibility quantised to 16 bits, which the upscale
     // unpacks into the composite's aux channel.
 layout(location = 1) out uvec2 fragIds;
-    // R = sprite coverage, G = fogVisibility, A = the same alpha written to
-    // fragColor. That alpha is load-bearing: MRT blending uses each draw
-    // buffer's OWN output alpha, so a zero here would make the blend
-    // dst = src*0 + dst*1 and freeze this attachment at its cleared value.
+    // R = sprite coverage, G = fogVisibility, B = sprite material mask
+    // (the material texture's own B channel -- a per-region index a post
+    // effect can recolour), A = the same alpha written to fragColor. That
+    // alpha is load-bearing: MRT blending uses each draw buffer's OWN output
+    // alpha, so a zero here would make the blend dst = src*0 + dst*1 and
+    // freeze this attachment at its cleared value.
+    //
+    // The mask BLENDS, exactly as coverage does -- this is a float attachment,
+    // not the integer id one. An opaque fragment therefore carries its mask
+    // through untouched, while a partially transparent edge fades toward what
+    // is behind it. Quantise on the way in (packMaterial's `quantize`) and
+    // threshold on the way out; do not expect exact band values at sprite
+    // edges.
 layout(location = 2) out vec4 fragAux;
 
     // Render mode selector
@@ -1047,6 +1056,9 @@ void main() {
                 // Returns before the shared tail below, so it has to write the
                 // masks itself.
                 fragIds = uvec2(texture(u_cellIdTexture, fboUV).r, u_spriteIndex);
+                // Mask stays 0: this exit runs BEFORE the material is sampled,
+                // and a silhouette is a flat stand-in for an obscured sprite --
+                // there is no visible surface for a region effect to recolour.
                 fragAux = vec4(1.0, fogVis, 0.0, u_silhouetteColor.a);
                 return;
             }
@@ -1077,15 +1089,19 @@ void main() {
             emissionTexColor = texture(u_emissionTexture, emissionAtlasUV).rgb;
         }
 
-        // Material (metallic/roughness) texture: R = metallic, G = roughness.
-        // Defaults (0 metallic, fully rough) make computeSpecular a no-op when unset.
+        // Material texture: R = metallic, G = roughness, B = region mask.
+        // Defaults (0 metallic, fully rough) make computeSpecular a no-op when
+        // unset. The mask defaults to 0, which a post effect reads as "no
+        // region here" -- so a sprite with no material is unaffected.
         float metallic = 0.0;
         float roughness = 1.0;
+        float materialMask = 0.0;
         if(u_hasMaterial) {
             vec2 materialAtlasUV = mix(u_materialUVBounds.xy, u_materialUVBounds.zw, v_uv);
             vec4 materialSample = texture(u_materialTexture, materialAtlasUV);
             metallic = materialSample.r;
             roughness = materialSample.g;
+            materialMask = materialSample.b;
         }
 
         // Dynamic lighting
@@ -1163,6 +1179,6 @@ void main() {
         // would otherwise erase what is behind it.
         fragIds = uvec2(texture(u_cellIdTexture, fboUV).r, u_spriteIndex);
         // .a must match fragColor's alpha -- see the fragAux declaration.
-        fragAux = vec4(1.0, fogVis, 0.0, outAlpha);
+        fragAux = vec4(1.0, fogVis, materialMask, outAlpha);
     }
 }

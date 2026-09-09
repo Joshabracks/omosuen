@@ -1,15 +1,11 @@
-// The `aseprite-loader` plugin component: a declarative, serializable handle to a
+// The `image-loader` plugin component: a declarative, serializable handle to a
 // .aseprite file. On init it statically fetches + parses the file and builds the
 // entity's sprites + animation-controller + texture-maps into its own nexus (all
 // flagged `_generated`, so the scene serializer keeps only this declaration and
 // the pixels/atlas regenerate on load). Same fully-static `filePath` convention
 // as the engine's audio-track / texture-map.
 
-import {
-  ComponentUnique,
-  castTo,
-  getActiveScene,
-} from 'omosuen';
+import { ComponentUnique, castTo, getActiveScene } from 'omosuen';
 import type {
   ComponentData,
   ComponentOptions,
@@ -18,9 +14,10 @@ import type {
   ComponentTypeDefinition,
 } from 'omosuen';
 import { importAseprite, importAsepriteSources } from './import.js';
+import { ImageChannelSpec, SpriteChannel, importImages } from './images.js';
 import type { AsepriteSourceEntry } from './import.js';
 
-const TYPE = 'aseprite-loader';
+const TYPE = 'image-loader';
 
 export type AnchorMode = 'center' | 'bottom-center';
 
@@ -30,7 +27,7 @@ export type AnchorMode = 'center' | 'bottom-center';
  * unique layer name across the whole set, not per source) and contributes to a
  * shared animation-controller with `${sourceKey}-${tag}` animation names.
  * `visibleOnly` falls back to the loader-level default; `flatten`/`layerSlots`
- * are set-level only (`AsepriteLoaderOptions.flatten`/`layerSlots`) — see
+ * are set-level only (`ImageLoaderOptions.flatten`/`layerSlots`) — see
  * `import.ts`'s `importAsepriteSources` doc for why per-source flatten doesn't
  * have a clean meaning under shared-by-layer-name ingestion.
  */
@@ -40,9 +37,21 @@ export interface AsepriteSourceOptions {
   visibleOnly?: boolean;
 }
 
-export interface AsepriteLoaderOptions extends ComponentOptions {
+export interface ImageLoaderOptions extends ComponentOptions {
   /** Single-file shorthand. Omit when using `sources`. */
   filePath?: string;
+  /**
+   * Plain-image path: declare an image per sprite texture channel. Mutually
+   * exclusive with `filePath`/`sources` (which parse Aseprite files).
+   *
+   * Each channel takes a URL, an array of per-frame URLs (composited into a
+   * strip), or — for `material` — a `{ metallic, roughness, mask }` group that
+   * is channel-packed into one image, removing the step where an artist merges
+   * three grayscale files by hand.
+   */
+  images?: Partial<Record<SpriteChannel, ImageChannelSpec>>;
+  /** Frame layout for single-image channels, passed through to `texture-map`. */
+  imageType?: unknown;
   /**
    * Multi-file: several .aseprite files sharing sprites by layer name into one
    * entity + one controller. Keyed by source id (e.g. `{ archer: '...', miner: '...' }`);
@@ -64,10 +73,12 @@ export interface AsepriteLoaderOptions extends ComponentOptions {
   anchorMode?: AnchorMode;
 }
 
-export interface AsepriteLoaderT extends ComponentData {
-  type: 'aseprite-loader';
-  /** Empty string when the loader is driven by `sources` instead. */
+export interface ImageLoaderT extends ComponentData {
+  type: 'image-loader';
+  /** Empty string when the loader is driven by `sources`/`images` instead. */
   filePath: string;
+  images?: Partial<Record<SpriteChannel, ImageChannelSpec>>;
+  imageType?: unknown;
   sources?: Record<string, string | AsepriteSourceOptions>;
   flatten: boolean;
   visibleOnly: boolean;
@@ -78,6 +89,8 @@ export interface AsepriteLoaderT extends ComponentData {
 
 const PROPERTY_ALLOWLIST: string[] = [
   'filePath',
+  'images',
+  'imageType',
   'sources',
   'flatten',
   'visibleOnly',
@@ -86,7 +99,7 @@ const PROPERTY_ALLOWLIST: string[] = [
   'anchorMode',
 ];
 
-function builder(options: AsepriteLoaderOptions): AsepriteLoaderT {
+function builder(options: ImageLoaderOptions): ImageLoaderT {
   return {
     type: TYPE,
     name: options.name,
@@ -94,13 +107,15 @@ function builder(options: AsepriteLoaderOptions): AsepriteLoaderT {
     parent: null,
     _disposed: false,
     filePath: options.filePath ?? '',
+    images: options.images,
+    imageType: options.imageType,
     sources: options.sources,
     flatten: options.flatten ?? true,
     visibleOnly: options.visibleOnly ?? true,
     packageId: options.packageId ?? options.name,
     layerSlots: options.layerSlots,
     anchorMode: options.anchorMode ?? 'center',
-  } as unknown as AsepriteLoaderT;
+  } as unknown as ImageLoaderT;
 }
 
 /**
@@ -111,7 +126,7 @@ function builder(options: AsepriteLoaderOptions): AsepriteLoaderT {
  * network.
  */
 async function initFromSources(
-  a: AsepriteLoaderT,
+  a: ImageLoaderT,
   parent: unknown,
   atlasManager: unknown,
   sceneRoot: unknown,
@@ -126,9 +141,7 @@ async function initFromSources(
   }
 
   if (Object.keys(entries).length === 0) {
-    console.warn(
-      `[aseprite-loader] '${a.name}' has no sources; nothing imported`,
-    );
+    console.warn(`[image-loader] '${a.name}' has no sources; nothing imported`);
     return;
   }
 
@@ -152,10 +165,10 @@ const methods: ComponentMethods = {
   type: TYPE,
 
   async init(component: ComponentData): Promise<void> {
-    const a = component as AsepriteLoaderT;
+    const a = component as ImageLoaderT;
     if (!a.parent) {
       console.warn(
-        `[aseprite-loader] Cannot initialize '${a.name}' - no parent nexus`,
+        `[image-loader] Cannot initialize '${a.name}' - no parent nexus`,
       );
       return;
     }
@@ -164,26 +177,37 @@ const methods: ComponentMethods = {
     const scene = getActiveScene();
     if (!scene) {
       console.warn(
-        `[aseprite-loader] Cannot initialize '${a.name}' - no active scene`,
+        `[image-loader] Cannot initialize '${a.name}' - no active scene`,
       );
       return;
     }
     const atlasManager = scene.getComponentByType('atlas-manager', true);
     if (!atlasManager) {
       console.warn(
-        `[aseprite-loader] '${a.name}' found no atlas-manager in the scene; cannot ingest`,
+        `[image-loader] '${a.name}' found no atlas-manager in the scene; cannot ingest`,
       );
       return;
     }
 
     try {
-      if (a.sources && Object.keys(a.sources).length > 0) {
+      if (a.images && Object.keys(a.images).length > 0) {
+        await importImages({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          parent: parent as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          atlasManager: atlasManager as any,
+          packageId: a.packageId,
+          images: a.images,
+          imageType: a.imageType,
+          anchorMode: a.anchorMode,
+        });
+      } else if (a.sources && Object.keys(a.sources).length > 0) {
         await initFromSources(a, parent, atlasManager, scene);
       } else {
         const response = await fetch(a.filePath);
         if (!response.ok) {
           console.error(
-            `[aseprite-loader] Failed to fetch '${a.filePath}' for '${a.name}': ${response.status} ${response.statusText}`,
+            `[image-loader] Failed to fetch '${a.filePath}' for '${a.name}': ${response.status} ${response.statusText}`,
           );
           return;
         }
@@ -199,7 +223,7 @@ const methods: ComponentMethods = {
         });
       }
     } catch (error) {
-      console.error(`[aseprite-loader] Failed to import '${a.name}'`, error);
+      console.error(`[image-loader] Failed to import '${a.name}'`, error);
     }
   },
 
@@ -210,11 +234,17 @@ const methods: ComponentMethods = {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function serialize(component: ComponentData): any {
-  const a = component as AsepriteLoaderT;
+  const a = component as ImageLoaderT;
   return {
     type: TYPE,
     name: a.name,
     filePath: a.filePath,
+    // URL-only by construction (see ImageLoaderOptions.images) so this round-trips.
+    images: a.images,
+    // `ImageType` is duck-typed on both sides (isFrameMap/isGridConfig test for
+    // Array-ness and for `cellSize`/`gridSize` keys), and every reader touches
+    // only .x/.y/.z/.w — so plain JSON objects survive the trip as-is.
+    imageType: a.imageType,
     sources: a.sources,
     flatten: a.flatten,
     visibleOnly: a.visibleOnly,
@@ -224,8 +254,17 @@ function serialize(component: ComponentData): any {
   };
 }
 
+function isNonEmptyMap(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).length > 0
+  );
+}
+
 function deserialize(data: unknown): {
-  component: AsepriteLoaderT | null;
+  component: ImageLoaderT | null;
   errors: { code: string; message: string }[];
 } {
   if (!data || typeof data !== 'object') {
@@ -234,12 +273,12 @@ function deserialize(data: unknown): {
       errors: [
         {
           code: 'INVALID_DATA',
-          message: 'aseprite-loader deserialize received non-object data',
+          message: 'image-loader deserialize received non-object data',
         },
       ],
     };
   }
-  const d = data as Partial<AsepriteLoaderT>;
+  const d = data as Partial<ImageLoaderT>;
   if (d.type !== TYPE) {
     return {
       component: null,
@@ -255,23 +294,21 @@ function deserialize(data: unknown): {
     return {
       component: null,
       errors: [
-        { code: 'MISSING_NAME', message: 'aseprite-loader requires a name' },
+        { code: 'MISSING_NAME', message: 'image-loader requires a name' },
       ],
     };
   }
   const hasFilePath = typeof d.filePath === 'string' && d.filePath.length > 0;
-  const hasSources =
-    d.sources !== null &&
-    typeof d.sources === 'object' &&
-    !Array.isArray(d.sources) &&
-    Object.keys(d.sources).length > 0;
-  if (!hasFilePath && !hasSources) {
+  const hasSources = isNonEmptyMap(d.sources);
+  const hasImages = isNonEmptyMap(d.images);
+  if (!hasFilePath && !hasSources && !hasImages) {
     return {
       component: null,
       errors: [
         {
           code: 'MISSING_FILEPATH',
-          message: 'aseprite-loader requires a filePath or a non-empty sources map',
+          message:
+            'image-loader requires a filePath, a non-empty sources map, or a non-empty images map',
         },
       ],
     };
@@ -280,6 +317,8 @@ function deserialize(data: unknown): {
     component: builder({
       name: d.name,
       filePath: d.filePath,
+      images: d.images,
+      imageType: d.imageType,
       sources: d.sources,
       flatten: d.flatten,
       visibleOnly: d.visibleOnly,
@@ -295,10 +334,10 @@ const serializer: ComponentSerializer = { serialize, deserialize };
 
 /**
  * The full plugin definition. Pass to
- * `Omosuen.init({ plugins: [asepriteLoaderDefinition] })` (TS path) or register
+ * `Omosuen.init({ plugins: [imageLoaderDefinition] })` (TS path) or register
  * it from the self-registering JS file (see browser.ts).
  */
-export const asepriteLoaderDefinition: ComponentTypeDefinition = {
+export const imageLoaderDefinition: ComponentTypeDefinition = {
   type: TYPE,
   // builder requires `filePath`; the registry's builder type takes the looser
   // ComponentOptions, so bridge through unknown (runtime options carry filePath).

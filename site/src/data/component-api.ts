@@ -535,7 +535,7 @@ export const COMPONENT_API: Record<string, ComponentApiDoc> = {
 
   sprite: {
     options: withBaseOptions([
-      O("textureMapKeys", "{albedo?,normal?,material?,emission?}?", "Texture-map keys per channel.", "{ albedo: '', normal: '', material: '', emission: '' }"),
+      O("textureMapKeys", "{albedo?,normal?,material?,emission?}?", "Texture-map keys per channel. material packs R=metallic, G=roughness, B=region mask — build one with Omosuen.packMaterial rather than merging grayscale files by hand.", "{ albedo: '', normal: '', material: '', emission: '' }"),
       O("frame", "{albedo?,normal?,emission?,material?}?", "Initial frame per channel.", "{ albedo: 0, normal: 0, emission: 0, material: 0 }"),
       O("anchor", "Vector2D?", "Pivot from top-left (px).", "new Omosuen.Vector2D(0, 0)"),
       O("tint", "Vector4D?", "RGBA tint 0–1.", "new Omosuen.Vector4D(1, 1, 1, 1)"),

@@ -31,6 +31,7 @@
     "test:explored": "tsx test/explored-sweep.test.ts",
     "test:vision": "tsx test/vision-source-selection.test.ts",
     "test:pick": "tsx test/screen-pick-window.test.ts",
+    "test:channel-pack": "tsx test/channel-pack.test.ts",
     "test": "start http://localhost:3000/ && node test/integration-test-server.js",
     "test:cli": "tsx test/cli.test.ts",
     "test:packer": "tsx test/packer-bench.test.ts",

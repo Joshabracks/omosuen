@@ -1,6 +1,6 @@
 // Bundles the self-registering browser entry into a single classic IIFE script
-// (dist/aseprite-loader.plugin.js). Load it after the Omosuen UMD bundle, or pass
-// its path to Omosuen.init({ plugins: ['.../aseprite-loader.plugin.js'] }).
+// (dist/image-loader.plugin.js). Load it after the Omosuen UMD bundle, or pass
+// its path to Omosuen.init({ plugins: ['.../image-loader.plugin.js'] }).
 //
 // `externals: { omosuen: 'Omosuen' }` is essential: the importer uses engine
 // RUNTIME singletons (newComponent, Vector*, castTo, getActiveScene). They must
@@ -15,7 +15,7 @@ module.exports = {
   entry: './src/browser.ts',
   output: {
     path: path.resolve(__dirname, 'dist'),
-    filename: 'aseprite-loader.plugin.js',
+    filename: 'image-loader.plugin.js',
     iife: true,
   },
   externals: {

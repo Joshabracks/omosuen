@@ -18,11 +18,11 @@ async function initGame() {
     console.log('Initializing Omosuen Test Game...');
 
     // Initialize Omosuen with log suppression + the official Aseprite loader
-    // plugin (self-registers the `aseprite-loader` component before scenes load).
+    // plugin (self-registers the `image-loader` component before scenes load).
     await Omosuen.init({
         logSuppression: 5,  // Suppress logs after 5 occurrences
         plugins: [
-            './dev/aseprite-loader.plugin.js',
+            './dev/image-loader.plugin.js',
             './dev/browser-local-storage.plugin.js',
             './dev/perf-monitor.plugin.js'
         ]
@@ -58,6 +58,7 @@ async function initGame() {
     Omosuen.registerSceneModule('cellmap-test', '/scenes/cellmap-test.js');
     Omosuen.registerSceneModule('depth-cues-test', '/scenes/depth-cues-test.js');
     Omosuen.registerSceneModule('post-process-test', '/scenes/post-process-test.js');
+    Omosuen.registerSceneModule('channel-pack-test', '/scenes/channel-pack-test.js');
     Omosuen.registerSceneModule('screen-pick-test', '/scenes/screen-pick-test.js');
     Omosuen.registerSceneModule('audio-test', '/scenes/audio-test.js');
     Omosuen.registerSceneModule('speed-dial-test', '/scenes/speed-dial-test.js');

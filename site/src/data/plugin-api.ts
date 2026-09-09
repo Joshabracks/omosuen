@@ -48,10 +48,12 @@ export const PLUGIN_API: Record<string, ComponentApiDoc> = {
     ],
   },
 
-  "aseprite-loader": {
+  "image-loader": {
     options: withBase([
       O("filePath", "string?", "Single .aseprite URL (omit when using sources).", "'./assets/hero.aseprite'"),
       O("sources", "AsepriteSourceOptions[]?", "Multi-file ingest into one entity."),
+      O("images", "Partial<Record<SpriteChannel, ImageChannelSpec>>?", "Plain images, one per sprite texture channel. Each takes a URL, an array of per-frame URLs, or \u2014 for material \u2014 a { metallic, roughness, mask } group that is channel-packed. Mutually exclusive with filePath / sources.", "{ albedo: './crate.png', material: { metallic: 0, roughness: 0.35 } }"),
+      O("imageType", "ImageType?", "Frame layout for single-image channels, passed through to texture-map."),
       O("flatten", "boolean?", "Composite layers into one sprite.", "true"),
       O("visibleOnly", "boolean?", "Skip layers hidden in Aseprite.", "true"),
       O("packageId", "string?", "Namespace for generated texture-map keys.", "'Hero'"),
@@ -59,7 +61,9 @@ export const PLUGIN_API: Record<string, ComponentApiDoc> = {
       O("anchorMode", "'center' | 'bottom-center'?", "Sprite anchor against canvas size.", "'center'"),
     ]),
     data: [
-      O("filePath", "string", "Source URL (empty when driven by sources)."),
+      O("filePath", "string", "Source URL (empty when driven by sources / images)."),
+      O("images", "Partial<Record<SpriteChannel, ImageChannelSpec>>?", "Per-channel image declarations."),
+      O("imageType", "ImageType?", "Frame layout for single-image channels."),
       O("sources", "AsepriteSourceOptions[]?", "Multi-file source list."),
       O("flatten", "boolean", "Layer compositing mode."),
       O("visibleOnly", "boolean", "Skip hidden Aseprite layers."),
@@ -68,7 +72,7 @@ export const PLUGIN_API: Record<string, ComponentApiDoc> = {
       O("anchorMode", "AnchorMode", "center | bottom-center."),
     ],
     methods: [
-      M("init", "init()", "Fetch, parse, and build sprites + controller under parent nexus."),
+      M("init", "init()", "Build texture-maps, sprites and an animation-controller under the parent nexus \u2014 by parsing an Aseprite binary, or from the declared images."),
       M("dispose", "dispose()", "Mark disposed."),
     ],
   },

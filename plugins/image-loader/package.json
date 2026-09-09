@@ -1,7 +1,7 @@
 {
-  "name": "omosuen-aseprite-loader",
+  "name": "omosuen-image-loader",
   "version": "1.0.0",
-  "description": "Official Omosuen plugin: the `aseprite-loader` component ingests Aseprite (.aseprite/.ase) files into layered, animated entities. Dependency-free, browser-static.",
+  "description": "Official Omosuen plugin: the `image-loader` component ingests Aseprite (.aseprite/.ase) files and plain images into layered, animated entities with packed texture-maps. Dependency-free, browser-static.",
   "type": "module",
   "main": "dist/src/index.js",
   "module": "dist/src/index.js",

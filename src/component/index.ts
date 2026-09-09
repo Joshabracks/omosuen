@@ -119,6 +119,21 @@ export {
   generateDefaultCubeMesh,
   generateDefaultCubeMesh as uvCube,
 } from './cell-map';
+// Channel packing: build a sprite `material` texture (R=metallic, G=roughness,
+// B=region mask) from separate grayscale sources, without merging channels by
+// hand in external software. Returns a canvas, which drops straight into a
+// texture-map's `sourceImage`.
+export { interleaveChannels, packChannels, packMaterial } from './texture-map';
+export type {
+  ChannelPackOptions,
+  ChannelSource,
+  ChannelSpec,
+  PackChannel,
+} from './texture-map';
+// Lays separate per-frame files out as one horizontal strip + FrameMap. Use a
+// `GridConfig` instead when a sheet already exists — this is for loose files.
+export { packFrameStrip } from './texture-map';
+export type { FrameStripOptions, FrameStripResult } from './texture-map';
 
 // Export serializers for scene management
 export { NexusSerializer } from './nexus/data';

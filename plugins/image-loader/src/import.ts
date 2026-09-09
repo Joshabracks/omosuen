@@ -6,6 +6,12 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { newComponent, Vector2D, Vector3D, Vector4D } from 'omosuen';
+import {
+  SpriteChannel,
+  TextureMapKeys,
+  animatedChannels,
+  spriteTextureMapKeys,
+} from './channels.js';
 import { parseAseprite } from './parser/parser.js';
 import type { AseCel, AseFile, AseLayer } from './parser/types.js';
 
@@ -101,6 +107,27 @@ interface InstanceBlueprint {
  * filePath in the set, order-sensitive). Lets repeat spawns of the same set
  * skip all the heavy import work (see importAsepriteSources).
  */
+/**
+ * The one channel an Aseprite import can fill. The parser composites every
+ * layer down to a single RGBA image, and the format carries no normal/material/
+ * emission information to split out — so this is a property of the file format,
+ * not a limitation waiting to be lifted here. (The plain-image path in
+ * `images.ts` is what fills the other slots.)
+ *
+ * The sprite's four-slot map and the controller's channel list both derive from
+ * it, so the two cannot drift apart.
+ */
+const aseChannel: SpriteChannel = 'albedo';
+
+function aseTextureMapKeys(texKey: string): TextureMapKeys {
+  return spriteTextureMapKeys({ [aseChannel]: texKey });
+}
+
+/** Channels a controller over Aseprite-built sprites should advance. */
+const aseChannels: SpriteChannel[] = animatedChannels(
+  aseTextureMapKeys('non-empty'),
+);
+
 const BLUEPRINTS = new Map<string, InstanceBlueprint>();
 
 /**
@@ -169,12 +196,7 @@ export async function importAseprite(
       'sprite',
       {
         name: build.name,
-        textureMapKeys: {
-          albedo: texKey,
-          normal: '',
-          material: '',
-          emission: '',
-        },
+        textureMapKeys: aseTextureMapKeys(texKey),
         frame: { albedo: 0, normal: 0, material: 0, emission: 0 },
         anchor,
         renderOrder: renderOrder++,
@@ -201,7 +223,7 @@ export async function importAseprite(
       name: `${config.packageId} Anim`,
       animations: buildAnimations(ase),
       layers,
-      channels: ['albedo'],
+      channels: aseChannels,
     },
     parent,
   );
@@ -301,7 +323,7 @@ export async function importAsepriteSources(
       const res = await fetch(e.filePath);
       if (!res.ok) {
         console.error(
-          `[aseprite-loader] failed to fetch source '${key}' ('${e.filePath}'): ${res.status} ${res.statusText}`,
+          `[image-loader] failed to fetch source '${key}' ('${e.filePath}'): ${res.status} ${res.statusText}`,
         );
         return null;
       }
@@ -355,7 +377,10 @@ export async function importAsepriteSources(
         byName.get(layer.name)!.push({ source: s, layers: [layer] });
       }
     }
-    layerUnion = order.map((name) => ({ name, contributions: byName.get(name)! }));
+    layerUnion = order.map((name) => ({
+      name,
+      contributions: byName.get(name)!,
+    }));
   }
 
   const allSprites: any[] = [];
@@ -407,7 +432,12 @@ export async function importAsepriteSources(
 
     const sprite = await buildInstanceSprite(parent, bp);
     if (sprite) allSprites.push(sprite);
-    allLayers.push({ name: entry.name, spriteName: entry.name, visible: true, slot });
+    allLayers.push({
+      name: entry.name,
+      spriteName: entry.name,
+      visible: true,
+      slot,
+    });
   }
 
   // Tags stay namespaced per source (`walk` → `${key}-walk`), with every frame
@@ -437,7 +467,7 @@ export async function importAsepriteSources(
       name: `${config.packageId} Anim`,
       animations: animationMapKey, // reference the shared animation-map by key
       layers: allLayers,
-      channels: ['albedo'],
+      channels: aseChannels,
     },
     parent,
   );
@@ -502,7 +532,7 @@ async function buildInstanceSprite(
     'sprite',
     {
       name: b.spriteName,
-      textureMapKeys: { albedo: b.texKey, normal: '', material: '', emission: '' },
+      textureMapKeys: aseTextureMapKeys(b.texKey),
       frame: { albedo: 0, normal: 0, material: 0, emission: 0 },
       anchor: b.anchor,
       renderOrder: b.renderOrder,
@@ -520,9 +550,13 @@ function sharedResourcesExist(
   blueprint: InstanceBlueprint,
 ): boolean {
   if (blueprint.builds.length === 0) return false;
-  const firstTex = config.atlasManager.getTextureMap(blueprint.builds[0].texKey);
+  const firstTex = config.atlasManager.getTextureMap(
+    blueprint.builds[0].texKey,
+  );
   if (!firstTex) return false;
-  return findAnimationMap(config.sharedParent, blueprint.animationMapKey) !== null;
+  return (
+    findAnimationMap(config.sharedParent, blueprint.animationMapKey) !== null
+  );
 }
 
 /**
@@ -556,7 +590,7 @@ async function spawnFromBlueprint(
       name: `${config.packageId} Anim`,
       animations: blueprint.animationMapKey,
       layers,
-      channels: ['albedo'],
+      channels: aseChannels,
     },
     parent,
   );

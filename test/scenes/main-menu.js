@@ -24,6 +24,7 @@ Omosuen.registerHtmlConstructor('mainMenu', (overlay) => {
                 <button id="btn-cellmap-test" class="menu-button">Cell-Map Rendering Test</button>
                 <button id="btn-depth-cues-test" class="menu-button">Depth Cues Test</button>
                 <button id="btn-post-process-test" class="menu-button">Post-Process Chain Test</button>
+                <button id="btn-channel-pack-test" class="menu-button">Channel Pack Test</button>
                 <button id="btn-screen-pick-test" class="menu-button">Screen Pick Test</button>
                 <button id="btn-audio-test" class="menu-button">Audio Test Scene</button>
                 <button id="btn-speed-dial-test" class="menu-button">Speed-Dial Test</button>
@@ -88,6 +89,11 @@ Omosuen.registerBinding('loadDepthCuesTest', async (event) => {
 Omosuen.registerBinding('loadPostProcessTest', async (event) => {
     console.log('Loading Post-Process Chain Test scene...');
     await Omosuen.switchScene('post-process-test');
+});
+
+Omosuen.registerBinding('loadChannelPackTest', async (event) => {
+    console.log('Loading Channel Pack Test scene...');
+    await Omosuen.switchScene('channel-pack-test');
 });
 
 Omosuen.registerBinding('loadScreenPickTest', async (event) => {
@@ -178,6 +184,11 @@ export async function createScene() {
                 selector: '#btn-post-process-test',
                 onActions: ['click'],
                 methodKey: 'loadPostProcessTest'
+            },
+            {
+                selector: '#btn-channel-pack-test',
+                onActions: ['click'],
+                methodKey: 'loadChannelPackTest'
             },
             {
                 selector: '#btn-screen-pick-test',

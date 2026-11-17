@@ -1,7 +1,8 @@
 /**
  * Vision-source uniform-slot selection.
  *
- * Drives the pure selection policy behind `setVisionUniforms` -- no WebGL, no
+ * Drives the pure selection policy behind `prepareVisibilityFrame` (applied
+ * only when a consumer sets `maxVisibilityShapes`) -- no WebGL, no
  * scene, no components. Every case here pins one of the reasons a colony past
  * the source cap used to render most of itself as remembered terrain: the
  * renderer took the first N sources in scene-graph registration order, so which
@@ -37,7 +38,7 @@ interface Entry {
 
 const CAM = { x: 0, y: 0, z: 0 };
 
-/** An entry scored against the camera at the origin, as setVisionUniforms does. */
+/** An entry scored against a camera at the origin. */
 function entry(name: string, x: number, outer = 0): Entry {
   return {
     name,

@@ -2,6 +2,7 @@ import { AtlasManagerT } from '../../atlas-manager';
 import { CellMapT, CellMap, rebuildDirtyChunks } from '../../cell-map';
 import { LightT } from '../../light';
 import { VisionSourceT } from '../../vision-source';
+import { VisibilityVolumeT } from '../../visibility-volume';
 import { FogOfWarT } from '../../fog-of-war';
 import { NexusT } from '../../nexus';
 import { TextureMapT } from '../../texture-map';
@@ -12,7 +13,10 @@ import {
   setOrbitYawUniform,
   setLightUniforms,
 } from './light-uniforms';
-import { setVisionUniforms } from './vision-uniforms';
+import {
+  bindVisibilityUniforms,
+  getVisibilityFrame,
+} from './visibility-uniforms';
 import { sweepExploredCells } from './explored-sweep';
 import { fogUsesExploredHistory, setFogUniforms } from './fog-uniforms';
 import { computeSolidityMap } from './visibility-mask';
@@ -724,6 +728,7 @@ export function renderCellMaps(
   textureMapCache: Map<string, TextureMapT>,
   lights: LightT[],
   visionSources: VisionSourceT[],
+  visibilityVolumes: VisibilityVolumeT[],
   sinA: number,
   heightScale: number,
   cosYaw: number,
@@ -911,7 +916,7 @@ export function renderCellMaps(
   );
 
   // Per-fragment raycasting uniform locations (vision-source array uniforms
-  // are cached/uploaded separately -- see vision-uniforms.ts)
+  // are cached/uploaded separately -- see visibility-uniforms.ts)
   const uCellSolidity = gl.getUniformLocation(program, 'u_cellSolidity');
   // Per-cell-map fog-of-war opt-out -- see cellMap.revealExempt usage below.
   const uFogExempt = gl.getUniformLocation(program, 'u_fogExempt');
@@ -971,20 +976,20 @@ export function renderCellMaps(
   // Set dynamic light uniforms
   setLightUniforms(gl, camera.id!, lights);
 
-  // Set fog-of-war vision-source uniforms
-  // Resolved before the vision uniforms because `visionMode` travels with
-  // them -- see setVisionUniforms.
+  // Fog-of-war visibility shapes. Built once this frame by
+  // prepareVisibilityFrame (render/index.ts); this only binds them.
+  // `visionMode` travels with them -- see bindVisibilityUniforms.
   const fogOfWar = sceneRoot.getComponentByType(
     'fog-of-war',
     true,
   ) as FogOfWarT | null;
   const fogUseLineOfSight = fogOfWar?.visionMode !== 'distance';
 
-  setVisionUniforms(gl, camera.id!, visionSources, camPos, fogUseLineOfSight);
+  bindVisibilityUniforms(gl, camera.id!, fogUseLineOfSight);
 
   // Set fog-of-war style config (fog-of-war is a GLOBAL component -- at most
   // one per scene). No component in the scene = the shader's own defaults
-  // apply only when fogActive is false anyway (u_numVisionSources gates
+  // apply only when fogActive is false anyway (u_visNumShapes gates
   // that), so falling back to the documented default style here just keeps
   // behavior identical to having a fog-of-war component with default values.
   // Styles, lightInfluence, memory mode and dropHidden -- shared with the
@@ -1299,7 +1304,10 @@ export function renderCellMaps(
     // Solidity texture (u_cellSolidity) is read by BOTH the vision-source
     // (fog-of-war) raycast and the AO/cast-shadow depth cues — so
     // upload/bind it whenever either needs it.
-    const hasVisionSources = visionSources.some((v) => v.enabled);
+    // Any enabled visibility shape -- a vision source OR a visibility volume --
+    // activates fog. A scene with volumes and no sources still fogs outside
+    // them. Mirrors the shader's `u_visNumShapes > 0`.
+    const hasVisionSources = getVisibilityFrame().count > 0;
     const fogActive = hasVisionSources && !cellMap.revealExempt;
     const cues = camera.depthCues;
     const needSolidity =
@@ -1386,6 +1394,7 @@ export function renderCellMaps(
         sweepExploredCells(
           cellMap,
           visionSources,
+          visibilityVolumes,
           solidityMap,
           // `visionMode: 'distance'` overrides the explore setting rather than
           // sitting beside it: with no raycast anywhere else, marking explored

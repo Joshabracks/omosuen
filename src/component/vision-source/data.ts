@@ -30,12 +30,21 @@ export interface VisionSourceT
 
   /** Whether this vision source is currently contributing to fog-of-war. */
   enabled: boolean;
+
+  /**
+   * Rank used only when the consumer has capped rendered shapes
+   * (`FogOfWarT.maxVisibilityShapes`): higher is kept first, before distance
+   * from the view centre. Has no effect with no cap (the default), and never
+   * affects exploration, which always uses every enabled source.
+   */
+  priority: number;
 }
 
 export interface VisionSourceOptions extends ComponentOptions {
   radius?: number;
   fadeWidth?: number;
   enabled?: boolean;
+  priority?: number;
 }
 
 export function builder(options: VisionSourceOptions): VisionSourceT {
@@ -49,6 +58,7 @@ export function builder(options: VisionSourceOptions): VisionSourceT {
     radius: options.radius ?? 256.0,
     fadeWidth: options.fadeWidth ?? 32.0,
     enabled: options.enabled ?? true,
+    priority: options.priority ?? 0,
   };
 
   return visionSource as unknown as VisionSourceT;
@@ -64,6 +74,7 @@ function serialize(component: ComponentData): any {
     radius: vs.radius,
     fadeWidth: vs.fadeWidth,
     enabled: vs.enabled,
+    priority: vs.priority,
   };
 }
 
@@ -110,6 +121,8 @@ function deserialize(data: any): DeserializeResult<VisionSourceT> {
       radius: data.radius as number,
       fadeWidth: data.fadeWidth as number,
       enabled: data.enabled as boolean,
+      // Absent in scenes saved before priorities existed; defaults to 0.
+      priority: typeof data.priority === 'number' ? data.priority : undefined,
     }),
     errors,
   };
@@ -124,4 +137,9 @@ export const VisionSourceSerializer: ComponentSerializer = {
  * Allowlist of vision-source-specific properties accessible via component Proxy.
  * These properties can be accessed directly without triggering method lookup.
  */
-export const PROPERTY_ALLOWLIST: string[] = ['radius', 'fadeWidth', 'enabled'];
+export const PROPERTY_ALLOWLIST: string[] = [
+  'radius',
+  'fadeWidth',
+  'enabled',
+  'priority',
+];

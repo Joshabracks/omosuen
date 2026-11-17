@@ -21,7 +21,29 @@ const RENDERABLE_TYPES = new Set<string>([
   'cell-map',
   'light',
   'vision-source',
+  'visibility-volume',
 ]);
+
+/**
+ * Bumps the renderable version of every renderable type found anywhere under
+ * `n` (once per type). See the attach branch in `addComponent`.
+ */
+function bumpSubtreeRenderables(n: NexusT): void {
+  const seen = new Set<string>();
+  const stack: NexusT[] = [n];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    for (const c of cur.components) {
+      if (c.type === 'nexus') {
+        stack.push(c as unknown as NexusT);
+      } else if (RENDERABLE_TYPES.has(c.type) && !seen.has(c.type)) {
+        seen.add(c.type);
+        bumpRenderableVersion(c.type as RenderableType);
+        if (seen.size === RENDERABLE_TYPES.size) return;
+      }
+    }
+  }
+}
 
 export interface NexusMethods extends ComponentMethods {
   addComponent: (
@@ -128,6 +150,16 @@ export const Nexus: NexusMethods = {
     // detect "did a sprite/cell-map/light get added anywhere" cheaply.
     if (RENDERABLE_TYPES.has(component.type)) {
       bumpRenderableVersion(component.type as RenderableType);
+    } else if (component.type === 'nexus') {
+      // Attaching an already-assembled entity (a nexus that already holds its
+      // sprite / vision-source / visibility-volume) never passes those
+      // components through this branch -- they were added to the detached
+      // nexus earlier, when a camera re-walk could not reach them. Without
+      // this a camera kept serving its stale list until some unrelated add
+      // bumped the same type, so a freshly spawned entity could fail to
+      // render or reveal for an arbitrary stretch. Only nexus adds pay for the
+      // subtree walk.
+      bumpSubtreeRenderables(component as NexusT);
     }
     // See component-lookup-registry.ts -- self-checks opt-in internally, so
     // safe to call unconditionally for every add.

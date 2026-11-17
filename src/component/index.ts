@@ -86,6 +86,24 @@ export type { TimerT as timer, TimerMethods } from './timer';
 export type { SpeedDialT as speed_dial, SpeedDialMethods } from './speed-dial';
 export type { LightT as light, LightMethods, LightType } from './light';
 export type {
+  VisionSourceT as vision_source,
+  VisionSourceMethods,
+} from './vision-source';
+export type {
+  VisibilityVolumeT as visibility_volume,
+  VisibilityVolumeMethods,
+} from './visibility-volume';
+export type {
+  FogOfWarT as fog_of_war,
+  FogOfWarMethods,
+  FogOfWarStyle,
+} from './fog-of-war';
+export type {
+  VisibilityCandidate,
+  VisibilitySelector,
+  VisibilityStats,
+} from './camera/render/visibility-uniforms';
+export type {
   AudioTrackT as audio_track,
   AudioTrackMethods,
 } from './audio-track';
@@ -153,6 +171,9 @@ export { EventColliderSerializer } from './event-collider/data';
 export { TimerSerializer } from './timer/data';
 export { SpeedDialSerializer } from './speed-dial/data';
 export { LightSerializer } from './light/data';
+export { VisionSourceSerializer } from './vision-source/data';
+export { VisibilityVolumeSerializer } from './visibility-volume/data';
+export { FogOfWarSerializer } from './fog-of-war/data';
 export { AudioTrackSerializer } from './audio-track/data';
 export { AudioEffectSerializer } from './audio-effect/data';
 export { AudioPlayerSerializer } from './audio-player/data';

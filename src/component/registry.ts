@@ -104,6 +104,11 @@ import {
   PROPERTY_ALLOWLIST as VisionSourcePropertyAllowlist,
 } from './vision-source';
 import {
+  VisibilityVolume,
+  builder as visibilityVolumeBuilder,
+  PROPERTY_ALLOWLIST as VisibilityVolumePropertyAllowlist,
+} from './visibility-volume';
+import {
   FogOfWar,
   builder as fogOfWarBuilder,
   PROPERTY_ALLOWLIST as FogOfWarPropertyAllowlist,
@@ -146,7 +151,8 @@ export type METHOD_TYPE =
   | 'html-constructor'
   | 'message-listener'
   | 'cell-map-generator'
-  | 'post-effect';
+  | 'post-effect'
+  | 'fog-selection';
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
 export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
@@ -171,6 +177,7 @@ export const BUILDERS: Record<COMPONENT_TYPE, Function> = {
   'speed-dial': speedDialBuilder,
   light: lightBuilder,
   'vision-source': visionSourceBuilder,
+  'visibility-volume': visibilityVolumeBuilder,
   'fog-of-war': fogOfWarBuilder,
   'audio-track': audioTrackBuilder,
   'audio-effect': audioEffectBuilder,
@@ -208,6 +215,7 @@ export const MethodRegistry: Record<
   'speed-dial': SpeedDial,
   light: Light,
   'vision-source': VisionSource,
+  'visibility-volume': VisibilityVolume,
   'fog-of-war': FogOfWar,
   'audio-track': AudioTrack,
   'audio-effect': AudioEffect,
@@ -219,6 +227,10 @@ export const MethodRegistry: Record<
   // Values here are GLSL source strings, not functions -- a keyed post-effect
   // is what lets a camera's chain survive save/load.
   'post-effect': {},
+  // Keyed replacements for the default "which shapes survive a consumer cap"
+  // policy -- see FogOfWarT.selectionKey. Keyed rather than a function on the
+  // component so the choice survives save/load.
+  'fog-selection': {},
 };
 
 /**
@@ -247,6 +259,7 @@ export const PROPERTY_ALLOWLIST: Record<COMPONENT_TYPE, string[]> = {
   'speed-dial': SpeedDialPropertyAllowlist,
   light: LightPropertyAllowlist,
   'vision-source': VisionSourcePropertyAllowlist,
+  'visibility-volume': VisibilityVolumePropertyAllowlist,
   'fog-of-war': FogOfWarPropertyAllowlist,
   'audio-track': AudioTrackPropertyAllowlist,
   'audio-effect': AudioEffectPropertyAllowlist,

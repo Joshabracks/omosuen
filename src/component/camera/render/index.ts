@@ -13,10 +13,41 @@ import { renderPostChain } from './post-chain';
 import { renderCellMaps, snapCameraPosition } from './render-cell-maps';
 import { allocateCameraTargets } from './framebuffers';
 import { uploadAtlasTextures, uploadAtlasDelta } from './atlas-textures';
+import { prepareVisibilityFrame } from './visibility-uniforms';
+import type {
+  VisibilityCellInfo,
+  VisibilitySelector,
+} from './visibility-uniforms';
+import type { FogOfWarT } from '../../fog-of-war/data';
+import { MethodRegistry } from '../../registry';
 import {
   isProfilingEnabled,
   recordComponentUpdate,
 } from '../../../loop/profile';
+
+/** `selectionKey`s already reported missing, so the warning fires once each. */
+const warnedSelectionKeys = new Set<string>();
+
+/** Resolves `FogOfWarT.selectionKey` to its registered function, or null. */
+function resolveFogSelector(
+  fogOfWar: FogOfWarT | null,
+): VisibilitySelector | null {
+  const key = fogOfWar?.selectionKey;
+  if (!key) return null;
+  const fn = MethodRegistry['fog-selection'][key] as
+    | VisibilitySelector
+    | undefined;
+  if (typeof fn === 'function') return fn;
+  if (!warnedSelectionKeys.has(key)) {
+    warnedSelectionKeys.add(key);
+    console.warn(
+      `[fog-of-war] selectionKey "${key}" is not registered in ` +
+        `MethodRegistry['fog-selection'] -- call registerMethod('fog-selection', ` +
+        `'${key}', fn) before it is needed. Using the default priority/distance policy.`,
+    );
+  }
+  return null;
+}
 
 const EMPTY_TEXTURE_MAP_CACHE: Map<string, TextureMapT> = new Map();
 
@@ -91,7 +122,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
   }
 
   // Collect all renderable components from the tree
-  const { sprites, cellMaps, lights, visionSources } =
+  const { sprites, cellMaps, lights, visionSources, visibilityVolumes } =
     Camera.collectRenderables(camera);
 
   const gl = viewport.gl;
@@ -171,6 +202,36 @@ export function render(camera: CameraT, _deltaTime: number): void {
     remainderX: cameraSnap.remainderX,
     remainderY: cameraSnap.remainderY,
   };
+
+  // Fog-of-war visibility shapes (vision sources + visibility volumes):
+  // resolved, selected, binned and uploaded ONCE here, then bound by both
+  // passes below -- so the cell-map pass, the sprite pass and the CPU sprite
+  // visibility all work from one set. Same "first cell-map" simplification the
+  // rest of fog-of-war uses for the window.
+  const fogOfWar = sceneRoot.getComponentByType(
+    'fog-of-war',
+    true,
+  ) as FogOfWarT | null;
+  const firstCellMap = cellMaps.length > 0 ? cellMaps[0] : null;
+  const fogWindowOrigin = firstCellMap?.window.origin ?? null;
+  const visCell: VisibilityCellInfo | null =
+    firstCellMap && fogWindowOrigin
+      ? {
+          cellSize: firstCellMap.cellSize,
+          windowOriginLocalCell: {
+            x: fogWindowOrigin.cx * firstCellMap.chunkSize.x,
+            y: fogWindowOrigin.cy * firstCellMap.chunkSize.y,
+            z: fogWindowOrigin.cz * firstCellMap.chunkSize.z,
+          },
+          windowSize: firstCellMap.mapSize,
+        }
+      : null;
+  prepareVisibilityFrame(gl, camera.id!, visionSources, visibilityVolumes, {
+    capacity: fogOfWar?.maxVisibilityShapes ?? Infinity,
+    selector: resolveFogSelector(fogOfWar),
+    projection: { camIsoX, camIsoY, sinA, heightScale, cosYaw, sinYaw },
+    cell: visCell,
+  });
 
   // Early return if nothing to render
   if (sprites.length === 0 && cellMaps.length === 0) {
@@ -270,6 +331,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
       textureMapCache,
       lights,
       visionSources,
+      visibilityVolumes,
       sinA,
       heightScale,
       cosYaw,
@@ -312,7 +374,6 @@ export function render(camera: CameraT, _deltaTime: number): void {
       gl,
       textureMapCache,
       lights,
-      visionSources,
       subPixelOffset,
       sinA,
       heightScale,

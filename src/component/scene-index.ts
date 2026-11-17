@@ -36,6 +36,7 @@ import type { NexusT } from './nexus/data';
 import type { TransformT } from './transform/data';
 import type { SpriteT } from './sprite/data';
 import type { VisionSourceT } from './vision-source/data';
+import type { VisibilityVolumeT } from './visibility-volume/data';
 import type { CellMapT } from './cell-map/data';
 
 /**
@@ -60,6 +61,10 @@ export const sceneIndex = {
   visionSourceCount: 0,
   visionSources: [] as VisionSourceT[],
 
+  /** Number of valid entries in `visibilityVolumes`. */
+  visibilityVolumeCount: 0,
+  visibilityVolumes: [] as VisibilityVolumeT[],
+
   /** Number of valid entries in `cellMaps`. */
   cellMapCount: 0,
   cellMaps: [] as CellMapT[],
@@ -75,6 +80,7 @@ export const sceneIndex = {
 export function beginSceneIndex(): void {
   sceneIndex.count = 0;
   sceneIndex.visionSourceCount = 0;
+  sceneIndex.visibilityVolumeCount = 0;
   sceneIndex.cellMapCount = 0;
 }
 
@@ -98,6 +104,10 @@ export function addSpriteEntry(
 
 export function addVisionSourceEntry(source: VisionSourceT): void {
   sceneIndex.visionSources[sceneIndex.visionSourceCount++] = source;
+}
+
+export function addVisibilityVolumeEntry(volume: VisibilityVolumeT): void {
+  sceneIndex.visibilityVolumes[sceneIndex.visibilityVolumeCount++] = volume;
 }
 
 export function addCellMapEntry(cellMap: CellMapT): void {
@@ -140,6 +150,11 @@ export function indexNexusComponents(n: NexusT): TransformT | null {
       // `getComponentByType(..., false)` truthiness test it replaces.
       selfLit = true;
       addVisionSourceEntry(c as unknown as VisionSourceT);
+    } else if (t === 'visibility-volume') {
+      // Deliberately NOT `selfLit`: a volume declares a region visible, it does
+      // not make its own nexus an observer. A sprite sharing the nexus is live
+      // only while its ground point is actually inside the box.
+      addVisibilityVolumeEntry(c as unknown as VisibilityVolumeT);
     } else if (t === 'cell-map') {
       addCellMapEntry(c as unknown as CellMapT);
     }

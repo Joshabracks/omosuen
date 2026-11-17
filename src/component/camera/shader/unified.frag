@@ -173,23 +173,32 @@ uniform vec4 u_silhouetteColor;
     // Per-fragment line-of-sight raycasting (both modes)
 uniform highp sampler2DArray u_cellSolidity;   // R8: 0=empty, 255=solid, layer=z
 
-    // Fog-of-war: multiple simultaneous vision sources (both modes). Position
-    // is world-space; radius/fadeWidth are world units (outer edge = radius +
-    // fadeWidth). u_fogExempt opts a single cell-map draw call out entirely
+    // Fog-of-war visibility shapes (both modes): vision-source SPHERES and
+    // visibility-volume BOXES, in runtime-sized data textures -- no count is
+    // compiled in. See camera/render/visibility-uniforms.ts / visibility-shapes.ts.
+    //
+    // u_visShapes (RGBA32F, VIS_TEX_WIDTH wide), two texels per shape:
+    //   texel 0: (pos.xyz, radius)            -- radius 0 for a box
+    //   texel 1: (fadeWidth, half.xyz)        -- half.x < 0 marks a sphere
+    // u_visBins (R32UI, VIS_TEX_WIDTH wide): an XZ grid of shape lists. Words
+    // [0 .. bins] are prefix offsets (bin b owns entries offsets[b]..[b+1]),
+    // followed by the shape indices themselves. Boxes precede spheres in each
+    // bin, so the early-out in computeVisibility usually stops before any
+    // sphere's raycasts.
+    //
+    // u_fogExempt opts a single cell-map draw call out entirely
     // (cellMap.revealExempt) -- not meaningful for sprites, which have no
     // per-cell-map context, so the sprite path never reads it.
-    // This literal is OVERWRITTEN at compile time with MAX_VISION_SOURCES from
-    // camera/render/vision-uniforms.ts (see camera/init) -- that constant is
-    // the single source of truth. The value here only keeps this file valid
-    // standalone GLSL; edit it there.
-const int MAX_VISION_SOURCES = 64;
-uniform int u_numVisionSources;
+uniform int u_visNumShapes;
+uniform highp sampler2D u_visShapes;
+uniform highp usampler2D u_visBins;
+uniform highp vec2 u_visGridOrigin;   // world X/Z of bin (0,0)
+uniform highp float u_visBinSize;     // world units
+uniform ivec2 u_visBinDims;           // bins along X, Z (0 = empty)
+const int VIS_TEX_WIDTH = 1024;       // must match visibility-shapes.ts
 // FogOfWarT.visionMode: true = 'line-of-sight' (raycasts), false = 'distance'
-// (range alone). Uploaded per draw alongside the source arrays.
+// (range alone). Uploaded per draw alongside the shape data.
 uniform bool u_fogUseLineOfSight;
-uniform highp vec3 u_visionSourcePos[MAX_VISION_SOURCES];
-uniform float u_visionSourceRadius[MAX_VISION_SOURCES];
-uniform float u_visionSourceFadeWidth[MAX_VISION_SOURCES];
 uniform bool u_fogExempt;
 
     // Fog-of-war persistent "explored" state -- one texel per CELL, the same
@@ -588,7 +597,8 @@ float visionSourceVisibility(
     float radius,
     float fadeWidth,
     vec3 fragWorldPos,
-    vec3 fragCellPos
+    vec3 fragCellPos,
+    float best
 ) {
     float dist = distance(fragWorldPos, sourcePos);
     float outer = radius + fadeWidth;
@@ -597,6 +607,11 @@ float visionSourceVisibility(
     // is a hard-edged source, fully visible right up to `outer`. Guarded to
     // match computeFogVisibility's identical guard on the CPU.
     float radial = outer > radius ? 1.0 - smoothstep(radius, outer, dist) : 1.0;
+    // Can't beat the running max even with every ray through, so skip the
+    // raycasts. The union is a max, so this changes no result -- it only stops
+    // a fragment inside many overlapping radii paying eight DDA rays for each.
+    // Mirrors computeFogVisibility's `radial <= best` skip on the CPU.
+    if(radial <= best) return 0.0;
 
     // 'distance' mode (FogOfWarT.visionMode): range alone decides, walls
     // included. Mirrored by computeFogVisibility/isVisibleFrom on the CPU off
@@ -617,8 +632,49 @@ float visionSourceVisibility(
     return radial * los;
 }
 
+// A visibility-volume's contribution: 1 if `cellCentre` (world units) lies in
+// the box, ramping to 0 across `fade` outside it (0 = hard edge). Tested at a
+// CELL CENTRE, never the raw fragment, so the edge lands on the cell grid
+// instead of cutting faces in half. No line of sight -- a volume is a
+// declaration, not an observer. Mirrored by visibility-shapes.ts's
+// `boxVisibility` on the CPU, term for term.
+float boxVisibility(vec3 center, vec3 halfExt, float fade, vec3 cellCentre) {
+    vec3 d = max(abs(cellCentre - center) - halfExt, 0.0);
+    float dist = length(d);
+    if(dist <= 0.0) return 1.0;
+    if(fade <= 0.0 || dist >= fade) return 0.0;
+    return 1.0 - smoothstep(0.0, fade, dist);
+}
+
+ivec2 visTexel(int i) {
+    return ivec2(i % VIS_TEX_WIDTH, i / VIS_TEX_WIDTH);
+}
+
+int visBinWord(int i) {
+    return int(texelFetch(u_visBins, visTexel(i), 0).r);
+}
+
+// The bin under a world point: its entry range [start, end) and the word
+// offset of the index list. False outside the grid, which covers every
+// shape's reach -- so "outside" correctly means "no shape can reach here".
+bool visBinRange(vec3 worldPos, out int start, out int end, out int base) {
+    start = 0;
+    end = 0;
+    base = 0;
+    if(u_visNumShapes <= 0 || u_visBinDims.x <= 0) return false;
+    vec2 g = floor((worldPos.xz - u_visGridOrigin) / u_visBinSize);
+    if(g.x < 0.0 || g.y < 0.0 ||
+       g.x >= float(u_visBinDims.x) || g.y >= float(u_visBinDims.y)) return false;
+    int bin = int(g.y) * u_visBinDims.x + int(g.x);
+    start = visBinWord(bin);
+    end = visBinWord(bin + 1);
+    base = u_visBinDims.x * u_visBinDims.y + 1;
+    return true;
+}
+
 // How far INTO vision range a point is, ignoring line of sight entirely: 1
-// anywhere inside a source's radius, ramping to 0 across its fadeWidth.
+// anywhere inside a source's radius (or a volume), ramping to 0 across the
+// fade band.
 //
 // This is the style selector under memory 'partial'/'none' (u_fogUseExplored
 // false), and it is what makes those modes need no history: 1 is the faded
@@ -626,36 +682,67 @@ float visionSourceVisibility(
 // hidden zone. Because radial is already flat at 1 inside the radius, the
 // source's fade band IS the hidden-to-faded transition, so there is no hard
 // step to alias along.
-float computeRadialZone(vec3 worldPos) {
+float computeRadialZone(vec3 worldPos, vec3 ownerCell) {
     float zone = 0.0;
-    for(int i = 0; i < MAX_VISION_SOURCES; i++) {
-        if(i >= u_numVisionSources) break;
-        float radius = u_visionSourceRadius[i];
-        float outer = radius + u_visionSourceFadeWidth[i];
-        float dist = distance(worldPos, u_visionSourcePos[i]);
-        if(dist >= outer) continue;
-        zone = max(zone, outer > radius ? 1.0 - smoothstep(radius, outer, dist) : 1.0);
+    int start;
+    int end;
+    int base;
+    if(!visBinRange(worldPos, start, end, base)) return 0.0;
+    vec3 cellCentre = (ownerCell + 0.5) * u_cellSize;
+    for(int k = start; k < end; k++) {
+        int si = visBinWord(base + k);
+        vec4 a = texelFetch(u_visShapes, visTexel(si * 2), 0);
+        vec4 b = texelFetch(u_visShapes, visTexel(si * 2 + 1), 0);
+        float v;
+        if(b.y >= 0.0) {
+            v = boxVisibility(a.xyz, b.yzw, b.x, cellCentre);
+        } else {
+            float radius = a.w;
+            float outer = radius + b.x;
+            float dist = distance(worldPos, a.xyz);
+            if(dist >= outer) continue;
+            v = outer > radius ? 1.0 - smoothstep(radius, outer, dist) : 1.0;
+        }
+        zone = max(zone, v);
+        if(zone >= 1.0) break;
     }
     return zone;
 }
 
-// Combined per-fragment live visibility: union (max) over every active
-// vision source, then optionally boosted by local light level via
+// Combined per-fragment live visibility: union (max) over every shape binned
+// under this fragment -- vision-source spheres and visibility-volume boxes
+// alike -- then optionally boosted by local light level via
 // u_fogLightInfluence -- additive only, so light can extend vision but never
 // reduce it below the pure-geometry result (default lightInfluence=0 is a
 // no-op here).
-float computeVisibility(vec3 fragWorldPos, vec3 fragCellPos) {
+//
+// `ownerCell` is the integer world cell this fragment belongs to, for the box
+// test: the solid cell owning a terrain face, or the cell under a sprite's
+// ground point.
+//
+// Stops as soon as visibility saturates at 1. Before binning existed every
+// fragment walked every source; now it walks only its bin, and usually stops
+// at the first box or the first fully-visible sphere.
+float computeVisibility(vec3 fragWorldPos, vec3 fragCellPos, vec3 ownerCell) {
     float visibility = 0.0;
-    for(int i = 0; i < MAX_VISION_SOURCES; i++) {
-        if(i >= u_numVisionSources) break;
-        float v = visionSourceVisibility(
-            u_visionSourcePos[i],
-            u_visionSourceRadius[i],
-            u_visionSourceFadeWidth[i],
-            fragWorldPos,
-            fragCellPos
-        );
-        visibility = max(visibility, v);
+    int start;
+    int end;
+    int base;
+    if(visBinRange(fragWorldPos, start, end, base)) {
+        vec3 cellCentre = (ownerCell + 0.5) * u_cellSize;
+        for(int k = start; k < end; k++) {
+            int si = visBinWord(base + k);
+            vec4 a = texelFetch(u_visShapes, visTexel(si * 2), 0);
+            vec4 b = texelFetch(u_visShapes, visTexel(si * 2 + 1), 0);
+            float v;
+            if(b.y >= 0.0) {
+                v = boxVisibility(a.xyz, b.yzw, b.x, cellCentre);
+            } else {
+                v = visionSourceVisibility(a.xyz, a.w, b.x, fragWorldPos, fragCellPos, visibility);
+            }
+            visibility = max(visibility, v);
+            if(visibility >= 1.0) break;
+        }
     }
     if(u_fogLightInfluence > 0.0) {
         float lightLevel = computeLightLevel(fragWorldPos);
@@ -840,16 +927,21 @@ void main() {
         // before paying for triplanar/lighting work below. Uses
         // pre-smoothing positions so floor() resolves consistently across
         // each face. fogActive is false (fog fully bypassed) when this
-        // cell-map opts out (cellMap.revealExempt) or no vision source is
-        // active in the scene at all.
-        bool fogActive = !u_fogExempt && u_numVisionSources > 0;
+        // cell-map opts out (cellMap.revealExempt) or no visibility shape --
+        // vision source OR visibility volume -- is active in the scene at all.
+        // A volume alone activates fog, just as a source does.
+        bool fogActive = !u_fogExempt && u_visNumShapes > 0;
         vec3 fragCellPos = v_origWorldPos / u_cellSize;
-        float fogVisibility = fogActive ? computeVisibility(v_origWorldPos, fragCellPos) : 1.0;
+        // The solid cell owning this face -- what a visibility volume tests, so
+        // its edge falls on the cell grid (same face->cell mapping the
+        // per-cell emission and region lookups use).
+        vec3 fogOwnerCell = emissionCellFromFace(v_origWorldPos, v_trueFaceDir);
+        float fogVisibility = fogActive ? computeVisibility(v_origWorldPos, fragCellPos, fogOwnerCell) : 1.0;
         // Which of the two style tiers this fragment sits in, 0 = hidden,
         // 1 = faded. Memory 'full' answers from history; the other modes answer
         // from the current radial zone and never touch the explored texture.
         float fogExplored = fogActive
-            ? (u_fogUseExplored ? exploredAt(fragCellPos) : computeRadialZone(v_origWorldPos))
+            ? (u_fogUseExplored ? exploredAt(fragCellPos) : computeRadialZone(v_origWorldPos, fogOwnerCell))
             : 1.0;
         float fogStyleOpacity = fogActive ? mix(u_fogHiddenOpacity, u_fogFadedOpacity, fogExplored) : 1.0;
         // Two different discards. The second is free correctness -- a fragment
@@ -1146,7 +1238,7 @@ void main() {
         // raycasts, so it is cheap per fragment, and u_spriteVisibility is
         // deliberately the pure-geometry term for it to build on.
         float fogVis = 1.0;
-        if(u_numVisionSources > 0) {
+        if(u_visNumShapes > 0) {
             // EXACTLY what terrain computes, at this fragment's ground point:
             // radial falloff AND line of sight, per fragment, plus the same
             // light-influence boost (computeVisibility applies it itself, so it
@@ -1166,7 +1258,12 @@ void main() {
             // would be a second opinion against the CPU sweep, no longer
             // applies: this drives COLOUR only, and every lifetime decision
             // still goes through u_spriteVisibility below.
-            fogVis = computeVisibility(v_spriteGroundPos, v_spriteGroundPos / u_cellSize);
+            // The box test uses the cell under the ground point, matching the
+            // CPU's `cellCentreOf` on the same point.
+            fogVis = computeVisibility(
+                v_spriteGroundPos,
+                v_spriteGroundPos / u_cellSize,
+                floor(v_spriteGroundPos / u_cellSize));
             // Both sides are gated on this one number, so there is never a
             // frame with neither the sprite nor its phantom visible -- the bug
             // this replaced.
@@ -1280,7 +1377,7 @@ void main() {
         // is never skipped and never replaced by a phantom, just filtered --
         // faded while in range but unseen, fading to hiddenStyle's opacity (0
         // by default, so to transparency) as it leaves range altogether.
-        float spriteZone = u_fogUseExplored ? 1.0 : computeRadialZone(v_spriteGroundPos);
+        float spriteZone = u_fogUseExplored ? 1.0 : computeRadialZone(v_spriteGroundPos, floor(v_spriteGroundPos / u_cellSize));
         float styleSaturation = mix(u_fogHiddenSaturation, u_fogFadedSaturation, spriteZone);
         vec3 styleTint = mix(u_fogHiddenTint, u_fogFadedTint, spriteZone);
         float styleOpacity = mix(u_fogHiddenOpacity, u_fogFadedOpacity, spriteZone);

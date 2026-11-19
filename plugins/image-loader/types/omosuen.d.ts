@@ -66,6 +66,9 @@ declare module 'omosuen' {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   export function castTo<T = any>(component: unknown): T;
 
+  // Queues a component for end-of-frame disposal (sets `_disposed` now).
+  export function markForDisposal(component: unknown): void;
+
   // Active scene root (used to find the atlas-manager).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   export function getActiveScene(): any;

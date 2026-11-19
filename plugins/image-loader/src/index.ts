@@ -35,7 +35,14 @@ export {
   CHANNEL_ORDER,
 } from './channels.js';
 export type { SpriteChannel, TextureMapKeys } from './channels.js';
-export { parseAseprite } from './parser/parser.js';
+export {
+  parseAseprite,
+  indexAseprite,
+  materializeCels,
+  dropPixels,
+  getCel,
+} from './parser/parser.js';
+export type { AseSelection } from './parser/parser.js';
 export type {
   AseFile,
   AseLayer,
@@ -43,6 +50,24 @@ export type {
   AseFrame,
   AseTag,
 } from './parser/types.js';
+export { clearAsepriteCache } from './session.js';
+export type {
+  AsepriteLoaderHandle,
+  AsepriteSelectionChange,
+} from './session.js';
+export {
+  resolveFrameSelector,
+  resolveFrameSelectors,
+  resolveLayers,
+  defaultFrameGroups,
+  tagAnimation,
+} from './selection.js';
+export type {
+  FrameSelector,
+  FrameGroup,
+  LayerSelection,
+  AnimationSpec,
+} from './selection.js';
 
 /**
  * Convenience: register the `image-loader` component type with the engine.

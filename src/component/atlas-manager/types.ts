@@ -33,6 +33,14 @@ export interface UnpackedFrame {
    * Index of the atlas this frame is packed into (0-15, set during packing)
    */
   atlasIndex?: number;
+
+  /**
+   * The guillotine-tree node whose slot `'0'` holds this frame (set during
+   * packing). The frame always sits at that node's relative (0,0) at its padded
+   * size, so `freeFrameSlot` can hand exactly that rect back to the free-space
+   * buckets when the frame is no longer referenced.
+   */
+  slot?: AtlasSpace;
 }
 
 /**
@@ -103,6 +111,12 @@ export interface PackedRegion {
   atlasIndex: number;
   atlasPosition: Vector2D;
   size: Vector2D;
+  /**
+   * Retain mode: the packer node holding this region (see `UnpackedFrame.slot`).
+   * Lets the incremental compile reclaim the region once no registered
+   * texture-map references it any more.
+   */
+  slot?: AtlasSpace;
 }
 
 /**

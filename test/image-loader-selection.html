@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Image Loader Selection</title>
+  <style>
+    body { background: #111; color: #ddd; font: 13px/1.5 monospace; margin: 0; }
+    #out { position: absolute; left: 512px; top: 16px; right: 16px; white-space: pre-wrap; }
+    .pass { color: #6f6; } .fail { color: #f66; } .note { color: #fc6; }
+  </style>
+</head>
+<body>
+  <pre id="out"></pre>
+  <script src="./dev/omosuen.js"></script>
+  <script type="module">
+    // Browser check for image-loader's layer/frame selection, lazy extend/release,
+    // and shared-texture reference counting, against a live retain-mode atlas
+    // with a camera rendering.
+    //
+    //   /image-loader-selection                → in-repo Mini* assets
+    //   /image-loader-selection?profile=cf&ase=<url of a MiniBase*.aseprite>
+    const O = window.Omosuen;
+    const params = new URLSearchParams(location.search);
+    const out = document.getElementById('out');
+    const results = { pass: 0, fail: 0, failures: [], notes: [], timings: {} };
+    window.__results = results;
+
+    const captured = [];
+    for (const level of ['warn', 'error']) {
+      const orig = console[level].bind(console);
+      console[level] = (...a) => { captured.push({ level, msg: a.map(String).join(' ') }); orig(...a); };
+    }
+    const messagesSince = (mark, re) => captured.slice(mark).filter((m) => re.test(m.msg));
+
+    function log(cls, msg) {
+      const s = document.createElement('span');
+      s.className = cls;
+      s.textContent = msg + '\n';
+      out.appendChild(s);
+    }
+    function check(label, ok, detail) {
+      if (ok) { results.pass++; log('pass', `PASS  ${label}`); }
+      else { results.fail++; results.failures.push(label + (detail ? ` -- ${detail}` : '')); log('fail', `FAIL  ${label}${detail ? ' -- ' + detail : ''}`); }
+    }
+    function note(msg) { results.notes.push(msg); log('note', `NOTE  ${msg}`); }
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const frames = (n) => new Promise((r) => { let i = 0; const step = () => (++i >= n ? r() : requestAnimationFrame(step)); requestAnimationFrame(step); });
+
+    const PROFILES = {
+      mini: {
+        file: './assets/aseprite/MiniSwordMan.aseprite',
+        sources: { sword: './assets/aseprite/MiniSwordMan.aseprite', dryad: './assets/aseprite/MiniDryadDeer.aseprite' },
+        layers: ['main', 'outline'],
+        frames: ['idle', 'walk:2', 3],
+        expectAnims: ['idle', 'walk:2', '3'],
+        absent: 'attack',
+        extendFrames: ['jump'],
+        extendLayer: 'hands',
+        slots: { outline: 'x', hands: 'x' },
+        slotRival: 'outline',
+        releaseLayer: 'main',
+        releaseFrame: 'jump',
+        setA: ['idle'],
+        setB: ['walk'],
+        defaultSprites: null,
+      },
+      cf: {
+        file: params.get('ase'),
+        sources: { man: params.get('ase') },
+        layers: ['main', 'outline', 'hands', 'weapon', 'shield', 'prop', 'fx', 'hair-short', 'top-apron-shirt', 'bottom-trousers'],
+        frames: ['idle', 'walk', 'jump', 'hit', 'death', 'gather', 'axe_idle', 'axe_walk', 'axe_jump', 'axe_chop',
+          'axe_attack', 'pickaxe_idle', 'pickaxe_walk', 'pickaxe_mine', 'idle:0', 117],
+        expectAnims: ['idle', 'walk', 'axe_chop', 'pickaxe_mine', 'idle:0', '117'],
+        absent: 'bow_attack',
+        extendFrames: ['bow_idle', 'bow_walk', 'bow_attack'],
+        extendLayer: 'headgear-helmet-round',
+        slots: { 'hair-short': 'head', 'headgear-helmet-round': 'head' },
+        slotRival: 'hair-short',
+        releaseLayer: 'top-apron-shirt',
+        releaseFrame: 'bow_walk',
+        setA: ['idle', 'axe_chop'],
+        setB: ['idle', 'bow_attack'],
+        defaultSprites: 8,
+      },
+    };
+    const P = PROFILES[params.get('profile') ?? 'mini'];
+
+    async function spawn(scene, name, loaderOptions, x) {
+      const nexus = await O.newComponent('nexus', { name });
+      scene.addComponent(nexus);
+      nexus.addComponent(await O.newComponent('transform', {
+        name: `${name} Transform`, position: new O.Vector3D(x, 0, 0),
+        rotation: new O.Vector3D(0, 0, 0), scale: new O.Vector3D(3, 3, 3),
+      }));
+      const loader = await O.newComponent('image-loader', { name, flatten: false, anchorMode: 'bottom-center', ...loaderOptions });
+      const t0 = performance.now();
+      nexus.addComponent(loader);
+      await loader.ready;
+      return { nexus, loader, ms: performance.now() - t0 };
+    }
+
+    const controllerOf = (nexus) => nexus.getComponentByType('animation-controller', false);
+    const spritesOf = (nexus) => nexus.getComponentsByType('sprite', false).filter((s) => !s._disposed);
+    function animFrames(ac) {
+      const s = new Set();
+      for (const a of ac.animations.values()) for (const f of a.frames) s.add(f);
+      return s;
+    }
+    const tmFrameSet = (tm) => new Set(tm.originalFrames.map((f) => f.frameIndex));
+    const sameSet = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
+
+    /** Every packed frame's atlas pixels equal its source cell's pixels. */
+    function atlasMatchesSource(am, tm, sample = 6) {
+      const src = tm.sourceImage.getContext('2d');
+      const step = Math.max(1, Math.floor(tm.packedFrames.length / sample));
+      for (let i = 0; i < tm.packedFrames.length; i += step) {
+        const pf = tm.packedFrames[i];
+        const of = tm.originalFrames.find((f) => f.frameIndex === pf.frameIndex);
+        if (!of) return `frame ${pf.frameIndex} packed but not in originalFrames`;
+        const a = am.atlasCanvases[pf.atlasIndex].getContext('2d')
+          .getImageData(pf.atlasPosition.x, pf.atlasPosition.y, pf.size.x, pf.size.y).data;
+        const b = src.getImageData(of.position.x, of.position.y, of.size.x, of.size.y).data;
+        for (let k = 0; k < a.length; k++) if (a[k] !== b[k]) return `${tm.textureMapKey} frame ${pf.frameIndex} differs at byte ${k}`;
+      }
+      return null;
+    }
+
+    async function run() {
+      await O.init({ plugins: ['./dev/image-loader.plugin.js'] });
+      O.registerSceneModule('ils', '/scenes/image-loader-selection-test.js');
+      await O.switchScene('ils');
+      O.start(60);
+      for (let i = 0; i < 50 && O.getInitQueueLength() !== -1; i++) await wait(50);
+      const scene = O.getActiveScene();
+      const am = scene.getComponentByType('atlas-manager', true);
+      log('', `profile: ${params.get('profile') ?? 'mini'}  file: ${P.file}`);
+
+      // ── A: one entity, selected layers × frames ──────────────────────────
+      log('', '\n— single-file selection —');
+      let mark = captured.length;
+      const A = await spawn(scene, 'unitA', { filePath: P.file, layers: P.layers, frames: P.frames, layerSlots: P.slots }, -40);
+      results.timings.selectedLoadMs = Math.round(A.ms);
+      note(`selected import ready in ${A.ms.toFixed(0)} ms`);
+      const acA = controllerOf(A.nexus);
+      const spriteNames = spritesOf(A.nexus).map((s) => s.name).sort();
+      check('one sprite per selected layer', spriteNames.join() === [...P.layers].sort().join(), spriteNames.join());
+      const tmsA = scene.getComponentsByType('texture-map', true).filter((t) => t.textureMapKey.startsWith('aseprite:unitA:'));
+      check('one texture-map per selected layer', tmsA.length === P.layers.length, `${tmsA.length}`);
+      const want = animFrames(acA);
+      const badTm = tmsA.find((t) => !sameSet(tmFrameSet(t), want));
+      check('every texture holds exactly the selected frames', !badTm, badTm ? `${badTm.textureMapKey}: ${tmFrameSet(badTm).size} vs ${want.size}` : '');
+      note(`${want.size} frames × ${tmsA.length} layers loaded`);
+      check('all selected frames packed into the atlas', tmsA.every((t) => t.packedFrames.length === t.originalFrames.length));
+      check('expected animations present', P.expectAnims.every((n) => acA.hasAnimation(n)), [...acA.animations.keys()].join());
+      check(`unselected tag '${P.absent}' is absent`, !acA.hasAnimation(P.absent));
+      const single = acA.getAnimation(P.expectAnims.find((n) => n.includes(':')));
+      check('tag-local selector is a one-frame animation', single && single.frames.length === 1);
+      check('per-frame durations kept', [...acA.animations.values()].every((a) => a.frameDurations && a.frameDurations.length === a.frames.length));
+      let err = tmsA.map((t) => atlasMatchesSource(am, t)).find(Boolean);
+      check('atlas pixels match the composited cells', !err, err ?? '');
+
+      acA.play(P.expectAnims[0], true);
+      await wait(400);
+      check('plays with no missing-frame warnings', messagesSince(mark, /not found in texture map/).length === 0,
+        messagesSince(mark, /not found/).map((m) => m.msg).join(' | '));
+      mark = captured.length;
+      acA.play(P.absent);
+      check('playing an unloaded tag is a clean "not found"', !acA.hasAnimation(P.absent) && messagesSince(mark, /Cannot play animation/).length === 1);
+
+      // ── extend frames ──
+      log('', '\n— extend / release —');
+      mark = captured.length;
+      let t0 = performance.now();
+      await A.loader.extend({ frames: P.extendFrames });
+      results.timings.extendFramesMs = Math.round(performance.now() - t0);
+      note(`extend(frames: ${P.extendFrames.join(', ')}) in ${results.timings.extendFramesMs} ms`);
+      check('extended animations added', P.extendFrames.every((n) => acA.hasAnimation(n)));
+      const want2 = animFrames(acA);
+      check('textures grew to the new selection', want2.size > want.size && tmsA.every((t) => sameSet(tmFrameSet(t), want2)),
+        `${want.size} → ${want2.size}`);
+      check('new frames packed', tmsA.every((t) => t.packedFrames.length === t.originalFrames.length));
+      err = tmsA.map((t) => atlasMatchesSource(am, t)).find(Boolean);
+      check('atlas pixels still match after growth', !err, err ?? '');
+      acA.play(P.extendFrames[0], true);
+
+      // ── extend a layer (slot) ──
+      t0 = performance.now();
+      await A.loader.extend({ layers: [P.extendLayer] });
+      results.timings.extendLayerMs = Math.round(performance.now() - t0);
+      note(`extend(layers: ${P.extendLayer}) in ${results.timings.extendLayerMs} ms`);
+      const added = spritesOf(A.nexus).find((s) => s.name === P.extendLayer);
+      check('extended layer got a sprite', !!added);
+      check('…bound to the controller and visible', !!acA.getLayer(P.extendLayer) && added && added.visible !== false);
+      const rival = spritesOf(A.nexus).find((s) => s.name === P.slotRival);
+      check('slot rival hidden by the new layer', rival && rival.visible === false);
+      const newTm = scene.getComponentsByType('texture-map', true).find((t) => t.textureMapKey === `aseprite:unitA:${P.extendLayer}`);
+      check('extended layer texture holds the current selection', newTm && sameSet(tmFrameSet(newTm), animFrames(acA)));
+      await wait(300);
+      check('no missing-frame warnings after extend', messagesSince(mark, /not found in texture map/).length === 0,
+        messagesSince(mark, /not found/).map((m) => m.msg).join(' | '));
+
+      // ── release a layer ──
+      const regionsBefore = am.packedByKey.size;
+      const relKey = `aseprite:unitA:${P.releaseLayer}`;
+      const relTm = am.getTextureMap(relKey);
+      await A.loader.release({ layers: [P.releaseLayer] });
+      await frames(3);
+      check('released layer sprite removed', !spritesOf(A.nexus).some((s) => s.name === P.releaseLayer));
+      check('…and its controller layer', !acA.getLayer(P.releaseLayer));
+      check('its texture-map disposed and unregistered', relTm && relTm._disposed && !am.getTextureMap(relKey));
+      check('atlas reclaimed its regions', am.packedByKey.size < regionsBefore, `${regionsBefore} → ${am.packedByKey.size}`);
+
+      // ── release the playing animation ──
+      mark = captured.length;
+      acA.play(P.releaseFrame, true);
+      await wait(100);
+      const framesBefore = tmFrameSet(tmsA.find((t) => !t._disposed)).size;
+      await A.loader.release({ frames: [P.releaseFrame] });
+      check('released animation gone', !acA.hasAnimation(P.releaseFrame));
+      check('controller stopped, not stuck on it', acA.currentAnimation !== P.releaseFrame && !acA.isPlaying());
+      const liveTms = tmsA.filter((t) => !t._disposed);
+      check('textures dropped its frames', liveTms.every((t) => sameSet(tmFrameSet(t), animFrames(acA))) &&
+        tmFrameSet(liveTms[0]).size < framesBefore);
+      const held = tmFrameSet(liveTms[0]);
+      check('sprites parked on a loaded frame', spritesOf(A.nexus).every((s) => held.has(s.frame.albedo)),
+        spritesOf(A.nexus).map((s) => s.frame.albedo).join());
+      await wait(300);
+      check('no missing-frame warnings after release', messagesSince(mark, /not found in texture map/).length === 0,
+        messagesSince(mark, /not found/).map((m) => m.msg).join(' | '));
+
+      // ── B: shared set, two entities, different selections ─────────────────
+      log('', '\n— shared set: reference counting —');
+      mark = captured.length;
+      const B1 = await spawn(scene, 'unitB1', { sources: P.sources, layers: P.layers, frames: P.setA, packageId: 'set' }, 0);
+      const B2 = await spawn(scene, 'unitB2', { sources: P.sources, layers: P.layers, frames: P.setB, packageId: 'set' }, 40);
+      const f1 = animFrames(controllerOf(B1.nexus));
+      const f2 = animFrames(controllerOf(B2.nexus));
+      const union = new Set([...f1, ...f2]);
+      const setTms = () => scene.getComponentsByType('texture-map', true).filter((t) => !t._disposed && t.textureMapKey.startsWith('aseprite:') && t.textureMapKey.includes('='));
+      const mainKey = setTms().find((t) => t.textureMapKey.endsWith(':main'))?.textureMapKey;
+      check('shared texture holds the union of both selections', mainKey && sameSet(tmFrameSet(am.getTextureMap(mainKey)), union),
+        mainKey ? `${tmFrameSet(am.getTextureMap(mainKey)).size} vs ${union.size}` : 'no shared main texture');
+      check('each entity sees only its own animations', [...controllerOf(B1.nexus).animations.keys()].length !== 0 &&
+        ![...controllerOf(B1.nexus).animations.keys()].some((n) => !P.setA.some((s) => n.endsWith(`-${s}`))));
+      const spritesPerSet = spritesOf(B1.nexus).length;
+      check('set entities share textures (no per-entity copies)', setTms().length === new Set(setTms().map((t) => t.textureMapKey)).size);
+
+      O.markForDisposal(B1.nexus);
+      await frames(3);
+      check('disposing one entity keeps the other\'s frames', sameSet(tmFrameSet(am.getTextureMap(mainKey)), f2),
+        `${tmFrameSet(am.getTextureMap(mainKey)).size} vs ${f2.size}`);
+      controllerOf(B2.nexus).play(controllerOf(B2.nexus).animations.keys().next().value, true);
+      await wait(300);
+      check('survivor renders with no missing-frame warnings', messagesSince(mark, /not found in texture map/).length === 0,
+        messagesSince(mark, /not found/).map((m) => m.msg).join(' | '));
+      const keys = setTms().map((t) => t.textureMapKey);
+      O.markForDisposal(B2.nexus);
+      await frames(3);
+      check('last entity gone → shared textures disposed', keys.every((k) => !am.getTextureMap(k)), keys.filter((k) => am.getTextureMap(k)).join());
+      check(`(${spritesPerSet} sprites per set entity)`, spritesPerSet > 0);
+
+      // ── C: default selection (no layers/frames) ───────────────────────────
+      log('', '\n— default selection —');
+      const C = await spawn(scene, 'unitC', { filePath: P.file }, 80);
+      results.timings.defaultLoadMs = Math.round(C.ms);
+      note(`default (every frame, visible layers) import ready in ${C.ms.toFixed(0)} ms`);
+      const tmsC = scene.getComponentsByType('texture-map', true).filter((t) => !t._disposed && t.textureMapKey.startsWith('aseprite:unitC:'));
+      if (P.defaultSprites !== null) check('visible layers only by default', spritesOf(C.nexus).length === P.defaultSprites, `${spritesOf(C.nexus).length}`);
+      check('default holds every tagged frame', tmsC.length > 0 && tmsC.every((t) => sameSet(tmFrameSet(t), animFrames(controllerOf(C.nexus)))));
+      err = tmsC.map((t) => atlasMatchesSource(am, t)).find(Boolean);
+      check('default import atlas pixels match', !err, err ?? '');
+
+      const loaderErrors = captured.filter((m) => /\[image-loader\]|\[atlas-manager\]/.test(m.msg) && m.level === 'error');
+      check('no image-loader / atlas-manager errors', loaderErrors.length === 0, loaderErrors.map((m) => m.msg).join(' | '));
+    }
+
+    try { await run(); }
+    catch (e) { check('test ran without throwing', false, e && e.stack ? e.stack : String(e)); }
+    log('', `\n${results.pass} passed, ${results.fail} failed`);
+    results.done = true;
+  </script>
+</body>
+</html>

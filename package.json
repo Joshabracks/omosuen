@@ -1,6 +1,6 @@
 {
   "name": "omosuen",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Omosuen - An axonometric game engine with an orbiting orthographic camera. Etymology: Omos (Greek: shoulder/axis) + Suen (Mesopotamian moon deity/measurement)",
   "main": "dist/omosuen.min.js",
   "types": "dist/src/index.d.ts",
@@ -36,6 +36,8 @@
     "test": "start http://localhost:3000/ && node test/integration-test-server.js",
     "test:cli": "tsx test/cli.test.ts",
     "test:packer": "tsx test/packer-bench.test.ts",
+    "test:atlas-reclaim": "tsx test/atlas-reclaim.test.ts",
+    "test:image-loader-parser": "tsx test/image-loader-parser.test.ts",
     "lint": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix",
     "format": "prettier --write \"src/**/*.ts\" \"*.js\" \"*.json\"",

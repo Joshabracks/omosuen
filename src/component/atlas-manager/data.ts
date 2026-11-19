@@ -49,7 +49,11 @@ export interface AtlasManagerConfig {
    * - `true` (procedural games): keep the atlas canvases + packer free-space so
    *   a runtime add packs/blits only the NEW frames (no full re-pack/re-blit)
    *   and cameras upload straight from the canvas. Trades memory for per-add
-   *   cost that scales with new frames, not total frames.
+   *   cost that scales with new frames, not total frames. Space held by frames
+   *   no registered texture-map references any more (a disposed texture-map, or
+   *   frames trimmed from `originalFrames`) is reclaimed on the next compile and
+   *   reused for new frames of the same or smaller size; if fragmentation still
+   *   makes an add overflow, the atlas is compacted with one full re-pack.
    *
    * Default: false
    */
@@ -130,6 +134,8 @@ export interface AtlasManagerT
    * Dedup map of already-packed unique frames (retain mode only), keyed by
    * `${filePath}|${sx},${sy},${w},${h}`. Persisted across incremental adds so a
    * re-referenced frame reuses its region and a genuinely new frame is detected.
+   * Keys no registered texture-map references are released (and their space
+   * returned to `packState`) at the start of each incremental compile.
    */
   packedByKey: Map<string, PackedRegion>;
 

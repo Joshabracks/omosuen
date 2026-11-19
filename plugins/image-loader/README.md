@@ -2,8 +2,9 @@
 
 Official [Omosuen](../../README.md) plugin: the **`image-loader`** component turns art files
 into ready-to-render entities. Dependency-free and fully browser-static — assets load by URL
-via `fetch`, with zlib inflate via the native `DecompressionStream` (evergreen browsers:
-Chrome 80+, Safari 16.4+, Firefox 113+).
+via `fetch`. Aseprite cels are inflated by a small in-house zlib decoder, falling back to the
+native `DecompressionStream` (evergreen browsers: Chrome 80+, Safari 16.4+, Firefox 113+) for
+anything it doesn't handle.
 
 It has two ingestion paths, and one component covers both:
 
@@ -53,6 +54,68 @@ await Omosuen.newComponent('image-loader', {
   // layerSlots: { 'hair-a': 'hair', 'hair-b': 'hair' }, // mutually-exclusive slots
 });
 ```
+
+### Loading a slice of a big file (`layers`, `frames`)
+
+A mix-and-match character file can hold every outfit, hairstyle and weapon pose an entity
+might use. One entity only needs a few of them, so you tell the loader which part to load.
+Only the selected layers × frames are decoded, composited and packed into the atlas, and
+only the selected animations exist.
+
+```js
+await Omosuen.newComponent('image-loader', {
+  name: 'unit',
+  filePath: './assets/character/MiniBaseMan.aseprite',
+  flatten: false,
+  layers: ['main', 'outline', 'hands', 'weapon', 'shield', 'prop', 'fx',
+           'hair-short', 'top-apron-shirt', 'bottom-trousers'],
+  // or a predicate: layers: (name, layer) => !name.startsWith('headgear-')
+  frames: ['idle', 'walk', 'axe_idle', 'axe_walk', 'axe_chop', 'idle:0', 117],
+  layerSlots: { 'hair-short': 'head', 'headgear-helmet-round': 'head' },
+});
+```
+
+| `frames` entry | Loads | Animation it creates |
+| --- | --- | --- |
+| `'walk'` or `{ tag: 'walk' }` | every frame of the tag | `walk`, with the tag's own durations, direction and repeat |
+| `117` | one absolute frame | a one-frame `117` you can park a sprite on |
+| `'walk:3'` or `{ tag: 'walk', frame: 3 }` | the 4th frame *of the tag* | a one-frame `walk:3` |
+
+- **`layers` overrides `visibleOnly`.** The saved visibility is just the default selection.
+  Every layer that has a listed name is loaded. Draw order stays the file's layer order.
+- **Tags you don't select don't exist.** `controller.play('bow_attack')` on a unit that didn't
+  load bows takes the controller's normal "not found" path.
+- With neither option set, every frame is loaded and every tag becomes an animation, the
+  same as before.
+- In `sources`, each source can set its own `layers` / `frames`. If it doesn't, it uses the
+  loader-level ones.
+- **A predicate `layers` is runtime-only.** A saved scene keeps only list-form selections. A
+  predicate is dropped on save, and loading falls back to `visibleOnly`.
+
+### Changing the slice at runtime (`extend`, `release`)
+
+```js
+await loader.extend({ frames: ['bow_idle', 'bow_walk', 'bow_attack'] }); // equipped a bow
+await loader.extend({ layers: ['headgear-helmet-round'] });             // promoted: helmet
+await loader.release({ layers: ['top-apron-shirt'] });                  // took the shirt off
+await loader.release({ frames: ['bow_walk'] });
+```
+
+- **No re-fetch and no re-parse.** The file was indexed once, so `extend` decodes and packs
+  only the new frames or layers. On a 573-frame, 99-layer character file that takes a few
+  tens of milliseconds.
+- **A new layer gets a sprite and a controller layer.** It's shown through
+  `setLayerVisible`, so `layerSlots` apply: the helmet above hides `hair-short`.
+- **A released layer's sprite and texture-map are removed.** Releasing the animation that's
+  playing stops the controller and parks the sprites on a frame that's still loaded.
+- **Released frames that no other entity holds leave their texture-map.** The atlas reclaims
+  their space on its next compile. With `retainAtlas: true`, that space is reused for later
+  frames of the same or smaller size, which needs an Omosuen engine that reclaims atlas
+  space.
+- In a multi-source loader, pass `source: '<id>'` to change one source only.
+- `flatten: true` loaders can extend and release `frames`, but not `layers`.
+- **Runtime changes aren't saved.** A saved scene stores the declared `layers` / `frames`.
+  Re-apply equipment changes after loading.
 
 ### Plain images, one per channel (`images`)
 
@@ -163,13 +226,25 @@ import {
   imageLoaderDefinition,
   importAseprite,
   parseAseprite,
+  indexAseprite,
+  materializeCels,
 } from 'omosuen-image-loader';
 
 registerImageLoader(); // or: Omosuen.init({ plugins: [imageLoaderDefinition] })
 
 // Or skip the component and build an entity directly:
 const buf = await fetch('./hero.aseprite').then((r) => r.arrayBuffer());
-await importAseprite(buf, { parent, atlasManager, packageId: 'hero', flatten: false });
+const { loader } = await importAseprite(buf, {
+  parent, atlasManager, packageId: 'hero', flatten: false,
+  layers: ['main', 'outline'], frames: ['idle', 'walk'],
+});
+await loader.extend({ frames: ['jump'] }); // same extend/release as the component
+
+// The parser on its own (no engine needed): decode everything, or just a slice.
+const ase = await parseAseprite(buf, { layers: ['main'], frames: ['idle'] });
+// …or index now and decode on demand:
+const index = indexAseprite(buf);                       // no pixels decoded yet
+await materializeCels(index, [0, 1, 2], [index.layers[0].index]);
 
 // Multi-file entity directly (shared by layer name across the set; the importer
 // fetches each filePath lazily, skipping the network on cached repeat spawns):
@@ -193,15 +268,20 @@ await importAsepriteSources(
 
 A multi-file loader shares its heavy static data across every entity of the same art set:
 
-- **Texture-maps** are created once per (art set, layer name) key and owned by the scene root —
-  already shared across every source in the set (not just across entities) by the horizontal
-  ingestion described above; each entity's sprites reference them by key (the engine resolves
-  texture-maps globally by `textureMapKey`).
-- **Animations** live in one shared `animation-map` component; each entity's controller references it
-  by key (`animations: '<key>'`) instead of inlining a copy.
-- The **first** entity of an art set pays the full import; **subsequent** entities are built from a
-  cached blueprint — only their own sprites + controller — with no `fetch`, parse, compositing, or atlas
-  work. So spawning many units of the same art set is cheap.
+- **Files** are fetched and indexed once per URL and cached; the cache is shared by every loader,
+  single- or multi-file. Pixels are decoded only for the cels being drawn, then dropped again.
+  `clearAsepriteCache()` forgets the cached indexes.
+- **Texture-maps** are created once per (art set, layer name) key and owned by the scene root.
+  Each holds the **union of the frames every entity of the set currently selects**. Each frame
+  is reference counted, so entities with different `layers` / `frames` share one texture.
+  Disposing an entity never removes frames another entity still shows. When the last entity
+  lets go of a frame, the frame is freed, and an empty texture-map is disposed.
+- **Animations**: with the default selection they live in one shared `animation-map`, and each
+  controller references it by key (`animations: '<key>'`). An entity with its own `frames`
+  gets exactly its own animations instead.
+- A repeat spawn whose frames are already loaded only takes references and builds its own sprites
+  and controller. It does no fetch, parse, compositing or atlas work, so spawning many units of
+  the same art set stays cheap.
 
 ## Build
 

@@ -2,6 +2,7 @@ import { AtlasManagerT } from '../../atlas-manager';
 import { CellMapT, CellMap, rebuildDirtyChunks } from '../../cell-map';
 import { LightT } from '../../light';
 import { VisionSourceT } from '../../vision-source';
+import { VisibilityVolumeT } from '../../visibility-volume';
 import { FogOfWarT } from '../../fog-of-war';
 import { NexusT } from '../../nexus';
 import { TextureMapT } from '../../texture-map';
@@ -12,7 +13,10 @@ import {
   setOrbitYawUniform,
   setLightUniforms,
 } from './light-uniforms';
-import { setVisionUniforms } from './vision-uniforms';
+import {
+  bindVisibilityUniforms,
+  getVisibilityFrame,
+} from './visibility-uniforms';
 import { sweepExploredCells } from './explored-sweep';
 import { fogUsesExploredHistory, setFogUniforms } from './fog-uniforms';
 import { computeSolidityMap } from './visibility-mask';
@@ -438,6 +442,126 @@ function uploadCellEmissionColorDelta(
 }
 
 /**
+ * Scratch buffer for the whole-window region-index rebuild. One byte per cell
+ * rather than four -- the channel is a single R8UI value -- but the same reuse
+ * reasoning as `emissionBytesScratch`: a full rebuild fires on window-shift
+ * commits, the frame least able to absorb a multi-megabyte allocation.
+ */
+let regionBytesScratch: Uint8Array | null = null;
+
+/**
+ * Packs `regionIndexMap` into R8UI bytes, and reports whether any cell carries
+ * a non-zero index (an all-zero map skips the upload and the shader term).
+ */
+function buildCellRegionIndexBytes(cellMap: CellMapT): {
+  bytes: Uint8Array;
+  hasAny: boolean;
+} {
+  const packed = cellMap.regionIndexMap.value;
+  if (
+    regionBytesScratch === null ||
+    regionBytesScratch.length !== packed.length
+  ) {
+    regionBytesScratch = new Uint8Array(packed.length);
+  }
+  const bytes = regionBytesScratch;
+  let hasAny = false;
+  for (let i = 0; i < packed.length; i++) {
+    const v = packed[i] & 0xff;
+    if (v !== 0) hasAny = true;
+    bytes[i] = v;
+  }
+  return { bytes, hasAny };
+}
+
+function uploadCellRegionIndexTexture(
+  gl: WebGL2RenderingContext,
+  camera: CameraT,
+  bytes: Uint8Array,
+  windowSize: { x: number; y: number; z: number },
+): void {
+  if (!camera.glResources.cellRegionIndexTexture) {
+    camera.glResources.cellRegionIndexTexture = gl.createTexture();
+  }
+  // Unit 9 -- units 0-8 are all spoken for in this program (0 albedo, 1 normal,
+  // 2 cell emission, 3 solidity, 4/5 the sprite pass's emission/material,
+  // 6 cell emission color, 7 explored, 8 the cell id texture). Sharing a unit
+  // with a differently-typed sampler throws GL_INVALID_OPERATION once both
+  // uniforms have been set.
+  gl.activeTexture(gl.TEXTURE9);
+  gl.bindTexture(
+    gl.TEXTURE_2D_ARRAY,
+    camera.glResources.cellRegionIndexTexture,
+  );
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage3D(
+    gl.TEXTURE_2D_ARRAY,
+    0,
+    gl.R8UI,
+    windowSize.x,
+    windowSize.y,
+    windowSize.z,
+    0,
+    gl.RED_INTEGER,
+    gl.UNSIGNED_BYTE,
+    bytes,
+  );
+  // Integer textures cannot be linearly filtered at all -- a LINEAR filter
+  // makes them INCOMPLETE and they sample as zero, silently. NEAREST is both
+  // required and exactly what a region index wants.
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+}
+
+/**
+ * Delta counterpart to the two above -- patches only the cells changed since
+ * `fromVersion`. Re-reads each cell's CURRENT value at upload time rather than
+ * trusting a value cached in the dirty entry, so repeated writes to one cell
+ * between uploads collapse to the latest. Mirrors
+ * `uploadCellEmissionColorDelta`, including its `hasAny` monotonic-true rule.
+ */
+function uploadCellRegionIndexDelta(
+  gl: WebGL2RenderingContext,
+  camera: CameraT,
+  cellMap: CellMapT,
+  fromVersion: number,
+): void {
+  gl.activeTexture(gl.TEXTURE9);
+  gl.bindTexture(
+    gl.TEXTURE_2D_ARRAY,
+    camera.glResources.cellRegionIndexTexture,
+  );
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  const { x: mx, y: my } = cellMap.mapSize;
+  const values = cellMap.regionIndexMap.value;
+  const texel = new Uint8Array(1);
+  for (const region of cellMap.regionIndexDirtyRegions) {
+    if (region.version <= fromVersion) continue;
+    const v = values[region.z * my * mx + region.y * mx + region.x] & 0xff;
+    texel[0] = v;
+    if (v !== 0) camera.glResources.cellRegionIndexHasAny = true;
+    // `region` is already a slot coordinate (see `setRegionIndex`), so the
+    // buffer read above and this texel write address the same cell.
+    gl.texSubImage3D(
+      gl.TEXTURE_2D_ARRAY,
+      0,
+      region.x,
+      region.y,
+      region.z,
+      1,
+      1,
+      1,
+      gl.RED_INTEGER,
+      gl.UNSIGNED_BYTE,
+      texel,
+    );
+  }
+}
+
+/**
  * Builds the R8 fog-of-war "explored" texture data from a cell-map's
  * `exploredMap` -- one byte per CELL, same resolution and flattening order
  * (x + y·mapX + z·mapX·mapY) as the solidity and emission-color textures, and
@@ -604,6 +728,7 @@ export function renderCellMaps(
   textureMapCache: Map<string, TextureMapT>,
   lights: LightT[],
   visionSources: VisionSourceT[],
+  visibilityVolumes: VisibilityVolumeT[],
   sinA: number,
   heightScale: number,
   cosYaw: number,
@@ -681,6 +806,9 @@ export function renderCellMaps(
   const uViewportSize = gl.getUniformLocation(program, 'u_viewportSize');
   const uCameraPosition = gl.getUniformLocation(program, 'u_cameraPosition');
   const uZoom = gl.getUniformLocation(program, 'u_zoom');
+  // World-space camera position, for computeSpecular's view vector. Shared with
+  // the sprite pass, which declares its own location for the same uniform.
+  const uCameraWorldPos = gl.getUniformLocation(program, 'u_cameraWorldPos');
   const uCellSize = gl.getUniformLocation(program, 'u_cellSize');
   // Size/origin of the currently-resident cell-map window. Used by the
   // fragment shader's reveal/occlusion sampling (u_windowSize/u_windowOrigin,
@@ -738,11 +866,37 @@ export function renderCellMaps(
   const uEmissionSizeXZ = gl.getUniformLocation(program, 'u_emissionSizeXZ');
   const uEmissionSizeXY = gl.getUniformLocation(program, 'u_emissionSizeXY');
 
+  // Per-material PBR texture (metallic/roughness) — same per-side layout again.
+  // Shares the u_materialTexture sampler with the sprite pass, bound to a
+  // different unit per mode just as u_emissionTexture is.
+  const uMaterialTexture = gl.getUniformLocation(program, 'u_materialTexture');
+  const uHasCellMaterial = gl.getUniformLocation(program, 'u_hasCellMaterial');
+  const uMaterialBoundsYZ = gl.getUniformLocation(
+    program,
+    'u_materialBoundsYZ',
+  );
+  const uMaterialBoundsXZ = gl.getUniformLocation(
+    program,
+    'u_materialBoundsXZ',
+  );
+  const uMaterialBoundsXY = gl.getUniformLocation(
+    program,
+    'u_materialBoundsXY',
+  );
+  const uMaterialSizeYZ = gl.getUniformLocation(program, 'u_materialSizeYZ');
+  const uMaterialSizeXZ = gl.getUniformLocation(program, 'u_materialSizeXZ');
+  const uMaterialSizeXY = gl.getUniformLocation(program, 'u_materialSizeXY');
+
   // Per-cell emission (highlight) color texture (Part A).
   const uHasCellEmissionColor = gl.getUniformLocation(
     program,
     'u_hasCellEmissionColor',
   );
+  const uHasCellRegionIndex = gl.getUniformLocation(
+    program,
+    'u_hasCellRegionIndex',
+  );
+  const uCellRegionIndex = gl.getUniformLocation(program, 'u_cellRegionIndex');
   const uCellEmissionColor = gl.getUniformLocation(
     program,
     'u_cellEmissionColor',
@@ -762,7 +916,7 @@ export function renderCellMaps(
   );
 
   // Per-fragment raycasting uniform locations (vision-source array uniforms
-  // are cached/uploaded separately -- see vision-uniforms.ts)
+  // are cached/uploaded separately -- see visibility-uniforms.ts)
   const uCellSolidity = gl.getUniformLocation(program, 'u_cellSolidity');
   // Per-cell-map fog-of-war opt-out -- see cellMap.revealExempt usage below.
   const uFogExempt = gl.getUniformLocation(program, 'u_fogExempt');
@@ -811,24 +965,31 @@ export function renderCellMaps(
   );
   gl.uniform2f(uCameraPosition, snapped.x, snapped.y);
   gl.uniform1f(uZoom, camera.zoom);
+  // computeSpecular builds its half-vector from this, and until cell shading
+  // gained a material channel ONLY the sprite pass ever uploaded it
+  // (render-sprites.ts). Left unset here, cell specular would read whatever the
+  // previous pass left in the uniform — or (0,0,0) in a sprite-free scene — and
+  // produce a plausible-looking highlight that is simply wrong. Same hazard
+  // class as the u_cellIdTexture pin below.
+  gl.uniform3f(uCameraWorldPos, camPos.x, camPos.y, camPos.z);
 
   // Set dynamic light uniforms
   setLightUniforms(gl, camera.id!, lights);
 
-  // Set fog-of-war vision-source uniforms
-  // Resolved before the vision uniforms because `visionMode` travels with
-  // them -- see setVisionUniforms.
+  // Fog-of-war visibility shapes. Built once this frame by
+  // prepareVisibilityFrame (render/index.ts); this only binds them.
+  // `visionMode` travels with them -- see bindVisibilityUniforms.
   const fogOfWar = sceneRoot.getComponentByType(
     'fog-of-war',
     true,
   ) as FogOfWarT | null;
   const fogUseLineOfSight = fogOfWar?.visionMode !== 'distance';
 
-  setVisionUniforms(gl, camera.id!, visionSources, camPos, fogUseLineOfSight);
+  bindVisibilityUniforms(gl, camera.id!, fogUseLineOfSight);
 
   // Set fog-of-war style config (fog-of-war is a GLOBAL component -- at most
   // one per scene). No component in the scene = the shader's own defaults
-  // apply only when fogActive is false anyway (u_numVisionSources gates
+  // apply only when fogActive is false anyway (u_visNumShapes gates
   // that), so falling back to the documented default style here just keeps
   // behavior identical to having a fog-of-war component with default values.
   // Styles, lightInfluence, memory mode and dropHidden -- shared with the
@@ -946,6 +1107,7 @@ export function renderCellMaps(
   for (const cellMap of cellMaps) {
     let gpuUploadMs = 0;
     let emissionColorGpuUploadMs = 0;
+    let regionIndexGpuUploadMs = 0;
     let solidityGpuUploadMs = 0;
     let memoryTexUploadMs = 0;
     let bufferCleanupMs = 0;
@@ -1142,7 +1304,10 @@ export function renderCellMaps(
     // Solidity texture (u_cellSolidity) is read by BOTH the vision-source
     // (fog-of-war) raycast and the AO/cast-shadow depth cues — so
     // upload/bind it whenever either needs it.
-    const hasVisionSources = visionSources.some((v) => v.enabled);
+    // Any enabled visibility shape -- a vision source OR a visibility volume --
+    // activates fog. A scene with volumes and no sources still fogs outside
+    // them. Mirrors the shader's `u_visNumShapes > 0`.
+    const hasVisionSources = getVisibilityFrame().count > 0;
     const fogActive = hasVisionSources && !cellMap.revealExempt;
     const cues = camera.depthCues;
     const needSolidity =
@@ -1229,6 +1394,7 @@ export function renderCellMaps(
         sweepExploredCells(
           cellMap,
           visionSources,
+          visibilityVolumes,
           solidityMap,
           // `visionMode: 'distance'` overrides the explore setting rather than
           // sitting beside it: with no raycast anywhere else, marking explored
@@ -1377,6 +1543,55 @@ export function renderCellMaps(
       gl.uniform1i(uHasCellEmissionColor, 1);
     } else {
       gl.uniform1i(uHasCellEmissionColor, 0);
+    }
+
+    // Region index: identical delta-vs-full decision and windowCommitted gate
+    // as the emission-color block above.
+    if (
+      windowCommitted &&
+      camera.glResources.cellRegionIndexVersion !== cellMap.regionIndexVersion
+    ) {
+      const regionT0 = profiling ? performance.now() : 0;
+      if (
+        camera.glResources.cellRegionIndexTexture &&
+        camera.glResources.cellRegionIndexVersion >=
+          cellMap.regionIndexFullVersion
+      ) {
+        uploadCellRegionIndexDelta(
+          gl,
+          camera,
+          cellMap,
+          camera.glResources.cellRegionIndexVersion,
+        );
+      } else {
+        const { bytes, hasAny } = buildCellRegionIndexBytes(cellMap);
+        camera.glResources.cellRegionIndexHasAny = hasAny;
+        if (hasAny) {
+          uploadCellRegionIndexTexture(gl, camera, bytes, cellMap.mapSize);
+        }
+      }
+      camera.glResources.cellRegionIndexVersion = cellMap.regionIndexVersion;
+      if (profiling) {
+        regionIndexGpuUploadMs += performance.now() - regionT0;
+      }
+    }
+    // Pin unconditionally. An integer sampler left at its default unit 0 both
+    // collides with u_albedoTexture (a sampler2D) and makes EVERY cell draw
+    // silently fail -- no GL error surfaces at the draw call, only a blank
+    // pass. That exact bug cost this project a debugging session once already.
+    gl.activeTexture(gl.TEXTURE9);
+    gl.bindTexture(
+      gl.TEXTURE_2D_ARRAY,
+      camera.glResources.cellRegionIndexTexture,
+    );
+    gl.uniform1i(uCellRegionIndex, 9);
+    if (
+      camera.glResources.cellRegionIndexHasAny &&
+      camera.glResources.cellRegionIndexTexture
+    ) {
+      gl.uniform1i(uHasCellRegionIndex, 1);
+    } else {
+      gl.uniform1i(uHasCellRegionIndex, 0);
     }
 
     // Caps fresh GPU uploads per frame -- reassembleChunks can mark hundreds
@@ -1727,6 +1942,60 @@ export function renderCellMaps(
                 gl.uniform1i(uHasEmissionTexture, 0);
               }
 
+              // Bind the material (PBR) texture if the material provides one.
+              // R = metallic, G = roughness, matching the sprite channel and
+              // packMaterial()'s output. Bound to unit 5 — the same unit the
+              // sprite pass uses for u_materialTexture, since only one of the
+              // two modes is ever drawing.
+              //
+              // Both `else` branches clear u_hasCellMaterial rather than leaving
+              // it: uniforms persist across draw calls, so a material without a
+              // texture in a mixed-material chunk would otherwise inherit the
+              // previous draw range's flag and sample its atlas rect.
+              const materialTextureMap = textureMapCache.get(
+                material.materialTextureKey,
+              );
+              const baseMaterial = materialTextureMap
+                ? frameBounds(materialTextureMap, material.materialFrame ?? 0)
+                : null;
+              if (materialTextureMap && baseMaterial) {
+                const materialAtlasTexture =
+                  camera.glResources.atlasTextures[baseMaterial.atlasIndex];
+
+                if (materialAtlasTexture) {
+                  gl.activeTexture(gl.TEXTURE5);
+                  gl.bindTexture(gl.TEXTURE_2D, materialAtlasTexture);
+                  gl.uniform1i(uMaterialTexture, 5);
+
+                  const materialUp = resolvePlane(
+                    materialTextureMap,
+                    sides?.up?.materialFrame,
+                    baseMaterial,
+                  );
+                  const materialSE = resolvePlane(
+                    materialTextureMap,
+                    sides?.southEast?.materialFrame,
+                    baseMaterial,
+                  );
+                  const materialSW = resolvePlane(
+                    materialTextureMap,
+                    sides?.southWest?.materialFrame,
+                    baseMaterial,
+                  );
+                  gl.uniform4f(uMaterialBoundsXZ, ...materialUp.bounds);
+                  gl.uniform2f(uMaterialSizeXZ, ...materialUp.size);
+                  gl.uniform4f(uMaterialBoundsYZ, ...materialSE.bounds);
+                  gl.uniform2f(uMaterialSizeYZ, ...materialSE.size);
+                  gl.uniform4f(uMaterialBoundsXY, ...materialSW.bounds);
+                  gl.uniform2f(uMaterialSizeXY, ...materialSW.size);
+                  gl.uniform1i(uHasCellMaterial, 1);
+                } else {
+                  gl.uniform1i(uHasCellMaterial, 0);
+                }
+              } else {
+                gl.uniform1i(uHasCellMaterial, 0);
+              }
+
               // Draw this material's faces
               gl.drawElements(
                 gl.TRIANGLES,
@@ -1753,6 +2022,12 @@ export function renderCellMaps(
         cellMap.name,
         'cell-map:emissionColorGpuUpload',
         emissionColorGpuUploadMs,
+      );
+      recordComponentUpdate(
+        cellMap.id ?? -1,
+        cellMap.name,
+        'cell-map:regionIndexGpuUpload',
+        regionIndexGpuUploadMs,
       );
       recordComponentUpdate(
         cellMap.id ?? -1,

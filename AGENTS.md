@@ -170,6 +170,18 @@ under `vendor/`, and ship via the `plugin-release.yml` workflow (release = bump 
   This is why the far-tier material color lives in its own separate `cmFarMaterialChannel`
   (`NEAREST`-filtered) rather than sharing `cmExploredChannel`'s texture — a real mistake made and
   caught mid-implementation, not a hypothetical.
+- **Fog-of-war visibility has no compiled-in shape count.** Vision-source spheres and
+  `visibility-volume` boxes share one runtime-sized store: two data textures (`u_visShapes`
+  RGBA32F, `u_visBins` R32UI, units 12/13) binned on an XZ grid
+  (`src/component/camera/render/visibility-shapes.ts`, a leaf module). They are built once per
+  camera per frame by `prepareVisibilityFrame` (`visibility-uniforms.ts`) and bound by both passes.
+  Don't reintroduce uniform arrays or a `MAX_*` constant. The shader and every CPU predicate
+  (`computeFogVisibility`/`isVisibleFrom` in `fog-of-war/sweep.ts`) must walk the **same bin**
+  for a point (`gatherShapesAt`). That is what keeps sprite fog, terrain fog and explored marking
+  in agreement, and `test:shapes` pins binned == linear. "Is fog active" means **any enabled
+  shape**, vision source *or* volume, at every gate: shader `u_visNumShapes`, render-cell-maps,
+  render-sprites, and fog-of-war's `update` bail. A consumer cap (`fogOfWar.maxVisibilityShapes`)
+  limits rendering only, never exploration.
 - **Never pause a real entity's nexus to "freeze" it for rendering.** An earlier fog-of-war
   sprite-tracking build stopped a tracked sprite's stale ghost from drifting by setting
   `nexus.paused = true` on the tracked sprite's own nexus while it was out of sight — which

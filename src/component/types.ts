@@ -133,6 +133,7 @@ export type COMPONENT_TYPE =
   | 'speed-dial'
   | 'light'
   | 'vision-source'
+  | 'visibility-volume'
   | 'audio-track'
   | 'audio-effect'
   | 'audio-player';

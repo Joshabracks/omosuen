@@ -1,6 +1,6 @@
 /* eslint-disable no-undef */
 import './styles/index.css';
-import { asepriteLoaderDefinition } from 'omosuen-aseprite-loader';
+import { imageLoaderDefinition } from 'omosuen-image-loader';
 import {
   registerStateBundle,
   stateOverlayDefinition,
@@ -61,7 +61,7 @@ function registerSiteBundle(): void {
 
 async function boot(): Promise<void> {
   await Omosuen.init({
-    plugins: [stateOverlayDefinition, asepriteLoaderDefinition],
+    plugins: [stateOverlayDefinition, imageLoaderDefinition],
   });
   registerSiteBundle();
   Omosuen.registerSceneModule('site', absoluteScenePath('./scenes/site.js'));

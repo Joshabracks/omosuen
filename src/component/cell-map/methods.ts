@@ -6,6 +6,7 @@ import {
   takePendingBufferCleanup,
   resetCellMapState,
   cmEmissionColorChannel,
+  cmRegionIndexChannel,
   cmExploredChannel,
   enqueuePendingSetCells,
   getPendingSetCells,
@@ -117,6 +118,8 @@ function assertFiniteCoordinates(x: number, y: number, z: number): void {
  * resident window.
  */
 const CELL_EMISSION_COLOR_DIRTY_CAP = 2048;
+/** Dirty-log cap for the region-index channel; same reasoning and value. */
+const CELL_REGION_INDEX_DIRTY_CAP = 2048;
 
 /**
  * Cap on the retained per-chunk fog-of-war "explored" dirty log; on overflow
@@ -207,6 +210,32 @@ export interface CellMapMethods extends ComponentMethods {
    * 0-1). `coordinates` is a WORLD cell coordinate — see `setEmissionColor`.
    */
   getEmissionColor: (component: CellMapT, coordinates: Vector3D) => Vector3D;
+
+  /**
+   * Set this cell's region index (0-255; 0 = "no region", the default).
+   *
+   * A post effect reads it per texel as `u_ids.b` and can recolour that region
+   * — the terrain counterpart to a sprite's material mask, and independent of
+   * the cell's material type (already exposed as `u_ids.r`). Unlike the sprite
+   * mask, this one lives on an INTEGER attachment, so it never blends and reads
+   * back exactly as written.
+   *
+   * Updates a GPU texture next frame — no remesh. `coordinates` is a WORLD cell
+   * coordinate (matching `setCellData`); an off-window coordinate is fully
+   * supported, persisted via cold storage, and survives a window shift or
+   * save/load, the same as `setEmissionColor`.
+   */
+  setRegionIndex: (
+    component: CellMapT,
+    coordinates: Vector3D,
+    index: number,
+  ) => void;
+
+  /**
+   * Get this cell's region index (0-255). `coordinates` is a WORLD cell
+   * coordinate — see `setRegionIndex`.
+   */
+  getRegionIndex: (component: CellMapT, coordinates: Vector3D) => number;
 
   /**
    * Marks a cell as explored for fog-of-war purposes (idempotent -- a no-op
@@ -615,6 +644,72 @@ export const CellMap: CellMapMethods = {
       ((packed >> 16) & 0xff) / 255,
       ((packed >> 8) & 0xff) / 255,
       (packed & 0xff) / 255,
+    );
+  },
+
+  setRegionIndex: (
+    component: CellMapT,
+    coordinates: Vector3D,
+    index: number,
+  ): void => {
+    assertFiniteCoordinates(coordinates.x, coordinates.y, coordinates.z);
+    // Clamped to a byte: the GPU carrier is R8UI, and silently wrapping a
+    // larger value would put the cell in a different region than asked for.
+    const clamped = Math.max(0, Math.min(255, Math.round(index)));
+    // Texture-side channel, so no remesh. Off-window writes are fully
+    // supported via the channel's own cold storage and reappear when the
+    // window shifts back -- see `setEmissionColor` for the full reasoning.
+    const local = component.window.worldToLocal(
+      coordinates.x,
+      coordinates.y,
+      coordinates.z,
+    );
+    cmRegionIndexChannel!.set(
+      coordinates.x,
+      coordinates.y,
+      coordinates.z,
+      local,
+      clamped,
+    );
+    if (local) {
+      // No separate `regionIndexMap.set`: the map is an Array3Du32 adopting the
+      // channel's own buffer, and its plain window-local indexing would land on
+      // a different cell than the toroidally-addressed buffer. Same trap the
+      // emission-colour setter documents above.
+      component.regionIndexVersion = component.regionIndexVersion + 1;
+      const version = component.regionIndexVersion;
+      // Logged as a SLOT, not window-local: the delta uploader reads the buffer
+      // and writes the texel at the same coordinate, and both are toroidal.
+      const s = cmRegionIndexChannel!.slotCoords(local);
+      component.regionIndexDirtyRegions.push({
+        version,
+        x: s.x,
+        y: s.y,
+        z: s.z,
+      });
+      if (
+        component.regionIndexDirtyRegions.length > CELL_REGION_INDEX_DIRTY_CAP
+      ) {
+        component.regionIndexDirtyRegions = [];
+        component.regionIndexFullVersion = version;
+      }
+    }
+  },
+
+  getRegionIndex: (component: CellMapT, coordinates: Vector3D): number => {
+    assertFiniteCoordinates(coordinates.x, coordinates.y, coordinates.z);
+    const local = component.window.worldToLocal(
+      coordinates.x,
+      coordinates.y,
+      coordinates.z,
+    );
+    return (
+      cmRegionIndexChannel!.get(
+        coordinates.x,
+        coordinates.y,
+        coordinates.z,
+        local,
+      ) | 0
     );
   },
 

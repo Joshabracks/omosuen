@@ -142,6 +142,32 @@ export interface FogOfWarT
   exploreRequiresLineOfSight: boolean;
 
   /**
+   * How many visibility shapes (vision sources + visibility volumes together)
+   * may RENDER per frame. Default `Infinity`: no cap at all -- the engine
+   * compiles no shape count in, and the shader's storage sizes to the data.
+   *
+   * Set it only as a deliberate performance budget. When more enabled shapes
+   * exist than this, the ones kept are chosen by `selectionKey` if set, else by
+   * each shape's `priority` (higher first) and then by on-screen distance from
+   * the view centre. Dropped shapes are reported by `getVisionStats()` and
+   * produce a one-time console warning.
+   *
+   * Rendering only: exploration and the sprite sweep always use every enabled
+   * source, so a capped scene never stops off-screen actors exploring.
+   */
+  maxVisibilityShapes: number;
+
+  /**
+   * Optional key into `MethodRegistry['fog-selection']` replacing the default
+   * priority-then-distance policy when `maxVisibilityShapes` is exceeded.
+   * Register it with
+   * `registerMethod('fog-selection', key, (candidates, capacity) => { ... })`;
+   * the function reorders `candidates` IN PLACE so the first `capacity` are the
+   * ones to keep. `null` (default) uses the built-in policy.
+   */
+  selectionKey: string | null;
+
+  /**
    * @deprecated No longer has any effect. It tuned the near/far terrain-memory
    * LOD, which tiered how much detail a flat per-material colour snapshot
    * carried. Remembered terrain is now the real geometry, deferred rather
@@ -159,6 +185,8 @@ export interface FogOfWarOptions extends ComponentOptions {
   lightInfluence?: number;
   visionMode?: FogVisionMode;
   exploreRequiresLineOfSight?: boolean;
+  maxVisibilityShapes?: number;
+  selectionKey?: string | null;
   nearBufferCells?: number;
 }
 
@@ -204,6 +232,8 @@ export function builder(options: FogOfWarOptions): FogOfWarT {
     lightInfluence: options.lightInfluence ?? 0,
     visionMode: options.visionMode ?? 'line-of-sight',
     exploreRequiresLineOfSight: options.exploreRequiresLineOfSight ?? true,
+    maxVisibilityShapes: options.maxVisibilityShapes ?? Infinity,
+    selectionKey: options.selectionKey ?? null,
     nearBufferCells: options.nearBufferCells ?? 0,
   };
 
@@ -246,6 +276,11 @@ function serialize(component: ComponentData): any {
     lightInfluence: fow.lightInfluence,
     visionMode: fow.visionMode,
     exploreRequiresLineOfSight: fow.exploreRequiresLineOfSight,
+    // JSON has no Infinity; null round-trips as "no cap".
+    maxVisibilityShapes: Number.isFinite(fow.maxVisibilityShapes)
+      ? fow.maxVisibilityShapes
+      : null,
+    selectionKey: fow.selectionKey,
     nearBufferCells: fow.nearBufferCells,
   };
 }
@@ -395,6 +430,12 @@ function deserialize(data: any): DeserializeResult<FogOfWarT> {
       exploreRequiresLineOfSight: data.exploreRequiresLineOfSight as
         | boolean
         | undefined,
+      maxVisibilityShapes:
+        typeof data.maxVisibilityShapes === 'number'
+          ? data.maxVisibilityShapes
+          : undefined,
+      selectionKey:
+        typeof data.selectionKey === 'string' ? data.selectionKey : undefined,
       nearBufferCells: data.nearBufferCells as number | undefined,
     }),
     errors,
@@ -418,5 +459,7 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'lightInfluence',
   'visionMode',
   'exploreRequiresLineOfSight',
+  'maxVisibilityShapes',
+  'selectionKey',
   'nearBufferCells',
 ];

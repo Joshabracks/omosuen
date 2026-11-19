@@ -15,6 +15,48 @@
 
 import { isVisibleFrom } from '../../fog-of-war/sweep';
 import type { ResolvedSource } from '../../fog-of-war/sweep';
+import { boxVisibility } from './visibility-shapes';
+
+/**
+ * Marks every cell a visibility-volume reaches as explored: each cell whose
+ * CENTRE has non-zero box visibility (inside the box, or inside its fade band).
+ *
+ * The same rule the shader and `computeFogVisibility` apply, through the same
+ * `boxVisibility`, so "remembered" is exactly "was live because of this box".
+ * No raycast -- a volume is a declaration, not an observer. Off-window cells
+ * are fine: the caller's `mark` persists them to cold storage.
+ *
+ * `isExplored` is consulted first, so re-marking an already-stamped box costs
+ * one read per cell -- though the caller also throttles to box changes only.
+ */
+export function markVolumeExploredCells(
+  box: ResolvedSource,
+  cellSize: { x: number; y: number; z: number },
+  isExplored: (x: number, y: number, z: number) => boolean,
+  mark: (x: number, y: number, z: number) => void,
+): void {
+  const half = box.half;
+  if (!half) return;
+  const fade = box.fadeWidth > 0 ? box.fadeWidth : 0;
+  const x0 = Math.floor((box.pos.x - half.x - fade) / cellSize.x);
+  const x1 = Math.floor((box.pos.x + half.x + fade) / cellSize.x);
+  const y0 = Math.floor((box.pos.y - half.y - fade) / cellSize.y);
+  const y1 = Math.floor((box.pos.y + half.y + fade) / cellSize.y);
+  const z0 = Math.floor((box.pos.z - half.z - fade) / cellSize.z);
+  const z1 = Math.floor((box.pos.z + half.z + fade) / cellSize.z);
+  for (let z = z0; z <= z1; z++) {
+    const cz = (z + 0.5) * cellSize.z;
+    for (let y = y0; y <= y1; y++) {
+      const cy = (y + 0.5) * cellSize.y;
+      for (let x = x0; x <= x1; x++) {
+        const cx = (x + 0.5) * cellSize.x;
+        if (boxVisibility(cx, cy, cz, box.pos, half, fade) <= 0) continue;
+        if (isExplored(x, y, z)) continue;
+        mark(x, y, z);
+      }
+    }
+  }
+}
 
 /** The resident window, for the line-of-sight test's raycast. */
 export interface ExploredWindow {

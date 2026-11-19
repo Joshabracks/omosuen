@@ -17,6 +17,7 @@ export interface VisionSourceMethods extends ComponentMethods {
   getFadeWidth: (visionSource: VisionSourceT) => number;
   setEnabled: (visionSource: VisionSourceT, enabled: boolean) => void;
   getEnabled: (visionSource: VisionSourceT) => boolean;
+  setPriority: (visionSource: VisionSourceT, priority: number) => void;
 }
 
 export const VisionSource: VisionSourceMethods = {
@@ -55,5 +56,9 @@ export const VisionSource: VisionSourceMethods = {
 
   getEnabled(visionSource: VisionSourceT): boolean {
     return visionSource.enabled;
+  },
+
+  setPriority(visionSource: VisionSourceT, priority: number): void {
+    visionSource.priority = priority;
   },
 };

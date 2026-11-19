@@ -210,10 +210,10 @@ function esmRegisterBlock(entry: PluginDocEntry): string {
       "  bundleKey: 'hud',",
       "});",
     );
-  } else if (entry.id === "aseprite-loader") {
+  } else if (entry.id === "image-loader") {
     lines.push(
       "",
-      "await Omosuen.newComponent('aseprite-loader', {",
+      "await Omosuen.newComponent('image-loader', {",
       "  name: 'Hero',",
       "  filePath: './assets/hero.aseprite',",
       "  flatten: false,",
@@ -247,10 +247,10 @@ function umdRegisterBlock(entry: PluginDocEntry): string {
       "  bundleKey: 'hud',",
       "});",
     );
-  } else if (entry.id === "aseprite-loader") {
+  } else if (entry.id === "image-loader") {
     lines.push(
       "",
-      "await Omosuen.newComponent('aseprite-loader', {",
+      "await Omosuen.newComponent('image-loader', {",
       "  name: 'Hero',",
       "  filePath: './assets/hero.aseprite',",
       "}, parentNexus);",

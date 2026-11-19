@@ -12,11 +12,20 @@ import type { NexusT } from '../nexus/data';
 import type { SpriteT, SpriteOptions } from '../sprite/data';
 import type { TransformT, TransformOptions } from '../transform/data';
 import type { VisionSourceT } from '../vision-source/data';
+import type { VisibilityVolumeT } from '../visibility-volume/data';
 import { computeSolidityMap } from '../camera/render/visibility-mask';
+import {
+  buildShapeGrid,
+  createShapeGrid,
+} from '../camera/render/visibility-shapes';
+import { getVisibilityStats } from '../camera/render/visibility-uniforms';
+import type { VisibilityStats } from '../camera/render/visibility-uniforms';
+import type { ShapeGrid } from '../camera/render/visibility-shapes';
 import {
   advanceFade,
   fogFadeStep,
   isVisibleFrom,
+  nearShapes,
   isSamePhantomPlace,
   phantomAlpha,
   phantomIsSpent,
@@ -44,19 +53,48 @@ import { markForDisposal } from '../../loop/dispose';
  * `count` is the index's valid-entry count; `sources` is grown to a high-water
  * mark and entries past `count` are stale (see scene-index.ts).
  *
- * Deliberately UNCAPPED, unlike the render path: `setVisionUniforms` keeps only
- * the MAX_VISION_SOURCES nearest the camera, because that is all the shader has
- * uniform slots for. Exploration has no such limit and must not acquire one --
- * capping here would stop off-screen actors banking explored terrain, trading a
- * cosmetic problem for a correctness one.
+ * Also resolves every enabled visibility-volume into a BOX shape, so volumes
+ * join the sprite sweep, phantoms and the observation predicate -- the single
+ * definition of "seen" -- rather than being a shader-only overlay.
+ *
+ * Deliberately UNCAPPED, unlike the render path: a consumer's
+ * `maxVisibilityShapes` budget limits only what the shader receives.
+ * Exploration has no such limit and must not acquire one -- capping here would
+ * stop off-screen actors banking explored terrain, trading a cosmetic problem
+ * for a correctness one.
  */
 function resolveActiveVisionSources(
   sources: VisionSourceT[],
   count: number,
+  volumes: VisibilityVolumeT[],
+  volumeCount: number,
   windowOriginLocalCell: { x: number; y: number; z: number },
   cellSize: { x: number; y: number; z: number },
 ): ResolvedSource[] {
   const resolved: ResolvedSource[] = [];
+  for (let i = 0; i < volumeCount; i++) {
+    const volume = volumes[i];
+    if (volume._disposed === true || !volume.enabled) continue;
+    if (!volume.parent || volume.parent.type !== 'nexus') continue;
+    const transform = castTo<NexusT>(volume.parent).getComponentByType(
+      'transform',
+      false,
+    ) as TransformT | null;
+    if (!transform) continue;
+    const pos = transform.worldPosition;
+    resolved.push({
+      pos: { x: pos.x, y: pos.y, z: pos.z },
+      localCell: { x: 0, y: 0, z: 0 },
+      outerSq: 0,
+      radius: 0,
+      fadeWidth: Math.max(0, volume.fadeWidth),
+      half: {
+        x: Math.max(0, volume.size.x) / 2,
+        y: Math.max(0, volume.size.y) / 2,
+        z: Math.max(0, volume.size.z) / 2,
+      },
+    });
+  }
   for (let i = 0; i < count; i++) {
     const source = sources[i];
     // The index is a frame old, so an entry can name something disposed since.
@@ -561,6 +599,16 @@ async function spawnPhantomNexus(
 let lastWindowOrigin: { cx: number; cy: number; cz: number } | null = null;
 
 /**
+ * The sweep's own shape bins, over every enabled source and volume (uncapped,
+ * and NOT clipped to the window -- exploration and phantoms reach off-window).
+ * Lets each sprite test only nearby shapes rather than the whole colony.
+ */
+const sweepGrid: ShapeGrid = createShapeGrid();
+
+/** Bins are never narrower than this many cells. Matches the renderer's. */
+const SWEEP_MIN_BIN_CELLS = 8;
+
+/**
  * Everything the observation predicate needs, snapshotted at the end of each
  * fog update. Terrain writes happen at arbitrary points in the frame (gameplay
  * code, not the render pass), so the predicate cannot recompute vision sources
@@ -573,6 +621,8 @@ let lastWindowOrigin: { cx: number; cy: number; cz: number } | null = null;
  */
 let observationContext: {
   sources: ResolvedSource[];
+  /** `sources` binned (sweepGrid), rebuilt together with them each update. */
+  grid: ShapeGrid;
   cellDims: { x: number; y: number; z: number };
   cellSize: { x: number; y: number; z: number };
   windowOriginLocalCell: { x: number; y: number; z: number };
@@ -602,13 +652,15 @@ function isWorldCellObserved(
   if (!ctx || ctx.sources.length === 0) return true;
 
   const { cellSize } = ctx;
+  const probe = {
+    x: (worldX + 0.5) * cellSize.x,
+    y: (worldY + 0.5) * cellSize.y,
+    z: (worldZ + 0.5) * cellSize.z,
+  };
   return isVisibleFrom(
-    {
-      x: (worldX + 0.5) * cellSize.x,
-      y: (worldY + 0.5) * cellSize.y,
-      z: (worldZ + 0.5) * cellSize.z,
-    },
-    ctx.sources,
+    probe,
+    // Only the shapes binned at this cell -- vision sources AND volumes.
+    nearShapes(ctx.grid, ctx.sources, probe),
     computeSolidityMap(),
     ctx.cellDims,
     ctx.windowOriginLocalCell,
@@ -631,6 +683,13 @@ export interface FogOfWarMethods extends ComponentMethods {
   setLightInfluence: (fow: FogOfWarT, lightInfluence: number) => void;
   getNearBufferCells: (fow: FogOfWarT) => number;
   setNearBufferCells: (fow: FogOfWarT, nearBufferCells: number) => void;
+  /**
+   * Render-side shape accounting for the last rendered frame: the effective
+   * `capacity`, how many enabled shapes were `resolved`, how many were
+   * `uploaded` to the shader, and how many were `dropped` by a consumer cap or
+   * the device limit. `dropped` is always 0 with no cap set.
+   */
+  getVisionStats: (fow: FogOfWarT) => VisibilityStats;
   update: (component: ComponentData, deltaTime: number) => void;
   dispose: (component: ComponentData) => void;
 }
@@ -723,6 +782,10 @@ export const FogOfWar: FogOfWarMethods = {
     fow.nearBufferCells = nearBufferCells;
   },
 
+  getVisionStats: (_fow: FogOfWarT): VisibilityStats => {
+    return getVisibilityStats();
+  },
+
   /**
    * The actual fog-of-war driver, once per frame: resolves every active
    * vision source, then walks every `trackedByFog` sprite in the scene and
@@ -808,10 +871,22 @@ export const FogOfWar: FogOfWarMethods = {
       const sources = resolveActiveVisionSources(
         index.visionSources,
         index.visionSourceCount,
+        index.visibilityVolumes,
+        index.visibilityVolumeCount,
         windowOriginLocalCell,
         cellSize,
       );
-      // No enabled vision source means fog is inactive for this frame --
+      buildShapeGrid(
+        sweepGrid,
+        sources,
+        sources.length,
+        SWEEP_MIN_BIN_CELLS * Math.max(cellSize.x, cellSize.z),
+        Math.max(cellSize.x, cellSize.z),
+        null,
+      );
+      // No enabled shape -- vision source OR visibility volume -- means fog is
+      // inactive for this frame. A volume alone keeps it active, matching the
+      // renderer's `u_visNumShapes > 0` and render-sprites' gate.
       // render-cell-maps.ts gates its own solidity work on the same condition
       // (`fogActive`/`needSolidity`). Bail BEFORE computeSolidityMap() rather
       // than after, and leave every `_fowStatus` untouched: running the sweep
@@ -845,6 +920,7 @@ export const FogOfWar: FogOfWarMethods = {
       // can write terrain this frame.
       observationContext = {
         sources,
+        grid: sweepGrid,
         cellDims,
         cellSize,
         windowOriginLocalCell,
@@ -880,6 +956,7 @@ export const FogOfWar: FogOfWarMethods = {
         newlyObscured,
         revealedPhantoms,
         useLineOfSight,
+        sweepGrid,
       );
 
       // REPAIR. An `'obscuring'` sprite is one waiting on a spawn to flip it to

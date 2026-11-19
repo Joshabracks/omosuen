@@ -9,7 +9,7 @@ diagnosed instead of just observed.
 
 ## Usage
 
-Filepath (self-registering `.plugin.js`, matches `aseprite-loader` /
+Filepath (self-registering `.plugin.js`, matches `image-loader` /
 `browser-local-storage`):
 
 ```js

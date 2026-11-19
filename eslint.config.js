@@ -36,6 +36,11 @@ export default [
         Request: 'readonly',
         Response: 'readonly',
         Image: 'readonly',
+        location: 'readonly',
+        // Used by the channel packer to decode a Blob with colour-space
+        // conversion disabled — the only decode path that can guarantee a mask
+        // index survives intact.
+        createImageBitmap: 'readonly',
         // Node.js globals (for test files)
         process: 'readonly',
         __dirname: 'readonly',

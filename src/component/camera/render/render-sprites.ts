@@ -1,7 +1,6 @@
 import { AtlasManagerT } from '../../atlas-manager';
 import { CellMapT } from '../../cell-map';
 import { LightT } from '../../light';
-import { VisionSourceT } from '../../vision-source';
 import { FogOfWarT } from '../../fog-of-war';
 import { NexusT } from '../../nexus';
 import type { SpriteT } from '../../sprite';
@@ -17,7 +16,11 @@ import {
 } from './light-uniforms';
 import { computeFboUvBridge } from './framebuffers';
 import { warnOversizedId } from './render-cell-maps';
-import { getResolvedVisionSources, setVisionUniforms } from './vision-uniforms';
+import {
+  bindVisibilityUniforms,
+  getVisibilityFrame,
+} from './visibility-uniforms';
+import { gatherShapesAt } from './visibility-shapes';
 import { setFogUniforms } from './fog-uniforms';
 import { computeFogVisibility, fogDrawKind } from '../../fog-of-war/sweep';
 import {
@@ -27,6 +30,9 @@ import {
 } from '../../fog-of-war/methods';
 import type { ResolvedSource } from '../../fog-of-war/sweep';
 import { computeSolidityMap } from './visibility-mask';
+
+/** Per-sprite gather scratch for fog visibility; reused, never retained. */
+const nearShapes: ResolvedSource[] = [];
 
 /** Default cell dimensions when no cell-maps are in the scene. */
 const DEFAULT_CELL_SIZE_X = 32;
@@ -266,7 +272,6 @@ export function renderSprites(
   gl: WebGL2RenderingContext,
   textureMapCache: Map<string, TextureMapT>,
   lights: LightT[],
-  visionSources: VisionSourceT[],
   subPixelOffset: { remainderX: number; remainderY: number },
   sinA: number,
   heightScale: number,
@@ -510,30 +515,30 @@ export function renderSprites(
   // Set dynamic light uniforms (same lights as cell-maps)
   setLightUniforms(gl, camera.id!, lights);
 
-  // Set fog-of-war vision-source uniforms (same sources as cell-maps)
-  // Resolved before the vision uniforms because `visionMode` travels with
-  // them -- see setVisionUniforms.
+  // Fog-of-war visibility shapes -- the same frame renderCellMaps bound,
+  // built once by prepareVisibilityFrame (render/index.ts). `visionMode`
+  // travels with them -- see bindVisibilityUniforms.
   const fogOfWar = sceneRoot.getComponentByType(
     'fog-of-war',
     true,
   ) as FogOfWarT | null;
   const fogUseLineOfSight = fogOfWar?.visionMode !== 'distance';
-
-  // camPos is the same camera transform world position renderCellMaps passes,
-  // so both passes rank and truncate the sources identically -- the fogSources
-  // built from getResolvedVisionSources() below depend on that.
-  setVisionUniforms(gl, camera.id!, visionSources, camPos, fogUseLineOfSight);
+  bindVisibilityUniforms(gl, camera.id!, fogUseLineOfSight);
 
   // Per-sprite fog visibility is computed HERE, on the CPU, and uploaded as
   // u_spriteVisibility -- see the fog block in unified.frag's sprite path for
-  // why. Resolved from the exact array setVisionUniforms just handed the
-  // shader, so the two cannot drift.
+  // why. Resolved from the exact shapes and bins the shader was handed (per
+  // sprite, the shapes in its own bin), so the two cannot drift.
   //
   // `origin` is null until the cell-map's first window commit; with no
   // cell-map (or no committed window) there is no solidity data to raycast
   // against, so every sprite is treated as fully visible -- matching the
   // pre-existing behaviour of a scene that has sprites but no terrain.
-  const fogSources: ResolvedSource[] = [];
+  const visFrame = getVisibilityFrame();
+  // Enabled shapes of EITHER kind, before any consumer cap. A volume alone
+  // activates fog, and the sweep (fog-of-war/methods.ts) gates on the same
+  // "any enabled shape" condition.
+  const anyVisibilityShape = visFrame.resolved > 0;
   // THE GATE, and it has to mirror EXACTLY when the sweep runs -- see
   // `fogDrawKind`. It used to omit both conditions on the fog-of-war component
   // itself, and that made every sprite in a vision-source-only scene vanish:
@@ -544,35 +549,13 @@ export function renderSprites(
   // no sweep, so no sprite may be skipped or replaced by a phantom. Fog still
   // FILTERS those sprites; it just does not remember them.
   const spriteFogManagesSprites =
-    !!fogOfWar && fogOfWar.memory !== 'none' && visionSources.length > 0;
+    !!fogOfWar && fogOfWar.memory !== 'none' && anyVisibilityShape;
   const spriteFogActive =
-    !!originCellMap && !!windowOrigin && visionSources.length > 0;
-  if (spriteFogActive) {
-    const cs = originCellMap.cellSize;
-    const originLocalCell = {
-      x: windowOrigin.cx * originCellMap.chunkSize.x,
-      y: windowOrigin.cy * originCellMap.chunkSize.y,
-      z: windowOrigin.cz * originCellMap.chunkSize.z,
-    };
-    for (const { source, pos } of getResolvedVisionSources()) {
-      const outer = source.radius + source.fadeWidth;
-      fogSources.push({
-        pos: { x: pos.x, y: pos.y, z: pos.z },
-        localCell: {
-          x: pos.x / cs.x - originLocalCell.x,
-          y: pos.y / cs.y - originLocalCell.y,
-          z: pos.z / cs.z - originLocalCell.z,
-        },
-        outerSq: outer * outer,
-        radius: source.radius,
-        fadeWidth: source.fadeWidth,
-      });
-    }
-  }
+    !!originCellMap && !!windowOrigin && visFrame.count > 0;
   // Cached WASM-side, so this is a flag read on frames where terrain did not
   // change. Held only across the synchronous draw loop below -- nothing in it
   // writes to WASM, so the view cannot be detached mid-use.
-  const fogMask = fogSources.length > 0 ? computeSolidityMap() : null;
+  const fogMask = spriteFogActive ? computeSolidityMap() : null;
 
   const fogCellDims = originCellMap?.mapSize;
   const fogCellSize = originCellMap?.cellSize;
@@ -858,9 +841,12 @@ export function renderSprites(
       fogCellSize &&
       fogWindowOriginLocalCell
     ) {
+      const sp = spriteTransform.worldPosition;
       spriteVis = computeFogVisibility(
-        spriteTransform.worldPosition,
-        fogSources,
+        sp,
+        // The shapes in this sprite's bin: exactly the set the shader walks
+        // at its ground point.
+        gatherShapesAt(visFrame.grid, visFrame.shapes, sp.x, sp.z, nearShapes),
         fogMask,
         fogCellDims,
         fogWindowOriginLocalCell,

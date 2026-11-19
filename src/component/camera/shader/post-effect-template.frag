@@ -74,13 +74,22 @@ void main() {
     vec4 color = texture(u_color, v_uv);
 
     // Masks. Compare ids as integers — never round-trip them through a float.
-    uvec2 ids = texture(u_ids, v_uv).rg;
+    uvec4 ids = texture(u_ids, v_uv);
     uint cellIndex = ids.r;
     uint spriteIndex = ids.g;
+    // The cell's region index, set per cell via cellMap.setRegionIndex. Unlike
+    // the sprite mask in aux.b below, this one is EXACT -- integer attachments
+    // do not blend, so compare it directly instead of thresholding.
+    uint cellRegion = ids.b;
 
     vec4 aux = texture(u_aux, v_uv);
     float spriteMix = aux.r;
     float fogVisibility = aux.g;
+    // The sprite's material B channel: a per-region index an effect can recolour
+    // without the sprite needing its own shader. 0 where no material is bound.
+    // Unlike the ids above this one BLENDS, so threshold it rather than testing
+    // for equality — sprite edges carry intermediate values.
+    float materialMask = aux.b;
 
     // Depth is base-resolution; the bridge maps a full-res UV into it.
     float depth = texture(u_depth, v_uv * u_depthUvScale + u_depthUvOffset).r;
@@ -95,8 +104,8 @@ void main() {
     // being true, this template stops being an identity and the test scene's
     // first assertion will catch it.
     float witness =
-          float(cellIndex) + float(spriteIndex)
-        + spriteMix + fogVisibility + depth + (isVoid ? 1.0 : 0.0)
+          float(cellIndex) + float(spriteIndex) + float(cellRegion)
+        + spriteMix + fogVisibility + materialMask + depth + (isVoid ? 1.0 : 0.0)
         + dot(u_depthUvScale, vec2(1.0)) + dot(u_depthUvOffset, vec2(1.0))
         + dot(u_resolution, vec2(1.0)) + dot(u_texelSize, vec2(1.0))
         + u_time + float(u_frame) + float(u_stageIndex)

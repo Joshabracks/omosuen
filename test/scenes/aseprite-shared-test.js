@@ -139,7 +139,7 @@ async function spawnUnit(scene, name, x, y) {
     scale: new Omosuen.Vector3D(SCALE, SCALE, SCALE),
   });
   nexus.addComponent(transform);
-  const loader = await Omosuen.newComponent('aseprite-loader', {
+  const loader = await Omosuen.newComponent('image-loader', {
     name,
     sources: SOURCES,
     flatten: false,

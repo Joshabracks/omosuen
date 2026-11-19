@@ -1475,7 +1475,7 @@ export async function createScene() {
     );
     console.log('[CellMap Test] Created Walker A at north (112, 32, 112)');
     // Second fog-of-war vision source: a moving NPC, to exercise the
-    // multi-source union path (up to MAX_VISION_SOURCES simultaneous
+    // multi-source union path (no compiled-in limit on simultaneous
     // sources) rather than just a single stationary/player-driven one.
     await Omosuen.newComponent('vision-source', {
         name: 'Walker A Vision',

@@ -16,12 +16,28 @@
  */
 
 import { isRayBlockedTS } from '../camera/render/ray-blocked';
+import {
+  boxVisibility,
+  cellCentreOf,
+  gatherShapesAt,
+} from '../camera/render/visibility-shapes';
+import type { ShapeGrid } from '../camera/render/visibility-shapes';
 import type { NexusT } from '../nexus/data';
 import type { SpriteT } from '../sprite/data';
 import type { TransformT } from '../transform/data';
 
-/** A vision source resolved to a plain world position, once per fog-of-war update tick. */
+/**
+ * A visibility shape resolved to a plain world position, once per fog-of-war
+ * update tick: a vision-source SPHERE, or -- when `half` is set -- a
+ * visibility-volume BOX.
+ *
+ * The two share one type, and every predicate below takes both, so a volume
+ * joins the single definition of "seen" (sprite sweep, phantoms, explored
+ * marking, deferred terrain presentation) rather than being a shader-only
+ * overlay.
+ */
 export interface ResolvedSource {
+  /** Sphere centre, or box centre. */
   pos: { x: number; y: number; z: number };
   /**
    * `pos` expressed in window-local cell space -- the form `isRayBlockedTS`
@@ -36,6 +52,45 @@ export interface ResolvedSource {
   radius: number;
   /** Falloff width beyond `radius`; visibility reaches 0 at `radius + fadeWidth`. */
   fadeWidth: number;
+  /**
+   * Box half-extents in world units. Present only for a visibility-volume,
+   * which is then a declaration rather than an observer: everything whose cell
+   * centre lies inside is fully visible, with no line-of-sight test at all.
+   * `radius`/`outerSq`/`localCell` are unused for a box.
+   */
+  half?: { x: number; y: number; z: number } | null;
+}
+
+/** Reused by `nearShapes`, so a warmed sweep allocates nothing per sprite. */
+const nearScratch: ResolvedSource[] = [];
+
+/**
+ * The shapes that can reach `p`: its grid bin when a grid is supplied (exactly
+ * what the shader walks there), otherwise every source. Live view of a reused
+ * array -- consume it before the next call.
+ */
+export function nearShapes(
+  grid: ShapeGrid | null,
+  sources: ResolvedSource[],
+  p: { x: number; z: number },
+): ResolvedSource[] {
+  return grid ? gatherShapesAt(grid, sources, p.x, p.z, nearScratch) : sources;
+}
+
+/** Box contribution at `pos`, tested at the centre of `pos`'s cell. */
+function boxAt(
+  pos: { x: number; y: number; z: number },
+  source: ResolvedSource,
+  cellSize: { x: number; y: number; z: number },
+): number {
+  return boxVisibility(
+    cellCentreOf(pos.x, cellSize.x),
+    cellCentreOf(pos.y, cellSize.y),
+    cellCentreOf(pos.z, cellSize.z),
+    source.pos,
+    source.half!,
+    source.fadeWidth,
+  );
 }
 
 /**
@@ -384,6 +439,14 @@ export function computeFogVisibility(
 
   let best = 0;
   for (const source of sources) {
+    // A visibility-volume: no raycast, no radial term -- see `boxVisibility`.
+    // Mirrors the shader's `boxVisibility` branch in computeVisibility.
+    if (source.half) {
+      const v = boxAt(pos, source, cellSize);
+      if (v > best) best = v;
+      if (best >= 1) break;
+      continue;
+    }
     const dx = pos.x - source.pos.x;
     const dy = pos.y - source.pos.y;
     const dz = pos.z - source.pos.z;
@@ -472,6 +535,10 @@ export function isVisibleFrom(
   const localCellZ = pos.z / cellSize.z - windowOriginLocalCell.z;
 
   for (const source of sources) {
+    if (source.half) {
+      if (boxAt(pos, source, cellSize) > 0) return true;
+      continue;
+    }
     const dx = pos.x - source.pos.x;
     const dy = pos.y - source.pos.y;
     const dz = pos.z - source.pos.z;
@@ -532,6 +599,13 @@ export function sweepFogOfWar(
   newlyObscured: ObscuredTransition[],
   revealedPhantoms: NexusT[],
   useLineOfSight = true,
+  /**
+   * The shapes binned over `sources`. When given, each sprite tests only the
+   * shapes in its own bin -- the same set the shader walks there -- instead of
+   * every source in the scene, which is what keeps the sweep proportional to
+   * nearby shapes rather than to colony size. Omitted, every source is tested.
+   */
+  grid: ShapeGrid | null = null,
 ): void {
   const { nexuses, transforms, sprites, selfLit } = index;
 
@@ -555,14 +629,16 @@ export function sweepFogOfWar(
     // then fade back in as the source retreated -- or stall for good at
     // whatever fraction the source stopped at.
     if (status === 'phantom') {
+      const p = transforms[i].worldPosition;
       if (
         computeFogVisibility(
-          transforms[i].worldPosition,
-          sources,
+          p,
+          nearShapes(grid, sources, p),
           mask,
           cellDims,
           windowOriginLocalCell,
           cellSize,
+          useLineOfSight,
         ) >= PHANTOM_REVEAL_VISIBILITY
       ) {
         revealedPhantoms.push(nexuses[i]);
@@ -582,7 +658,7 @@ export function sweepFogOfWar(
     const transform = transforms[i];
     const vis = computeFogVisibility(
       transform.worldPosition,
-      sources,
+      nearShapes(grid, sources, transform.worldPosition),
       mask,
       cellDims,
       windowOriginLocalCell,

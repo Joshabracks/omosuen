@@ -231,6 +231,42 @@ export function packFrames(
 }
 
 /**
+ * Releases a packed frame's region back to the free-space buckets so a later
+ * `packFramesInto` can place a frame of the same or smaller size there.
+ *
+ * A packed frame always occupies slot `'0'` of its holder node, at the holder's
+ * relative (0,0), at its padded size. Freeing swaps that slot for a fresh empty
+ * child space of exactly that rect — the guillotine tree stays well-formed and
+ * the new space is subdivided like any other on reuse. Freed neighbours are not
+ * merged back together: same-size reuse (the common case — uniform sprite
+ * frames) is a perfect fit anyway, and the atlas-manager falls back to a full
+ * compacting re-pack when fragmentation makes an incremental add overflow.
+ *
+ * The pixels are left in place; whoever reuses the rect must clear it first.
+ *
+ * @returns The new free space, or null if `slot` no longer holds a frame
+ *   (already freed).
+ */
+export function freeFrameSlot(
+  state: PackerState,
+  slot: AtlasSpace,
+): AtlasSpace | null {
+  const occupant = slot['0'];
+  if (!occupant || 'position' in occupant) return null;
+  const free = createChildAtlasSpace(
+    slot,
+    new Vector2D(0, 0),
+    new Vector2D(
+      occupant.size.x + state.padding,
+      occupant.size.y + state.padding,
+    ),
+  );
+  slot['0'] = free;
+  addSpaceToBuckets(state.spaceBuckets, free);
+  return free;
+}
+
+/**
  * Sorts frames into buckets based on aspect ratio and sorts each bucket.
  */
 function sortFramesIntoBuckets(frames: UnpackedFrame[]): FrameBuckets {
@@ -271,6 +307,7 @@ function allocateFrameToSpace(
     space.slice = 'horizontal';
     space['0'] = frame;
     space['1'] = null;
+    frame.slot = space;
     return;
   }
 
@@ -310,6 +347,7 @@ function allocateFrameToSpace(
     space.slice = 'vertical';
     space['0'] = leftSpace;
     space['1'] = rightSpace;
+    frame.slot = leftSpace;
 
     // Now allocate frame to left space (may need horizontal subdivision)
     if (leftSpace.size.y === paddedSize.y) {
@@ -343,6 +381,7 @@ function allocateFrameToSpace(
     space.slice = 'horizontal';
     space['0'] = topSpace;
     space['1'] = bottomSpace;
+    frame.slot = topSpace;
 
     // Now allocate frame to top space (may need vertical subdivision)
     if (topSpace.size.x === paddedSize.x) {

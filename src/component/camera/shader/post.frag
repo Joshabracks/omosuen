@@ -22,7 +22,7 @@ uniform float u_outlineWidth;    // line thickness in pixels
 in vec2 v_uv;
 
 layout(location = 0) out vec4 fragColor;
-layout(location = 1) out uvec2 fragIds;
+layout(location = 1) out uvec4 fragIds;
 layout(location = 2) out vec4 fragAux;
 
 void main() {
@@ -50,10 +50,13 @@ void main() {
 
     // Carry the cell masks base → full resolution. NEAREST on an integer
     // texture makes this exact, so ids survive the upscale unchanged.
-    uvec2 ids = texture(u_idTexture, uv).rg;
+    uvec4 ids = texture(u_idTexture, uv);
     // Sprite id starts at 0 ("no sprite here"); the sprite pass overwrites it
     // where it draws.
-    fragIds = uvec2(ids.r, 0u);
+    // .b carries the cell region index through unchanged; the sprite pass
+    // preserves it too, so a post effect reads terrain regions even under a
+    // sprite. .a is reserved.
+    fragIds = uvec4(ids.r, 0u, ids.b, 0u);
     // Sprite coverage starts at 0 and accumulates through the sprite pass's
     // alpha blend. Fog is unpacked from the 16-bit carrier above. Alpha is 1.0
     // so this pass lays down a fully-opaque base for that blend to work

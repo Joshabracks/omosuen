@@ -207,7 +207,7 @@ function controllerOf(char) {
   return char.controller;
 }
 
-/** Namespaced tag ids from aseprite-loader `sources` import (`${spriteId}-${tag}`). */
+/** Namespaced tag ids from image-loader `sources` import (`${spriteId}-${tag}`). */
 function animationTagCandidates(spriteId, tags) {
   const out = [];
   for (let i = 0; i < tags.length; i++) {
@@ -449,7 +449,7 @@ async function spawnCharacter() {
   );
 
   const loader = await Omosuen.newComponent(
-    'aseprite-loader',
+    'image-loader',
     {
       name: def.id,
       // Shared art path: texture-maps + animation-map live on the scene root;

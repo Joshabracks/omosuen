@@ -4,6 +4,7 @@ import type { TextureMapT } from '../texture-map/data';
 import type { NexusT } from '../nexus/data';
 import type { UnpackedFrame, PackedRegion, AtlasDirtyRegion } from './types';
 import { createPackerState, packFramesInto } from './packer';
+import { paddedRect, reclaimUnreferenced } from './reclaim';
 import { Vector2D } from '../../math';
 import type { PackedFrame } from '../texture-map/types';
 import { Nexus } from '../nexus/methods';
@@ -254,6 +255,12 @@ function syncTextureMapRegistry(am: AtlasManagerT): void {
     true,
   ) as TextureMapT[];
   for (const tm of allTextureMaps) {
+    // A texture-map disposed via its own `.dispose()` method (rather than
+    // `markForDisposal` → `disposeComponent`) stays in the type registry, so
+    // this walk still finds it. Re-adding it would resurrect a dead map and,
+    // since dispose cleared its `originalFrames`, pack its whole source image
+    // as a brand-new frame — and keep its space from ever being reclaimed.
+    if (tm._disposed) continue;
     AtlasManager.addTextureMap(am, tm);
   }
 }
@@ -374,12 +381,15 @@ function assignPackedFrames(
 // work spreads across frames. `getContext` resolves an atlas index to its 2D ctx
 // (prebuilt array in full compile, lazy accessor in incremental); `onBlit` runs
 // optional per-frame bookkeeping (incremental mode records the dedup map + dirty
-// regions).
+// regions). `clearFirst` (incremental mode) clears each frame's padded rect
+// before drawing: a reclaimed slot still holds its previous occupant's pixels,
+// and drawImage composites over them rather than replacing them.
 const BUILD_BATCH = 512;
 function* blitFramesYielding(
   frames: UnpackedFrame[],
   getContext: (atlasIndex: number) => CanvasRenderingContext2D,
   onBlit?: (frame: UnpackedFrame, index: number) => void,
+  clearFirst?: { padding: number; atlasSize: number },
 ): Generator<void> {
   let drawn = 0;
   for (let i = 0; i < frames.length; i++) {
@@ -388,7 +398,18 @@ function* blitFramesYielding(
       console.error('[atlas-manager] Frame missing atlas info', frame);
       continue;
     }
-    getContext(frame.atlasIndex).drawImage(
+    const ctx = getContext(frame.atlasIndex);
+    if (clearFirst) {
+      const r = paddedRect(
+        frame.atlasIndex,
+        frame.atlasPosition,
+        frame.size,
+        clearFirst.padding,
+        clearFirst.atlasSize,
+      );
+      ctx.clearRect(r.x, r.y, r.w, r.h);
+    }
+    ctx.drawImage(
       frame.sourceImage,
       frame.sourcePosition.x,
       frame.sourcePosition.y,
@@ -492,6 +513,7 @@ async function* compileSteps(am: AtlasManagerT): AsyncGenerator<void> {
         atlasIndex: u.atlasIndex,
         atlasPosition: u.atlasPosition,
         size: u.size,
+        slot: u.slot,
       });
     }
   }
@@ -575,12 +597,19 @@ const DIRTY_REGION_CAP = 4096;
  * every texture map's packed frames (old + new) and bumps the atlas version so
  * cameras re-upload (from the retained canvas). Falls back to a full compile if
  * there's no retained state yet.
+ *
+ * Before packing, regions no registered texture-map references any more are
+ * reclaimed (`reclaimUnreferenced`) so the new frames can reuse that space, and
+ * every new frame's padded rect is cleared before its blit. If the incremental
+ * pack still overflows (fragmentation), it falls back once to a full compile,
+ * which re-packs only live frames and so compacts the atlas.
  */
 async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
   if (!am.packState) {
     yield* compileSteps(am);
     return;
   }
+  const packState = am.packState;
 
   if (!getRootNexus(am)) {
     throw new Error(
@@ -606,10 +635,12 @@ async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
   }
   yield;
 
-  // Collect only the frames whose region isn't already packed (genuinely new).
+  // Collect only the frames whose region isn't already packed (genuinely new),
+  // and the full set of keys still referenced (for reclamation below).
   const newFrames: UnpackedFrame[] = [];
   const newKeys: string[] = [];
   const seen = new Set<string>();
+  const liveKeys = new Set<string>();
   for (let i = 0; i < textureMaps.length; i++) {
     const tm = textureMaps[i];
     const image = images[i];
@@ -620,6 +651,7 @@ async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
         originalFrame.position,
         originalFrame.size,
       );
+      liveKeys.add(key);
       if (am.packedByKey.has(key) || seen.has(key)) continue;
       seen.add(key);
       newKeys.push(key);
@@ -631,19 +663,26 @@ async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
     }
   }
 
+  // Hand space held by no-longer-referenced frames back to the packer first, so
+  // this pass's new frames can land in it.
+  reclaimUnreferenced(packState, am.packedByKey, liveKeys);
+
   // Changed rects logged for delta GPU upload (tagged with the new version below).
   const newRegions: AtlasDirtyRegion[] = [];
 
   // Pack + blit ONLY the new frames into the retained free space + canvases.
   if (newFrames.length > 0) {
     try {
-      packFramesInto(am.packState, newFrames);
-    } catch (error) {
-      console.error(
-        '[atlas-manager] Failed to pack new frames (atlas full?)',
-        error,
+      packFramesInto(packState, newFrames);
+    } catch {
+      // Out of room incrementally — most likely fragmentation, since freed
+      // neighbours aren't merged. A full compile re-packs only the live frames
+      // from scratch (compacting the atlas) and throws if they truly don't fit.
+      console.warn(
+        '[atlas-manager] Incremental pack overflowed; compacting with a full re-pack',
       );
-      throw error;
+      yield* compileSteps(am);
+      return;
     }
     yield;
 
@@ -665,23 +704,36 @@ async function* incrementalSteps(am: AtlasManagerT): AsyncGenerator<void> {
       return ctx;
     };
 
-    // Blit only the new frames, recording the dedup map + dirty regions per frame.
-    // (version is tagged after the bump below.)
-    yield* blitFramesYielding(newFrames, getCtx, (frame, i) => {
-      am.packedByKey.set(newKeys[i], {
-        atlasIndex: frame.atlasIndex!,
-        atlasPosition: frame.atlasPosition!,
-        size: frame.size,
-      });
-      newRegions.push({
-        version: 0,
-        atlasIndex: frame.atlasIndex!,
-        x: frame.atlasPosition!.x,
-        y: frame.atlasPosition!.y,
-        w: frame.size.x,
-        h: frame.size.y,
-      });
-    });
+    // Blit only the new frames (each into a cleared padded rect — it may be a
+    // reclaimed slot), recording the dedup map + dirty regions per frame. The
+    // dirty region covers the padding gutter too, so the GPU copy drops the
+    // previous occupant's pixels there as well. (version is tagged after the
+    // bump below.)
+    const padding = am.config.padding;
+    const atlasSize = am.config.atlasSize;
+    yield* blitFramesYielding(
+      newFrames,
+      getCtx,
+      (frame, i) => {
+        am.packedByKey.set(newKeys[i], {
+          atlasIndex: frame.atlasIndex!,
+          atlasPosition: frame.atlasPosition!,
+          size: frame.size,
+          slot: frame.slot,
+        });
+        newRegions.push({
+          version: 0,
+          ...paddedRect(
+            frame.atlasIndex!,
+            frame.atlasPosition!,
+            frame.size,
+            padding,
+            atlasSize,
+          ),
+        });
+      },
+      { padding, atlasSize },
+    );
   }
 
   // Reassign every texture map from the (now-updated) dedup map (old + new).
@@ -770,6 +822,23 @@ export const AtlasManager: AtlasManagerMethods = {
       am.textureMapsByKey.delete(textureMap.textureMapKey);
     }
     am.textureMapIds.delete(textureMap.textureMapKey);
+
+    // Drop the cached in-memory source (canvas / ImageBitmap from a procedural
+    // producer) once no registered texture-map uses its filePath — otherwise it
+    // stays alive for the life of the atlas-manager. Only an entry that IS this
+    // texture-map's own sourceImage is evicted: images loaded from a real file
+    // path (possibly preloaded via `loadImage`) are left cached.
+    const { filePath, sourceImage } = textureMap;
+    if (sourceImage && am.imageCache.get(filePath) === sourceImage) {
+      let stillUsed = false;
+      for (const tm of am.textureMapsByKey.values()) {
+        if (tm.filePath === filePath) {
+          stillUsed = true;
+          break;
+        }
+      }
+      if (!stillUsed) am.imageCache.delete(filePath);
+    }
   },
 
   getTextureMap: (am: AtlasManagerT, key: string): TextureMapT | null => {

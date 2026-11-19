@@ -5,6 +5,7 @@ import { SpriteT } from '../sprite/data';
 import { CellMapT } from '../cell-map/data';
 import { LightT } from '../light/data';
 import { VisionSourceT } from '../vision-source/data';
+import { VisibilityVolumeT } from '../visibility-volume/data';
 import { render } from './render';
 import { collectRenderables } from './collect-renderables';
 import { pan } from './pan';
@@ -36,6 +37,7 @@ export interface CameraMethods extends ComponentMethods {
     cellMaps: CellMapT[];
     lights: LightT[];
     visionSources: VisionSourceT[];
+    visibilityVolumes: VisibilityVolumeT[];
   };
   pan: (camera: CameraT, offsetX: number, offsetY: number) => void;
   setZoom: (camera: CameraT, zoom: number) => void;

@@ -1,6 +1,7 @@
 import { CellMapT } from '../../cell-map';
 import { LightT } from '../../light';
 import { VisionSourceT } from '../../vision-source';
+import { VisibilityVolumeT } from '../../visibility-volume';
 import { NexusT } from '../../nexus';
 import { SpriteT } from '../../sprite';
 import { castTo } from '../../types';
@@ -17,10 +18,12 @@ interface RenderablesCacheEntry {
   cellMapVersion: number;
   lightVersion: number;
   visionSourceVersion: number;
+  visibilityVolumeVersion: number;
   sprites: SpriteT[];
   cellMaps: CellMapT[];
   lights: LightT[];
   visionSources: VisionSourceT[];
+  visibilityVolumes: VisibilityVolumeT[];
 }
 
 const RENDERABLES_CACHE = new Map<number, RenderablesCacheEntry>();
@@ -40,9 +43,16 @@ export function collectRenderables(camera: CameraT): {
   cellMaps: CellMapT[];
   lights: LightT[];
   visionSources: VisionSourceT[];
+  visibilityVolumes: VisibilityVolumeT[];
 } {
   if (!camera.parent || camera.parent.type !== 'nexus') {
-    return { sprites: [], cellMaps: [], lights: [], visionSources: [] };
+    return {
+      sprites: [],
+      cellMaps: [],
+      lights: [],
+      visionSources: [],
+      visibilityVolumes: [],
+    };
   }
 
   const parentNexus = castTo<NexusT>(camera.parent!);
@@ -55,6 +65,7 @@ export function collectRenderables(camera: CameraT): {
   const cellMapVersion = getRenderableVersion('cell-map');
   const lightVersion = getRenderableVersion('light');
   const visionSourceVersion = getRenderableVersion('vision-source');
+  const visibilityVolumeVersion = getRenderableVersion('visibility-volume');
   const cached = RENDERABLES_CACHE.get(camera.id!);
 
   // Recursively collect all sprites from the scene root, unless nothing of
@@ -101,18 +112,30 @@ export function collectRenderables(camera: CameraT): {
           true,
         ) as VisionSourceT[]);
 
+  // Same again for visibility-volumes, which share the vision sources' shape
+  // store downstream (camera/render/visibility-uniforms.ts).
+  const visibilityVolumes =
+    cached && cached.visibilityVolumeVersion === visibilityVolumeVersion
+      ? cached.visibilityVolumes
+      : (sceneRoot.getComponentsByType(
+          'visibility-volume',
+          true,
+        ) as VisibilityVolumeT[]);
+
   RENDERABLES_CACHE.set(camera.id!, {
     spriteVersion,
     cellMapVersion,
     lightVersion,
     visionSourceVersion,
+    visibilityVolumeVersion,
     sprites,
     cellMaps,
     lights,
     visionSources,
+    visibilityVolumes,
   });
 
-  return { sprites, cellMaps, lights, visionSources };
+  return { sprites, cellMaps, lights, visionSources, visibilityVolumes };
 }
 
 /**

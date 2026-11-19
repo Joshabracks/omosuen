@@ -3,7 +3,7 @@
  * SHARED BY LAYER NAME across the whole set (horizontal ingestion), ONE
  * animation-controller.
  *
- * Demonstrates the `sources` option on the `aseprite-loader` plugin: a single
+ * Demonstrates the `sources` option on the `image-loader` plugin: a single
  * loader on ONE entity nexus ingests multiple .aseprite files, but produces only
  * ONE sprite per unique layer name across the set (not one per source) —
  * swordman + dryad both have `main`/`hands`/`outline` layers, so those three are
@@ -187,7 +187,7 @@ export async function createScene() {
   });
   nexus.addComponent(transform);
 
-  const loader = await Omosuen.newComponent('aseprite-loader', {
+  const loader = await Omosuen.newComponent('image-loader', {
     name: 'unit',
     sources: Object.fromEntries(
       Object.entries(SOURCES).map(([id, file]) => [id, ASE_BASE + file]),

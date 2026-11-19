@@ -12,16 +12,10 @@ import unifiedVertexShader from '../shader/unified.vert';
 import unifiedFragmentShader from '../shader/unified.frag';
 import { cacheLightUniformLocations } from '../render/light-uniforms';
 import { allocateCameraTargets } from '../render/framebuffers';
-import {
-  MAX_VISION_SOURCES,
-  cacheVisionUniformLocations,
-} from '../render/vision-uniforms';
+import { cacheVisibilityUniformLocations } from '../render/visibility-uniforms';
 import { cacheFogUniformLocations } from '../render/fog-uniforms';
 import { initRenderWasm } from '../render/wasm';
 import { uploadAtlasTextures } from '../render/atlas-textures';
-
-/** Matches unified.frag's vision-source cap declaration — see init(). */
-const MAX_VISION_SOURCES_RE = /const int MAX_VISION_SOURCES = \d+;/;
 
 /**
  * Initializes WebGL resources for the camera (shader programs, buffers).
@@ -66,27 +60,13 @@ export async function init(component: ComponentData): Promise<void> {
   // requirement — no JS fallback. Idempotent across cameras.
   await initRenderWasm();
 
-  // Substitute the vision-source cap into the fragment shader so GLSL cannot
-  // drift from the TS constant the upload path sizes its buffers and location
-  // cache against. The test is load-bearing: a silent non-match would put the
-  // two declarations back out of step, which is exactly the failure this
-  // prevents.
-  if (!MAX_VISION_SOURCES_RE.test(unifiedFragmentShader)) {
-    console.error(
-      `[camera] Camera '${camera.name}': unified.frag has no MAX_VISION_SOURCES declaration to substitute`,
-    );
-    return;
-  }
-  const unifiedFragmentSource = unifiedFragmentShader.replace(
-    MAX_VISION_SOURCES_RE,
-    `const int MAX_VISION_SOURCES = ${MAX_VISION_SOURCES};`,
-  );
-
-  // Compile unified shader program
+  // Compile unified shader program. No vision-source count is substituted in:
+  // fog-of-war shapes live in runtime-sized data textures (see
+  // render/visibility-uniforms.ts), so the shader has nothing to size.
   const unifiedProgram = createShaderProgram(
     gl,
     unifiedVertexShader,
-    unifiedFragmentSource,
+    unifiedFragmentShader,
   );
   if (!unifiedProgram) {
     console.error(
@@ -107,8 +87,10 @@ export async function init(component: ComponentData): Promise<void> {
 
   // Cache all light uniform locations for this camera
   cacheLightUniformLocations(gl, unifiedProgram, camera.id!);
-  // Cache all vision-source (fog-of-war) uniform locations for this camera
-  cacheVisionUniformLocations(gl, unifiedProgram, camera.id!);
+  // Fog-of-war visibility shapes: uniform locations plus this camera's two
+  // data textures (shapes + bins).
+  gl.useProgram(unifiedProgram);
+  cacheVisibilityUniformLocations(gl, unifiedProgram, camera.id!);
   cacheFogUniformLocations(gl, unifiedProgram, camera.id!);
 
   // 3. Create quad geometry buffers

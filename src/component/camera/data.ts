@@ -284,7 +284,7 @@ export interface CameraT
      * reaches the screen. `renderPresent` blits it to the default framebuffer.
      */
     /**
-     * Cell FBO's id attachment (COLOR1, RG16UI, base resolution).
+     * Cell FBO's id attachment (COLOR1, RGBA16UI, base resolution).
      * R = cell material index, G = fogVisibility quantised to 16 bits — the
      * only carrier the cell pass has for a fog value that must survive the
      * upscale into the composite's aux channel.
@@ -304,7 +304,7 @@ export interface CameraT
     framebufferB: WebGLFramebuffer | null;
     compositeTexture: WebGLTexture | null;
     /**
-     * Composite id attachment (COLOR1, RG16UI, full resolution).
+     * Composite id attachment (COLOR1, RGBA16UI, full resolution).
      * R = cell material index, G = sprite `shaderId`. Integer format, so the
      * sprite pass's alpha blend cannot smear two ids into a meaningless third
      * along a soft edge — the value is simply the frontmost writer's.
@@ -344,12 +344,18 @@ export interface CameraT
 
     // Per-cell emission (highlight) color texture (RGBA8, flattened cell grid).
     cellEmissionColorTexture: WebGLTexture | null;
+    /** Per-cell region-index texture (R8UI 2D array, layer = z). */
+    cellRegionIndexTexture: WebGLTexture | null;
     // Whether the resident emission-color texture has any non-black cell (gates the
     // shader term + avoids binding an empty texture).
     cellEmissionColorHasAny: boolean;
+    /** Whether any cell carries a non-zero region index; skips the shader term. */
+    cellRegionIndexHasAny: boolean;
     // cellMap.emissionColorVersion last fully applied to cellEmissionColorTexture
     // (via full rebuild or texSubImage3D deltas). -1 = nothing uploaded yet.
     cellEmissionColorVersion: number;
+    /** Region-index version this camera has uploaded; -1 = nothing yet. */
+    cellRegionIndexVersion: number;
 
     // Per-chunk fog-of-war "explored" texture (R8, chunk-grid resolution).
     exploredTexture: WebGLTexture | null;
@@ -459,8 +465,11 @@ export function builder(options: CameraOptions): CameraT {
       solidityGeneration: -1,
       solidityDims: null,
       cellEmissionColorTexture: null,
+      cellRegionIndexTexture: null,
       cellEmissionColorHasAny: false,
+      cellRegionIndexHasAny: false,
       cellEmissionColorVersion: -1,
+      cellRegionIndexVersion: -1,
       exploredTexture: null,
       exploredVersion: -1,
     },

@@ -11,12 +11,29 @@ precision highp int;
 layout(location = 0) out vec4 fragColor;
     // R = cell material index. G = sprite id in the composite; in the cell FBO
     // it instead carries fogVisibility quantised to 16 bits, which the upscale
-    // unpacks into the composite's aux channel.
-layout(location = 1) out uvec2 fragIds;
-    // R = sprite coverage, G = fogVisibility, A = the same alpha written to
-    // fragColor. That alpha is load-bearing: MRT blending uses each draw
-    // buffer's OWN output alpha, so a zero here would make the blend
-    // dst = src*0 + dst*1 and freeze this attachment at its cleared value.
+    // unpacks into the composite's aux channel. B = the cell's region index,
+    // an author-assigned value a post effect recolours (see cellRegionAt).
+    // A = reserved.
+    //
+    // Integer attachments do NOT blend, so every channel here is exact -- the
+    // region index reads back precisely as written even under a partially
+    // transparent sprite, unlike the sprite mask in fragAux.b which blends.
+    // Every component must be written: an unwritten component of an RGBA
+    // attachment is undefined, not zero.
+layout(location = 1) out uvec4 fragIds;
+    // R = sprite coverage, G = fogVisibility, B = sprite material mask
+    // (the material texture's own B channel -- a per-region index a post
+    // effect can recolour), A = the same alpha written to fragColor. That
+    // alpha is load-bearing: MRT blending uses each draw buffer's OWN output
+    // alpha, so a zero here would make the blend dst = src*0 + dst*1 and
+    // freeze this attachment at its cleared value.
+    //
+    // The mask BLENDS, exactly as coverage does -- this is a float attachment,
+    // not the integer id one. An opaque fragment therefore carries its mask
+    // through untouched, while a partially transparent edge fades toward what
+    // is behind it. Quantise on the way in (packMaterial's `quantize`) and
+    // threshold on the way out; do not expect exact band values at sprite
+    // edges.
 layout(location = 2) out vec4 fragAux;
 
     // Render mode selector
@@ -74,10 +91,37 @@ uniform vec4 u_emissionBoundsXY;
 uniform vec2 u_emissionSizeYZ;
 uniform vec2 u_emissionSizeXZ;
 uniform vec2 u_emissionSizeXY;
+    // Per-side material (PBR) frames for cells (Mode 0). R = metallic,
+    // G = roughness -- the same packing the sprite channel uses, and built by the
+    // same packMaterial() helper. The sampler itself is u_materialTexture,
+    // declared with the sprite uniforms below and rebound per pass, exactly as
+    // u_emissionTexture is.
+    //
+    // When u_hasCellMaterial is false the defaults (metallic 0, roughness 1)
+    // make computeSpecular a no-op, so terrain with no material texture renders
+    // bit-identically to before this channel existed.
+uniform bool u_hasCellMaterial;
+uniform vec4 u_materialBoundsYZ;
+uniform vec4 u_materialBoundsXZ;
+uniform vec4 u_materialBoundsXY;
+uniform vec2 u_materialSizeYZ;
+uniform vec2 u_materialSizeXZ;
+uniform vec2 u_materialSizeXY;
+
     // Per-cell emission (highlight) color: RGB texture keyed by cell coordinate
     // (Mode 0). Added flat, independent of v_emission. Default black = no-op.
 uniform bool u_hasCellEmissionColor;
 uniform highp sampler2DArray u_cellEmissionColor;  // layer=z
+
+    // Per-cell REGION INDEX (Mode 0): a small integer an author assigns per
+    // cell so a post effect can recolour that region, read back as u_ids.b.
+    // An INTEGER texture, so the value round-trips exactly with no float step
+    // and NEAREST is enforced by the format rather than by convention -- which
+    // matters because a region index is precisely the kind of value bilinear
+    // filtering turns into a different region (see AGENTS.md on not putting
+    // non-interpolatable values in filtered textures).
+uniform bool u_hasCellRegionIndex;
+uniform highp usampler2DArray u_cellRegionIndex;  // R8UI, layer=z
 
     // Optional per-vertex UV mode (custom shapes): sample the base frame by v_uv
     // instead of triplanar. u_useMeshUV is set per draw range.
@@ -129,23 +173,32 @@ uniform vec4 u_silhouetteColor;
     // Per-fragment line-of-sight raycasting (both modes)
 uniform highp sampler2DArray u_cellSolidity;   // R8: 0=empty, 255=solid, layer=z
 
-    // Fog-of-war: multiple simultaneous vision sources (both modes). Position
-    // is world-space; radius/fadeWidth are world units (outer edge = radius +
-    // fadeWidth). u_fogExempt opts a single cell-map draw call out entirely
+    // Fog-of-war visibility shapes (both modes): vision-source SPHERES and
+    // visibility-volume BOXES, in runtime-sized data textures -- no count is
+    // compiled in. See camera/render/visibility-uniforms.ts / visibility-shapes.ts.
+    //
+    // u_visShapes (RGBA32F, VIS_TEX_WIDTH wide), two texels per shape:
+    //   texel 0: (pos.xyz, radius)            -- radius 0 for a box
+    //   texel 1: (fadeWidth, half.xyz)        -- half.x < 0 marks a sphere
+    // u_visBins (R32UI, VIS_TEX_WIDTH wide): an XZ grid of shape lists. Words
+    // [0 .. bins] are prefix offsets (bin b owns entries offsets[b]..[b+1]),
+    // followed by the shape indices themselves. Boxes precede spheres in each
+    // bin, so the early-out in computeVisibility usually stops before any
+    // sphere's raycasts.
+    //
+    // u_fogExempt opts a single cell-map draw call out entirely
     // (cellMap.revealExempt) -- not meaningful for sprites, which have no
     // per-cell-map context, so the sprite path never reads it.
-    // This literal is OVERWRITTEN at compile time with MAX_VISION_SOURCES from
-    // camera/render/vision-uniforms.ts (see camera/init) -- that constant is
-    // the single source of truth. The value here only keeps this file valid
-    // standalone GLSL; edit it there.
-const int MAX_VISION_SOURCES = 64;
-uniform int u_numVisionSources;
+uniform int u_visNumShapes;
+uniform highp sampler2D u_visShapes;
+uniform highp usampler2D u_visBins;
+uniform highp vec2 u_visGridOrigin;   // world X/Z of bin (0,0)
+uniform highp float u_visBinSize;     // world units
+uniform ivec2 u_visBinDims;           // bins along X, Z (0 = empty)
+const int VIS_TEX_WIDTH = 1024;       // must match visibility-shapes.ts
 // FogOfWarT.visionMode: true = 'line-of-sight' (raycasts), false = 'distance'
-// (range alone). Uploaded per draw alongside the source arrays.
+// (range alone). Uploaded per draw alongside the shape data.
 uniform bool u_fogUseLineOfSight;
-uniform highp vec3 u_visionSourcePos[MAX_VISION_SOURCES];
-uniform float u_visionSourceRadius[MAX_VISION_SOURCES];
-uniform float u_visionSourceFadeWidth[MAX_VISION_SOURCES];
 uniform bool u_fogExempt;
 
     // Fog-of-war persistent "explored" state -- one texel per CELL, the same
@@ -362,6 +415,21 @@ bool isCellSolid(vec3 cell) {
 
 // Per-cell emission (highlight) color, sampled by integer cell coordinate using the
 // same array-layer lookup as isCellSolid. Out-of-bounds cells contribute nothing.
+/**
+ * This cell's region index, or 0 ("no region") outside the resident window.
+ * Structurally identical to cellEmissionColorAt below -- same toroidal
+ * windowSlot addressing, same texelFetch (which ignores filtering entirely).
+ */
+uint cellRegionAt(vec3 cell) {
+    vec3 local = cell - u_windowOrigin;
+    if(local.x < 0.0 || local.x >= u_windowSize.x ||
+       local.y < 0.0 || local.y >= u_windowSize.y ||
+       local.z < 0.0 || local.z >= u_windowSize.z) {
+        return 0u;
+    }
+    return texelFetch(u_cellRegionIndex, windowSlot(local), 0).r;
+}
+
 vec3 cellEmissionColorAt(vec3 cell) {
     vec3 local = cell - u_windowOrigin;
     if(local.x < 0.0 || local.x >= u_windowSize.x ||
@@ -529,7 +597,8 @@ float visionSourceVisibility(
     float radius,
     float fadeWidth,
     vec3 fragWorldPos,
-    vec3 fragCellPos
+    vec3 fragCellPos,
+    float best
 ) {
     float dist = distance(fragWorldPos, sourcePos);
     float outer = radius + fadeWidth;
@@ -538,6 +607,11 @@ float visionSourceVisibility(
     // is a hard-edged source, fully visible right up to `outer`. Guarded to
     // match computeFogVisibility's identical guard on the CPU.
     float radial = outer > radius ? 1.0 - smoothstep(radius, outer, dist) : 1.0;
+    // Can't beat the running max even with every ray through, so skip the
+    // raycasts. The union is a max, so this changes no result -- it only stops
+    // a fragment inside many overlapping radii paying eight DDA rays for each.
+    // Mirrors computeFogVisibility's `radial <= best` skip on the CPU.
+    if(radial <= best) return 0.0;
 
     // 'distance' mode (FogOfWarT.visionMode): range alone decides, walls
     // included. Mirrored by computeFogVisibility/isVisibleFrom on the CPU off
@@ -558,8 +632,49 @@ float visionSourceVisibility(
     return radial * los;
 }
 
+// A visibility-volume's contribution: 1 if `cellCentre` (world units) lies in
+// the box, ramping to 0 across `fade` outside it (0 = hard edge). Tested at a
+// CELL CENTRE, never the raw fragment, so the edge lands on the cell grid
+// instead of cutting faces in half. No line of sight -- a volume is a
+// declaration, not an observer. Mirrored by visibility-shapes.ts's
+// `boxVisibility` on the CPU, term for term.
+float boxVisibility(vec3 center, vec3 halfExt, float fade, vec3 cellCentre) {
+    vec3 d = max(abs(cellCentre - center) - halfExt, 0.0);
+    float dist = length(d);
+    if(dist <= 0.0) return 1.0;
+    if(fade <= 0.0 || dist >= fade) return 0.0;
+    return 1.0 - smoothstep(0.0, fade, dist);
+}
+
+ivec2 visTexel(int i) {
+    return ivec2(i % VIS_TEX_WIDTH, i / VIS_TEX_WIDTH);
+}
+
+int visBinWord(int i) {
+    return int(texelFetch(u_visBins, visTexel(i), 0).r);
+}
+
+// The bin under a world point: its entry range [start, end) and the word
+// offset of the index list. False outside the grid, which covers every
+// shape's reach -- so "outside" correctly means "no shape can reach here".
+bool visBinRange(vec3 worldPos, out int start, out int end, out int base) {
+    start = 0;
+    end = 0;
+    base = 0;
+    if(u_visNumShapes <= 0 || u_visBinDims.x <= 0) return false;
+    vec2 g = floor((worldPos.xz - u_visGridOrigin) / u_visBinSize);
+    if(g.x < 0.0 || g.y < 0.0 ||
+       g.x >= float(u_visBinDims.x) || g.y >= float(u_visBinDims.y)) return false;
+    int bin = int(g.y) * u_visBinDims.x + int(g.x);
+    start = visBinWord(bin);
+    end = visBinWord(bin + 1);
+    base = u_visBinDims.x * u_visBinDims.y + 1;
+    return true;
+}
+
 // How far INTO vision range a point is, ignoring line of sight entirely: 1
-// anywhere inside a source's radius, ramping to 0 across its fadeWidth.
+// anywhere inside a source's radius (or a volume), ramping to 0 across the
+// fade band.
 //
 // This is the style selector under memory 'partial'/'none' (u_fogUseExplored
 // false), and it is what makes those modes need no history: 1 is the faded
@@ -567,36 +682,67 @@ float visionSourceVisibility(
 // hidden zone. Because radial is already flat at 1 inside the radius, the
 // source's fade band IS the hidden-to-faded transition, so there is no hard
 // step to alias along.
-float computeRadialZone(vec3 worldPos) {
+float computeRadialZone(vec3 worldPos, vec3 ownerCell) {
     float zone = 0.0;
-    for(int i = 0; i < MAX_VISION_SOURCES; i++) {
-        if(i >= u_numVisionSources) break;
-        float radius = u_visionSourceRadius[i];
-        float outer = radius + u_visionSourceFadeWidth[i];
-        float dist = distance(worldPos, u_visionSourcePos[i]);
-        if(dist >= outer) continue;
-        zone = max(zone, outer > radius ? 1.0 - smoothstep(radius, outer, dist) : 1.0);
+    int start;
+    int end;
+    int base;
+    if(!visBinRange(worldPos, start, end, base)) return 0.0;
+    vec3 cellCentre = (ownerCell + 0.5) * u_cellSize;
+    for(int k = start; k < end; k++) {
+        int si = visBinWord(base + k);
+        vec4 a = texelFetch(u_visShapes, visTexel(si * 2), 0);
+        vec4 b = texelFetch(u_visShapes, visTexel(si * 2 + 1), 0);
+        float v;
+        if(b.y >= 0.0) {
+            v = boxVisibility(a.xyz, b.yzw, b.x, cellCentre);
+        } else {
+            float radius = a.w;
+            float outer = radius + b.x;
+            float dist = distance(worldPos, a.xyz);
+            if(dist >= outer) continue;
+            v = outer > radius ? 1.0 - smoothstep(radius, outer, dist) : 1.0;
+        }
+        zone = max(zone, v);
+        if(zone >= 1.0) break;
     }
     return zone;
 }
 
-// Combined per-fragment live visibility: union (max) over every active
-// vision source, then optionally boosted by local light level via
+// Combined per-fragment live visibility: union (max) over every shape binned
+// under this fragment -- vision-source spheres and visibility-volume boxes
+// alike -- then optionally boosted by local light level via
 // u_fogLightInfluence -- additive only, so light can extend vision but never
 // reduce it below the pure-geometry result (default lightInfluence=0 is a
 // no-op here).
-float computeVisibility(vec3 fragWorldPos, vec3 fragCellPos) {
+//
+// `ownerCell` is the integer world cell this fragment belongs to, for the box
+// test: the solid cell owning a terrain face, or the cell under a sprite's
+// ground point.
+//
+// Stops as soon as visibility saturates at 1. Before binning existed every
+// fragment walked every source; now it walks only its bin, and usually stops
+// at the first box or the first fully-visible sphere.
+float computeVisibility(vec3 fragWorldPos, vec3 fragCellPos, vec3 ownerCell) {
     float visibility = 0.0;
-    for(int i = 0; i < MAX_VISION_SOURCES; i++) {
-        if(i >= u_numVisionSources) break;
-        float v = visionSourceVisibility(
-            u_visionSourcePos[i],
-            u_visionSourceRadius[i],
-            u_visionSourceFadeWidth[i],
-            fragWorldPos,
-            fragCellPos
-        );
-        visibility = max(visibility, v);
+    int start;
+    int end;
+    int base;
+    if(visBinRange(fragWorldPos, start, end, base)) {
+        vec3 cellCentre = (ownerCell + 0.5) * u_cellSize;
+        for(int k = start; k < end; k++) {
+            int si = visBinWord(base + k);
+            vec4 a = texelFetch(u_visShapes, visTexel(si * 2), 0);
+            vec4 b = texelFetch(u_visShapes, visTexel(si * 2 + 1), 0);
+            float v;
+            if(b.y >= 0.0) {
+                v = boxVisibility(a.xyz, b.yzw, b.x, cellCentre);
+            } else {
+                v = visionSourceVisibility(a.xyz, a.w, b.x, fragWorldPos, fragCellPos, visibility);
+            }
+            visibility = max(visibility, v);
+            if(visibility >= 1.0) break;
+        }
     }
     if(u_fogLightInfluence > 0.0) {
         float lightLevel = computeLightLevel(fragWorldPos);
@@ -768,7 +914,7 @@ void main() {
     // then yields a deterministic zero instead of undefined attachment
     // contents -- by far the cheapest insurance in this file.
     fragColor = vec4(0.0);
-    fragIds = uvec2(0u);
+    fragIds = uvec4(0u);
     fragAux = vec4(0.0);
 
     if(u_renderMode == 0) {
@@ -781,16 +927,21 @@ void main() {
         // before paying for triplanar/lighting work below. Uses
         // pre-smoothing positions so floor() resolves consistently across
         // each face. fogActive is false (fog fully bypassed) when this
-        // cell-map opts out (cellMap.revealExempt) or no vision source is
-        // active in the scene at all.
-        bool fogActive = !u_fogExempt && u_numVisionSources > 0;
+        // cell-map opts out (cellMap.revealExempt) or no visibility shape --
+        // vision source OR visibility volume -- is active in the scene at all.
+        // A volume alone activates fog, just as a source does.
+        bool fogActive = !u_fogExempt && u_visNumShapes > 0;
         vec3 fragCellPos = v_origWorldPos / u_cellSize;
-        float fogVisibility = fogActive ? computeVisibility(v_origWorldPos, fragCellPos) : 1.0;
+        // The solid cell owning this face -- what a visibility volume tests, so
+        // its edge falls on the cell grid (same face->cell mapping the
+        // per-cell emission and region lookups use).
+        vec3 fogOwnerCell = emissionCellFromFace(v_origWorldPos, v_trueFaceDir);
+        float fogVisibility = fogActive ? computeVisibility(v_origWorldPos, fragCellPos, fogOwnerCell) : 1.0;
         // Which of the two style tiers this fragment sits in, 0 = hidden,
         // 1 = faded. Memory 'full' answers from history; the other modes answer
         // from the current radial zone and never touch the explored texture.
         float fogExplored = fogActive
-            ? (u_fogUseExplored ? exploredAt(fragCellPos) : computeRadialZone(v_origWorldPos))
+            ? (u_fogUseExplored ? exploredAt(fragCellPos) : computeRadialZone(v_origWorldPos, fogOwnerCell))
             : 1.0;
         float fogStyleOpacity = fogActive ? mix(u_fogHiddenOpacity, u_fogFadedOpacity, fogExplored) : 1.0;
         // Two different discards. The second is free correctness -- a fragment
@@ -812,6 +963,21 @@ void main() {
         // material provides an emission texture; otherwise falls back to albedo below.
         vec3 emissionTexColor = vec3(0.0);
 
+        // Material (PBR) accumulators. These defaults are the sprite branch's
+        // defaults verbatim, and they are load-bearing: metallic 0 makes
+        // computeSpecular early-out, and roughness 1 is MATTE. Roughness 0 is a
+        // mirror finish, which is also the value an unwritten channel gives you
+        // for free -- see the header of test/scenes/channel-pack-test.js, which
+        // documents that trap at length for sprites. Terrain inherits the same
+        // convention rather than re-creating the bug.
+        float cellMetallic = 0.0;
+        float cellRoughness = 1.0;
+        // The material texture's B channel: a PER-TEXEL region index, so a
+        // region can vary within one cell face rather than colouring the whole
+        // cell. That is the thing the per-cell channel cannot do -- and a solid
+        // per-cell colour is already expressible with setEmissionColor.
+        float cellRegionMask = 0.0;
+
         if(u_useMeshUV) {
             // Per-vertex UV mode (custom shapes): sample by the mesh's own UVs, but
             // pick the per-side frame by the dominant axis of the world normal so an
@@ -828,6 +994,13 @@ void main() {
             if(u_hasEmissionTexture) {
                 vec4 eb = axis == 0 ? u_emissionBoundsYZ : axis == 1 ? u_emissionBoundsXZ : u_emissionBoundsXY;
                 emissionTexColor = texture(u_emissionTexture, mix(eb.xy, eb.zw, v_uv)).rgb;
+            }
+            if(u_hasCellMaterial) {
+                vec4 mb = axis == 0 ? u_materialBoundsYZ : axis == 1 ? u_materialBoundsXZ : u_materialBoundsXY;
+                vec4 ms = texture(u_materialTexture, mix(mb.xy, mb.zw, v_uv));
+                cellMetallic = ms.r;
+                cellRoughness = ms.g;
+                cellRegionMask = ms.b;
             }
             if(u_hasNormal) {
                 vec2 nUV = mix(nb.xy, nb.zw, v_uv);
@@ -872,6 +1045,48 @@ void main() {
                 vec4 emXZ = sampleBilinear(u_emissionTexture, vec2(v_worldPos.x, v_worldPos.z), u_emissionSizeXZ, u_emissionBoundsXZ);
                 vec4 emXY = sampleBilinear(u_emissionTexture, vec2(v_worldPos.x, -v_worldPos.y), u_emissionSizeXY, u_emissionBoundsXY);
                 emissionTexColor = (emYZ * blendWeights.x + emXZ * blendWeights.y + emXY * blendWeights.z).rgb;
+            }
+
+            // Triplanar material sampling (same planes/weights as albedo).
+            // Metallic and roughness are scalars, so blending the raw samples is
+            // well-defined -- unlike normals below, which have to be converted to
+            // world space before blending because each plane maps onto different
+            // world axes. Guarded so terrain without a material texture never
+            // samples unit 5, which in cell mode still holds whatever the sprite
+            // pass bound there.
+            if(u_hasCellMaterial) {
+                vec4 mtYZ = sampleBilinear(u_materialTexture, vec2(v_worldPos.z, -v_worldPos.y), u_materialSizeYZ, u_materialBoundsYZ);
+                vec4 mtXZ = sampleBilinear(u_materialTexture, vec2(v_worldPos.x, v_worldPos.z), u_materialSizeXZ, u_materialBoundsXZ);
+                vec4 mtXY = sampleBilinear(u_materialTexture, vec2(v_worldPos.x, -v_worldPos.y), u_materialSizeXY, u_materialBoundsXY);
+                vec4 mt = mtYZ * blendWeights.x + mtXZ * blendWeights.y + mtXY * blendWeights.z;
+                cellMetallic = mt.r;
+                cellRoughness = mt.g;
+
+                // The region index needs a POINT sample, and picking the
+                // dominant plane is only half of that.
+                //
+                // Metallic and roughness are scalars: blending them across the
+                // three planes above is meaningful, and `sampleBilinear`'s
+                // 4-tap blend within a plane is what keeps them from shimmering.
+                // A region index survives neither. Blending region 1 and region
+                // 3 across a corner yields 2 -- a real region the artist never
+                // painted there -- and bilinear filtering inside one plane
+                // smears the authored levels into a continuum. Measured: the
+                // quantised 0/85/170/255 mask came back as all 256 values.
+                //
+                // So: dominant plane only, and a floor-based UV so the fetch
+                // lands on exactly one texel. Same trick the normal-map path
+                // uses for its own reasons, and the atlas is NEAREST-filtered,
+                // so the value arrives exactly as authored.
+                bool domX = blendWeights.x >= blendWeights.y && blendWeights.x >= blendWeights.z;
+                bool domY = !domX && blendWeights.y >= blendWeights.z;
+                vec2 maskWorldUV = domX ? vec2(v_worldPos.z, -v_worldPos.y)
+                                 : domY ? vec2(v_worldPos.x, v_worldPos.z)
+                                        : vec2(v_worldPos.x, -v_worldPos.y);
+                vec2 maskSize = domX ? u_materialSizeYZ : domY ? u_materialSizeXZ : u_materialSizeXY;
+                vec4 maskBounds = domX ? u_materialBoundsYZ : domY ? u_materialBoundsXZ : u_materialBoundsXY;
+                vec2 maskUV = (mod(floor(maskWorldUV), maskSize) + 0.5) / maskSize;
+                cellRegionMask = texture(u_materialTexture, mix(maskBounds.xy, maskBounds.zw, maskUV)).b;
             }
 
             // Triplanar normal mapping (if available). Each plane's tangent-space
@@ -926,9 +1141,22 @@ void main() {
         vec3 highlight = u_hasCellEmissionColor
             ? cellEmissionColorAt(emissionCellFromFace(v_origWorldPos, v_trueFaceDir))
             : vec3(0.0);
+        // Material-driven specular. Sits inside cellColor rather than after the
+        // fog block so terrain specular is fog-styled along with everything else
+        // -- otherwise a metallic surface glints through fog-of-war at full
+        // brightness. The sprite branch folds its specular into litColor for the
+        // same reason.
+        //
+        // Zero cost when unset: cellMetallic defaults to 0.0 and computeSpecular
+        // returns vec3(0.0) on its first line, so every material without a
+        // materialTextureKey is bit-identical to before this channel existed.
+        vec3 cellViewDir = normalize(u_cameraWorldPos - v_worldPos);
+        vec3 cellSpecular = computeSpecular(finalNormal, v_worldPos, cellViewDir, cellMetallic, cellRoughness);
+
         vec3 cellColor = albedo.rgb * lighting
                        + emissionSample * v_emission
-                       + highlight;
+                       + highlight
+                       + cellSpecular;
 
         // Fog-of-war tiered styling: blend from the never-viewed/memory style
         // (desaturation + tint + opacity-as-fade-to-black, no real alpha —
@@ -961,7 +1189,23 @@ void main() {
         fragColor = vec4(fogOutColor, albedo.a);
         // G carries fogVisibility through the upscale: the cell FBO has no aux
         // attachment, so this is the only channel available to it.
-        fragIds = uvec2(u_cellIndex, uint(clamp(fogVisibility, 0.0, 1.0) * 65535.0 + 0.5));
+        // Region index for this texel, from whichever source the material
+        // actually declares. A material texture's B channel is per-TEXEL and
+        // takes precedence, because it is strictly more expressive: it can vary
+        // within one face, where the per-cell channel paints the whole cell one
+        // value. The per-cell index is the fallback for materials with no
+        // texture. Both answer the same question -- "which region is this
+        // texel" -- so they share one channel rather than competing for two.
+        uint cellRegion = u_hasCellMaterial
+            ? uint(cellRegionMask * 255.0 + 0.5)
+            : (u_hasCellRegionIndex
+                ? cellRegionAt(emissionCellFromFace(v_origWorldPos, v_trueFaceDir))
+                : 0u);
+        fragIds = uvec4(
+            u_cellIndex,
+            uint(clamp(fogVisibility, 0.0, 1.0) * 65535.0 + 0.5),
+            cellRegion,
+            0u);
 
     } else {
         // ============================================================
@@ -994,7 +1238,7 @@ void main() {
         // raycasts, so it is cheap per fragment, and u_spriteVisibility is
         // deliberately the pure-geometry term for it to build on.
         float fogVis = 1.0;
-        if(u_numVisionSources > 0) {
+        if(u_visNumShapes > 0) {
             // EXACTLY what terrain computes, at this fragment's ground point:
             // radial falloff AND line of sight, per fragment, plus the same
             // light-influence boost (computeVisibility applies it itself, so it
@@ -1014,7 +1258,12 @@ void main() {
             // would be a second opinion against the CPU sweep, no longer
             // applies: this drives COLOUR only, and every lifetime decision
             // still goes through u_spriteVisibility below.
-            fogVis = computeVisibility(v_spriteGroundPos, v_spriteGroundPos / u_cellSize);
+            // The box test uses the cell under the ground point, matching the
+            // CPU's `cellCentreOf` on the same point.
+            fogVis = computeVisibility(
+                v_spriteGroundPos,
+                v_spriteGroundPos / u_cellSize,
+                floor(v_spriteGroundPos / u_cellSize));
             // Both sides are gated on this one number, so there is never a
             // frame with neither the sprite nor its phantom visible -- the bug
             // this replaced.
@@ -1046,7 +1295,14 @@ void main() {
                 fragColor = u_silhouetteColor;
                 // Returns before the shared tail below, so it has to write the
                 // masks itself.
-                fragIds = uvec2(texture(u_cellIdTexture, fboUV).r, u_spriteIndex);
+                uvec4 cellIds = texture(u_cellIdTexture, fboUV);
+                // Carries the TERRAIN region under the sprite through, exactly
+                // as .r carries the cell id. The sprite's own mask is a
+                // different thing and lives in fragAux.b.
+                fragIds = uvec4(cellIds.r, u_spriteIndex, cellIds.b, 0u);
+                // Mask stays 0: this exit runs BEFORE the material is sampled,
+                // and a silhouette is a flat stand-in for an obscured sprite --
+                // there is no visible surface for a region effect to recolour.
                 fragAux = vec4(1.0, fogVis, 0.0, u_silhouetteColor.a);
                 return;
             }
@@ -1077,15 +1333,19 @@ void main() {
             emissionTexColor = texture(u_emissionTexture, emissionAtlasUV).rgb;
         }
 
-        // Material (metallic/roughness) texture: R = metallic, G = roughness.
-        // Defaults (0 metallic, fully rough) make computeSpecular a no-op when unset.
+        // Material texture: R = metallic, G = roughness, B = region mask.
+        // Defaults (0 metallic, fully rough) make computeSpecular a no-op when
+        // unset. The mask defaults to 0, which a post effect reads as "no
+        // region here" -- so a sprite with no material is unaffected.
         float metallic = 0.0;
         float roughness = 1.0;
+        float materialMask = 0.0;
         if(u_hasMaterial) {
             vec2 materialAtlasUV = mix(u_materialUVBounds.xy, u_materialUVBounds.zw, v_uv);
             vec4 materialSample = texture(u_materialTexture, materialAtlasUV);
             metallic = materialSample.r;
             roughness = materialSample.g;
+            materialMask = materialSample.b;
         }
 
         // Dynamic lighting
@@ -1117,7 +1377,7 @@ void main() {
         // is never skipped and never replaced by a phantom, just filtered --
         // faded while in range but unseen, fading to hiddenStyle's opacity (0
         // by default, so to transparency) as it leaves range altogether.
-        float spriteZone = u_fogUseExplored ? 1.0 : computeRadialZone(v_spriteGroundPos);
+        float spriteZone = u_fogUseExplored ? 1.0 : computeRadialZone(v_spriteGroundPos, floor(v_spriteGroundPos / u_cellSize));
         float styleSaturation = mix(u_fogHiddenSaturation, u_fogFadedSaturation, spriteZone);
         vec3 styleTint = mix(u_fogHiddenTint, u_fogFadedTint, spriteZone);
         float styleOpacity = mix(u_fogHiddenOpacity, u_fogFadedOpacity, spriteZone);
@@ -1161,8 +1421,9 @@ void main() {
         // Cell id is READ from the cell FBO rather than re-derived: integer
         // attachments do not blend, so this fragment owns the whole texel and
         // would otherwise erase what is behind it.
-        fragIds = uvec2(texture(u_cellIdTexture, fboUV).r, u_spriteIndex);
+        uvec4 cellIds = texture(u_cellIdTexture, fboUV);
+        fragIds = uvec4(cellIds.r, u_spriteIndex, cellIds.b, 0u);
         // .a must match fragColor's alpha -- see the fragAux declaration.
-        fragAux = vec4(1.0, fogVis, 0.0, outAlpha);
+        fragAux = vec4(1.0, fogVis, materialMask, outAlpha);
     }
 }

@@ -12,7 +12,7 @@ import type { FogOfWarStyle, FogOfWarT } from '../../fog-of-war/data';
  * and vision sources with no fog-of-war component made every sprite disappear.
  * One uploader, one set of defaults, both passes.
  *
- * Same structure as vision-uniforms.ts: locations cached per camera id at
+ * Same structure as visibility-uniforms.ts: locations cached per camera id at
  * program-build time, values uploaded per frame.
  */
 

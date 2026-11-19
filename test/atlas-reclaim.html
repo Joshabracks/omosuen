@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Atlas Reclaim Check</title>
+  <style>
+    body { background: #111; color: #ddd; font: 13px/1.5 monospace; padding: 16px; }
+    .pass { color: #6f6; } .fail { color: #f66; } .note { color: #fc6; }
+  </style>
+</head>
+<body>
+  <h1>Atlas reclaim (retain mode) — browser check</h1>
+  <p>Cases: <a href="?case=reuse">reuse</a> · <a href="?case=compact">compact</a> · <a href="?case=proxy-dispose">proxy-dispose</a></p>
+  <pre id="out"></pre>
+  <script src="./dev/omosuen.js"></script>
+  <script type="module">
+    // Drives the real atlas-manager (retain mode) against in-memory canvases and
+    // reads the retained atlas canvas back to check reclaimed slots are reused,
+    // cleared before reuse, and that disposal evicts in-memory sources.
+    const O = window.Omosuen;
+    const out = document.getElementById('out');
+    const results = { pass: 0, fail: 0, notes: [], failures: [] };
+    window.__results = results;
+
+    function log(cls, msg) {
+      const s = document.createElement('span');
+      s.className = cls;
+      s.textContent = msg + '\n';
+      out.appendChild(s);
+    }
+    function check(label, ok, detail) {
+      if (ok) { results.pass++; log('pass', `PASS  ${label}`); }
+      else { results.fail++; results.failures.push(label + (detail ? ` -- ${detail}` : '')); log('fail', `FAIL  ${label}${detail ? ' -- ' + detail : ''}`); }
+    }
+    function note(msg) { results.notes.push(msg); log('note', `NOTE  ${msg}`); }
+
+    /** A cols×rows sheet of size×size cells, each painted by paint(ctx, x, y, i). */
+    function makeSheet(cols, rows, size, paint) {
+      const c = document.createElement('canvas');
+      c.width = cols * size; c.height = rows * size;
+      const ctx = c.getContext('2d');
+      const rects = [];
+      for (let i = 0; i < cols * rows; i++) {
+        const x = (i % cols) * size, y = Math.floor(i / cols) * size;
+        paint(ctx, x, y, i);
+        rects.push(new O.Vector4D(x, y, size, size));
+      }
+      return { canvas: c, rects };
+    }
+    const solid = (color) => (ctx, x, y) => { ctx.fillStyle = color; ctx.fillRect(x, y, 32, 32); };
+    // Transparent except one opaque centre pixel: any ghost of a previous
+    // occupant shows up as extra non-transparent pixels.
+    const dot = (size) => (ctx, x, y) => { ctx.fillStyle = '#fff'; ctx.fillRect(x + size / 2, y + size / 2, 1, 1); };
+
+    async function makeTm(scene, key, sheet) {
+      const tm = await O.newComponent('texture-map', {
+        name: key, textureMapKey: key, filePath: `mem://${key}`,
+        sourceImage: sheet.canvas, imageType: sheet.rects,
+      });
+      scene.addComponent(tm);
+      return tm;
+    }
+
+    async function setup(config) {
+      await O.init();
+      const scene = await O.newComponent('nexus', { name: 'Reclaim' });
+      const am = await O.newComponent('atlas-manager', { name: 'AM', config });
+      scene.addComponent(am);
+      return { scene, am };
+    }
+
+    const posKey = (pf) => `${pf.atlasIndex}:${pf.atlasPosition.x},${pf.atlasPosition.y}`;
+
+    function atlasPixels(am, atlasIndex, x, y, w, h) {
+      return am.atlasCanvases[atlasIndex].getContext('2d').getImageData(x, y, w, h).data;
+    }
+    function opaqueCount(data) {
+      let n = 0;
+      for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) n++;
+      return n;
+    }
+
+    /** All live packed frames' padded rects are disjoint and in-bounds. */
+    function overlapError(am) {
+      const size = am.config.atlasSize, pad = am.config.padding;
+      const grids = new Map();
+      for (const tm of am.textureMapsByKey.values()) {
+        for (const pf of tm.packedFrames) {
+          const x0 = pf.atlasPosition.x, y0 = pf.atlasPosition.y;
+          const x1 = x0 + pf.size.x + pad, y1 = y0 + pf.size.y + pad;
+          if (x1 > size || y1 > size) return `${tm.textureMapKey} out of bounds`;
+          let g = grids.get(pf.atlasIndex);
+          if (!g) { g = new Uint8Array(size * size); grids.set(pf.atlasIndex, g); }
+          for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+            if (g[y * size + x]) return `${tm.textureMapKey}#${pf.frameIndex} overlaps at (${x},${y})`;
+            g[y * size + x] = 1;
+          }
+        }
+      }
+      return null;
+    }
+
+    // ── reuse: dispose → reclaim → reuse, cleared, cache evicted ─────────────
+    async function caseReuse() {
+      const { scene, am } = await setup({ atlasSize: 1024, maxAtlases: 2, padding: 1, retainAtlas: true });
+      const colors = ['#f00', '#0f0', '#00f', '#ff0', '#f0f', '#0ff', '#f80', '#08f'];
+      const old = [];
+      for (let i = 0; i < 8; i++) old.push(await makeTm(scene, `old_${i}`, makeSheet(2, 1, 32, solid(colors[i]))));
+      await am.processTextureMaps();
+      check('first compile retains packer state', am.packState !== null);
+      check('8 in-memory sources cached', am.imageCache.size === 8, `${am.imageCache.size}`);
+      check('16 regions packed', am.packedByKey.size === 16, `${am.packedByKey.size}`);
+
+      const freed = new Set();
+      for (const tm of old.slice(0, 4)) for (const pf of tm.packedFrames) freed.add(posKey(pf));
+      const survivorColors = old.slice(4).map((tm, i) => ({ tm, color: colors[i + 4] }));
+
+      for (const tm of old.slice(0, 4)) O.markForDisposal(tm);
+      O.processDisposeQueue(scene);
+      check('disposed texture-maps leave the registry', am.textureMapsByKey.size === 4, `${am.textureMapsByKey.size}`);
+      check('disposed in-memory sources evicted from imageCache', am.imageCache.size === 4, `${am.imageCache.size}`);
+
+      const fresh = [];
+      for (let i = 0; i < 4; i++) fresh.push(await makeTm(scene, `new_${i}`, makeSheet(2, 1, 32, dot(32))));
+      const versionBefore = am.atlasVersion;
+      await am.processTextureMaps();
+
+      check('incremental compile kept the retained state', am.packState !== null && am.fullVersion <= versionBefore,
+        `fullVersion ${am.fullVersion}, version before ${versionBefore}`);
+      check('stale regions reclaimed (16 live)', am.packedByKey.size === 16, `${am.packedByKey.size}`);
+      const newPositions = fresh.flatMap((tm) => tm.packedFrames.map(posKey));
+      check('8 new frames packed', newPositions.length === 8, `${newPositions.length}`);
+      check('every new frame reuses a freed slot', newPositions.every((p) => freed.has(p)), newPositions.join(' '));
+      check('still one atlas', am.getAtlasCount() === 1, `${am.getAtlasCount()}`);
+
+      let ghosts = 0;
+      for (const tm of fresh) for (const pf of tm.packedFrames) {
+        ghosts += opaqueCount(atlasPixels(am, pf.atlasIndex, pf.atlasPosition.x, pf.atlasPosition.y, 33, 33)) - 1;
+      }
+      check('reused slots cleared: only the 1 new pixel per frame, gutter included', ghosts === 0, `${ghosts} stale pixels`);
+
+      let survivorsIntact = true;
+      for (const { tm, color } of survivorColors) {
+        for (const pf of tm.packedFrames) {
+          const d = atlasPixels(am, pf.atlasIndex, pf.atlasPosition.x + 5, pf.atlasPosition.y + 5, 1, 1);
+          const want = color.length === 4
+            ? [1, 2, 3].map((k) => parseInt(color[k] + color[k], 16)) : null;
+          if (!want || d[0] !== want[0] || d[1] !== want[1] || d[2] !== want[2] || d[3] !== 255) survivorsIntact = false;
+        }
+      }
+      check('surviving frames untouched', survivorsIntact);
+
+      const delta = am.dirtyRegions.filter((r) => r.version === am.atlasVersion);
+      check('8 dirty regions for this version', delta.length === 8, `${delta.length}`);
+      check('dirty regions cover the padded 33×33 rect', delta.every((r) => r.w === 33 && r.h === 33));
+      const err = overlapError(am);
+      check('no overlap', err === null, err ?? '');
+
+      // Trimming originalFrames (the other release path): drop frame 1 of new_0.
+      const t = fresh[0];
+      t.originalFrames = t.originalFrames.filter((f) => f.frameIndex === 0);
+      await am.processTextureMaps();
+      check('trimmed frame reclaimed (15 live)', am.packedByKey.size === 15, `${am.packedByKey.size}`);
+      check('trimmed texture-map keeps its remaining frame', t.packedFrames.length === 1);
+    }
+
+    // ── compact: fragmentation overflow falls back to a full re-pack ─────────
+    async function caseCompact() {
+      const { scene, am } = await setup({ atlasSize: 1024, maxAtlases: 1, padding: 1, retainAtlas: true });
+      // 60×60 16px frames fill the 1024 atlas's 17px grid (60*17 = 1020).
+      const small = await makeTm(scene, 'small', makeSheet(60, 60, 16, (ctx, x, y) => { ctx.fillStyle = '#0a0'; ctx.fillRect(x, y, 16, 16); }));
+      await am.processTextureMaps();
+      check('3600 small frames packed into one atlas', small.packedFrames.length === 3600, `${small.packedFrames.length}`);
+
+      // Free a checkerboard: plenty of total area, but no 33×33 hole anywhere.
+      small.originalFrames = small.originalFrames.filter((f) => {
+        const col = f.frameIndex % 60, row = Math.floor(f.frameIndex / 60);
+        return (col + row) % 2 === 0;
+      });
+      const big = await makeTm(scene, 'big', makeSheet(20, 15, 32, (ctx, x, y) => { ctx.fillStyle = '#c0c'; ctx.fillRect(x, y, 32, 32); }));
+
+      const warnings = [];
+      const origWarn = console.warn;
+      console.warn = (...a) => { warnings.push(a.join(' ')); origWarn.apply(console, a); };
+      let threw = null;
+      const versionBefore = am.atlasVersion;
+      try { await am.processTextureMaps(); } catch (e) { threw = e; }
+      console.warn = origWarn;
+
+      check('overflowing incremental add does not throw', threw === null, threw ? String(threw.message) : '');
+      check('compaction warning logged', warnings.some((w) => w.includes('compacting')), warnings.join(' | '));
+      check('fell back to a full compile', am.fullVersion > versionBefore);
+      check('1800 small + 300 big frames packed', small.packedFrames.length === 1800 && big.packedFrames.length === 300,
+        `${small.packedFrames.length} + ${big.packedFrames.length}`);
+      check('still one atlas', am.getAtlasCount() === 1, `${am.getAtlasCount()}`);
+      check('retain state rebuilt', am.packState !== null && am.packedByKey.size === 2100, `${am.packedByKey.size}`);
+      const err = overlapError(am);
+      check('no overlap after compaction', err === null, err ?? '');
+      let bigOk = true;
+      for (const pf of big.packedFrames) {
+        const d = atlasPixels(am, pf.atlasIndex, pf.atlasPosition.x + 16, pf.atlasPosition.y + 16, 1, 1);
+        if (d[0] !== 0xcc || d[1] !== 0 || d[2] !== 0xcc) bigOk = false;
+      }
+      check('big frames hold their own pixels', bigOk);
+    }
+
+    // ── proxy-dispose: the plain `.dispose()` method (what image-loader uses) ─
+    async function caseProxyDispose() {
+      const { scene, am } = await setup({ atlasSize: 1024, maxAtlases: 2, padding: 1, retainAtlas: true });
+      const a = await makeTm(scene, 'a', makeSheet(2, 1, 32, solid('#f00')));
+      await makeTm(scene, 'b', makeSheet(2, 1, 32, solid('#0f0')));
+      await am.processTextureMaps();
+      // Same as image-loader's removeGeneratedChildren: dispose, then drop from parent.components.
+      a.dispose();
+      scene.components = scene.components.filter((c) => c.id !== a.id);
+      check('imageCache evicted on .dispose()', am.imageCache.size === 1, `${am.imageCache.size}`);
+      await am.processTextureMaps();
+      const reRegistered = am.textureMapsByKey.has('a');
+      check('disposed map NOT re-registered by the compile-time resync', !reRegistered,
+        reRegistered ? 'still reachable through the type registry' : '');
+      check('its regions reclaimed (2 live)', am.packedByKey.size === 2, `${am.packedByKey.size}`);
+    }
+
+    const cases = { reuse: caseReuse, compact: caseCompact, 'proxy-dispose': caseProxyDispose };
+    const which = new URLSearchParams(location.search).get('case') ?? 'reuse';
+    log('', `case: ${which}`);
+    try { await cases[which](); }
+    catch (e) { check(`case ${which} ran without throwing`, false, e && e.stack ? e.stack : String(e)); }
+    log('', `\n${results.pass} passed, ${results.fail} failed`);
+    results.done = true;
+  </script>
+</body>
+</html>

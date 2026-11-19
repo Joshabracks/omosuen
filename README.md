@@ -255,8 +255,8 @@ Stages are GLSL ES 3.00 (`#version 300 es` is prepended if you omit it) and rece
 | Uniform | Type | Meaning |
 | --- | --- | --- |
 | `u_color` | `sampler2D` | previous stage's output; the composited frame at stage 0 |
-| `u_ids` | `highp usampler2D` | `.r` = cell material index, `.g` = sprite `shaderId` |
-| `u_aux` | `sampler2D` | `.r` = sprite coverage 0–1, `.g` = fog-of-war visibility 0–1 |
+| `u_ids` | `highp usampler2D` | `.r` = cell material index, `.g` = sprite `shaderId`, `.b` = cell region index (see below), `.a` = reserved |
+| `u_aux` | `sampler2D` | `.r` = sprite coverage 0–1, `.g` = fog-of-war visibility 0–1, `.b` = sprite material mask (the `material` texture's B channel — see below) |
 | `u_depth` | `sampler2D` | linear depth, at **base** resolution — sample via the bridge below |
 | `u_depthUvScale` / `u_depthUvOffset` | `vec2` | maps a full-res UV into `u_depth` |
 | `u_resolution` / `u_texelSize` | `vec2` | full-res size, and `1.0 / size` |
@@ -296,7 +296,7 @@ attachments. Nothing is allocated while `postEffects` is unset.
 
 **`sprite`** — Multi-channel billboard; per-channel frame selection, tint, opacity, optional
 silhouette, material-driven specular and emission. *Unique: one per parent nexus.*
-- `textureMapKeys?: { albedo?, normal?, material?, emission?: string }` (default all empty) — which texture-maps feed each channel. `material` is `R=metallic, G=roughness`, driving a cheap Blinn-Phong specular highlight (metallic gates it — non-metal sprites are unaffected).
+- `textureMapKeys?: { albedo?, normal?, material?, emission?: string }` (default all empty) — which texture-maps feed each channel. `material` is `R=metallic, G=roughness`, driving a cheap Blinn-Phong specular highlight (metallic gates it — non-metal sprites are unaffected). Build one with `packMaterial` rather than merging channels by hand — see **Channel packing** below.
 - `frame?: { albedo?, normal?, material?, emission?: number }` (default all `0`) — frame index per channel
 - `anchor?: Vector2D` (default `(0,0)`)
 - `tint?: Vector4D` (default `(1,1,1,1)`), `opacity?: number` (default `1.0`)
@@ -338,7 +338,7 @@ auto-sized to keep the whole authored map resident (today's pre-windowing behavi
 supplying `windowRadius` opts even a hand-authored map into windowed streaming.
 
 - `materials: Material[]` (**required**) — each `Material` bundles `{ albedoTextureKey, normalTextureKey, emissionTextureKey, materialTextureKey: string }` and a frame index per channel `{ albedoFrame, normalFrame, emissionFrame, materialFrame?: number (default 0) }`
-  - `sides?: { up?, southEast?, southWest?: { albedoFrame?, normalFrame?: number } }` — per-visible-side texture override (`up` = +Y, `southEast` = +X, `southWest` = +Z — the three faces the camera shows at `orbitYaw = 0`). Omitted sides/channels fall back to the base frame, so a material with no `sides` renders unchanged. Per-side frames must be frames of the **same** texture-map as the base (single atlas page); albedo + normal only. These names assume `orbitYaw` near `0`/`90`/`180`/`270`; at other yaws the camera sees faces these overrides don't cover, so authors relying on `sides` should snap orbit to those angles (a yaw-aware per-side remap is a possible follow-up, not implemented here).
+  - `sides?: { up?, southEast?, southWest?: { albedoFrame?, normalFrame?, emissionFrame?: number } }` — per-visible-side texture override (`up` = +Y, `southEast` = +X, `southWest` = +Z — the three faces the camera shows at `orbitYaw = 0`). Omitted sides/channels fall back to the base frame, so a material with no `sides` renders unchanged. Per-side frames must be frames of the **same** texture-map as the base (single atlas page); albedo, normal and emission. These names assume `orbitYaw` near `0`/`90`/`180`/`270`; at other yaws the camera sees faces these overrides don't cover, so authors relying on `sides` should snap orbit to those angles (a yaw-aware per-side remap is a possible follow-up, not implemented here).
   - `smoothness?: number` (0–15) — per-cell-type smoothing weight that overrides `smoothingWeights` for cells of this material; omit to use the map/per-cell weight.
 - `cellSize: Vector3D` (**required**)
 - `mapSize?: Vector3D`, `materialMap?: Array3D<number>` — together, the hand-authored path (both or neither; **required** for that path, omit both for the generative path)
@@ -388,6 +388,11 @@ through cold storage rather than the live WASM store, and comes back exactly as 
 time the window shifts there, **including through save/load** (`coldStorageEntries` in the
 serialized scene). A `generateCell`/`generateChunk` **registered via a `'cell-map-generator'`
 key** also survives save/load; a raw function passed directly does not.
+
+`regionIndexMap` is a third channel of the same kind: `setRegionIndex(coords, 0-255)` /
+`getRegionIndex(coords)` tag a cell with a region a post effect can recolour (read as `u_ids.b` —
+see **Post-process effects**), with identical windowing, off-window and save/load behaviour to the
+emission colour below. An untouched map serializes exactly as before the channel existed.
 
 `emissionColorMap`/`smoothingWeights` get the same windowed treatment: `setEmissionColor`/
 `getEmissionColor` take a **world** cell coordinate (matching `setCellData`) and fully support an
@@ -458,6 +463,120 @@ is session-only and does **not** persist through save/load, unlike terrain memor
   layout). Clears stale `packedFrames`; follow with `atlasManager.compiled = false` +
   `processTextureMaps()` to re-pack. `imageSize` is only needed for the whole-image fallback
   (`imageType === undefined`) — grid/framemap configs don't need it.
+
+**Channel packing.** A sprite's `material` texture packs several single-channel maps into the RGB
+of one image. Authoring those as separate grayscale files and merging them in external software is
+a step the engine can do for you:
+
+```js
+const canvas = await Omosuen.packMaterial({
+  metallic: 0,                 // a plain number is a constant — no file needed
+  roughness: './hero-rough.png',
+  mask: { source: './hero-regions.png', quantize: 4 },
+});
+
+await Omosuen.newComponent('texture-map', {
+  textureMapKey: 'hero-material',
+  filePath: 'packed://hero/material',   // synthetic — used only as the atlas dedup key
+  sourceImage: canvas,
+}, scene);
+```
+
+`packMaterial` maps `metallic → R`, `roughness → G`, `mask → B`, and returns a **canvas** that
+drops straight into `sourceImage` — no PNG encode/decode round-trip and no object URL to revoke.
+`packChannels` is the general form, keyed on `{ r, g, b, a }` with no opinion about meaning.
+
+Each channel accepts a URL, `Blob`/`File`, `ImageData`, a canvas/`ImageBitmap`, or a **number**
+(a constant 0–1). Per-channel options: `from` (which channel of the source to read, default `r`,
+or `'luminance'`), `default` (used where the source is absent or transparent), and `quantize`
+(snap to N evenly-spaced levels).
+
+Four things worth knowing:
+
+- **The defaults match the shader: metallic 0, roughness 1 (fully rough).** An unauthored
+  roughness channel packed as `0` is a *mirror finish*, not matte. `packMaterial` gets this right;
+  hand-merged textures frequently do not.
+- **An all-constant pack has no size to infer.** `packMaterial({ metallic: 1, roughness: 0.35 })`
+  is a perfectly good "all metal, semi-gloss" material, but nothing in it says how big the image
+  should be — pass an explicit `size`. (The `image-loader` plugin fills this in from the albedo,
+  since a material has to register with its albedo pixel-for-pixel anyway.)
+- **Sources must agree on size**, or the call throws and names every source with its dimensions —
+  a material map that does not register with its albedo pixel-for-pixel is misaligned in a way
+  that survives review. Override with an explicit `size`, or `fit: 'scale' | 'top-left'`.
+- **Output alpha is forced opaque.** The renderer ignores a material texture's alpha, and a
+  non-opaque one would have its RGB mangled by the atlas blit's premultiplication.
+- **For a region mask, prefer a `Blob` source and set `quantize`.** Only the Blob path can disable
+  colour-space conversion on decode; a value that drifts a few LSBs across a band boundary
+  silently reassigns a region.
+- **`quantize` must match how many levels the file actually uses.** It snaps to N evenly-spaced
+  values across 0–255, so quantising to fewer levels than the art contains merges regions into
+  each other — or into "no region" — with no warning anywhere. Author greys on the grid `quantize`
+  will produce: `2` → 0, 255; `3` → 0, 128, 255; `4` → 0, 85, 170, 255.
+
+**The mask reaches post-processing.** A sprite's material `B` channel is written to `u_aux.b`
+(`unified.frag`), so a post effect can recolour regions *within* one sprite without that sprite
+needing a shader of its own:
+
+```glsl
+// Recover the region index the artist painted.
+float steps = maskBands - 1.0;
+float band  = floor(texture(u_aux, v_uv).b * steps + 0.5);
+if (band < 0.5) { fragColor = texture(u_color, v_uv); return; }  // band 0 = no region
+```
+
+**Cells have the same idea, in a better channel.** Terrain regions reach a post effect as
+`u_ids.b`, from either of two sources:
+
+- **Per-texel** — a cell `Material`'s `materialTextureKey` texture packs `R = metallic,
+  G = roughness, B = region`, exactly like a sprite's. Build it with the same `packMaterial`. The
+  region can vary *within* one cell face, so a single 16×16 file can paint three different regions
+  across every tile.
+- **Per-cell** — `cellMap.setRegionIndex(coords, 0-255)` sets a flat index for a whole cell,
+  settable at runtime like `setEmissionColor` (no remesh; off-window writes persist through cold
+  storage and save/load). This is the fallback for materials with no texture.
+
+Per-texel wins where a material texture exists; they share one channel because they answer the same
+question. Reading it:
+
+```glsl
+uint region = texture(u_ids, v_uv).b;
+if (region == 0u) { fragColor = texture(u_color, v_uv); return; }   // 0 = no region
+// A quantised mask arrives as its authored byte: for `maskLevels: 4` that is
+// 0 / 85 / 170 / 255, so divide by 255/(N-1) to get a small band index.
+```
+
+**`u_ids.b` is exact; `u_aux.b` blends.** The id attachment is an integer target and integer targets
+never blend in ES 3.0, so a cell's region reads back precisely as written even under a partially
+transparent sprite — compare it with `==`. The sprite mask lives in a float attachment that does
+blend, so its values fray at antialiased edges and must be thresholded. That asymmetry is why the
+two live where they do, and it means a sprite over terrain carries **both** masks at once: its own
+in `u_aux.b`, the ground's in `u_ids.b`.
+
+Two traps specific to the per-texel path, both silent:
+
+- **A region index must not be interpolated.** Cell albedo is sampled with a bilinear blend across
+  three triplanar planes to stop it shimmering; doing that to an index turns a quantised
+  `0/85/170/255` mask into all 256 values. The engine therefore point-samples the B channel from the
+  dominant plane only. If you write your own sampling, do the same.
+- **`quantize` must match the levels the art uses** — see the channel-packing note above.
+
+For "recolour every cell of material 3" you need none of this: `u_ids.r` already carries the
+material index on every cell texel.
+
+Band 0 means "no region", which is what every unmasked sprite and every cell writes — so a stage
+like this is a no-op on the rest of the scene by construction. Two caveats: the aux attachment is
+a float buffer and **blends**, so a sprite's antialiased outer edge carries values between bands
+(round to the nearest band rather than testing equality); and the silhouette pass writes mask 0
+deliberately, since an obscured sprite has no visible surface to recolour.
+
+`test/scenes/channel-pack-test.js` exercises this end to end — a greyscale file beside the albedo,
+through `packMaterial`, the atlas, the shader, and out to a post stage that recolours each region.
+
+`packFrameStrip(frames)` is the spatial counterpart: it lays separate per-frame images out as one
+strip and returns `{ canvas, frames }` for `sourceImage` + `imageType`. If a spritesheet already
+exists as one image, `GridConfig` slices it with no compositing and is the cheaper path. When both
+are needed, **lay out frames first and channel-pack second** — one interleave over the finished
+strip instead of one per frame.
 
 **`atlas-manager`** — Packs texture-maps into GPU atlases (incremental upload in retain mode).
 *Unique: one per scene.*
@@ -575,12 +694,17 @@ Plugin/UI registrations must happen **before** the scene that uses them is loade
   npm i github:joshabracks/omosuen#state-overlay0.0.6
   ```
 
-- **[omosuen-aseprite-loader](plugins/aseprite-loader/README.md)** — ingests
+- **[omosuen-image-loader](plugins/image-loader/README.md)** — ingests
   [Aseprite](https://www.aseprite.org/) (`.aseprite`/`.ase`) files into layered,
-  animated entities with shared atlases and animation maps.
+  animated entities with shared atlases and animation maps, *or* plain images
+  declared per sprite texture channel — including a `material` assembled from
+  `{ metallic, roughness, mask }` without merging channels by hand.
+
+  Renamed from `omosuen-aseprite-loader`; the component type is now
+  `'image-loader'`. Existing `aseprite-loader` releases stay installable.
 
   ```bash
-  npm i github:joshabracks/omosuen#aseprite-loader0.3.0
+  npm i github:joshabracks/omosuen#image-loader1.0.0
   ```
 
 - **[omosuen-browser-local-storage](plugins/browser-local-storage/README.md)** —

@@ -115,7 +115,17 @@ function allocateColorTexture(
 }
 
 /**
- * Creates the RG16UI id texture if absent, then (re)allocates its storage.
+ * Creates the RGBA16UI id texture if absent, then (re)allocates its storage.
+ *
+ * Deliberately shared by the cell FBO and the composite: `post.frag` copies
+ * between them channel-for-channel, so they have to agree on channel count.
+ * Splitting the allocator would let them drift apart silently.
+ *
+ * Channels: .r = cell material index, .g = sprite id (fogVisibility in the cell
+ * FBO, unpacked by the upscale), .b = cell region index, .a = reserved.
+ * Integer attachments never blend in ES 3.0, which is exactly why the region
+ * index lives here rather than in the aux attachment alongside the sprite mask
+ * -- it round-trips exactly instead of fading at antialiased sprite edges.
  *
  * Unsigned-integer format on purpose. ES 3.0 skips blending entirely for
  * integer color buffers, so ids written here cannot be corrupted by the sprite
@@ -138,11 +148,11 @@ function allocateIdTexture(
   gl.texImage2D(
     gl.TEXTURE_2D,
     0,
-    gl.RG16UI,
+    gl.RGBA16UI,
     width,
     height,
     0,
-    gl.RG_INTEGER,
+    gl.RGBA_INTEGER,
     gl.UNSIGNED_SHORT,
     null,
   );

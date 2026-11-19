@@ -50,10 +50,12 @@ export type {
   AseFrame,
   AseTag,
 } from './parser/types.js';
-export { clearAsepriteCache } from './session.js';
+export { clearAsepriteCache, remapFor } from './session.js';
 export type {
   AsepriteLoaderHandle,
   AsepriteSelectionChange,
+  PaletteEntry,
+  RemapByLayer,
 } from './session.js';
 export {
   resolveFrameSelector,

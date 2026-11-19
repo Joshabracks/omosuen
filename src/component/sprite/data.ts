@@ -9,6 +9,12 @@ import {
 } from '../types';
 import { Vector2D, Vector3D, Vector4D } from '../../math';
 import type { SpriteMethods } from './methods';
+import {
+  normalizePaletteRemap,
+  clonePaletteRemap,
+  type PaletteEntry,
+  type PackedPalette,
+} from './palette';
 
 /**
  * Sprite component for multi-channel texture rendering.
@@ -55,6 +61,25 @@ export interface SpriteT
    * Multiplied with texture color during rendering.
    */
   tint: Vector4D;
+
+  /**
+   * Exact-RGB swaps applied to the sampled albedo before lighting and before
+   * `tint`. A texel whose 8-bit RGB equals an entry's `from` takes its `to`
+   * colour (if given) and has its alpha multiplied by `alpha / 255` (if
+   * given); alpha 0 switches the texel off (discarded — not drawn and kept
+   * out of the per-pixel id mask). Up to `MAX_PALETTE_ENTRIES` (48) entries; null = no remap.
+   * Lets many sprites share one atlas region yet each show its own colours
+   * (skin, hair, clothing…) and hide or fade marked regions.
+   *
+   * Only fully opaque texels match reliably: the atlas goes through a 2D
+   * canvas, which premultiplies alpha, so a semi-transparent texel's RGB can
+   * shift by a step. Set via `setPaletteRemap` (which validates); a direct
+   * assignment is also picked up, but is not validated.
+   */
+  paletteRemap: PaletteEntry[] | null;
+
+  /** Runtime-only upload cache for `paletteRemap`, rebuilt by the renderer. Never serialized. */
+  _palettePacked?: PackedPalette;
 
   /**
    * Opacity/alpha transparency (0-1 range).
@@ -172,6 +197,8 @@ export interface SpriteOptions extends ComponentOptions {
   };
   anchor?: Vector2D;
   tint?: Vector4D;
+  /** Exact-RGB colour swaps; see `SpriteT.paletteRemap`. Validated by the builder. */
+  paletteRemap?: PaletteEntry[] | null;
   opacity?: number;
   shaderId?: number;
   showSilhouette?: boolean;
@@ -212,6 +239,10 @@ export function builder(options: SpriteOptions): SpriteT {
 
     anchor: options.anchor ?? new Vector2D(0, 0),
     tint: options.tint ?? new Vector4D(1, 1, 1, 1),
+    paletteRemap: normalizePaletteRemap(
+      options.paletteRemap,
+      `sprite '${options.name}'`,
+    ),
     opacity: options.opacity ?? 1.0,
     shaderId: options.shaderId ?? 0,
     showSilhouette: options.showSilhouette ?? false,
@@ -263,6 +294,7 @@ function serialize(component: ComponentData): any {
       z: s.tint.z,
       w: s.tint.w,
     },
+    paletteRemap: clonePaletteRemap(s.paletteRemap),
     opacity: s.opacity,
     shaderId: s.shaderId,
     showSilhouette: s.showSilhouette,
@@ -312,6 +344,7 @@ function deserialize(data: any): DeserializeResult<SpriteT> {
     frame,
     anchor,
     tint,
+    paletteRemap,
     opacity,
     shaderId,
     showSilhouette,
@@ -434,6 +467,8 @@ function deserialize(data: any): DeserializeResult<SpriteT> {
       frame: frame as SpriteOptions['frame'],
       anchor: anchorVec,
       tint: tintVec,
+      // The builder validates it (drops malformed entries with a warning).
+      paletteRemap: paletteRemap as PaletteEntry[] | null | undefined,
       opacity: opacity as number,
       shaderId: shaderId as number | undefined,
       showSilhouette: showSilhouette as boolean | undefined,
@@ -461,6 +496,8 @@ export const PROPERTY_ALLOWLIST: string[] = [
   'frame',
   'anchor',
   'tint',
+  'paletteRemap',
+  '_palettePacked',
   'opacity',
   'shaderId',
   'showSilhouette',

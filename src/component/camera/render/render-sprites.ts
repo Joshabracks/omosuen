@@ -30,9 +30,26 @@ import {
 } from '../../fog-of-war/methods';
 import type { ResolvedSource } from '../../fog-of-war/sweep';
 import { computeSolidityMap } from './visibility-mask';
+import { packPaletteRemap, type PackedPalette } from '../../sprite/palette';
 
 /** Per-sprite gather scratch for fog visibility; reused, never retained. */
 const nearShapes: ResolvedSource[] = [];
+
+/**
+ * The sprite's packed palette remap, or null when it has none. Repacked only
+ * when `paletteRemap` is a different array from the one last packed, so a
+ * direct assignment is picked up and an unchanged remap costs one compare.
+ */
+function spritePalette(sprite: SpriteT): PackedPalette | null {
+  const remap = sprite.paletteRemap;
+  if (!remap || remap.length === 0) return null;
+  let packed = sprite._palettePacked;
+  if (!packed || packed.source !== remap) {
+    packed = packPaletteRemap(remap);
+    sprite._palettePacked = packed;
+  }
+  return packed;
+}
 
 /** Default cell dimensions when no cell-maps are in the scene. */
 const DEFAULT_CELL_SIZE_X = 32;
@@ -380,6 +397,12 @@ export function renderSprites(
   const u_emissionColor = gl.getUniformLocation(program, 'u_emissionColor');
   const u_cameraWorldPos = gl.getUniformLocation(program, 'u_cameraWorldPos');
   const u_tint = gl.getUniformLocation(program, 'u_tint');
+  const u_remapFrom = gl.getUniformLocation(program, 'u_remapFrom');
+  const u_remapTo = gl.getUniformLocation(program, 'u_remapTo');
+  const u_remapCount = gl.getUniformLocation(program, 'u_remapCount');
+  // The remap last uploaded this pass (null = count 0). Uniform values persist
+  // across passes, so the first sprite always uploads (`undefined` never matches).
+  let lastPalette: PackedPalette | null | undefined = undefined;
   const u_opacity = gl.getUniformLocation(program, 'u_opacity');
   const u_uvBounds = gl.getUniformLocation(program, 'u_uvBounds');
   const u_normalUVBounds = gl.getUniformLocation(program, 'u_normalUVBounds');
@@ -993,6 +1016,17 @@ export function renderSprites(
       sprite.tint.z,
       sprite.tint.w,
     );
+    const palette = spritePalette(sprite);
+    if (palette !== lastPalette) {
+      if (palette) {
+        gl.uniform4uiv(u_remapFrom, palette.from);
+        gl.uniform4uiv(u_remapTo, palette.to);
+        gl.uniform1i(u_remapCount, palette.count);
+      } else {
+        gl.uniform1i(u_remapCount, 0);
+      }
+      lastPalette = palette;
+    }
     gl.uniform1f(u_opacity, sprite.opacity);
 
     // Set emission uniforms

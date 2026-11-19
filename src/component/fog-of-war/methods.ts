@@ -10,6 +10,7 @@ import { getActiveScene } from '../../scene';
 import { sceneIndex } from '../scene-index';
 import type { NexusT } from '../nexus/data';
 import type { SpriteT, SpriteOptions } from '../sprite/data';
+import { clonePaletteRemap } from '../sprite/palette';
 import type { TransformT, TransformOptions } from '../transform/data';
 import type { VisionSourceT } from '../vision-source/data';
 import type { VisibilityVolumeT } from '../visibility-volume/data';
@@ -537,6 +538,9 @@ async function spawnPhantomNexus(
       sprite.tint.z,
       sprite.tint.w,
     ),
+    // Without this an out-of-sight unit's stand-in reverts to the shared
+    // sheet's base colours.
+    paletteRemap: clonePaletteRemap(sprite.paletteRemap),
     opacity: sprite.opacity,
     showSilhouette: sprite.showSilhouette,
     silhouetteColor: new Vector4D(

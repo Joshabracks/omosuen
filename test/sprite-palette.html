@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sprite Palette Remap</title>
+  <style>
+    body { background: #111; color: #ddd; font: 13px/1.5 monospace; margin: 0; }
+    #out { position: absolute; left: 512px; top: 16px; right: 16px; white-space: pre-wrap; }
+    .pass { color: #6f6; } .fail { color: #f66; } .note { color: #fc6; }
+  </style>
+</head>
+<body>
+  <pre id="out"></pre>
+  <script>
+    // Test-only: keep the drawing buffer after compositing so the page can read
+    // back exactly what was presented, at any time.
+    const origGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, attrs) {
+      if (type === 'webgl2') attrs = { ...(attrs || {}), preserveDrawingBuffer: true };
+      return origGetContext.call(this, type, attrs);
+    };
+  </script>
+  <script src="./dev/omosuen.js"></script>
+  <script type="module">
+    // Browser check for the sprite palette remap (engine `paletteRemap` +
+    // shader, controller helper, image-loader `remap`), read back from the
+    // real render. The scene's only light is a white ambient at brightness 1,
+    // so a sprite's on-screen colour equals its (remapped) albedo exactly.
+    const O = window.Omosuen;
+    const out = document.getElementById('out');
+    const results = { pass: 0, fail: 0, failures: [], notes: [] };
+    window.__results = results;
+
+    const captured = [];
+    for (const level of ['warn', 'error']) {
+      const orig = console[level].bind(console);
+      console[level] = (...a) => { captured.push({ level, msg: a.map(String).join(' ') }); orig(...a); };
+    }
+
+    function log(cls, msg) {
+      const s = document.createElement('span');
+      s.className = cls;
+      s.textContent = msg + '\n';
+      out.appendChild(s);
+    }
+    function check(label, ok, detail) {
+      if (ok) { results.pass++; log('pass', `PASS  ${label}`); }
+      else { results.fail++; results.failures.push(label + (detail ? ` -- ${detail}` : '')); log('fail', `FAIL  ${label}${detail ? ' -- ' + detail : ''}`); }
+    }
+    function note(msg) { results.notes.push(msg); log('note', `NOTE  ${msg}`); }
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const frames = (n) => new Promise((r) => { let i = 0; const step = () => (++i >= n ? r() : requestAnimationFrame(step)); requestAnimationFrame(step); });
+
+    const FILE = './assets/aseprite/MiniSwordMan.aseprite';
+    const BG = [26, 26, 38];   // viewport backgroundColor (0.1, 0.1, 0.15) in bytes
+    const key = (r, g, b) => (r << 16) | (g << 8) | b;
+    const rgbOf = (k) => [(k >> 16) & 255, (k >> 8) & 255, k & 255];
+
+    /** The presented viewport pixels: Map<colourKey, count> and the raw bytes. */
+    async function readScreen() {
+      await frames(4);
+      const canvas = document.querySelector('#SPViewport canvas');
+      const gl = canvas.getContext('webgl2');
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const px = new Uint8Array(w * h * 4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const counts = new Map();
+      for (let i = 0; i < px.length; i += 4) {
+        const k = key(px[i], px[i + 1], px[i + 2]);
+        counts.set(k, (counts.get(k) ?? 0) + 1);
+      }
+      return { px, counts };
+    }
+    // The clear colour, as the GPU rounds it (0.1 * 255 = 25.5 lands on 25 or
+    // 26 depending on the driver): the most common colour on screen.
+    let bgKey = key(...BG);
+    const spriteColours = (scr) => new Map([...scr.counts].filter(([k]) => k !== bgKey));
+
+    /** Opaque colours in a texture-map's cell for one frame: Map<key, count>. */
+    function cellColours(tm, frameIndex) {
+      const f = tm.originalFrames.find((o) => o.frameIndex === frameIndex);
+      const d = tm.sourceImage.getContext('2d').getImageData(f.position.x, f.position.y, f.size.x, f.size.y).data;
+      const m = new Map();
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] !== 255) continue;
+        const k = key(d[i], d[i + 1], d[i + 2]);
+        m.set(k, (m.get(k) ?? 0) + 1);
+      }
+      return m;
+    }
+
+    /** Positions (pixel indices) where `a` and `b` differ. */
+    function diffPixels(a, b) {
+      const out = [];
+      for (let i = 0; i < a.px.length; i += 4) {
+        if (a.px[i] !== b.px[i] || a.px[i + 1] !== b.px[i + 1] || a.px[i + 2] !== b.px[i + 2] || a.px[i + 3] !== b.px[i + 3]) out.push(i);
+      }
+      return out;
+    }
+
+    async function run() {
+      await O.init({ plugins: ['./dev/image-loader.plugin.js'] });
+      O.registerSceneModule('sp', '/scenes/sprite-palette-test.js');
+      await O.switchScene('sp');
+      O.start(60);
+      for (let i = 0; i < 50 && O.getInitQueueLength() !== -1; i++) await wait(50);
+      const scene = O.getActiveScene();
+
+      const nexus = await O.newComponent('nexus', { name: 'unit' });
+      scene.addComponent(nexus);
+      nexus.addComponent(await O.newComponent('transform', {
+        name: 'unit Transform', position: new O.Vector3D(0, 0, 0),
+        rotation: new O.Vector3D(0, 0, 0), scale: new O.Vector3D(4, 4, 4),
+      }));
+      const loader = await O.newComponent('image-loader', {
+        name: 'unit', filePath: FILE, flatten: false, anchorMode: 'center',
+        layers: ['main', 'outline'], frames: ['idle'],
+      });
+      nexus.addComponent(loader);
+      await loader.ready;
+      const ac = nexus.getComponentByType('animation-controller', false);
+      ac.stop();
+      const sprites = () => nexus.getComponentsByType('sprite', false).filter((s) => !s._disposed);
+      const byName = (n) => sprites().find((s) => s.name === n);
+      const frame = byName('main').frame.albedo;
+      const tm = (layer) => scene.getComponentsByType('texture-map', true).find((t) => !t._disposed && t.textureMapKey === `aseprite:unit:${layer}`);
+      const mainCols = cellColours(tm('main'), frame);
+      const outlineCols = cellColours(tm('outline'), frame);
+
+      // ── baseline: the pipeline is neutral ─────────────────────────────────
+      log('', '— baseline —');
+      const base = await readScreen();
+      bgKey = [...base.counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      note(`background renders as ${rgbOf(bgKey)}`);
+      const baseCols = spriteColours(base);
+      check('sprite is on screen', baseCols.size > 0, `${baseCols.size} non-background colours`);
+      const known = new Set([...mainCols.keys(), ...outlineCols.keys()]);
+      const unknown = [...baseCols.keys()].filter((k) => !known.has(k));
+      check('on-screen colours are exactly the authored colours (lighting = 1, no post shift)',
+        unknown.length === 0, unknown.slice(0, 6).map((k) => rgbOf(k).join(',')).join(' | '));
+
+      // A colour drawn by `main` only (never by outline), clearly visible.
+      const A = [...mainCols.entries()]
+        .filter(([k]) => !outlineCols.has(k) && baseCols.has(k))
+        .sort((a, b) => b[1] - a[1])[0]?.[0];
+      check('found a main-only colour to remap', A !== undefined);
+      const B = key(1, 254, 3);
+      check('target colour is not already on screen', !baseCols.has(B));
+      note(`remap ${rgbOf(A)} → ${rgbOf(B)} (${baseCols.get(A)} px on screen)`);
+
+      // ?show → leave a vivid remap on screen to look at, skip the rest.
+      if (new URLSearchParams(location.search).has('show')) {
+        const vivid = [[230, 60, 40], [250, 200, 40], [60, 200, 90], [240, 240, 240]];
+        const ks = [...mainCols.keys()];
+        await loader.setPaletteRemap('*', [
+          ...ks.slice(0, 4).map((k, i) => ({ from: rgbOf(k), to: vivid[i] })),
+          { from: rgbOf(ks[4]), alpha: 0 },                     // switched off
+          { from: rgbOf(ks[5]), to: [40, 160, 230], alpha: 110 }, // recoloured + faded
+        ]);
+        ac.play('idle', true);
+        note('show mode: 4 colours recoloured, 1 switched off, 1 recoloured + faded; test stopped here');
+        return;
+      }
+
+      // ── loader.setPaletteRemap on one layer ──────────────────────────────
+      log('', '\n— loader remap, one layer —');
+      await loader.setPaletteRemap('main', [{ from: rgbOf(A), to: rgbOf(B) }]);
+      const r1 = await readScreen();
+      check('remapped colour shows exactly where the original was',
+        r1.counts.get(B) === base.counts.get(A) && !r1.counts.has(A), `${r1.counts.get(B)} vs ${base.counts.get(A)}, left ${r1.counts.get(A) ?? 0}`);
+      const changed = diffPixels(base, r1);
+      const onlyA = changed.every((i) => key(base.px[i], base.px[i + 1], base.px[i + 2]) === A);
+      check('no other pixel changed (alpha and every other colour untouched)', onlyA && changed.length === base.counts.get(A),
+        `${changed.length} changed`);
+      check('loader.remap records it for saving', loader.remap?.main?.length === 1 && loader.remap.main[0].to.join() === rgbOf(B).join());
+      check('sprite carries it', byName('main').paletteRemap?.length === 1 && !byName('outline').paletteRemap);
+
+      // ── controller '*' covers every layer ────────────────────────────────
+      log('', '\n— controller remap, every layer —');
+      const O1 = [...outlineCols.keys()].find((k) => baseCols.has(k) && !mainCols.has(k));
+      const C = key(250, 3, 250);
+      ac.setPaletteRemap('*', [{ from: rgbOf(A), to: rgbOf(B) }, { from: rgbOf(O1), to: rgbOf(C) }]);
+      const r2 = await readScreen();
+      check('both layers remapped', r2.counts.get(B) === base.counts.get(A) && r2.counts.get(C) === base.counts.get(O1) && !r2.counts.has(O1),
+        `B ${r2.counts.get(B)}/${base.counts.get(A)}, C ${r2.counts.get(C)}/${base.counts.get(O1)}`);
+      check('sprites get separate copies', byName('main').paletteRemap !== byName('outline').paletteRemap);
+
+      // ── clearing restores the original exactly ───────────────────────────
+      ac.setPaletteRemap('*', null);
+      const r3 = await readScreen();
+      check('clearing restores the original frame byte for byte', diffPixels(base, r3).length === 0, `${diffPixels(base, r3).length} px differ`);
+
+      // ── sprite API directly; swaps don't chain ───────────────────────────
+      log('', '\n— sprite API —');
+      const main = byName('main');
+      main.setPaletteRemap([{ from: rgbOf(A), to: rgbOf(B) }, { from: rgbOf(B), to: [9, 9, 9] }]);
+      const r4 = await readScreen();
+      check('a → b, b → c applies once (no chaining)', r4.counts.get(B) === base.counts.get(A) && !r4.counts.has(key(9, 9, 9)));
+      main.paletteRemap = [{ from: rgbOf(A), to: [200, 100, 50] }];
+      const r5 = await readScreen();
+      check('direct assignment is picked up', r5.counts.get(key(200, 100, 50)) === base.counts.get(A));
+      const ser = O.SpriteSerializer.serialize(main);
+      const back = O.SpriteSerializer.deserialize(JSON.parse(JSON.stringify(ser)));
+      check('sprite serialize → deserialize keeps the remap',
+        back.component?.paletteRemap?.length === 1 && back.component.paletteRemap[0].to.join() === '200,100,50', JSON.stringify(ser.paletteRemap));
+      const legacy = { ...JSON.parse(JSON.stringify(ser)) };
+      delete legacy.paletteRemap;
+      check('a save without paletteRemap loads with none', O.SpriteSerializer.deserialize(legacy).component?.paletteRemap === null);
+      let mark = captured.length;
+      const many = Array.from({ length: 50 }, (_, i) => ({ from: [i, 0, 0], to: [0, i, 0] }));
+      main.setPaletteRemap(many);
+      check('over 48 entries: truncated with a warning', main.paletteRemap.length === 48 &&
+        captured.slice(mark).some((m) => /limit is 48/.test(m.msg)));
+      main.setPaletteRemap(null);
+
+      // ── alpha: fade and switch off ───────────────────────────────────────
+      log('', '\n— alpha —');
+      const ID = 4242;
+      main.shaderId = ID;
+      const camera = scene.getComponentsByType('camera', true)[0];
+      /** Texels of the composite id mask carrying `ID` (the sprite id is in .g). */
+      function idCount() {
+        const canvas = document.querySelector('#SPViewport canvas');
+        const gl = canvas.getContext('webgl2');
+        const fb = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, camera.glResources.compositeIdTexture, 0);
+        const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+        const ids = new Uint32Array(w * h * 4);
+        gl.readPixels(0, 0, w, h, gl.RGBA_INTEGER, gl.UNSIGNED_INT, ids);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.deleteFramebuffer(fb);
+        let n = 0;
+        for (let i = 1; i < ids.length; i += 4) if (ids[i] === ID) n++;
+        return n;
+      }
+      const a0 = await readScreen();
+      const idBase = idCount();
+      check('id mask carries the sprite', idBase > 0, `${idBase}`);
+
+      main.setPaletteRemap([{ from: rgbOf(A), to: rgbOf(B) }]);
+      await readScreen();
+      check('a colour-only remap leaves the id mask alone', idCount() === idBase, `${idCount()} vs ${idBase}`);
+
+      main.setPaletteRemap([{ from: rgbOf(A), alpha: 0 }]);
+      const off = await readScreen();
+      const offChanged = diffPixels(a0, off);
+      check('alpha 0: exactly the matched pixels change', offChanged.length === a0.counts.get(A) &&
+        offChanged.every((i) => key(a0.px[i], a0.px[i + 1], a0.px[i + 2]) === A), `${offChanged.length} vs ${a0.counts.get(A)}`);
+      check('alpha 0: the colour is gone from screen', !off.counts.has(A));
+      const idOff = idCount();
+      check('alpha 0: those texels leave the id mask too (discarded, not transparent)', idOff < idBase, `${idOff} vs ${idBase}`);
+
+      main.setPaletteRemap([...mainCols.keys()].map((k) => ({ from: rgbOf(k), alpha: 0 })));
+      const allOff = await readScreen();
+      check('every main colour off: main vanishes from screen', [...mainCols.keys()].every((k) => outlineCols.has(k) || !allOff.counts.has(k)));
+      check('…and from the id mask', idCount() === 0, `${idCount()}`);
+
+      main.setPaletteRemap([{ from: rgbOf(A), alpha: 128 }]);
+      const halfScr = await readScreen();
+      const aPos = diffPixels(a0, halfScr);
+      const t = 128 / 255;
+      const want = rgbOf(A).map((c, i) => c * t + rgbOf(bgKey)[i] * (1 - t));
+      const near = aPos.filter((i) => [0, 1, 2].every((c) => Math.abs(halfScr.px[i + c] - want[c]) <= 3));
+      check('alpha 128 keeps the colour and blends it half over the background',
+        aPos.length === a0.counts.get(A) && near.length >= 0.8 * aPos.length,
+        `${near.length}/${aPos.length} within ±3 of ${want.map(Math.round)}; e.g. ${aPos.length ? [...halfScr.px.slice(aPos[0], aPos[0] + 3)] : '-'}`);
+      check('alpha 128: still in the id mask', idCount() === idBase, `${idCount()} vs ${idBase}`);
+
+      main.setPaletteRemap([{ from: rgbOf(A), to: [255, 0, 0], alpha: 255 }]);
+      const both = await readScreen();
+      check('colour + alpha 255 = plain recolour', both.counts.get(key(255, 0, 0)) === a0.counts.get(A));
+
+      main.setPaletteRemap(null);
+      main.shaderId = 0;
+      const back2 = await readScreen();
+      check('clearing restores the original exactly', diffPixels(a0, back2).length === 0);
+
+      // ── loader '*' reaches layers added later by extend ──────────────────
+      log('', '\n— loader remap + extend —');
+      await loader.setPaletteRemap('main', null);
+      await loader.setPaletteRemap('*', [{ from: rgbOf(A), to: rgbOf(B) }]);
+      check('clearing a layer key falls back to *', byName('main').paletteRemap?.[0]?.to.join() === rgbOf(B).join() && loader.remap.main === undefined);
+      await loader.extend({ layers: ['hands'] });
+      const hands = byName('hands');
+      check('a layer added by extend gets the loader remap', hands && hands.paletteRemap?.[0]?.to.join() === rgbOf(B).join());
+      if (typeof O.serializeComponentRecursive === 'function') {
+        const saved = O.serializeComponentRecursive(loader);
+        check('loader serializes its remap', JSON.stringify(saved.remap ?? saved.data?.remap ?? null).includes('"*"'), JSON.stringify(saved).slice(0, 200));
+      } else {
+        note('serializeComponentRecursive not exported; loader serialization checked via loader.remap only');
+      }
+
+      // ── fog-of-war phantom keeps the colours ─────────────────────────────
+      log('', '\n— fog-of-war phantom —');
+      await loader.release({ layers: ['hands'] });
+      // Fog-of-war only tracks sprites once a cell-map exists; an all-air one
+      // draws nothing.
+      await O.newComponent('cell-map', {
+        name: 'Air', materials: [{ name: 'unused' }],
+        cellSize: new O.Vector3D(32, 16, 32),
+      }, scene);
+      scene.addComponent(await O.newComponent('fog-of-war', { name: 'Fog' }));
+      const eye = await O.newComponent('nexus', { name: 'eye' });
+      scene.addComponent(eye);
+      const eyeT = await O.newComponent('transform', {
+        name: 'eye Transform', position: new O.Vector3D(0, 0, 0),
+        rotation: new O.Vector3D(0, 0, 0), scale: new O.Vector3D(1, 1, 1),
+      });
+      eye.addComponent(eyeT);
+      eye.addComponent(await O.newComponent('vision-source', { name: 'eye Vision', radius: 400, fadeWidth: 8 }));
+      for (let i = 0; i < 60 && byName('main')._fowStatus !== 'visible'; i++) await frames(2);
+      check('unit fully seen first', byName('main')._fowStatus === 'visible', byName('main')._fowStatus);
+      eyeT.setPosition(new O.Vector3D(20000, 0, 0));
+      let phantom = null;
+      for (let i = 0; i < 120 && !phantom; i++) {
+        await frames(2);
+        phantom = scene.getComponentsByType('sprite', true).find((s) => !s._disposed && s.name === 'main-fow-phantom-sprite');
+      }
+      check('a phantom was spawned', !!phantom, byName('main')._fowStatus);
+      if (phantom) {
+        check('phantom carries the remap', phantom.paletteRemap?.[0]?.to.join() === rgbOf(B).join(), JSON.stringify(phantom.paletteRemap));
+        check('…as its own copy', phantom.paletteRemap !== byName('main').paletteRemap);
+      }
+
+      const glErrors = captured.filter((m) => /GL_INVALID|WebGL/.test(m.msg));
+      check('no WebGL errors', glErrors.length === 0, glErrors.slice(0, 3).map((m) => m.msg).join(' | '));
+      const errors = captured.filter((m) => m.level === 'error');
+      check('no console errors', errors.length === 0, errors.slice(0, 3).map((m) => m.msg).join(' | '));
+    }
+
+    try { await run(); }
+    catch (e) { check('test ran without throwing', false, e && e.stack ? e.stack : String(e)); }
+    log('', `\n${results.pass} passed, ${results.fail} failed`);
+    results.done = true;
+  </script>
+</body>
+</html>

@@ -69,6 +69,33 @@ export interface AsepriteSessionConfig {
   position?: Vector3D;
   scale?: Vector3D;
   layerSlots?: Record<string, string>;
+  /** Palette remaps by layer name (or `'*'` for every layer); see {@link RemapByLayer}. */
+  remap?: RemapByLayer;
+}
+
+/**
+ * One exact-RGB swap (0-255 per channel); same shape as the engine's
+ * `PaletteEntry`. `to` replaces the colour, `alpha` multiplies the alpha
+ * (0 switches the pixel off); give at least one.
+ */
+export interface PaletteEntry {
+  from: [number, number, number];
+  to?: [number, number, number];
+  alpha?: number;
+}
+
+/**
+ * Palette remaps keyed by layer name, plus `'*'` for every layer. A layer's
+ * own entry REPLACES `'*'` for that layer (they aren't merged). A flattened
+ * loader has one sprite, named after its `packageId`; `'*'` covers it.
+ */
+export type RemapByLayer = Record<string, PaletteEntry[] | null>;
+
+/** The remap a sprite named `name` should carry under `remap`. */
+export function remapFor(remap: RemapByLayer | undefined, name: string): PaletteEntry[] | null {
+  if (!remap) return null;
+  if (Object.prototype.hasOwnProperty.call(remap, name)) return remap[name] ?? remap['*'] ?? null;
+  return remap['*'] ?? null;
 }
 
 /** A change to an entity's selection (`extend` adds it, `release` removes it). */
@@ -87,6 +114,8 @@ export interface AsepriteLoaderHandle {
   readonly sprites: any[];
   extend(change: AsepriteSelectionChange): Promise<void>;
   release(change: AsepriteSelectionChange): Promise<void>;
+  /** Replaces the palette remaps and applies them to every sprite, current and future. */
+  setRemap(remap: RemapByLayer | undefined): void;
   dispose(): void;
 }
 
@@ -265,6 +294,18 @@ export class AsepriteSession implements AsepriteLoaderHandle {
 
   release(change: AsepriteSelectionChange): Promise<void> {
     return this.change(change, 'release');
+  }
+
+  /**
+   * Replaces the remap map and applies it to every live sprite. Sprites created
+   * later (an `extend` still queued, or a future one) read the new map when
+   * they're built, so there's no window where a layer misses it.
+   */
+  setRemap(remap: RemapByLayer | undefined): void {
+    this.config.remap = remap;
+    for (const [name, sprite] of this.spriteByName) {
+      sprite.setPaletteRemap(remapFor(remap, name));
+    }
   }
 
   /**
@@ -541,6 +582,8 @@ export class AsepriteSession implements AsepriteLoaderHandle {
           anchor: resolveAnchor(first.source.ase, this.config),
           renderOrder: this.config.flatten ? 0 : this.layerOrder.get(name) ?? 0,
           visible: true,
+          // Layers added later by `extend` get the loader's remap too.
+          paletteRemap: remapFor(this.config.remap, name),
         },
         parent,
       );

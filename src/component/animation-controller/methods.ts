@@ -4,6 +4,11 @@ import type { Animation, AnimationLayer, AnimationState } from './types';
 import type { ChannelType } from '../sprite/types';
 import type { NexusT } from '../nexus/data';
 import type { SpriteT } from '../sprite/data';
+import {
+  normalizePaletteRemap,
+  clonePaletteRemap,
+  type PaletteEntry,
+} from '../sprite/palette';
 import type { TransformT } from '../transform';
 import type { AnimationMapT } from '../animation-map/data';
 import { MethodRegistry } from '../registry';
@@ -46,6 +51,11 @@ export interface AnimationControllerMethods extends ComponentMethods {
     visible: boolean,
   ) => void;
   addLayer: (controller: AnimationControllerT, layer: AnimationLayer) => void;
+  setPaletteRemap: (
+    controller: AnimationControllerT,
+    layerName: string,
+    entries: PaletteEntry[] | null,
+  ) => void;
   getLayer: (
     controller: AnimationControllerT,
     layerName: string,
@@ -480,6 +490,48 @@ export const AnimationController: AnimationControllerMethods = {
     }
     // Invalidate the resolved-sprite cache; rebuilt on next use.
     controller._layerSprites = undefined;
+  },
+
+  /**
+   * Sets (or clears, with null) the exact-RGB palette remap on one layer's
+   * sprite, or on every layer's sprite with `'*'` — see
+   * `SpriteT.paletteRemap`. With no configured layers, `'*'` covers all the
+   * sibling sprites the controller drives. Entries are validated once and
+   * each sprite gets its own copy.
+   *
+   * @example
+   * controller.setPaletteRemap('*', unitPalette);          // whole unit
+   * controller.setPaletteRemap('hair-short', hairPalette); // one layer
+   */
+  setPaletteRemap(
+    controller: AnimationControllerT,
+    layerName: string,
+    entries: PaletteEntry[] | null,
+  ) {
+    const sprites = layerSpritesFor(controller);
+    let targets: (SpriteT | null)[];
+    if (layerName === '*') {
+      targets = sprites;
+    } else {
+      const index = controller.layers.findIndex((l) => l.name === layerName);
+      if (index === -1) {
+        console.warn(
+          `[animation-controller] setPaletteRemap: no layer '${layerName}' in '${controller.name}'`,
+        );
+        return;
+      }
+      targets = [sprites[index] ?? null];
+    }
+
+    const remap = normalizePaletteRemap(
+      entries,
+      `animation-controller '${controller.name}'`,
+    );
+    for (const sprite of targets) {
+      if (!sprite) continue;
+      sprite.paletteRemap = clonePaletteRemap(remap);
+      sprite._palettePacked = undefined;
+    }
   },
 
   /**

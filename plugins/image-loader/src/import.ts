@@ -5,7 +5,11 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { Vector2D, Vector3D } from 'omosuen';
-import { AsepriteSession, type AsepriteLoaderHandle } from './session.js';
+import {
+  AsepriteSession,
+  type AsepriteLoaderHandle,
+  type RemapByLayer,
+} from './session.js';
 import type { FrameSelector, LayerSelection } from './selection.js';
 
 /**
@@ -49,6 +53,8 @@ export interface AsepriteImportConfig {
   scale?: Vector3D;
   /** Optional layer-name → slot map; layers sharing a slot are mutually exclusive. */
   layerSlots?: Record<string, string>;
+  /** Palette remaps by layer name, or `'*'` for every layer (see `RemapByLayer`). */
+  remap?: RemapByLayer;
 }
 
 /** What the import produced. */
@@ -95,6 +101,8 @@ export interface AsepriteSourcesConfig {
   scale?: Vector3D;
   /** Layer-name → slot map; layers sharing a slot are mutually exclusive. Set-level: keyed by the shared layer name, not by source. */
   layerSlots?: Record<string, string>;
+  /** Palette remaps by layer name, or `'*'` for every layer. Set-level, like `layerSlots`. */
+  remap?: RemapByLayer;
 }
 
 /**
@@ -129,6 +137,7 @@ export async function importAseprite(
       position: config.position,
       scale: config.scale,
       layerSlots: config.layerSlots,
+      remap: config.remap,
     },
   );
   return { controller: session.controller, sprites: session.sprites, loader: session };
@@ -187,6 +196,7 @@ export async function importAsepriteSources(
     position: config.position,
     scale: config.scale,
     layerSlots: config.layerSlots,
+    remap: config.remap,
   });
   return { controller: session.controller, sprites: session.sprites, loader: session };
 }

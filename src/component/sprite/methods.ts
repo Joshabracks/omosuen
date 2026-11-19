@@ -5,6 +5,7 @@ import { Vector3D } from '../../math';
 import type { NexusT } from '../nexus/data';
 import type { TextureMapT } from '../texture-map/data';
 import { bumpRenderableVersion } from '../renderable-version';
+import { normalizePaletteRemap, type PaletteEntry } from './palette';
 
 export type ChannelType = 'albedo' | 'normal' | 'material' | 'emission';
 
@@ -22,6 +23,7 @@ export interface SpriteMethods extends ComponentMethods {
     b: number,
     a: number,
   ) => void;
+  setPaletteRemap: (sprite: SpriteT, entries: PaletteEntry[] | null) => void;
   setOpacity: (sprite: SpriteT, alpha: number) => void;
   setVisible: (sprite: SpriteT, visible: boolean) => void;
   setRenderOrder: (sprite: SpriteT, order: number) => void;
@@ -125,6 +127,28 @@ export const Sprite: SpriteMethods = {
     sprite.tint.y = g;
     sprite.tint.z = b;
     sprite.tint.w = a;
+  },
+
+  /**
+   * Sets (or clears) the sprite's exact-RGB colour swaps — see
+   * `SpriteT.paletteRemap`. Entries are validated and copied: channels are
+   * rounded/clamped to 0-255, malformed or repeated-`from` entries are
+   * dropped, and anything past 48 entries is dropped, each with a warning.
+   *
+   * @param sprite - The sprite component
+   * @param entries - `{ from: [r,g,b], to: [r,g,b] }` pairs (0-255), or null to clear
+   *
+   * @example
+   * sprite.setPaletteRemap([
+   *   { from: [92, 62, 40], to: [230, 220, 200] },   // brown hair → white
+   * ]);
+   */
+  setPaletteRemap(sprite: SpriteT, entries: PaletteEntry[] | null) {
+    sprite.paletteRemap = normalizePaletteRemap(
+      entries,
+      `sprite '${sprite.name}'`,
+    );
+    sprite._palettePacked = undefined;
   },
 
   /**

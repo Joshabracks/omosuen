@@ -38,6 +38,7 @@
     "test:packer": "tsx test/packer-bench.test.ts",
     "test:atlas-reclaim": "tsx test/atlas-reclaim.test.ts",
     "test:image-loader-parser": "tsx test/image-loader-parser.test.ts",
+    "test:sprite-palette": "tsx test/sprite-palette.test.ts",
     "lint": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix",
     "format": "prettier --write \"src/**/*.ts\" \"*.js\" \"*.json\"",

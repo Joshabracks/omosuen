@@ -117,6 +117,65 @@ await loader.release({ frames: ['bow_walk'] });
 - **Runtime changes aren't saved.** A saved scene stores the declared `layers` / `frames`.
   Re-apply equipment changes after loading.
 
+### Recolouring layers (`remap`)
+
+Paint shared sheets in reserved colours, then give each entity its own colours with an
+exact-RGB swap applied in the sprite shader. Every entity keeps sharing the same atlas
+regions; nothing is re-baked.
+
+```js
+const unit = await Omosuen.newComponent('image-loader', {
+  name: 'villager-17',
+  filePath: './assets/character/MiniBaseMan.aseprite',
+  flatten: false,
+  layers: ['main', 'outline', 'hands', 'hair-short', 'top-apron-shirt'],
+  remap: {
+    '*': skinAndClothes,          // every layer
+    'hair-short': blondeHair,     // this layer only (replaces '*', no merge)
+  },
+});
+
+await unit.setPaletteRemap('hair-short', greyHair);   // aged; saved with the scene
+await unit.setPaletteRemap('hair-short', null);       // back to '*'
+```
+
+Each entry is `{ from: [r, g, b], to?: [r, g, b], alpha?: 0-255 }` and needs at least one of
+`to` / `alpha`:
+
+```js
+{ from: skinMid, to: [141, 85, 36] }   // recolour
+{ from: strapMark, alpha: 0 }          // switch the pixel off (e.g. no backpack)
+{ from: cloakMark, alpha: 128 }        // keep the colour, half transparent
+{ from: glowMark, to: [255, 220, 120], alpha: 160 }
+```
+
+- **Applied before lighting.** The swap runs on the sampled colour, before lighting, fog
+  styling and `tint`.
+- **`alpha` multiplies the pixel's own alpha by `alpha / 255`.** Without `alpha`, the alpha
+  is untouched.
+- **A pixel that ends near zero is discarded.** That's alpha 0, 1 or 2 on an opaque pixel,
+  the same threshold as a transparent pixel in the texture. Nothing is drawn there, and the
+  sprite's ID isn't written to the per-pixel mask that post effects such as outlines read.
+  `screenPick` tests the sprite's whole rectangle, so it still reports the sprite there,
+  just as it does over transparent pixels.
+- **Faded pixels blend like any semi-transparent sprite pixel.** They still carry the
+  sprite's ID in the mask.
+- **Up to 48 entries per sprite.** Extra entries are dropped with a warning, as are
+  malformed ones and repeats of an earlier `from`.
+- **Swaps don't chain.** With `a → b` and `b → c`, a texel that was `a` ends as `b`.
+- **Covers sprites created later.** Layers added by `extend` get the map too, and so do
+  fog-of-war's last-seen stand-ins.
+- **Saved with the scene.** `remap`, including changes made through `setPaletteRemap`, is
+  saved and restored.
+- **Flattened loaders.** A flattened loader has one sprite, so use `'*'` for it.
+- **Opaque pixels only.** Put reserved colours only on fully opaque pixels: the atlas goes
+  through a 2D canvas, which can shift the RGB of semi-transparent pixels by a step.
+- **Aseprite loads only.** `remap` applies to `filePath` and `sources` loaders; it's ignored
+  for `images` loaders.
+- **Needs an engine with sprite palette remap.** That's the release after 1.6.1.
+- **Without the loader:** `sprite.setPaletteRemap(entries)` sets it on one sprite, and
+  `controller.setPaletteRemap(layerName | '*', entries)` on a controller's layers.
+
 ### Plain images, one per channel (`images`)
 
 Declare an image per sprite texture channel. Nothing here is Aseprite-specific — these are

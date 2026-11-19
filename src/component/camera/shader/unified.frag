@@ -140,6 +140,14 @@ uniform float u_emissionIntensity;
 uniform vec3 u_emissionColor;
 uniform highp vec3 u_cameraWorldPos;
 uniform vec4 u_tint;
+    // Sprite palette remap (render-sprites.ts, sprite/palette.ts): up to 48
+    // exact-RGB entries, each packed into one uint (colour in the low 24
+    // bits, flags/alpha above -- see applyPaletteRemap), four per uvec4 --
+    // 24 uniform vectors in all, where a vec3-per-colour layout would take 96.
+    // u_remapCount = 0 (the default, and always in cell mode) skips it.
+uniform highp uvec4 u_remapFrom[12];
+uniform highp uvec4 u_remapTo[12];
+uniform int u_remapCount;
 uniform float u_opacity;
     // Fog-of-war: set per-draw-call by the CPU (render-sprites.ts) when this
     // draw call is a "phantom" sprite -- a separate, ordinary sprite entity
@@ -909,6 +917,42 @@ float computeCastShadow(vec3 worldPos, vec3 worldNormal) {
     return shadowSample(worldPos, worldNormal, scatterOffset(seed) * u_shadowScatter);
 }
 
+// Sprite palette remap: matches the texel's exact 8-bit RGB and replaces its
+// colour and/or scales its alpha. Runs on the raw sampled albedo, before
+// lighting, fog styling and u_tint, so everything downstream sees the result;
+// the caller discards the texel if the alpha drops out. The atlas is
+// NEAREST-sampled with no mipmaps, so the sampled value is the authored byte
+// exactly. This is the single per-sprite colour stage: anything that
+// recolours albedo per sprite belongs here.
+//
+// Packed layout (sprite/palette.ts):
+//   from: bits 0-23 match colour, bit 24 apply alpha, bit 25 keep the RGB
+//   to:   bits 0-23 output colour, bits 24-31 alpha (0-255, multiplies)
+const uint REMAP_FLAG_ALPHA = 1u << 24;
+const uint REMAP_FLAG_KEEP_RGB = 1u << 25;
+vec4 applyPaletteRemap(vec4 albedo) {
+    if(u_remapCount <= 0)
+        return albedo;
+    uvec3 c = uvec3(albedo.rgb * 255.0 + 0.5);
+    uint key = (c.r << 16) | (c.g << 8) | c.b;
+    for(int i = 0; i < 48; i++) {
+        if(i >= u_remapCount)
+            break;
+        uint from = u_remapFrom[i >> 2][i & 3];
+        if((from & 0xffffffu) == key) {
+            uint to = u_remapTo[i >> 2][i & 3];
+            vec3 rgb = (from & REMAP_FLAG_KEEP_RGB) != 0u
+                ? albedo.rgb
+                : vec3(float((to >> 16) & 0xffu), float((to >> 8) & 0xffu), float(to & 0xffu)) / 255.0;
+            float a = (from & REMAP_FLAG_ALPHA) != 0u
+                ? albedo.a * (float(to >> 24) / 255.0)
+                : albedo.a;
+            return vec4(rgb, a);
+        }
+    }
+    return albedo;
+}
+
 void main() {
     // Initialise every output before branching. A write path that forgets one
     // then yields a deterministic zero instead of undefined attachment
@@ -1221,6 +1265,16 @@ void main() {
         // Discard fully transparent pixels early
         if(albedo.a < 0.01)
             discard;
+
+        // A remap can switch a texel off (alpha 0): discard it exactly like a
+        // transparent texel, so it writes no colour AND no sprite id (the id
+        // attachments are integer and don't blend, so an alpha-0 fragment
+        // would still stamp the sprite into the post-effect id masks).
+        if(u_remapCount > 0) {
+            albedo = applyPaletteRemap(albedo);
+            if(albedo.a < 0.01)
+                discard;
+        }
 
         // Fog-of-war visibility for this sprite, 0..1.
         //

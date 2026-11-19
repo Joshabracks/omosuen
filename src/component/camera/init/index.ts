@@ -90,6 +90,15 @@ export async function init(component: ComponentData): Promise<void> {
   // Fog-of-war visibility shapes: uniform locations plus this camera's two
   // data textures (shapes + bins).
   gl.useProgram(unifiedProgram);
+  // Pin the integer samplers to their own units for the program's lifetime.
+  // An unset sampler defaults to unit 0, where u_albedoTexture (a float
+  // sampler2D) lives, and an integer and a float sampler on one unit make
+  // EVERY draw fail with GL_INVALID_OPERATION -- not just draws that sample
+  // them. u_cellRegionIndex used to be set only while drawing a cell-map, so
+  // a sprite-only scene drew nothing at all. The passes still re-pin the
+  // units they bind; this just guarantees no draw ever sees the default.
+  gl.uniform1i(gl.getUniformLocation(unifiedProgram, 'u_cellIdTexture'), 8);
+  gl.uniform1i(gl.getUniformLocation(unifiedProgram, 'u_cellRegionIndex'), 9);
   cacheVisibilityUniformLocations(gl, unifiedProgram, camera.id!);
   cacheFogUniformLocations(gl, unifiedProgram, camera.id!);
 

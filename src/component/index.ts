@@ -39,6 +39,8 @@ export type {
   AtlasManagerConfig,
 } from './atlas-manager';
 export type { SpriteT as sprite, SpriteMethods, ChannelType } from './sprite';
+export type { PaletteEntry, Rgb8 } from './sprite/palette';
+export { MAX_PALETTE_ENTRIES } from './sprite/palette';
 export type { TransformT as transform, TransformMethods } from './transform';
 export type {
   AnimationControllerT as animation_controller,

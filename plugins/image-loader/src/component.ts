@@ -18,6 +18,8 @@ import {
   AsepriteSession,
   type AsepriteSelectionChange,
   type AsepriteSourceSpec,
+  type PaletteEntry,
+  type RemapByLayer,
 } from './session.js';
 import type { FrameSelector, LayerSelection } from './selection.js';
 
@@ -95,6 +97,14 @@ export interface ImageLoaderOptions extends ComponentOptions {
    * 'bottom-center' foot-anchors it so billboards stand on the ground.
    */
   anchorMode?: AnchorMode;
+  /**
+   * Exact-RGB palette remaps, keyed by layer name or `'*'` (every layer):
+   * `{ '*': unitColours, 'hair-short': hairColours }`. A layer's own entry
+   * replaces `'*'` for that layer. Applied to every sprite the loader creates,
+   * including layers added later by `extend`, and saved with the scene. Only
+   * Aseprite loads (`filePath`/`sources`); ignored for `images`.
+   */
+  remap?: RemapByLayer;
 }
 
 export interface ImageLoaderT extends ComponentData {
@@ -111,9 +121,11 @@ export interface ImageLoaderT extends ComponentData {
   packageId: string;
   layerSlots?: Record<string, string>;
   anchorMode: AnchorMode;
+  remap?: RemapByLayer;
 }
 
 const PROPERTY_ALLOWLIST: string[] = [
+  'remap',
   'filePath',
   'images',
   'imageType',
@@ -145,6 +157,7 @@ function builder(options: ImageLoaderOptions): ImageLoaderT {
     packageId: options.packageId ?? options.name,
     layerSlots: options.layerSlots,
     anchorMode: options.anchorMode ?? 'center',
+    remap: copyRemap(options.remap),
   } as unknown as ImageLoaderT;
 }
 
@@ -206,6 +219,7 @@ async function startSession(
     flatten: a.flatten,
     anchorMode: a.anchorMode,
     layerSlots: a.layerSlots,
+    remap: a.remap,
   };
   if (a.sources && Object.keys(a.sources).length > 0) {
     // Shared texture-maps + animation-map live on the scene root so they outlive
@@ -246,6 +260,16 @@ interface ImageLoaderMethods extends ComponentMethods {
    * Releasing the playing animation stops it.
    */
   release: (component: ComponentData, change: AsepriteSelectionChange) => Promise<void>;
+  /**
+   * Sets (or clears, with null) the palette remap for one layer or `'*'`, on
+   * the live sprites and in the saved `remap` option. Clearing a layer's own
+   * entry makes it fall back to `'*'`.
+   */
+  setPaletteRemap: (
+    component: ComponentData,
+    layer: string,
+    entries: PaletteEntry[] | null,
+  ) => Promise<void>;
 }
 
 const methods: ImageLoaderMethods = {
@@ -257,6 +281,20 @@ const methods: ImageLoaderMethods = {
 
   release(component: ComponentData, change: AsepriteSelectionChange): Promise<void> {
     return withSession(component, 'release', (s) => s.release(change));
+  },
+
+  setPaletteRemap(
+    component: ComponentData,
+    layer: string,
+    entries: PaletteEntry[] | null,
+  ): Promise<void> {
+    const a = component as ImageLoaderT;
+    const next: RemapByLayer = { ...(a.remap ?? {}) };
+    if (entries === null) delete next[layer];
+    else next[layer] = copyEntries(entries);
+    a.remap = Object.keys(next).length > 0 ? next : undefined;
+    const remap = a.remap;
+    return withSession(component, 'setPaletteRemap', async (s) => s.setRemap(remap));
   },
 
   async init(component: ComponentData): Promise<void> {
@@ -348,7 +386,35 @@ function serialize(component: ComponentData): any {
     packageId: a.packageId,
     layerSlots: a.layerSlots,
     anchorMode: a.anchorMode,
+    remap: copyRemap(a.remap),
   };
+}
+
+function copyEntries(entries: PaletteEntry[]): PaletteEntry[] {
+  return entries.map((e) => {
+    const copy: PaletteEntry = { from: [e.from[0], e.from[1], e.from[2]] };
+    if (Array.isArray(e.to)) copy.to = [e.to[0], e.to[1], e.to[2]];
+    if (typeof e.alpha === 'number') copy.alpha = e.alpha;
+    return copy;
+  });
+}
+
+/** Deep copy; drops malformed values (the sprite validates entries itself). */
+function copyRemap(remap: unknown): RemapByLayer | undefined {
+  if (!remap || typeof remap !== 'object' || Array.isArray(remap)) return undefined;
+  const out: RemapByLayer = {};
+  for (const [layer, entries] of Object.entries(remap as Record<string, unknown>)) {
+    if (!Array.isArray(entries)) continue;
+    const valid = entries.filter(
+      (e): e is PaletteEntry =>
+        !!e &&
+        typeof e === 'object' &&
+        Array.isArray(e.from) &&
+        (Array.isArray(e.to) || typeof e.alpha === 'number'),
+    );
+    out[layer] = copyEntries(valid);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function serializableLayers(layers: LayerSelection | undefined): string[] | undefined {
@@ -439,6 +505,7 @@ function deserialize(data: unknown): {
       packageId: d.packageId,
       layerSlots: d.layerSlots,
       anchorMode: d.anchorMode,
+      remap: d.remap,
     }),
     errors: [],
   };

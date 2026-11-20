@@ -595,7 +595,7 @@ export function bindVisibilityUniforms(
 
 /**
  * The shapes and grid the shader received this frame, for CPU-side visibility
- * that must agree with it (render-sprites' per-sprite `u_spriteVisibility`).
+ * that must agree with it (render-sprites' per-sprite visibility value).
  * Gather candidates per point with `gatherShapesAt(frame.grid, frame.shapes,
  * x, z, out)` -- exactly the bin the shader walks there.
  *

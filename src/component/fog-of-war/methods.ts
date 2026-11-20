@@ -254,8 +254,8 @@ export function phantomFogAlpha(phantomNexusId: number): number {
  * `coveredPhantoms`. False for anything fog-of-war isn't tracking, so an
  * unknown phantom simply fades as normal.
  *
- * Read by render-sprites.ts, which feeds a covered phantom `u_spriteVisibility
- * = 0` so the shader's `u_spriteFogMemory && fogVis >= 1.0` discard cannot fire
+ * Read by render-sprites.ts, which feeds a covered phantom a sprite visibility
+ * of 0 so the shader's `spriteFogMemory && fogVis >= 1.0` discard cannot fire
  * on it. A covered phantom must stay drawn until its sprite has fully faded in;
  * without this it is discarded outright the moment its spot reaches full
  * vision, which on a fast approach is well before the sprite is opaque.

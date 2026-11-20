@@ -4,26 +4,57 @@ import { VisionSourceT } from '../../vision-source';
 import { VisibilityVolumeT } from '../../visibility-volume';
 import { NexusT } from '../../nexus';
 import { SpriteT } from '../../sprite';
-import { castTo } from '../../types';
+import { TransformT } from '../../transform';
+import { ComponentData, castTo, rawOf } from '../../types';
 import { getRenderableVersion } from '../../renderable-version';
 import { CameraT } from '../data';
 
+/**
+ * What the sprite pass needs per collected sprite, resolved once per
+ * collection instead of once per sprite per frame. Three arrays parallel to
+ * `sprites`.
+ *
+ * Everything here is the RAW data object (see `rawOf`), not the Proxy: the
+ * draw loop reads a few dozen fields per sprite per frame, and each read
+ * through the Proxy is a trap. Read-only by contract -- writes must still go
+ * through the Proxy.
+ */
+export interface SpriteDrawData {
+  /** `rawOf(sprites[i])`. */
+  rawSprites: SpriteT[];
+  /**
+   * The first transform on the sprite's own nexus (what
+   * `getComponentByType('transform', false)` would return), raw; null when the
+   * sprite has no nexus parent or that nexus has no transform.
+   */
+  transforms: (TransformT | null)[];
+  /** Whether the sprite's nexus carries its own vision-source. */
+  selfLit: boolean[];
+}
+
+export interface Renderables {
+  sprites: SpriteT[];
+  spriteDraw: SpriteDrawData;
+  cellMaps: CellMapT[];
+  lights: LightT[];
+  visionSources: VisionSourceT[];
+  visibilityVolumes: VisibilityVolumeT[];
+}
+
 // Per-camera renderables cache -- each entry remembers the per-type version
 // (see renderable-version.ts) it was collected at, alongside the results.
-// Each of the four arrays is independently re-collected only when its own
+// Each of the arrays is independently re-collected only when its own
 // type's version has changed since this camera last collected it -- a light
 // being added doesn't force sprites/cell-maps to re-walk too.
-interface RenderablesCacheEntry {
+interface RenderablesCacheEntry extends Renderables {
   spriteVersion: number;
   cellMapVersion: number;
   lightVersion: number;
   visionSourceVersion: number;
   visibilityVolumeVersion: number;
-  sprites: SpriteT[];
-  cellMaps: CellMapT[];
-  lights: LightT[];
-  visionSources: VisionSourceT[];
-  visibilityVolumes: VisibilityVolumeT[];
+  /** Versions `spriteDraw` was resolved at (it also follows `sprites`). */
+  spriteDrawTransformVersion: number;
+  spriteDrawVisionSourceVersion: number;
 }
 
 const RENDERABLES_CACHE = new Map<number, RenderablesCacheEntry>();
@@ -33,21 +64,57 @@ export function clearRenderablesCache(cameraId: number): void {
 }
 
 /**
+ * Fills `out` for `sprites`. Sprites of one nexus are contiguous (see
+ * `segmentedRenderOrderSort`), so the nexus scan is shared across a run.
+ */
+function resolveSpriteDrawData(sprites: SpriteT[], out: SpriteDrawData): void {
+  const n = sprites.length;
+  out.rawSprites.length = n;
+  out.transforms.length = n;
+  out.selfLit.length = n;
+
+  let lastParent: ComponentData | null = null;
+  let transform: TransformT | null = null;
+  let selfLit = false;
+  for (let i = 0; i < n; i++) {
+    const raw = rawOf(sprites[i]);
+    out.rawSprites[i] = raw;
+    const parent = raw.parent ? rawOf(raw.parent) : null;
+    if (i === 0 || parent !== lastParent) {
+      lastParent = parent;
+      transform = null;
+      selfLit = false;
+      if (parent && parent.type === 'nexus') {
+        const components = (parent as NexusT).components;
+        for (let j = 0; j < components.length; j++) {
+          const type = components[j].type;
+          if (type === 'transform') {
+            if (!transform) transform = rawOf(components[j]) as TransformT;
+          } else if (type === 'vision-source') {
+            selfLit = true;
+          }
+        }
+      }
+    }
+    out.transforms[i] = transform;
+    out.selfLit[i] = selfLit;
+  }
+}
+
+/**
  * Collects all renderable components (sprites, cell maps, and lights) from the render tree.
+ *
+ * The returned object is this camera's cache entry, reused across frames: read
+ * it, don't keep or mutate it.
  *
  * @param camera - The camera component
  * @returns Object containing arrays of sprites, cell maps, and lights
  */
-export function collectRenderables(camera: CameraT): {
-  sprites: SpriteT[];
-  cellMaps: CellMapT[];
-  lights: LightT[];
-  visionSources: VisionSourceT[];
-  visibilityVolumes: VisibilityVolumeT[];
-} {
+export function collectRenderables(camera: CameraT): Renderables {
   if (!camera.parent || camera.parent.type !== 'nexus') {
     return {
       sprites: [],
+      spriteDraw: { rawSprites: [], transforms: [], selfLit: [] },
       cellMaps: [],
       lights: [],
       visionSources: [],
@@ -122,20 +189,57 @@ export function collectRenderables(camera: CameraT): {
           true,
         ) as VisibilityVolumeT[]);
 
-  RENDERABLES_CACHE.set(camera.id!, {
+  // Each sprite's transform and self-lit flag. Stale when the sprite list was
+  // re-collected, or when a transform / vision-source was added or removed
+  // anywhere (either can change the answer for a sprite that did not move).
+  const transformVersion = getRenderableVersion('transform');
+  const spriteDraw = cached
+    ? cached.spriteDraw
+    : { rawSprites: [], transforms: [], selfLit: [] };
+  if (
+    !cached ||
+    cached.sprites !== sprites ||
+    cached.spriteDrawTransformVersion !== transformVersion ||
+    cached.spriteDrawVisionSourceVersion !== visionSourceVersion
+  ) {
+    resolveSpriteDrawData(sprites, spriteDraw);
+  }
+
+  // Update the entry in place: this runs every frame for every camera, and a
+  // fresh object per call was pure garbage on the (usual) all-hit frame.
+  if (cached) {
+    cached.spriteVersion = spriteVersion;
+    cached.cellMapVersion = cellMapVersion;
+    cached.lightVersion = lightVersion;
+    cached.visionSourceVersion = visionSourceVersion;
+    cached.visibilityVolumeVersion = visibilityVolumeVersion;
+    cached.spriteDrawTransformVersion = transformVersion;
+    cached.spriteDrawVisionSourceVersion = visionSourceVersion;
+    cached.sprites = sprites;
+    cached.cellMaps = cellMaps;
+    cached.lights = lights;
+    cached.visionSources = visionSources;
+    cached.visibilityVolumes = visibilityVolumes;
+    return cached;
+  }
+
+  const entry: RenderablesCacheEntry = {
     spriteVersion,
     cellMapVersion,
     lightVersion,
     visionSourceVersion,
     visibilityVolumeVersion,
+    spriteDrawTransformVersion: transformVersion,
+    spriteDrawVisionSourceVersion: visionSourceVersion,
     sprites,
+    spriteDraw,
     cellMaps,
     lights,
     visionSources,
     visibilityVolumes,
-  });
-
-  return { sprites, cellMaps, lights, visionSources, visibilityVolumes };
+  };
+  RENDERABLES_CACHE.set(camera.id!, entry);
+  return entry;
 }
 
 /**

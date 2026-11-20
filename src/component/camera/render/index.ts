@@ -122,8 +122,14 @@ export function render(camera: CameraT, _deltaTime: number): void {
   }
 
   // Collect all renderable components from the tree
-  const { sprites, cellMaps, lights, visionSources, visibilityVolumes } =
-    Camera.collectRenderables(camera);
+  const {
+    sprites,
+    spriteDraw,
+    cellMaps,
+    lights,
+    visionSources,
+    visibilityVolumes,
+  } = Camera.collectRenderables(camera);
 
   const gl = viewport.gl;
 
@@ -367,7 +373,7 @@ export function render(camera: CameraT, _deltaTime: number): void {
     renderSprites(
       camera,
       viewport,
-      sprites,
+      spriteDraw,
       cellMaps,
       transform,
       sceneRoot,

@@ -22,6 +22,7 @@ const RENDERABLE_TYPES = new Set<string>([
   'light',
   'vision-source',
   'visibility-volume',
+  'transform',
 ]);
 
 /**

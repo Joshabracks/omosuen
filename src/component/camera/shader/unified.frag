@@ -38,9 +38,9 @@ layout(location = 2) out vec4 fragAux;
 
     // Render mode selector
 uniform lowp int u_renderMode;  // 0 = cells, 1 = sprites
-    // Per-draw id written into fragIds.r (cells) / fragIds.g (sprites).
+    // Per-draw id written into fragIds.r (cells). The sprite id written into
+    // fragIds.g is per INSTANCE and arrives in v_spriteData.y.
 uniform highp uint u_cellIndex;
-uniform highp uint u_spriteIndex;
     // Cell FBO's id attachment, sampled by the sprite pass through the same UV
     // bridge it uses for depth, so a sprite fragment can carry the cell id
     // underneath it forward instead of clobbering it (integer attachments do
@@ -51,7 +51,7 @@ uniform highp usampler2D u_cellIdTexture;
     // Shared uniforms
 uniform sampler2D u_albedoTexture;
 uniform sampler2D u_normalTexture;
-uniform vec4 u_uvBounds;
+    // Cell mode only. A sprite's own flag is per instance (SPRITE_FLAG_NORMAL).
 uniform bool u_hasNormal;
 
     // Cell-specific uniforms (Mode 0)
@@ -65,7 +65,6 @@ uniform highp vec3 u_windowOrigin;
 // Toroidal wrap offset in CELLS: the window origin modulo the window size,
 // computed with integer math on the CPU. See `windowSlot`.
 uniform highp ivec3 u_windowWrapOffset;
-uniform vec4 u_normalUVBounds;
 
     // Per-side (per-triplanar-plane) frames for cells (Mode 0).
     // Plane <-> visible side:  YZ = +X (south-east),  XZ = +Y (up),  XY = +Z (south-west)
@@ -132,51 +131,58 @@ uniform vec4 u_normalBoundsBase;
     // Sprite-specific uniforms (Mode 1)
 uniform sampler2D u_materialTexture;
 uniform sampler2D u_emissionTexture;
-uniform bool u_hasMaterial;
-uniform bool u_hasEmission;
-uniform vec4 u_emissionUVBounds;
-uniform vec4 u_materialUVBounds;
-uniform float u_emissionIntensity;
-uniform vec3 u_emissionColor;
 uniform highp vec3 u_cameraWorldPos;
-uniform vec4 u_tint;
-    // Sprite palette remap (render-sprites.ts, sprite/palette.ts): up to 48
-    // exact-RGB entries, each packed into one uint (colour in the low 24
-    // bits, flags/alpha above -- see applyPaletteRemap), four per uvec4 --
-    // 24 uniform vectors in all, where a vec3-per-colour layout would take 96.
-    // u_remapCount = 0 (the default, and always in cell mode) skips it.
-uniform highp uvec4 u_remapFrom[12];
-uniform highp uvec4 u_remapTo[12];
-uniform int u_remapCount;
-uniform float u_opacity;
-    // Fog-of-war: set per-draw-call by the CPU (render-sprites.ts) when this
-    // draw call is a "phantom" sprite -- a separate, ordinary sprite entity
-    // fog-of-war/methods.ts's update() spawned as a frozen last-seen
-    // stand-in for some other (currently obscured) tracked sprite. See
-    // SpriteT._fowStatus's doc comment.
-uniform bool u_spriteFogMemory;
-    // Fog-of-war OPACITY for this draw, 0..1, supplied per draw call from the
-    // CPU. Timed, not distance-driven: a live sprite fades in over a fixed
-    // duration, and a phantom fades out over one. Distance drives COLOUR only
-    // (u_spriteVisibility). See fog-of-war/methods.ts for why.
-uniform float u_spriteFogAlpha;
-    // Fog-of-war visibility for THIS sprite, 0..1, computed once on the CPU
-    // (render-sprites.ts, via fog-of-war/sweep.ts's computeSpriteVisibility)
-    // rather than per fragment. Pure geometry -- radial falloff times the
-    // fraction of jittered rays that reach the sprite -- with the
-    // u_fogLightInfluence boost applied in the fragment shader on top.
-    // 1.0 when there are no vision sources.
-uniform float u_spriteVisibility;
+
+    // Per-sprite state (Mode 1). Sprites are drawn instanced, so nothing about
+    // one sprite is a uniform any more: it is a record in u_spriteInstances
+    // (layout owned by render/sprite-instances.ts; unified.vert reads the same
+    // records). What every fragment needs arrives as the flat varyings below;
+    // the rest is fetched from the record on the branches that use it.
+    //
+    //   v_spriteFog.x  opacity
+    //   v_spriteFog.y  fog-of-war visibility for THIS sprite, 0..1, computed
+    //                  once on the CPU (render-sprites.ts, via fog-of-war/
+    //                  sweep.ts's computeFogVisibility) rather than per
+    //                  fragment. Pure geometry; 1.0 with no vision sources.
+    //   v_spriteFog.z  fog-of-war OPACITY, 0..1. Timed, not distance-driven: a
+    //                  live sprite fades in over a fixed duration and a phantom
+    //                  fades out over one. Distance drives COLOUR only (.y).
+    //                  See fog-of-war/methods.ts for why.
+    //   SPRITE_FLAG_FOG_MEMORY  this instance is drawn as a memory: a
+    //                  "phantom" sprite -- a separate, ordinary sprite entity
+    //                  fog-of-war/methods.ts's update() spawned as a frozen
+    //                  last-seen stand-in for an obscured tracked sprite -- or
+    //                  a sprite mid-handover to one. See SpriteT._fowStatus.
+uniform highp sampler2D u_spriteInstances;
+    // Sprite palette remaps (render-sprites.ts, sprite/palette.ts): one slot
+    // per distinct remap, up to 48 exact-RGB entries each, every entry packed
+    // into one uint (colour in the low 24 bits, flags/alpha above -- see
+    // applyPaletteRemap), four per texel. A slot is 24 texels: 12 `from` then
+    // 12 `to`. The instance carries its slot and entry count; a count of 0
+    // skips the remap.
+uniform highp usampler2D u_spritePalettes;
+
+const uint SPRITE_FLAG_FOG_MEMORY = 1u;
+const uint SPRITE_FLAG_NORMAL = 2u;
+const uint SPRITE_FLAG_EMISSION = 4u;
+const uint SPRITE_FLAG_MATERIAL = 8u;
+const uint SPRITE_FLAG_SILHOUETTE = 16u;
+    // Record texels the fragment shader fetches for itself.
+const int SPRITE_TEXEL_UV_NORMAL = 7;
+const int SPRITE_TEXEL_UV_EMISSION = 8;
+const int SPRITE_TEXEL_UV_MATERIAL = 9;
+const int SPRITE_TEXEL_SILHOUETTE = 10;
+const int SPRITE_INSTANCE_WIDTH_SHIFT = 10; // texture is 1024 texels wide
+const int SPRITE_INSTANCE_WIDTH_MASK = 1023;
+    // Palette table: 64 slots per row, 24 texels per slot.
+const uint SPRITE_PALETTE_SLOTS_PER_ROW = 64u;
+const int SPRITE_PALETTE_SLOT_TEXELS = 24;
 
     // Occlusion mask uniforms (sprite mode — samples cell FBO depth texture)
 uniform sampler2D u_depthTexture;
 uniform vec2 u_fboUvScale;
 uniform vec2 u_fboUvOffset;
 uniform vec2 u_screenSize;
-
-    // Silhouette uniforms (sprite mode — renders flat color when occluded)
-uniform bool u_showSilhouette;
-uniform vec4 u_silhouetteColor;
 
     // Per-fragment line-of-sight raycasting (both modes)
 uniform highp sampler2DArray u_cellSolidity;   // R8: 0=empty, 255=solid, layer=z
@@ -287,6 +293,19 @@ in vec3 v_origWorldPos;
 in vec3 v_spriteGroundPos;
 in float v_emission;
 flat in vec3 v_trueFaceDir;
+    // Per-sprite, from the instance record (see unified.vert). Zero in cell mode.
+flat in highp vec4 v_spriteUvBounds;
+flat in highp vec4 v_spriteTint;
+flat in highp vec4 v_spriteEmission;
+flat in highp vec4 v_spriteFog;
+flat in highp uvec4 v_spriteData;
+
+// One texel of this fragment's sprite record.
+highp vec4 spriteRecord(int offset) {
+    int index = int(v_spriteData.w) + offset;
+    return texelFetch(u_spriteInstances,
+        ivec2(index & SPRITE_INSTANCE_WIDTH_MASK, index >> SPRITE_INSTANCE_WIDTH_SHIFT), 0);
+}
 
 // Distance attenuation with hardness control
 float attenuate(float dist, float radius, float hardness) {
@@ -919,7 +938,7 @@ float computeCastShadow(vec3 worldPos, vec3 worldNormal) {
 
 // Sprite palette remap: matches the texel's exact 8-bit RGB and replaces its
 // colour and/or scales its alpha. Runs on the raw sampled albedo, before
-// lighting, fog styling and u_tint, so everything downstream sees the result;
+// lighting, fog styling and tint, so everything downstream sees the result;
 // the caller discards the texel if the alpha drops out. The atlas is
 // NEAREST-sampled with no mipmaps, so the sampled value is the authored byte
 // exactly. This is the single per-sprite colour stage: anything that
@@ -930,24 +949,35 @@ float computeCastShadow(vec3 worldPos, vec3 worldNormal) {
 //   to:   bits 0-23 output colour, bits 24-31 alpha (0-255, multiplies)
 const uint REMAP_FLAG_ALPHA = 1u << 24;
 const uint REMAP_FLAG_KEEP_RGB = 1u << 25;
-vec4 applyPaletteRemap(vec4 albedo) {
-    if(u_remapCount <= 0)
+//
+// `slot` is the remap's slot in u_spritePalettes and `count` its entry count.
+// Entries are tested in order and the first match wins.
+vec4 applyPaletteRemap(vec4 albedo, uint slot, int count) {
+    if(count <= 0)
         return albedo;
     uvec3 c = uvec3(albedo.rgb * 255.0 + 0.5);
     uint key = (c.r << 16) | (c.g << 8) | c.b;
-    for(int i = 0; i < 48; i++) {
-        if(i >= u_remapCount)
+    ivec2 base = ivec2(
+        int(slot % SPRITE_PALETTE_SLOTS_PER_ROW) * SPRITE_PALETTE_SLOT_TEXELS,
+        int(slot / SPRITE_PALETTE_SLOTS_PER_ROW));
+    for(int j = 0; j < 12; j++) {
+        if(j * 4 >= count)
             break;
-        uint from = u_remapFrom[i >> 2][i & 3];
-        if((from & 0xffffffu) == key) {
-            uint to = u_remapTo[i >> 2][i & 3];
-            vec3 rgb = (from & REMAP_FLAG_KEEP_RGB) != 0u
-                ? albedo.rgb
-                : vec3(float((to >> 16) & 0xffu), float((to >> 8) & 0xffu), float(to & 0xffu)) / 255.0;
-            float a = (from & REMAP_FLAG_ALPHA) != 0u
-                ? albedo.a * (float(to >> 24) / 255.0)
-                : albedo.a;
-            return vec4(rgb, a);
+        uvec4 from4 = texelFetch(u_spritePalettes, base + ivec2(j, 0), 0);
+        for(int k = 0; k < 4; k++) {
+            if(j * 4 + k >= count)
+                break;
+            uint from = from4[k];
+            if((from & 0xffffffu) == key) {
+                uint to = texelFetch(u_spritePalettes, base + ivec2(12 + j, 0), 0)[k];
+                vec3 rgb = (from & REMAP_FLAG_KEEP_RGB) != 0u
+                    ? albedo.rgb
+                    : vec3(float((to >> 16) & 0xffu), float((to >> 8) & 0xffu), float(to & 0xffu)) / 255.0;
+                float a = (from & REMAP_FLAG_ALPHA) != 0u
+                    ? albedo.a * (float(to >> 24) / 255.0)
+                    : albedo.a;
+                return vec4(rgb, a);
+            }
         }
     }
     return albedo;
@@ -1256,8 +1286,21 @@ void main() {
         // MODE 1: SPRITE RENDERING (Atlas sampling with normal mapping and lighting)
         // ============================================================
 
+        // This sprite's per-instance state (see the declarations above).
+        uint spriteFlags = v_spriteData.x & 0xffu;
+        int remapCount = int(v_spriteData.x >> 8u);
+        uint spriteIndex = v_spriteData.y;
+        bool spriteFogMemory = (spriteFlags & SPRITE_FLAG_FOG_MEMORY) != 0u;
+        bool hasNormal = (spriteFlags & SPRITE_FLAG_NORMAL) != 0u;
+        bool hasEmission = (spriteFlags & SPRITE_FLAG_EMISSION) != 0u;
+        bool hasMaterial = (spriteFlags & SPRITE_FLAG_MATERIAL) != 0u;
+        bool showSilhouette = (spriteFlags & SPRITE_FLAG_SILHOUETTE) != 0u;
+        float spriteOpacity = v_spriteFog.x;
+        float spriteVisibility = v_spriteFog.y;
+        float spriteFogAlpha = v_spriteFog.z;
+
         // Sample UV within atlas bounds
-        vec2 atlasUV = mix(u_uvBounds.xy, u_uvBounds.zw, v_uv);
+        vec2 atlasUV = mix(v_spriteUvBounds.xy, v_spriteUvBounds.zw, v_uv);
 
         // Albedo (always required)
         vec4 albedo = texture(u_albedoTexture, atlasUV);
@@ -1270,16 +1313,16 @@ void main() {
         // transparent texel, so it writes no colour AND no sprite id (the id
         // attachments are integer and don't blend, so an alpha-0 fragment
         // would still stamp the sprite into the post-effect id masks).
-        if(u_remapCount > 0) {
-            albedo = applyPaletteRemap(albedo);
+        if(remapCount > 0) {
+            albedo = applyPaletteRemap(albedo, v_spriteData.z, remapCount);
             if(albedo.a < 0.01)
                 discard;
         }
 
         // Fog-of-war visibility for this sprite, 0..1.
         //
-        // Supplied by the CPU as u_spriteVisibility rather than computed here.
-        // v_origWorldPos in sprite mode is u_spritePosition (see unified.vert)
+        // Supplied by the CPU as spriteVisibility rather than computed here.
+        // v_origWorldPos in sprite mode is the sprite's position (see unified.vert)
         // — constant across the whole quad — so calling computeVisibility per
         // fragment re-ran eight DDA raycasts per pixel to produce one number
         // per sprite. Worse, it was a SECOND opinion: fog-of-war's CPU sweep
@@ -1289,7 +1332,7 @@ void main() {
         // was discarded, leaving a hole. One number now drives both.
         //
         // The light-influence boost stays here: it needs a light walk but no
-        // raycasts, so it is cheap per fragment, and u_spriteVisibility is
+        // raycasts, so it is cheap per fragment, and spriteVisibility is
         // deliberately the pure-geometry term for it to build on.
         float fogVis = 1.0;
         if(u_visNumShapes > 0) {
@@ -1311,7 +1354,7 @@ void main() {
             // entirely. The OTHER original reason, that a per-fragment value
             // would be a second opinion against the CPU sweep, no longer
             // applies: this drives COLOUR only, and every lifetime decision
-            // still goes through u_spriteVisibility below.
+            // still goes through spriteVisibility below.
             // The box test uses the cell under the ground point, matching the
             // CPU's `cellCentreOf` on the same point.
             fogVis = computeVisibility(
@@ -1333,11 +1376,11 @@ void main() {
             // Discarding here made that one-frame disagreement a blank frame,
             // every single time a sprite left vision. Mirrored on the CPU in
             // fog-of-war/sweep.ts's `fogDiscards`, which is where it is tested.
-            // Anchored on u_spriteVisibility, NOT the per-fragment value. This
+            // Anchored on spriteVisibility, NOT the per-fragment value. This
             // is a lifetime decision -- it must agree with the CPU sweep, which
             // disposes the phantom off that same number. Taken per fragment it
             // would erase part of a phantom's quad and leave the rest.
-            if(u_spriteFogMemory && u_spriteVisibility >= 1.0) discard;
+            if(spriteFogMemory && spriteVisibility >= 1.0) discard;
         }
 
         // Occlusion test: discard sprite fragments behind cells (or show silhouette)
@@ -1345,19 +1388,20 @@ void main() {
         vec2 fboUV = screenUV * u_fboUvScale + u_fboUvOffset;
         float cellDepth = texture(u_depthTexture, fboUV).r;
         if(cellDepth < gl_FragCoord.z) {
-            if(u_showSilhouette) {
-                fragColor = u_silhouetteColor;
+            if(showSilhouette) {
+                vec4 silhouetteColor = spriteRecord(SPRITE_TEXEL_SILHOUETTE);
+                fragColor = silhouetteColor;
                 // Returns before the shared tail below, so it has to write the
                 // masks itself.
                 uvec4 cellIds = texture(u_cellIdTexture, fboUV);
                 // Carries the TERRAIN region under the sprite through, exactly
                 // as .r carries the cell id. The sprite's own mask is a
                 // different thing and lives in fragAux.b.
-                fragIds = uvec4(cellIds.r, u_spriteIndex, cellIds.b, 0u);
+                fragIds = uvec4(cellIds.r, spriteIndex, cellIds.b, 0u);
                 // Mask stays 0: this exit runs BEFORE the material is sampled,
                 // and a silhouette is a flat stand-in for an obscured sprite --
                 // there is no visible surface for a region effect to recolour.
-                fragAux = vec4(1.0, fogVis, 0.0, u_silhouetteColor.a);
+                fragAux = vec4(1.0, fogVis, 0.0, silhouetteColor.a);
                 return;
             }
             discard;
@@ -1369,9 +1413,10 @@ void main() {
         // (u,v,n) = (x,z,y) convention for normal-map perturbation.
         vec3 finalNormal;
         vec3 baseNormal = vec3(0.0, 1.0, 0.0);
-        if(u_hasNormal) {
+        if(hasNormal) {
           // Sample normal map from same UV coords as albedo
-            vec2 normalAtlasUV = mix(u_normalUVBounds.xy, u_normalUVBounds.zw, v_uv);
+            vec4 normalUVBounds = spriteRecord(SPRITE_TEXEL_UV_NORMAL);
+            vec2 normalAtlasUV = mix(normalUVBounds.xy, normalUVBounds.zw, v_uv);
             vec3 nm = texture(u_normalTexture, normalAtlasUV).rgb * 2.0 - 1.0;
             vec3 pert = vec3(nm.r, nm.b, nm.g);
             finalNormal = normalize(baseNormal + pert * 0.5);
@@ -1382,8 +1427,9 @@ void main() {
         // Emission texture (or albedo fallback below), sampled from the same UV
         // rect convention as normal/albedo — a single atlas frame, no triplanar.
         vec3 emissionTexColor = vec3(0.0);
-        if(u_hasEmission) {
-            vec2 emissionAtlasUV = mix(u_emissionUVBounds.xy, u_emissionUVBounds.zw, v_uv);
+        if(hasEmission) {
+            vec4 emissionUVBounds = spriteRecord(SPRITE_TEXEL_UV_EMISSION);
+            vec2 emissionAtlasUV = mix(emissionUVBounds.xy, emissionUVBounds.zw, v_uv);
             emissionTexColor = texture(u_emissionTexture, emissionAtlasUV).rgb;
         }
 
@@ -1394,8 +1440,9 @@ void main() {
         float metallic = 0.0;
         float roughness = 1.0;
         float materialMask = 0.0;
-        if(u_hasMaterial) {
-            vec2 materialAtlasUV = mix(u_materialUVBounds.xy, u_materialUVBounds.zw, v_uv);
+        if(hasMaterial) {
+            vec4 materialUVBounds = spriteRecord(SPRITE_TEXEL_UV_MATERIAL);
+            vec2 materialAtlasUV = mix(materialUVBounds.xy, materialUVBounds.zw, v_uv);
             vec4 materialSample = texture(u_materialTexture, materialAtlasUV);
             metallic = materialSample.r;
             roughness = materialSample.g;
@@ -1405,20 +1452,20 @@ void main() {
         // Dynamic lighting
         vec3 lighting = computeLighting(finalNormal, v_worldPos);
 
-        // Specular highlight (material-driven; zero cost when u_hasMaterial is false,
+        // Specular highlight (material-driven; zero cost when hasMaterial is false,
         // since metallic defaults to 0.0 and computeSpecular early-outs on it).
         vec3 viewDir = normalize(u_cameraWorldPos - v_worldPos);
         vec3 specular = computeSpecular(finalNormal, v_worldPos, viewDir, metallic, roughness);
 
         // Emission: texture-driven glow (or albedo fallback) scaled by intensity, plus
         // an independent flat additive highlight — mirrors cell mode's two-term emission.
-        vec3 spriteEmission = (u_hasEmission ? emissionTexColor : albedo.rgb) * u_emissionIntensity
-                             + u_emissionColor;
+        vec3 spriteEmission = (hasEmission ? emissionTexColor : albedo.rgb) * v_spriteEmission.a
+                             + v_spriteEmission.rgb;
 
         // Tint scales lit albedo only — emission/specular stay additive and untinted,
         // matching cell mode's convention (glow/highlight terms aren't albedo-scaled).
-        vec3 litColor = albedo.rgb * lighting * u_tint.rgb + specular + spriteEmission;
-        vec4 tinted = vec4(litColor, albedo.a * u_tint.a);
+        vec3 litColor = albedo.rgb * lighting * v_spriteTint.rgb + specular + spriteEmission;
+        vec4 tinted = vec4(litColor, albedo.a * v_spriteTint.a);
 
         // Fog-of-war memory styling -- desaturate/tint like terrain memory,
         // using REAL alpha for opacity (sprites already blend, unlike cells,
@@ -1441,7 +1488,7 @@ void main() {
         // entering or leaving alike. At fogVis 0 a sprite is pixel-identical to
         // a phantom of the same frame; at 1 it is fully live. Nothing here
         // needs to know which direction it is travelling -- OPACITY carries
-        // that, on a timer, in u_spriteFogAlpha.
+        // that, on a timer, in spriteFogAlpha.
         //
         // That is what removed the old fade-direction machinery. Telling the
         // two apart had required latching 'visible' at FULL visibility, and
@@ -1451,14 +1498,14 @@ void main() {
         // memory behind.
         vec3 finalRgb;
         float fogAlpha;
-        if(u_spriteFogMemory) {
+        if(spriteFogMemory) {
             // A phantom is already the memory; only its opacity changes. The
             // CPU supplies that as `1 - presence` of the sprite standing over
             // it, or its own dissolve timer when the sprite has moved on -- so
             // a covered pair is complementary from ONE timer rather than two
             // that have to agree.
             finalRgb = fadedRgb;
-            fogAlpha = styleOpacity * u_spriteFogAlpha;
+            fogAlpha = styleOpacity * spriteFogAlpha;
         } else {
             // A live sprite: colour dissolves toward the memory look as it
             // leaves and back toward live as it returns, purely by distance.
@@ -1466,17 +1513,17 @@ void main() {
             // frame -- which is exactly what replaces it, so the handover
             // cannot be seen. Opacity is the timed fade-in.
             finalRgb = mix(fadedRgb, liveRgb, fogVis);
-            fogAlpha = mix(styleOpacity, 1.0, fogVis) * u_spriteFogAlpha;
+            fogAlpha = mix(styleOpacity, 1.0, fogVis) * spriteFogAlpha;
         }
 
         // Apply opacity to final alpha channel
-        float outAlpha = tinted.a * u_opacity * fogAlpha;
+        float outAlpha = tinted.a * spriteOpacity * fogAlpha;
         fragColor = vec4(finalRgb, outAlpha);
         // Cell id is READ from the cell FBO rather than re-derived: integer
         // attachments do not blend, so this fragment owns the whole texel and
         // would otherwise erase what is behind it.
         uvec4 cellIds = texture(u_cellIdTexture, fboUV);
-        fragIds = uvec4(cellIds.r, u_spriteIndex, cellIds.b, 0u);
+        fragIds = uvec4(cellIds.r, spriteIndex, cellIds.b, 0u);
         // .a must match fragColor's alpha -- see the fragAux declaration.
         fragAux = vec4(1.0, fogVis, materialMask, outAlpha);
     }

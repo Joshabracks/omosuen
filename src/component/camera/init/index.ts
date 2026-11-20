@@ -13,6 +13,7 @@ import unifiedFragmentShader from '../shader/unified.frag';
 import { cacheLightUniformLocations } from '../render/light-uniforms';
 import { allocateCameraTargets } from '../render/framebuffers';
 import { cacheVisibilityUniformLocations } from '../render/visibility-uniforms';
+import { initSpriteInstanceResources } from '../render/sprite-instances';
 import { cacheFogUniformLocations } from '../render/fog-uniforms';
 import { initRenderWasm } from '../render/wasm';
 import { uploadAtlasTextures } from '../render/atlas-textures';
@@ -99,6 +100,9 @@ export async function init(component: ComponentData): Promise<void> {
   // units they bind; this just guarantees no draw ever sees the default.
   gl.uniform1i(gl.getUniformLocation(unifiedProgram, 'u_cellIdTexture'), 8);
   gl.uniform1i(gl.getUniformLocation(unifiedProgram, 'u_cellRegionIndex'), 9);
+  // The sprite pass's per-instance data textures, pinned the same way (one of
+  // them is an integer sampler too).
+  initSpriteInstanceResources(gl, unifiedProgram, camera.id!);
   cacheVisibilityUniformLocations(gl, unifiedProgram, camera.id!);
   cacheFogUniformLocations(gl, unifiedProgram, camera.id!);
 

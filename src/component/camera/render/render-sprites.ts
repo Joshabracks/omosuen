@@ -5,10 +5,12 @@ import { FogOfWarT } from '../../fog-of-war';
 import { NexusT } from '../../nexus';
 import type { SpriteT } from '../../sprite';
 import { TextureMapT } from '../../texture-map';
+import type { PackedFrame } from '../../texture-map/types';
 import { TransformT } from '../../transform';
-import { castTo } from '../../types';
+import { rawOf } from '../../types';
 import { ViewportT } from '../../viewport';
 import { CameraT } from '../data';
+import type { SpriteDrawData } from '../collect-renderables';
 import {
   setAngleUniform,
   setOrbitYawUniform,
@@ -31,6 +33,31 @@ import {
 import type { ResolvedSource } from '../../fog-of-war/sweep';
 import { computeSolidityMap } from './visibility-mask';
 import { packPaletteRemap, type PackedPalette } from '../../sprite/palette';
+import {
+  SPRITE_FLAG_EMISSION,
+  SPRITE_FLAG_FOG_MEMORY,
+  SPRITE_FLAG_MATERIAL,
+  SPRITE_FLAG_NORMAL,
+  SPRITE_FLAG_SILHOUETTE,
+  SPRITE_INSTANCE_FLOATS,
+  SPRITE_OFFSET_EMISSION,
+  SPRITE_OFFSET_FOG,
+  SPRITE_OFFSET_IDS,
+  SPRITE_OFFSET_POS_ROT,
+  SPRITE_OFFSET_SILHOUETTE,
+  SPRITE_OFFSET_SIZE_ANCHOR,
+  SPRITE_OFFSET_TINT,
+  SPRITE_OFFSET_UV_ALBEDO,
+  SPRITE_OFFSET_UV_EMISSION,
+  SPRITE_OFFSET_UV_MATERIAL,
+  SPRITE_OFFSET_UV_NORMAL,
+  SPRITE_PALETTE_COUNT_SHIFT,
+  beginSpritePalettes,
+  sortDrawOrder,
+  spriteInstanceBuffer,
+  spritePaletteSlot,
+  uploadSpriteInstances,
+} from './sprite-instances';
 
 /** Per-sprite gather scratch for fog visibility; reused, never retained. */
 const nearShapes: ResolvedSource[] = [];
@@ -69,18 +96,32 @@ const DEFAULT_MAP_DIMENSION = 20;
  */
 const EDGE_PAD_WORLD = 64;
 
-// Reused scratch buffers for the per-frame back-to-front depth sort. Parallel arrays
-// (not an array of objects) grown only to the high-water sprite count, so steady-state
-// rendering allocates nothing — no GC churn.
-const _drawSprites: SpriteT[] = [];
-const _drawTransforms: TransformT[] = [];
-const _drawDepths: number[] = [];
-// Parallel to the three arrays above: true when the entry at this index is a
-// fog-of-war phantom sprite (`_fowStatus === 'phantom'`, spawned by
-// fog-of-war/methods.ts's update() as a last-seen stand-in for a real sprite
-// that's currently obscured) -- the second loop must set
-// u_spriteFogMemory=true for that draw call.
-const _drawIsMemory: boolean[] = [];
+// Reused scratch buffers for the per-frame draw list. Parallel arrays (not an array
+// of objects) grown only to the high-water sprite count, so steady-state rendering
+// allocates nothing — no GC churn. Indexed by CANDIDATE: a sprite that survived the
+// skip checks and the off-screen reject, in collection order. `sortDrawOrder` then
+// supplies the back-to-front permutation over them.
+const drawSprites: SpriteT[] = [];
+const drawTransforms: TransformT[] = [];
+// Float64, not Float32: MEMORY_DEPTH_BIAS is far below float32 resolution at
+// world-scale depths, and the tie-break it provides must survive.
+let drawDepths = new Float64Array(256);
+// Parallel to the arrays above: true when the entry draws as a fog-of-war
+// MEMORY (see `fogDrawKind`) -- a phantom sprite (`_fowStatus === 'phantom'`,
+// spawned by fog-of-war/methods.ts's update() as a last-seen stand-in for a
+// real sprite that's currently obscured), or a sprite mid-handover to one. Its
+// record carries SPRITE_FLAG_FOG_MEMORY.
+const drawIsMemory: boolean[] = [];
+
+/**
+ * One instanced draw call: a run of consecutive records (in draw order) whose
+ * atlas pages can all be bound at once. `BATCH_INTS` ints each -- first record,
+ * record count, then the atlas page bound for albedo / normal / emission /
+ * material (-1 = no sprite in the run samples that channel, leave the unit
+ * alone).
+ */
+const BATCH_INTS = 6;
+let batches = new Int32Array(BATCH_INTS * 64);
 
 /**
  * Depth nudge applied to a memory (phantom) draw so it always sorts behind a
@@ -90,189 +131,191 @@ const _drawIsMemory: boolean[] = [];
  */
 const MEMORY_DEPTH_BIAS = 1e-4;
 
-/**
- * Attempts to bind a sprite's normal texture to TEXTURE1.
- * Sets u_hasNormal to 1 on success, 0 on any failure (early return).
- */
-function bindNormalTexture(
-  sprite: SpriteT,
+// Texture-map channels, indexing the lookup memo below.
+const CHANNEL_ALBEDO = 0;
+const CHANNEL_NORMAL = 1;
+const CHANNEL_EMISSION = 2;
+const CHANNEL_MATERIAL = 3;
+
+// Last texture map resolved per channel. Sprites drawn back to back very often
+// share a sheet, so this turns most of the per-sprite `Map.get(string)` calls
+// into one string compare. Reset around every pass, so it never outlives the
+// texture maps it points at.
+const memoKeys: (string | null)[] = [null, null, null, null];
+const memoMaps: (TextureMapT | null)[] = [null, null, null, null];
+
+function resetTextureMapMemo(): void {
+  for (let i = 0; i < memoKeys.length; i++) {
+    memoKeys[i] = null;
+    memoMaps[i] = null;
+  }
+}
+
+/** The (raw) texture map registered under `key`, or null. */
+function lookupTextureMap(
   textureMapCache: Map<string, TextureMapT>,
-  camera: CameraT,
-  gl: WebGL2RenderingContext,
-  u_normalTexture: WebGLUniformLocation | null,
-  u_normalUVBounds: WebGLUniformLocation | null,
-  u_hasNormal: WebGLUniformLocation | null,
-  atlasSize: number,
-): void {
-  if (!sprite.textureMapKeys.normal) {
-    gl.uniform1i(u_hasNormal, 0);
-    return;
-  }
-
-  const normalTextureMap = textureMapCache.get(sprite.textureMapKeys.normal);
-  if (!normalTextureMap || normalTextureMap.packedFrames.length === 0) {
-    gl.uniform1i(u_hasNormal, 0);
-    return;
-  }
-
-  const normalFrame = normalTextureMap.frameIndexMap.get(sprite.frame.normal);
-  if (!normalFrame) {
-    gl.uniform1i(u_hasNormal, 0);
-    return;
-  }
-
-  const normalAtlasTexture =
-    camera.glResources.atlasTextures[normalFrame.atlasIndex];
-  if (!normalAtlasTexture) {
-    gl.uniform1i(u_hasNormal, 0);
-    return;
-  }
-
-  gl.activeTexture(gl.TEXTURE1);
-  gl.bindTexture(gl.TEXTURE_2D, normalAtlasTexture);
-  gl.uniform1i(u_normalTexture, 1);
-
-  const normalMinU = normalFrame.atlasPosition.x / atlasSize;
-  const normalMinV = normalFrame.atlasPosition.y / atlasSize;
-  const normalMaxU =
-    (normalFrame.atlasPosition.x + normalFrame.size.x) / atlasSize;
-  const normalMaxV =
-    (normalFrame.atlasPosition.y + normalFrame.size.y) / atlasSize;
-  gl.uniform4f(
-    u_normalUVBounds,
-    normalMinU,
-    normalMinV,
-    normalMaxU,
-    normalMaxV,
-  );
-
-  gl.uniform1i(u_hasNormal, 1);
+  channel: number,
+  key: string,
+): TextureMapT | null {
+  if (memoKeys[channel] === key) return memoMaps[channel];
+  const found = textureMapCache.get(key);
+  const map = found ? rawOf(found) : null;
+  memoKeys[channel] = key;
+  memoMaps[channel] = map;
+  return map;
 }
 
 /**
- * Attempts to bind a sprite's emission texture to TEXTURE4.
- * Sets u_hasEmission to 1 on success, 0 on any failure (early return).
+ * The packed frame an OPTIONAL channel (normal / emission / material) should
+ * sample, or null when the sprite has no such map, the map is unknown or
+ * unpacked, the frame is missing, or its atlas page has no texture -- every
+ * case in which the channel is simply treated as absent.
  */
-function bindEmissionTexture(
-  sprite: SpriteT,
+function optionalFrame(
   textureMapCache: Map<string, TextureMapT>,
-  camera: CameraT,
-  gl: WebGL2RenderingContext,
-  u_emissionTexture: WebGLUniformLocation | null,
-  u_emissionUVBounds: WebGLUniformLocation | null,
-  u_hasEmission: WebGLUniformLocation | null,
-  atlasSize: number,
-): void {
-  if (!sprite.textureMapKeys.emission) {
-    gl.uniform1i(u_hasEmission, 0);
-    return;
-  }
-
-  const emissionTextureMap = textureMapCache.get(
-    sprite.textureMapKeys.emission,
-  );
-  if (!emissionTextureMap || emissionTextureMap.packedFrames.length === 0) {
-    gl.uniform1i(u_hasEmission, 0);
-    return;
-  }
-
-  const emissionFrame = emissionTextureMap.frameIndexMap.get(
-    sprite.frame.emission,
-  );
-  if (!emissionFrame) {
-    gl.uniform1i(u_hasEmission, 0);
-    return;
-  }
-
-  const emissionAtlasTexture =
-    camera.glResources.atlasTextures[emissionFrame.atlasIndex];
-  if (!emissionAtlasTexture) {
-    gl.uniform1i(u_hasEmission, 0);
-    return;
-  }
-
-  gl.activeTexture(gl.TEXTURE4);
-  gl.bindTexture(gl.TEXTURE_2D, emissionAtlasTexture);
-  gl.uniform1i(u_emissionTexture, 4);
-
-  const emissionMinU = emissionFrame.atlasPosition.x / atlasSize;
-  const emissionMinV = emissionFrame.atlasPosition.y / atlasSize;
-  const emissionMaxU =
-    (emissionFrame.atlasPosition.x + emissionFrame.size.x) / atlasSize;
-  const emissionMaxV =
-    (emissionFrame.atlasPosition.y + emissionFrame.size.y) / atlasSize;
-  gl.uniform4f(
-    u_emissionUVBounds,
-    emissionMinU,
-    emissionMinV,
-    emissionMaxU,
-    emissionMaxV,
-  );
-
-  gl.uniform1i(u_hasEmission, 1);
+  channel: number,
+  key: string | null | undefined,
+  frameIndex: number,
+  atlasTextures: (WebGLTexture | null)[],
+): PackedFrame | null {
+  if (!key) return null;
+  const map = lookupTextureMap(textureMapCache, channel, key);
+  if (!map || map.packedFrames.length === 0) return null;
+  const frame = map.frameIndexMap.get(frameIndex);
+  if (!frame || !atlasTextures[frame.atlasIndex]) return null;
+  return frame;
 }
 
 /**
- * Attempts to bind a sprite's material (metallic/roughness) texture to TEXTURE5.
- * Sets u_hasMaterial to 1 on success, 0 on any failure (early return).
+ * Writes a frame's UV rect in its atlas (normalized 0-1: minU, minV, maxU,
+ * maxV) at `offset`, or zeros when there is no frame -- the buffer is reused,
+ * so an absent channel must still overwrite what was there.
  */
-function bindMaterialTexture(
-  sprite: SpriteT,
-  textureMapCache: Map<string, TextureMapT>,
-  camera: CameraT,
-  gl: WebGL2RenderingContext,
-  u_materialTexture: WebGLUniformLocation | null,
-  u_materialUVBounds: WebGLUniformLocation | null,
-  u_hasMaterial: WebGLUniformLocation | null,
+function writeFrameUv(
+  data: Float32Array,
+  offset: number,
+  frame: PackedFrame | null,
   atlasSize: number,
 ): void {
-  if (!sprite.textureMapKeys.material) {
-    gl.uniform1i(u_hasMaterial, 0);
+  if (!frame) {
+    data[offset] = 0;
+    data[offset + 1] = 0;
+    data[offset + 2] = 0;
+    data[offset + 3] = 0;
     return;
   }
+  data[offset] = frame.atlasPosition.x / atlasSize;
+  data[offset + 1] = frame.atlasPosition.y / atlasSize;
+  data[offset + 2] = (frame.atlasPosition.x + frame.size.x) / atlasSize;
+  data[offset + 3] = (frame.atlasPosition.y + frame.size.y) / atlasSize;
+}
 
-  const materialTextureMap = textureMapCache.get(
-    sprite.textureMapKeys.material,
-  );
-  if (!materialTextureMap || materialTextureMap.packedFrames.length === 0) {
-    gl.uniform1i(u_hasMaterial, 0);
-    return;
+/** Appends a batch to `batches`, growing it if needed. */
+function pushBatch(
+  index: number,
+  start: number,
+  count: number,
+  albedoPage: number,
+  normalPage: number,
+  emissionPage: number,
+  materialPage: number,
+): void {
+  const o = index * BATCH_INTS;
+  if (o + BATCH_INTS > batches.length) {
+    const grown = new Int32Array(batches.length * 2);
+    grown.set(batches);
+    batches = grown;
   }
+  batches[o] = start;
+  batches[o + 1] = count;
+  batches[o + 2] = albedoPage;
+  batches[o + 3] = normalPage;
+  batches[o + 4] = emissionPage;
+  batches[o + 5] = materialPage;
+}
 
-  const materialFrame = materialTextureMap.frameIndexMap.get(
-    sprite.frame.material,
-  );
-  if (!materialFrame) {
-    gl.uniform1i(u_hasMaterial, 0);
-    return;
-  }
+/**
+ * Attribute/uniform locations the sprite pass uses, looked up once per camera
+ * program instead of once per frame.
+ */
+interface SpriteLocations {
+  program: WebGLProgram;
+  position: number;
+  uv: number;
+  origPosition: number;
+  emission: number;
+  viewportSize: WebGLUniformLocation | null;
+  cameraPosition: WebGLUniformLocation | null;
+  zoom: WebGLUniformLocation | null;
+  cellSize: WebGLUniformLocation | null;
+  windowSize: WebGLUniformLocation | null;
+  windowOrigin: WebGLUniformLocation | null;
+  windowWrapOffset: WebGLUniformLocation | null;
+  worldOffset: WebGLUniformLocation | null;
+  albedoTexture: WebGLUniformLocation | null;
+  normalTexture: WebGLUniformLocation | null;
+  materialTexture: WebGLUniformLocation | null;
+  emissionTexture: WebGLUniformLocation | null;
+  cameraWorldPos: WebGLUniformLocation | null;
+  depthTexture: WebGLUniformLocation | null;
+  fboUvScale: WebGLUniformLocation | null;
+  fboUvOffset: WebGLUniformLocation | null;
+  screenSize: WebGLUniformLocation | null;
+  cellSolidity: WebGLUniformLocation | null;
+  cellEmissionColor: WebGLUniformLocation | null;
+  hasCellEmissionColor: WebGLUniformLocation | null;
+  cellIdTexture: WebGLUniformLocation | null;
+  exploredTexture: WebGLUniformLocation | null;
+}
 
-  const materialAtlasTexture =
-    camera.glResources.atlasTextures[materialFrame.atlasIndex];
-  if (!materialAtlasTexture) {
-    gl.uniform1i(u_hasMaterial, 0);
-    return;
-  }
+const spriteLocations = new Map<number, SpriteLocations>();
 
-  gl.activeTexture(gl.TEXTURE5);
-  gl.bindTexture(gl.TEXTURE_2D, materialAtlasTexture);
-  gl.uniform1i(u_materialTexture, 5);
+function getSpriteLocations(
+  gl: WebGL2RenderingContext,
+  program: WebGLProgram,
+  cameraId: number,
+): SpriteLocations {
+  const cached = spriteLocations.get(cameraId);
+  // Keyed on the program too: a camera that is re-initialised links a new one.
+  if (cached && cached.program === program) return cached;
+  const u = (name: string): WebGLUniformLocation | null =>
+    gl.getUniformLocation(program, name);
+  const locations: SpriteLocations = {
+    program,
+    position: gl.getAttribLocation(program, 'a_position'),
+    uv: gl.getAttribLocation(program, 'a_uv'),
+    origPosition: gl.getAttribLocation(program, 'a_origPosition'),
+    emission: gl.getAttribLocation(program, 'a_emission'),
+    viewportSize: u('u_viewportSize'),
+    cameraPosition: u('u_cameraPosition'),
+    zoom: u('u_zoom'),
+    cellSize: u('u_cellSize'),
+    windowSize: u('u_windowSize'),
+    windowOrigin: u('u_windowOrigin'),
+    windowWrapOffset: u('u_windowWrapOffset'),
+    worldOffset: u('u_worldOffset'),
+    albedoTexture: u('u_albedoTexture'),
+    normalTexture: u('u_normalTexture'),
+    materialTexture: u('u_materialTexture'),
+    emissionTexture: u('u_emissionTexture'),
+    cameraWorldPos: u('u_cameraWorldPos'),
+    depthTexture: u('u_depthTexture'),
+    fboUvScale: u('u_fboUvScale'),
+    fboUvOffset: u('u_fboUvOffset'),
+    screenSize: u('u_screenSize'),
+    cellSolidity: u('u_cellSolidity'),
+    cellEmissionColor: u('u_cellEmissionColor'),
+    hasCellEmissionColor: u('u_hasCellEmissionColor'),
+    cellIdTexture: u('u_cellIdTexture'),
+    exploredTexture: u('u_exploredTexture'),
+  };
+  spriteLocations.set(cameraId, locations);
+  return locations;
+}
 
-  const materialMinU = materialFrame.atlasPosition.x / atlasSize;
-  const materialMinV = materialFrame.atlasPosition.y / atlasSize;
-  const materialMaxU =
-    (materialFrame.atlasPosition.x + materialFrame.size.x) / atlasSize;
-  const materialMaxV =
-    (materialFrame.atlasPosition.y + materialFrame.size.y) / atlasSize;
-  gl.uniform4f(
-    u_materialUVBounds,
-    materialMinU,
-    materialMinV,
-    materialMaxU,
-    materialMaxV,
-  );
-
-  gl.uniform1i(u_hasMaterial, 1);
+/** Drops a disposed camera's cached locations. */
+export function clearSpriteUniformCache(cameraId: number): void {
+  spriteLocations.delete(cameraId);
 }
 
 /**
@@ -282,7 +325,7 @@ function bindMaterialTexture(
 export function renderSprites(
   camera: CameraT,
   viewport: ViewportT,
-  sprites: SpriteT[],
+  spriteDraw: SpriteDrawData,
   cellMaps: CellMapT[],
   transform: TransformT,
   sceneRoot: NexusT,
@@ -357,81 +400,34 @@ export function renderSprites(
     gl.uniform1i(camera.glResources.renderModeLocation, 1);
   }
 
-  // Get attribute/uniform locations
-  const a_position = gl.getAttribLocation(program, 'a_position');
-  const a_uv = gl.getAttribLocation(program, 'a_uv');
-  const u_viewportSize = gl.getUniformLocation(program, 'u_viewportSize');
-  const u_cameraPosition = gl.getUniformLocation(program, 'u_cameraPosition');
-  const u_zoom = gl.getUniformLocation(program, 'u_zoom');
-  const u_cellSize = gl.getUniformLocation(program, 'u_cellSize');
-  const u_windowSize = gl.getUniformLocation(program, 'u_windowSize');
-  const u_windowOrigin = gl.getUniformLocation(program, 'u_windowOrigin');
-  const u_windowWrapOffset = gl.getUniformLocation(
-    program,
-    'u_windowWrapOffset',
-  );
-  const u_worldOffset = gl.getUniformLocation(program, 'u_worldOffset');
-  const u_spritePosition = gl.getUniformLocation(program, 'u_spritePosition');
-  const u_spriteSize = gl.getUniformLocation(program, 'u_spriteSize');
-  const u_anchor = gl.getUniformLocation(program, 'u_anchor');
-  const u_rotation = gl.getUniformLocation(program, 'u_rotation');
-  const u_albedoTexture = gl.getUniformLocation(program, 'u_albedoTexture');
-  const u_normalTexture = gl.getUniformLocation(program, 'u_normalTexture');
-  const u_hasNormal = gl.getUniformLocation(program, 'u_hasNormal');
-  const u_materialTexture = gl.getUniformLocation(program, 'u_materialTexture');
-  const u_emissionTexture = gl.getUniformLocation(program, 'u_emissionTexture');
-  const u_hasMaterial = gl.getUniformLocation(program, 'u_hasMaterial');
-  const u_hasEmission = gl.getUniformLocation(program, 'u_hasEmission');
-  const u_materialUVBounds = gl.getUniformLocation(
-    program,
-    'u_materialUVBounds',
-  );
-  const u_emissionUVBounds = gl.getUniformLocation(
-    program,
-    'u_emissionUVBounds',
-  );
-  const u_emissionIntensity = gl.getUniformLocation(
-    program,
-    'u_emissionIntensity',
-  );
-  const u_emissionColor = gl.getUniformLocation(program, 'u_emissionColor');
-  const u_cameraWorldPos = gl.getUniformLocation(program, 'u_cameraWorldPos');
-  const u_tint = gl.getUniformLocation(program, 'u_tint');
-  const u_remapFrom = gl.getUniformLocation(program, 'u_remapFrom');
-  const u_remapTo = gl.getUniformLocation(program, 'u_remapTo');
-  const u_remapCount = gl.getUniformLocation(program, 'u_remapCount');
-  // The remap last uploaded this pass (null = count 0). Uniform values persist
-  // across passes, so the first sprite always uploads (`undefined` never matches).
-  let lastPalette: PackedPalette | null | undefined = undefined;
-  const u_opacity = gl.getUniformLocation(program, 'u_opacity');
-  const u_uvBounds = gl.getUniformLocation(program, 'u_uvBounds');
-  const u_normalUVBounds = gl.getUniformLocation(program, 'u_normalUVBounds');
-  const u_depthTexture = gl.getUniformLocation(program, 'u_depthTexture');
-  const u_fboUvScale = gl.getUniformLocation(program, 'u_fboUvScale');
-  const u_fboUvOffset = gl.getUniformLocation(program, 'u_fboUvOffset');
-  const u_screenSize = gl.getUniformLocation(program, 'u_screenSize');
-  const u_showSilhouette = gl.getUniformLocation(program, 'u_showSilhouette');
-  const u_spriteIndex = gl.getUniformLocation(program, 'u_spriteIndex');
-  const u_silhouetteColor = gl.getUniformLocation(program, 'u_silhouetteColor');
-  const u_cellSolidity = gl.getUniformLocation(program, 'u_cellSolidity');
-  // const u_fogLightInfluence = gl.getUniformLocation(
-  //   program,
-  //   'u_fogLightInfluence',
-  // );
-  const u_cellEmissionColor = gl.getUniformLocation(
-    program,
-    'u_cellEmissionColor',
-  );
-  const u_hasCellEmissionColor = gl.getUniformLocation(
-    program,
-    'u_hasCellEmissionColor',
-  );
-  const u_spriteFogMemory = gl.getUniformLocation(program, 'u_spriteFogMemory');
-  const u_spriteVisibility = gl.getUniformLocation(
-    program,
-    'u_spriteVisibility',
-  );
-  const u_spriteFogAlpha = gl.getUniformLocation(program, 'u_spriteFogAlpha');
+  // Attribute/uniform locations (cached per camera program). Everything that
+  // used to be a per-sprite uniform is now per-instance data -- see
+  // sprite-instances.ts.
+  const loc = getSpriteLocations(gl, program, camera.id!);
+  const a_position = loc.position;
+  const a_uv = loc.uv;
+  const u_viewportSize = loc.viewportSize;
+  const u_cameraPosition = loc.cameraPosition;
+  const u_zoom = loc.zoom;
+  const u_cellSize = loc.cellSize;
+  const u_windowSize = loc.windowSize;
+  const u_windowOrigin = loc.windowOrigin;
+  const u_windowWrapOffset = loc.windowWrapOffset;
+  const u_worldOffset = loc.worldOffset;
+  const u_albedoTexture = loc.albedoTexture;
+  const u_normalTexture = loc.normalTexture;
+  const u_materialTexture = loc.materialTexture;
+  const u_emissionTexture = loc.emissionTexture;
+  const u_cameraWorldPos = loc.cameraWorldPos;
+  const u_depthTexture = loc.depthTexture;
+  const u_fboUvScale = loc.fboUvScale;
+  const u_fboUvOffset = loc.fboUvOffset;
+  const u_screenSize = loc.screenSize;
+  const u_cellSolidity = loc.cellSolidity;
+  const u_cellEmissionColor = loc.cellEmissionColor;
+  const u_hasCellEmissionColor = loc.hasCellEmissionColor;
+  const u_cellIdTexture = loc.cellIdTexture;
+  const u_exploredTexture = loc.exploredTexture;
 
   // Set constant uniforms (same for all sprites)
   // Sprites render at full resolution to screen (not via FBO), so they use
@@ -548,9 +544,9 @@ export function renderSprites(
   const fogUseLineOfSight = fogOfWar?.visionMode !== 'distance';
   bindVisibilityUniforms(gl, camera.id!, fogUseLineOfSight);
 
-  // Per-sprite fog visibility is computed HERE, on the CPU, and uploaded as
-  // u_spriteVisibility -- see the fog block in unified.frag's sprite path for
-  // why. Resolved from the exact shapes and bins the shader was handed (per
+  // Per-sprite fog visibility is computed HERE, on the CPU, and uploaded in
+  // the sprite's instance record -- see the fog block in unified.frag's sprite
+  // path for why. Resolved from the exact shapes and bins the shader was handed (per
   // sprite, the shapes in its own bin), so the two cannot drift.
   //
   // `origin` is null until the cell-map's first window commit; with no
@@ -615,7 +611,7 @@ export function renderSprites(
   // with a float one on a single unit is GL_INVALID_OPERATION.
   gl.activeTexture(gl.TEXTURE8);
   gl.bindTexture(gl.TEXTURE_2D, camera.glResources.cellIdTexture);
-  gl.uniform1i(gl.getUniformLocation(program, 'u_cellIdTexture'), 8);
+  gl.uniform1i(u_cellIdTexture, 8);
 
   // Pass FBO UV mapping so the sprite shader can sample the depth texture.
   // Shared with the post-process blit — the two must agree exactly, and used to
@@ -658,7 +654,7 @@ export function renderSprites(
   // reads it.
   gl.activeTexture(gl.TEXTURE7);
   gl.bindTexture(gl.TEXTURE_3D, camera.glResources.exploredTexture);
-  gl.uniform1i(gl.getUniformLocation(program, 'u_exploredTexture'), 7);
+  gl.uniform1i(u_exploredTexture, 7);
   if (
     camera.glResources.cellEmissionColorHasAny &&
     camera.glResources.cellEmissionColorTexture
@@ -669,17 +665,18 @@ export function renderSprites(
   }
 
   // Disable cell-only attributes that may be left enabled from cell rendering
-  const a_origPosition = gl.getAttribLocation(program, 'a_origPosition');
+  const a_origPosition = loc.origPosition;
   if (a_origPosition >= 0) {
     gl.disableVertexAttribArray(a_origPosition);
     gl.vertexAttrib3f(a_origPosition, 0, 0, 0);
   }
-  const a_emission = gl.getAttribLocation(program, 'a_emission');
+  const a_emission = loc.emission;
   if (a_emission >= 0) {
     gl.disableVertexAttribArray(a_emission);
     gl.vertexAttrib1f(a_emission, 0);
   }
 
+  // Bind vertex buffers (shared for all sprites)
   // Bind vertex buffers (shared for all sprites)
   gl.bindBuffer(gl.ARRAY_BUFFER, camera.glResources.quadVertexBuffer);
   gl.enableVertexAttribArray(a_position);
@@ -695,18 +692,47 @@ export function renderSprites(
     true,
   ) as AtlasManagerT | null;
   const atlasSize = atlasManager?.config.atlasSize ?? 1024;
+  const atlasTextures = camera.glResources.atlasTextures;
 
-  // Build the draw list into reused scratch arrays: apply the per-sprite skip checks
-  // (hidden / no nexus parent / no transform), carry the transform, and compute each
-  // sprite's axonometric depth (matches the vertex shader: rx + heightScale*y + rz,
-  // where rx/rz are worldX/Z rotated by orbit yaw).
+  // Half-extents of the camera-relative off-screen reject below. Loop-invariant.
+  //
+  // Uses zoom², matching the shader's real clip-space scale: this file sets
+  // u_viewportSize = viewport/zoom (above), and unified.vert applies another
+  // `* u_zoom` to isoPos/viewPos before dividing by that -- net zoom²
+  // relationship, already documented as `projScale = zoom * zoom` in
+  // screen-pick/projection-math.ts and screen-pick/ray.ts. NOT zoom -- that was
+  // this reject's bug (see the Colony Forever bug report
+  // 010-sprite-edge-cull-zoom-formula-mismatch.md: at zoom < 1 the old linear
+  // formula wrongly culled a zoom-proportional ring of sprites near the screen
+  // edges that the shader would have actually placed on-screen).
+  const zoomSquared = camera.zoom * camera.zoom;
+  const halfW = viewport.width / (2 * zoomSquared) + EDGE_PAD_WORLD;
+  const halfH = viewport.height / (2 * zoomSquared) + EDGE_PAD_WORLD;
+
+  // Build the candidate list into reused scratch arrays: apply the per-sprite
+  // skip checks (hidden / no nexus parent / no transform), carry the transform,
+  // and compute each sprite's axonometric depth (matches the vertex shader:
+  // rx + heightScale*y + rz, where rx/rz are worldX/Z rotated by orbit yaw).
+  //
+  // `spriteDraw` holds RAW data objects (see SpriteDrawData), resolved when the
+  // sprite list was collected -- nothing in this loop or the next goes through
+  // a component Proxy or looks a component up.
+  const rawSprites = spriteDraw.rawSprites;
+  const spriteTransforms = spriteDraw.transforms;
+  const spriteSelfLit = spriteDraw.selfLit;
+  const spriteTotal = rawSprites.length;
+  if (drawDepths.length < spriteTotal) {
+    let size = drawDepths.length;
+    while (size < spriteTotal) size *= 2;
+    drawDepths = new Float64Array(size);
+  }
   let drawCount = 0;
-  for (const sprite of sprites) {
+  for (let si = 0; si < spriteTotal; si++) {
+    const sprite = rawSprites[si];
     // Use `=== false` so any legacy sprite lacking the field still renders.
     if (sprite.visible === false) continue;
-    if (!sprite.parent || sprite.parent.type !== 'nexus') continue;
-    const nexus = castTo<NexusT>(sprite.parent);
-    const t = nexus.getComponentByType('transform', false) as TransformT | null;
+    // Null when the sprite has no nexus parent, or that nexus has no transform.
+    const t = spriteTransforms[si];
     if (!t) continue;
 
     // Fog-of-war: an 'obscured' sprite's own phantom (a separate sprite,
@@ -717,10 +743,7 @@ export function renderSprites(
     // sprite carrying its own vision-source always sees itself (defensive:
     // fog-of-war's update() already never obscures/phantoms such a sprite,
     // this is the render-time half of that same guarantee).
-    const hasOwnVisionSource = !!nexus.getComponentByType(
-      'vision-source',
-      false,
-    );
+    //
     // 'obscured' and 'unseen' are skipped. An 'obscuring' sprite is deliberately
     // still drawn: it has reached zero visibility but its phantom is mid-spawn,
     // and it holds the memory look until the swap so the handover lands on one
@@ -736,7 +759,7 @@ export function renderSprites(
     // draw.
     const drawKind = fogDrawKind(
       sprite._fowStatus,
-      hasOwnVisionSource,
+      spriteSelfLit[si],
       sprite.trackedByFog !== false,
       spriteFogManagesSprites,
     );
@@ -759,28 +782,15 @@ export function renderSprites(
     // done in collect-renderables (see that module's comment) -- camera
     // position isn't tracked by the version-counter cache collection relies
     // on, so this filter must be re-evaluated fresh every draw, every frame.
-    //
-    // Threshold uses zoom², matching the shader's real clip-space scale: this
-    // file sets u_viewportSize = viewport/zoom (below), and unified.vert
-    // applies another `* u_zoom` to isoPos/viewPos before dividing by that --
-    // net zoom² relationship, already documented as `projScale = zoom * zoom`
-    // in screen-pick/projection-math.ts and screen-pick/ray.ts. NOT zoom --
-    // that was this reject's bug (see the Colony Forever bug report
-    // 010-sprite-edge-cull-zoom-formula-mismatch.md: at zoom < 1 the old
-    // linear formula wrongly culled a zoom-proportional ring of sprites near
-    // the screen edges that the shader would have actually placed on-screen).
+    // (halfW/halfH, and why they use zoom², are above the loop.)
     const isoX = ISO_H * (pRx - pRz);
     const isoY = sinA * (pRx + pRz) - heightScale * p.y;
-    const halfW =
-      viewport.width / (2 * camera.zoom * camera.zoom) + EDGE_PAD_WORLD;
-    const halfH =
-      viewport.height / (2 * camera.zoom * camera.zoom) + EDGE_PAD_WORLD;
     if (Math.abs(isoX - camIsoX) > halfW || Math.abs(isoY - camIsoY) > halfH) {
       continue;
     }
 
-    _drawSprites[drawCount] = sprite;
-    _drawTransforms[drawCount] = t;
+    drawSprites[drawCount] = sprite;
+    drawTransforms[drawCount] = t;
     // A phantom and the unmoved sprite it stands in for land at IDENTICAL
     // depth, and the sort below is stable, so their order would otherwise be
     // whatever collection order happened to produce. That is load-bearing
@@ -788,51 +798,48 @@ export function renderSprites(
     // phantom sorted after its sprite would hide that fade completely. Nudge
     // memory draws fractionally further away so they always sort first --
     // a pure tie-break, since the two are at the same world position.
-    _drawDepths[drawCount] =
+    drawDepths[drawCount] =
       pRx + heightScale * p.y + pRz - (isMemory ? MEMORY_DEPTH_BIAS : 0);
-    _drawIsMemory[drawCount] = isMemory;
+    drawIsMemory[drawCount] = isMemory;
     drawCount++;
   }
 
   // Sprite-vs-sprite order is pure draw order (the sprite pass has the depth test
   // disabled). Stable-sort back-to-front by depth (larger depth = nearer the camera =
-  // drawn last/on top). In-place insertion sort over the parallel arrays: no temp
-  // array / closures (zero GC), and ~O(n) frame-to-frame when depth order is mostly
-  // stable (static sprites + unchanged/slowly-orbiting camera keep their relative
-  // order). A large single-frame orbitYaw jump can reorder many sprites at once,
-  // temporarily costing more swaps — still correct, just not the O(n) common case.
-  // Strict `>` keeps it stable, so a composited entity's layers (equal depth)
-  // preserve their segmentedRenderOrderSort renderOrder.
-  for (let i = 1; i < drawCount; i++) {
-    const s = _drawSprites[i];
-    const st = _drawTransforms[i];
-    const sd = _drawDepths[i];
-    const sm = _drawIsMemory[i];
-    let j = i - 1;
-    while (j >= 0 && _drawDepths[j] > sd) {
-      _drawSprites[j + 1] = _drawSprites[j];
-      _drawTransforms[j + 1] = _drawTransforms[j];
-      _drawDepths[j + 1] = _drawDepths[j];
-      _drawIsMemory[j + 1] = _drawIsMemory[j];
-      j--;
-    }
-    _drawSprites[j + 1] = s;
-    _drawTransforms[j + 1] = st;
-    _drawDepths[j + 1] = sd;
-    _drawIsMemory[j + 1] = sm;
-  }
+  // drawn last/on top). Stable, so a composited entity's layers (equal depth)
+  // preserve their segmentedRenderOrderSort renderOrder. O(n log n) however far
+  // the candidates' collection order is from their depth order -- which, for a
+  // few thousand sprites spread over a map, is always a long way: an insertion
+  // sort restarting from collection order every frame was quadratic here.
+  const order = sortDrawOrder(drawDepths, drawCount);
 
-  // Render each sprite (back-to-front)
-  for (let di = 0; di < drawCount; di++) {
-    const sprite = _drawSprites[di];
-    const spriteTransform = _drawTransforms[di];
+  // Write one instance record per drawn sprite, in draw order, and group the
+  // records into batches. Draw order is never changed to make a batch: a batch
+  // is just a run of consecutive sprites whose atlas pages can all be bound at
+  // once. It ends only when the next sprite needs a DIFFERENT page on a unit
+  // the run has already claimed -- a sprite with no normal / emission /
+  // material map samples nothing on that unit, so it never ends one.
+  resetTextureMapMemo();
+  beginSpritePalettes();
+  const data = spriteInstanceBuffer(drawCount);
+  let instanceCount = 0;
+  let batchCount = 0;
+  let batchStart = 0;
+  let albedoPage = -1;
+  let normalPage = -1;
+  let emissionPage = -1;
+  let materialPage = -1;
+  // The remap whose slot was last looked up (sprites of one entity usually
+  // share one), saving the table lookup.
+  let lastPalette: PackedPalette | null = null;
+  let lastPaletteSlot = 0;
 
-    // u_spriteFogMemory is a shared-program uniform that persists across
-    // draw calls -- set explicitly on EVERY sprite draw (both true and
-    // false), not just tracked ones, so a stale `true` left over from a
-    // previous tracked-sprite draw this frame can never leak into an
-    // unrelated untracked sprite's draw call.
-    gl.uniform1i(u_spriteFogMemory, _drawIsMemory[di] ? 1 : 0);
+  for (let oi = 0; oi < drawCount; oi++) {
+    const di = order[oi];
+    const sprite = drawSprites[di];
+    const spriteTransform = drawTransforms[di];
+    const isMemory = drawIsMemory[di];
+    const sWorldPos = spriteTransform.worldPosition;
 
     // Fog COLOUR comes from distance -- the same point fog-of-war's sweep
     // tests, so a phantom and the sprite it stands in for (which share a
@@ -840,7 +847,7 @@ export function renderSprites(
     // 1.0 when fog isn't active, which the shader reads as fully visible.
     //
     // A COVERED phantom is fed 0 regardless. In the memory branch `fogVis`
-    // drives nothing but the `u_spriteFogMemory && fogVis >= 1.0` discard
+    // drives nothing but the `spriteFogMemory && fogVis >= 1.0` discard
     // (colour there is `fadedRgb` unconditionally), and a covered phantom must
     // keep drawing until the sprite over it is fully opaque -- it is that
     // sprite's opaque backdrop. Without this it is discarded the moment its spot
@@ -864,12 +871,17 @@ export function renderSprites(
       fogCellSize &&
       fogWindowOriginLocalCell
     ) {
-      const sp = spriteTransform.worldPosition;
       spriteVis = computeFogVisibility(
-        sp,
+        sWorldPos,
         // The shapes in this sprite's bin: exactly the set the shader walks
         // at its ground point.
-        gatherShapesAt(visFrame.grid, visFrame.shapes, sp.x, sp.z, nearShapes),
+        gatherShapesAt(
+          visFrame.grid,
+          visFrame.shapes,
+          sWorldPos.x,
+          sWorldPos.z,
+          nearShapes,
+        ),
         fogMask,
         fogCellDims,
         fogWindowOriginLocalCell,
@@ -877,7 +889,6 @@ export function renderSprites(
         fogUseLineOfSight,
       );
     }
-    gl.uniform1f(u_spriteVisibility, spriteVis);
 
     // Fog OPACITY comes from a timer, not from distance. A distance-driven
     // fade stalls part-way whenever the source stops closing and runs backwards
@@ -887,23 +898,21 @@ export function renderSprites(
     // over it wherever there is one, so the pair is complementary from a single
     // timer rather than two that have to stay in agreement.
     //
-    // Branch on `isPhantom`, NOT on `_drawIsMemory` -- the two are not the same
+    // Branch on `isPhantom`, NOT on `isMemory` -- the two are not the same
     // set. An `'obscuring'` sprite also draws as a memory (it IS the memory
     // until its phantom lands), but it is a real sprite, so `phantomNexusId`
     // would be its own nexus and `phantomFogAlpha` would be asked about an id
     // that is not a phantom's. It happens to answer 1, which is what the hold
     // wants, but only by missing the lookup.
-    gl.uniform1f(
-      u_spriteFogAlpha,
-      isPhantom
-        ? phantomNexusId !== undefined
-          ? phantomFogAlpha(phantomNexusId)
-          : 1
-        : spriteFogPresence(sprite.id),
-    );
+    const fogAlpha = isPhantom
+      ? phantomNexusId !== undefined
+        ? phantomFogAlpha(phantomNexusId)
+        : 1
+      : spriteFogPresence(sprite.id!);
 
     // Get albedo texture map (required)
-    if (!sprite.textureMapKeys.albedo) {
+    const textureMapKeys = sprite.textureMapKeys;
+    if (!textureMapKeys.albedo) {
       console.warn(
         `[camera] Sprite '${sprite.name}' missing albedo texture, skipping`,
       );
@@ -911,10 +920,14 @@ export function renderSprites(
     }
 
     // Look up texture map by textureMapKey (not name!)
-    const albedoTextureMap = textureMapCache.get(sprite.textureMapKeys.albedo);
+    const albedoTextureMap = lookupTextureMap(
+      textureMapCache,
+      CHANNEL_ALBEDO,
+      textureMapKeys.albedo,
+    );
     if (!albedoTextureMap) {
       console.warn(
-        `[camera] Sprite '${sprite.name}' references textureMapKey '${sprite.textureMapKeys.albedo}' which was not found`,
+        `[camera] Sprite '${sprite.name}' references textureMapKey '${textureMapKeys.albedo}' which was not found`,
       );
       continue;
     }
@@ -923,136 +936,231 @@ export function renderSprites(
     }
 
     // Get packed frame for current albedo frame index
-    const albedoFrame = albedoTextureMap.frameIndexMap.get(sprite.frame.albedo);
+    const frames = sprite.frame;
+    const albedoFrame = albedoTextureMap.frameIndexMap.get(frames.albedo);
     if (!albedoFrame) {
       console.warn(
-        `[camera] Sprite '${sprite.name}' frame ${sprite.frame.albedo} not found in texture map`,
+        `[camera] Sprite '${sprite.name}' frame ${frames.albedo} not found in texture map`,
       );
       continue;
     }
 
-    // Get atlas texture
-    const atlasTexture =
-      camera.glResources.atlasTextures[albedoFrame.atlasIndex];
-    if (!atlasTexture) {
+    // Its atlas page must have a texture
+    if (!atlasTextures[albedoFrame.atlasIndex]) {
       console.warn(
         `[camera] Sprite '${sprite.name}' atlas ${albedoFrame.atlasIndex} texture not found`,
       );
       continue;
     }
 
-    // Bind albedo texture to TEXTURE0
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
-    gl.uniform1i(u_albedoTexture, 0);
-
-    // Calculate UV bounds in atlas (normalized 0-1 coordinates)
-    const minU = albedoFrame.atlasPosition.x / atlasSize;
-    const minV = albedoFrame.atlasPosition.y / atlasSize;
-    const maxU = (albedoFrame.atlasPosition.x + albedoFrame.size.x) / atlasSize;
-    const maxV = (albedoFrame.atlasPosition.y + albedoFrame.size.y) / atlasSize;
-    gl.uniform4f(u_uvBounds, minU, minV, maxU, maxV);
-
-    // Bind normal texture if available
-    bindNormalTexture(
-      sprite,
+    // Optional channels: null (flag clear) on any failure.
+    const normalFrame = optionalFrame(
       textureMapCache,
-      camera,
-      gl,
-      u_normalTexture,
-      u_normalUVBounds,
-      u_hasNormal,
-      atlasSize,
+      CHANNEL_NORMAL,
+      textureMapKeys.normal,
+      frames.normal,
+      atlasTextures,
+    );
+    const emissionFrame = optionalFrame(
+      textureMapCache,
+      CHANNEL_EMISSION,
+      textureMapKeys.emission,
+      frames.emission,
+      atlasTextures,
+    );
+    const materialFrame = optionalFrame(
+      textureMapCache,
+      CHANNEL_MATERIAL,
+      textureMapKeys.material,
+      frames.material,
+      atlasTextures,
     );
 
-    // Bind emission texture if available
-    bindEmissionTexture(
-      sprite,
-      textureMapCache,
-      camera,
-      gl,
-      u_emissionTexture,
-      u_emissionUVBounds,
-      u_hasEmission,
-      atlasSize,
-    );
+    // End the current batch if this sprite cannot share its bound pages.
+    const needAlbedo = albedoFrame.atlasIndex;
+    const needNormal = normalFrame ? normalFrame.atlasIndex : -1;
+    const needEmission = emissionFrame ? emissionFrame.atlasIndex : -1;
+    const needMaterial = materialFrame ? materialFrame.atlasIndex : -1;
+    if (
+      (albedoPage !== -1 && needAlbedo !== albedoPage) ||
+      (needNormal !== -1 && normalPage !== -1 && needNormal !== normalPage) ||
+      (needEmission !== -1 &&
+        emissionPage !== -1 &&
+        needEmission !== emissionPage) ||
+      (needMaterial !== -1 &&
+        materialPage !== -1 &&
+        needMaterial !== materialPage)
+    ) {
+      pushBatch(
+        batchCount++,
+        batchStart,
+        instanceCount - batchStart,
+        albedoPage,
+        normalPage,
+        emissionPage,
+        materialPage,
+      );
+      batchStart = instanceCount;
+      normalPage = -1;
+      emissionPage = -1;
+      materialPage = -1;
+    }
+    albedoPage = needAlbedo;
+    if (needNormal !== -1) normalPage = needNormal;
+    if (needEmission !== -1) emissionPage = needEmission;
+    if (needMaterial !== -1) materialPage = needMaterial;
 
-    // Bind material (metallic/roughness) texture if available
-    bindMaterialTexture(
-      sprite,
-      textureMapCache,
-      camera,
-      gl,
-      u_materialTexture,
-      u_materialUVBounds,
-      u_hasMaterial,
-      atlasSize,
-    );
+    // The record. Layout: sprite-instances.ts.
+    const o = instanceCount * SPRITE_INSTANCE_FLOATS;
 
-    // Set sprite transformation uniforms from the cached WORLD transform (composed
-    // up the ancestry), so nesting under a transformed parent moves/scales/rotates it.
-    const sWorldPos = spriteTransform.worldPosition;
+    // Placement, from the cached WORLD transform (composed up the ancestry),
+    // so nesting under a transformed parent moves/scales/rotates the sprite.
     const sWorldScale = spriteTransform.worldScale;
-    gl.uniform3f(u_spritePosition, sWorldPos.x, sWorldPos.y, sWorldPos.z);
-    gl.uniform2f(
-      u_spriteSize,
-      albedoFrame.size.x * sWorldScale.x,
-      albedoFrame.size.y * sWorldScale.y,
-    );
+    const frameW = albedoFrame.size.x;
+    const frameH = albedoFrame.size.y;
+    data[o + SPRITE_OFFSET_POS_ROT] = sWorldPos.x;
+    data[o + SPRITE_OFFSET_POS_ROT + 1] = sWorldPos.y;
+    data[o + SPRITE_OFFSET_POS_ROT + 2] = sWorldPos.z;
+    data[o + SPRITE_OFFSET_POS_ROT + 3] = spriteTransform.worldRotation.y;
+    data[o + SPRITE_OFFSET_SIZE_ANCHOR] = frameW * sWorldScale.x;
+    data[o + SPRITE_OFFSET_SIZE_ANCHOR + 1] = frameH * sWorldScale.y;
     // Normalize the pixel anchor (from the frame's top-left) to [0,1] for the shader,
     // which re-bases the centered quad around it (anchor pixel lands on the transform).
-    gl.uniform2f(
-      u_anchor,
-      albedoFrame.size.x !== 0 ? sprite.anchor.x / albedoFrame.size.x : 0.5,
-      albedoFrame.size.y !== 0 ? sprite.anchor.y / albedoFrame.size.y : 0.5,
-    );
-    gl.uniform1f(u_rotation, spriteTransform.worldRotation.y);
+    const anchor = sprite.anchor;
+    data[o + SPRITE_OFFSET_SIZE_ANCHOR + 2] =
+      frameW !== 0 ? anchor.x / frameW : 0.5;
+    data[o + SPRITE_OFFSET_SIZE_ANCHOR + 3] =
+      frameH !== 0 ? anchor.y / frameH : 0.5;
 
-    // Set sprite appearance uniforms
-    gl.uniform4f(
-      u_tint,
-      sprite.tint.x,
-      sprite.tint.y,
-      sprite.tint.z,
-      sprite.tint.w,
-    );
+    // UV bounds of each channel's frame in its atlas
+    writeFrameUv(data, o + SPRITE_OFFSET_UV_ALBEDO, albedoFrame, atlasSize);
+    writeFrameUv(data, o + SPRITE_OFFSET_UV_NORMAL, normalFrame, atlasSize);
+    writeFrameUv(data, o + SPRITE_OFFSET_UV_EMISSION, emissionFrame, atlasSize);
+    writeFrameUv(data, o + SPRITE_OFFSET_UV_MATERIAL, materialFrame, atlasSize);
+
+    // Appearance
+    const tint = sprite.tint;
+    data[o + SPRITE_OFFSET_TINT] = tint.x;
+    data[o + SPRITE_OFFSET_TINT + 1] = tint.y;
+    data[o + SPRITE_OFFSET_TINT + 2] = tint.z;
+    data[o + SPRITE_OFFSET_TINT + 3] = tint.w;
+    const emissionColor = sprite.emissionColor;
+    data[o + SPRITE_OFFSET_EMISSION] = emissionColor.x;
+    data[o + SPRITE_OFFSET_EMISSION + 1] = emissionColor.y;
+    data[o + SPRITE_OFFSET_EMISSION + 2] = emissionColor.z;
+    data[o + SPRITE_OFFSET_EMISSION + 3] = sprite.emissionIntensity;
+
+    // Palette remap: its slot in the shared table plus its entry count.
     const palette = spritePalette(sprite);
-    if (palette !== lastPalette) {
-      if (palette) {
-        gl.uniform4uiv(u_remapFrom, palette.from);
-        gl.uniform4uiv(u_remapTo, palette.to);
-        gl.uniform1i(u_remapCount, palette.count);
-      } else {
-        gl.uniform1i(u_remapCount, 0);
+    let paletteSlot = 0;
+    let paletteEntries = 0;
+    if (palette) {
+      if (palette !== lastPalette) {
+        lastPalette = palette;
+        lastPaletteSlot = spritePaletteSlot(palette);
       }
-      lastPalette = palette;
+      paletteSlot = lastPaletteSlot;
+      paletteEntries = palette.count;
     }
-    gl.uniform1f(u_opacity, sprite.opacity);
 
-    // Set emission uniforms
-    gl.uniform1f(u_emissionIntensity, sprite.emissionIntensity);
-    gl.uniform3f(
-      u_emissionColor,
-      sprite.emissionColor.x,
-      sprite.emissionColor.y,
-      sprite.emissionColor.z,
+    const showSilhouette = !!sprite.showSilhouette;
+    let flags = paletteEntries << SPRITE_PALETTE_COUNT_SHIFT;
+    if (isMemory) flags |= SPRITE_FLAG_FOG_MEMORY;
+    if (normalFrame) flags |= SPRITE_FLAG_NORMAL;
+    if (emissionFrame) flags |= SPRITE_FLAG_EMISSION;
+    if (materialFrame) flags |= SPRITE_FLAG_MATERIAL;
+    if (showSilhouette) flags |= SPRITE_FLAG_SILHOUETTE;
+
+    data[o + SPRITE_OFFSET_FOG] = sprite.opacity;
+    data[o + SPRITE_OFFSET_FOG + 1] = spriteVis;
+    data[o + SPRITE_OFFSET_FOG + 2] = fogAlpha;
+    data[o + SPRITE_OFFSET_FOG + 3] = flags;
+    data[o + SPRITE_OFFSET_IDS] = warnOversizedId(sprite.shaderId);
+    data[o + SPRITE_OFFSET_IDS + 1] = paletteSlot;
+    data[o + SPRITE_OFFSET_IDS + 2] = 0;
+    data[o + SPRITE_OFFSET_IDS + 3] = 0;
+
+    // Silhouette colour (read by the shader only when the flag is set)
+    if (showSilhouette) {
+      const silhouetteColor = sprite.silhouetteColor;
+      data[o + SPRITE_OFFSET_SILHOUETTE] = silhouetteColor.x;
+      data[o + SPRITE_OFFSET_SILHOUETTE + 1] = silhouetteColor.y;
+      data[o + SPRITE_OFFSET_SILHOUETTE + 2] = silhouetteColor.z;
+      data[o + SPRITE_OFFSET_SILHOUETTE + 3] = silhouetteColor.w;
+    } else {
+      data[o + SPRITE_OFFSET_SILHOUETTE] = 0;
+      data[o + SPRITE_OFFSET_SILHOUETTE + 1] = 0;
+      data[o + SPRITE_OFFSET_SILHOUETTE + 2] = 0;
+      data[o + SPRITE_OFFSET_SILHOUETTE + 3] = 0;
+    }
+
+    instanceCount++;
+  }
+  if (instanceCount > batchStart) {
+    pushBatch(
+      batchCount++,
+      batchStart,
+      instanceCount - batchStart,
+      albedoPage,
+      normalPage,
+      emissionPage,
+      materialPage,
     );
+  }
+  resetTextureMapMemo();
 
-    // Set silhouette uniforms
-    gl.uniform1ui(u_spriteIndex, warnOversizedId(sprite.shaderId));
-    gl.uniform1i(u_showSilhouette, sprite.showSilhouette ? 1 : 0);
-    if (sprite.showSilhouette) {
-      gl.uniform4f(
-        u_silhouetteColor,
-        sprite.silhouetteColor.x,
-        sprite.silhouetteColor.y,
-        sprite.silhouetteColor.z,
-        sprite.silhouetteColor.w,
-      );
+  // Upload the records (and any new palette slots), then one instanced draw
+  // per batch, back-to-front. A page is re-bound only when it changes, and a
+  // channel's sampler is pointed at its unit only once a batch actually binds
+  // something there -- exactly as before, an unused channel leaves both its
+  // unit and its sampler uniform untouched.
+  const uploaded =
+    instanceCount > 0
+      ? uploadSpriteInstances(gl, camera.id!, instanceCount)
+      : null;
+  if (uploaded) {
+    let boundAlbedo = -1;
+    let boundNormal = -1;
+    let boundEmission = -1;
+    let boundMaterial = -1;
+    for (let b = 0; b < batchCount; b++) {
+      const o = b * BATCH_INTS;
+      const batchAlbedo = batches[o + 2];
+      const batchNormal = batches[o + 3];
+      const batchEmission = batches[o + 4];
+      const batchMaterial = batches[o + 5];
+
+      if (batchAlbedo !== boundAlbedo) {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, atlasTextures[batchAlbedo]);
+        if (boundAlbedo === -1) gl.uniform1i(u_albedoTexture, 0);
+        boundAlbedo = batchAlbedo;
+      }
+      if (batchNormal !== -1 && batchNormal !== boundNormal) {
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, atlasTextures[batchNormal]);
+        if (boundNormal === -1) gl.uniform1i(u_normalTexture, 1);
+        boundNormal = batchNormal;
+      }
+      if (batchEmission !== -1 && batchEmission !== boundEmission) {
+        gl.activeTexture(gl.TEXTURE4);
+        gl.bindTexture(gl.TEXTURE_2D, atlasTextures[batchEmission]);
+        if (boundEmission === -1) gl.uniform1i(u_emissionTexture, 4);
+        boundEmission = batchEmission;
+      }
+      if (batchMaterial !== -1 && batchMaterial !== boundMaterial) {
+        gl.activeTexture(gl.TEXTURE5);
+        gl.bindTexture(gl.TEXTURE_2D, atlasTextures[batchMaterial]);
+        if (boundMaterial === -1) gl.uniform1i(u_materialTexture, 5);
+        boundMaterial = batchMaterial;
+      }
+
+      // gl_InstanceID restarts at 0 for every draw; this is the batch's
+      // first record.
+      gl.uniform1i(uploaded.instanceBaseLoc, batches[o]);
+      // Each instance is one quad (6 vertices = 2 triangles)
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, batches[o + 1]);
     }
-
-    // Draw the sprite quad (6 vertices = 2 triangles)
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 
   // Restore depth mask state

@@ -182,6 +182,18 @@ under `vendor/`, and ship via the `plugin-release.yml` workflow (release = bump 
   shape**, vision source *or* volume, at every gate: shader `u_visNumShapes`, render-cell-maps,
   render-sprites, and fog-of-war's `update` bail. A consumer cap (`fogOfWar.maxVisibilityShapes`)
   limits rendering only, never exploration.
+- **Sprites are drawn instanced; nothing per-sprite is a uniform.** `renderSprites`
+  (`src/component/camera/render/render-sprites.ts`) writes one fixed-size record per drawn sprite
+  into an RGBA32F data texture and issues one `drawArraysInstanced` per *batch* (a run of
+  consecutive sprites, in draw order, whose atlas pages can be bound together). The record layout
+  lives in `render/sprite-instances.ts` and is hard-coded again in `unified.vert`/`unified.frag` —
+  change all three together. A new per-sprite value goes in the record (and, if the fragment
+  shader needs it on every fragment, a `flat` varying), **not** in a `gl.uniform*` call: a
+  per-sprite uniform would force one draw call per sprite again. Palette remaps live in a second
+  data texture (one slot per distinct packed remap) for the same reason. The draw loop reads
+  **raw** component objects (`rawOf`, resolved in `collect-renderables`'s `spriteDraw`), which is
+  read-only by contract — writes still go through the Proxy. `test:sprite-batch` pins the sort's
+  stability and the palette-table addressing.
 - **Never pause a real entity's nexus to "freeze" it for rendering.** An earlier fog-of-war
   sprite-tracking build stopped a tracked sprite's stale ghost from drifting by setting
   `nexus.paused = true` on the tracked sprite's own nexus while it was out of sight — which

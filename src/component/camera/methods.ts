@@ -1,13 +1,8 @@
 import { ComponentData, ComponentMethods } from '../types';
 import { Vector3D } from '../../math';
 import { CameraT, PostEffectOptions, PostEffectUniformValue } from './data';
-import { SpriteT } from '../sprite/data';
-import { CellMapT } from '../cell-map/data';
-import { LightT } from '../light/data';
-import { VisionSourceT } from '../vision-source/data';
-import { VisibilityVolumeT } from '../visibility-volume/data';
 import { render } from './render';
-import { collectRenderables } from './collect-renderables';
+import { collectRenderables, Renderables } from './collect-renderables';
 import { pan } from './pan';
 import {
   screenPick,
@@ -32,13 +27,7 @@ import { dispose } from './dispose';
 
 export interface CameraMethods extends ComponentMethods {
   render: (camera: CameraT, deltaTime: number) => void;
-  collectRenderables: (camera: CameraT) => {
-    sprites: SpriteT[];
-    cellMaps: CellMapT[];
-    lights: LightT[];
-    visionSources: VisionSourceT[];
-    visibilityVolumes: VisibilityVolumeT[];
-  };
+  collectRenderables: (camera: CameraT) => Renderables;
   pan: (camera: CameraT, offsetX: number, offsetY: number) => void;
   setZoom: (camera: CameraT, zoom: number) => void;
   setZoomTarget: (camera: CameraT, x: number, y: number) => void;

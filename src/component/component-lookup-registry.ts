@@ -9,7 +9,7 @@
  */
 import type { ComponentData, COMPONENT_TYPE } from './types';
 import { ComponentUnique } from './types';
-import { getConfig } from '../config';
+import { getComponentRegistrationOverride } from '../config';
 
 /**
  * Curated low-volume types that default to opted in, regardless of their
@@ -17,12 +17,20 @@ import { getConfig } from '../config';
  * `atlas-manager` -- `camera` is `LOCAL`, `viewport`/`texture-map` are
  * `FALSE`, included here because they're low-volume in practice, not because
  * they're structurally unique).
+ *
+ * `fog-of-war` is `GLOBAL`, so it would be discovered on its own -- but only
+ * once an instance exists. The camera asks for it recursively several times a
+ * frame, and in a scene that has never had one, each ask fell through to a
+ * walk of the whole tree: milliseconds per frame in a scene with thousands of
+ * entities, to find nothing. Listed here so the "there is none" answer is the
+ * registry's empty set from the start.
  */
 const BUILT_IN_DEFAULT_TYPES = new Set<string>([
   'camera',
   'atlas-manager',
   'texture-map',
   'viewport',
+  'fog-of-war',
 ]);
 
 /**
@@ -53,8 +61,7 @@ function noteUniqueness(component: ComponentData): void {
  * otherwise the built-in default (curated list, or discovered `GLOBAL`).
  */
 export function isTypeOptedIn(type: string): boolean {
-  const override =
-    getConfig().componentRegistrationOverrideList?.[type as COMPONENT_TYPE];
+  const override = getComponentRegistrationOverride(type as COMPONENT_TYPE);
   if (override !== undefined) return override;
   return BUILT_IN_DEFAULT_TYPES.has(type) || KNOWN_GLOBAL_TYPES.has(type);
 }

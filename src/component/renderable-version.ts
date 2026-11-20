@@ -12,13 +12,19 @@
  * whole-subtree cascade) ultimately calls, rather than a single
  * disposal-queue hook, since `Nexus.dispose()`'s cascade disposes
  * descendants directly without going through the queue.
+ *
+ * `transform` is versioned for a narrower reason: it is not collected itself,
+ * but collect-renderables caches each sprite's transform alongside the sprite,
+ * and a transform added to (or removed from) a nexus after its sprite must
+ * invalidate that pairing.
  */
 export type RenderableType =
   | 'sprite'
   | 'cell-map'
   | 'light'
   | 'vision-source'
-  | 'visibility-volume';
+  | 'visibility-volume'
+  | 'transform';
 
 const VERSIONS: Record<RenderableType, number> = {
   sprite: 0,
@@ -26,6 +32,7 @@ const VERSIONS: Record<RenderableType, number> = {
   light: 0,
   'vision-source': 0,
   'visibility-volume': 0,
+  transform: 0,
 };
 
 export function bumpRenderableVersion(type: RenderableType): void {

@@ -32,13 +32,13 @@ export interface PaletteEntry {
 }
 
 /**
- * Most entries one sprite can carry. The shader holds the remap in two
- * `uvec4[12]` uniform arrays (one packed entry per component), so this is
- * 12 * 4.
+ * Most entries one sprite can carry. The shader reads a remap as two runs of
+ * 12 `uvec4` texels (one packed entry per component) from the sprite palette
+ * table (camera/render/sprite-instances.ts), so this is 12 * 4.
  */
 export const MAX_PALETTE_ENTRIES = 48;
 
-/** Number of `uvec4` slots each packed array occupies in the shader. */
+/** Number of `uvec4` texels each packed array occupies in the palette table. */
 export const PALETTE_UNIFORM_VECTORS = MAX_PALETTE_ENTRIES / 4;
 
 /**
@@ -174,7 +174,7 @@ export function normalizePaletteRemap(
   return out.length > 0 ? out : null;
 }
 
-/** Packs a (normalized) remap for upload to the shader's uniform arrays. */
+/** Packs a (normalized) remap for upload to the shader's palette table. */
 export function packPaletteRemap(entries: PaletteEntry[]): PackedPalette {
   const from = new Uint32Array(MAX_PALETTE_ENTRIES);
   const to = new Uint32Array(MAX_PALETTE_ENTRIES);

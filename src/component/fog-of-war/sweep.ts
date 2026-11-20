@@ -412,7 +412,7 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
  * eight jittered rays to decide whether to draw. Those two disagreed wherever
  * the centre ray threaded a gap that the jittered ones did not, which left a
  * phantom disposed and its real sprite discarded: a hole where the entity
- * should be. `render-sprites.ts` now uploads this value as `u_spriteVisibility`
+ * should be. `render-sprites.ts` now uploads this value per sprite instance
  * and the shader consumes it instead of recomputing, so a disagreement is no
  * longer expressible.
  *

@@ -76,6 +76,27 @@ export function castTo<T>(component: ComponentData): T {
   return (proxy || component) as T;
 }
 
+/**
+ * The inverse of {@link PROXY_REGISTRY}: each Proxy wrapper back to the raw
+ * component object it wraps.
+ */
+const RAW_REGISTRY = new WeakMap<ComponentData, ComponentData>();
+
+/**
+ * Gets the raw data object behind a component (the inverse of `castTo`).
+ *
+ * For hot loops that only READ data fields: a read on the raw object skips the
+ * Proxy `get` trap entirely. Never write through it -- the `set` trap is what
+ * keeps `_hasUpdateWork` and the renderable versions correct -- and never call
+ * methods on it (the raw object has none).
+ *
+ * @param component - The component (may be proxied or already raw)
+ * @returns The raw data object
+ */
+export function rawOf<T extends ComponentData>(component: T): T {
+  return (RAW_REGISTRY.get(component) as T | undefined) ?? component;
+}
+
 let COMPONENT_COUNT = 0;
 
 /**
@@ -456,6 +477,7 @@ export function wrapInProxy(component: ComponentData): ComponentData {
   // Register the proxy in the registry so it can be retrieved later
   // This is crucial for components that store references to other components
   PROXY_REGISTRY.set(component, proxy);
+  RAW_REGISTRY.set(proxy, component);
 
   return proxy;
 }

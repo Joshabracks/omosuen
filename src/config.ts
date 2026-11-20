@@ -47,6 +47,17 @@ export function getConfig(): Readonly<OmosuenConfig> {
 }
 
 /**
+ * The per-type registry opt-in override for `type`, or `undefined` when the
+ * config has none. Reads the live config directly: `getConfig()` copies the
+ * whole object, and this is asked on every `getComponentByType` call.
+ */
+export function getComponentRegistrationOverride(
+  type: COMPONENT_TYPE,
+): boolean | undefined {
+  return globalConfig.componentRegistrationOverrideList?.[type];
+}
+
+/**
  * Update the global configuration
  */
 export function setConfig(config: Partial<OmosuenConfig>): void {

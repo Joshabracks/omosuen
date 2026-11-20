@@ -5,6 +5,8 @@ import { CameraT } from '../data';
 import { clearLightUniformCache } from '../render/light-uniforms';
 import { clearVisibilityUniformCache } from '../render/visibility-uniforms';
 import { clearFogUniformCache } from '../render/fog-uniforms';
+import { clearSpriteInstanceCache } from '../render/sprite-instances';
+import { clearSpriteUniformCache } from '../render/render-sprites';
 import { clearRenderablesCache } from '../collect-renderables/index';
 import { disposeCameraTargets } from '../render/framebuffers';
 import { clearPostChainCache } from '../render/post-chain';
@@ -65,6 +67,8 @@ export function dispose(component: ComponentData): void {
   clearLightUniformCache(camera.id!);
   clearVisibilityUniformCache(gl, camera.id!);
   clearFogUniformCache(camera.id!);
+  clearSpriteInstanceCache(gl, camera.id!);
+  clearSpriteUniformCache(camera.id!);
   clearRenderablesCache(camera.id!);
   clearPostChainCache(gl, camera.id!);
 

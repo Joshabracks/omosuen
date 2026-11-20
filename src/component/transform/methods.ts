@@ -2,6 +2,7 @@ import { ComponentData, ComponentMethods, castTo } from '../types';
 import { TransformT } from './data';
 import { Vector3D } from '../../math';
 import { NexusT } from '../nexus';
+import { bumpRenderableVersion } from '../renderable-version';
 
 export interface TransformMethods extends ComponentMethods {
   init: (component: ComponentData) => Promise<void>;
@@ -243,5 +244,7 @@ export const Transform: TransformMethods = {
   dispose(c: ComponentData) {
     const t = c as TransformT;
     t._disposed = true;
+    // collect-renderables caches each sprite's transform; see renderable-version.ts.
+    bumpRenderableVersion('transform');
   },
 };

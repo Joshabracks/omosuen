@@ -170,6 +170,21 @@ under `vendor/`, and ship via the `plugin-release.yml` workflow (release = bump 
   This is why the far-tier material color lives in its own separate `cmFarMaterialChannel`
   (`NEAREST`-filtered) rather than sharing `cmExploredChannel`'s texture — a real mistake made and
   caught mid-implementation, not a hypothetical.
+- **Explored ground has a portable form for games that save their own state.**
+  `fogOfWar.exportExplored()` / `importExplored(state)` / `clearExplored()` (thin delegates to
+  `CellMap.exportExploredState` etc.) round-trip the whole explored channel — resident window
+  *and* cold storage — as an `ExploredState` (`src/component/cell-map/explored-state.ts`, a leaf
+  module) keyed by **world chunk**, so it restores into a window that is somewhere else or has
+  not committed yet (off-window chunks wait in the channel's cold storage). Import merges. The
+  engine's own scene serializer is separate and still saves only the cold-storage half
+  (`exploredStorageEntries`). `test:explored-state` pins the round trip. Sprite memory is the
+  other half: `exportPhantoms()` / `importPhantoms(state, { ids | resolveOwner })` /
+  `clearPhantoms()` (`fog-of-war/phantom-state.ts`). A phantom names its owner by the **nexus
+  ids of the sprite's ancestors** plus names, because a rebuilt scene has new engine ids — the
+  caller supplies the saved→current id map. `importPhantoms` is async and must run after the
+  owning sprites exist; an owner that cannot be found still gets its phantom back, ownerless
+  (`LivePhantom.ownerSprite` is nullable for exactly this). Deferred terrain presentation is in
+  neither snapshot.
 - **Fog-of-war visibility has no compiled-in shape count.** Vision-source spheres and
   `visibility-volume` boxes share one runtime-sized store: two data textures (`u_visShapes`
   RGBA32F, `u_visBins` R32UI, units 12/13) binned on an XZ grid

@@ -101,6 +101,16 @@ export type {
   FogOfWarStyle,
 } from './fog-of-war';
 export type {
+  PhantomState,
+  PhantomSnapshot,
+  PhantomOwnerRef,
+  PhantomImportOptions,
+} from './fog-of-war/phantom-state';
+export type {
+  ExploredState,
+  ExploredChunkData,
+} from './cell-map/explored-state';
+export type {
   VisibilityCandidate,
   VisibilitySelector,
   VisibilityStats,

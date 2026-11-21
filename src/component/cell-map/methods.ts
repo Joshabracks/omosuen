@@ -28,6 +28,13 @@ import type { ChunkCoord } from './window';
 import { markChunksDirty, markChunkAndNeighborsDirty } from './mesh-builder';
 import { deferCellWriteIfUnobserved } from './deferred-presentation';
 import {
+  decodeExploredChunk,
+  encodeExploredChunk,
+  isExploredChunkEntry,
+  isExploredState,
+} from './explored-state';
+import type { ExploredState } from './explored-state';
+import {
   raycastCellMap,
   cellSurfacePoint,
   sampleSurfaceHeight,
@@ -145,6 +152,21 @@ const CELL_EXPLORED_DIRTY_CAP = 2048;
  * what is already there.
  */
 const EXPLORED_DIRTY_TAIL_SCAN = 32;
+
+/** `mergeChunk` combiner for explored state: once explored, always explored. */
+function mergeExplored(existing: number, incoming: number): number {
+  return existing !== 0 || incoming !== 0 ? 1 : 0;
+}
+
+/**
+ * Makes every camera re-upload the whole explored texture on its next frame.
+ * For bulk changes, which the per-chunk dirty log is not worth replaying for.
+ */
+function invalidateExploredUploads(component: CellMapT): void {
+  component.exploredVersion = component.exploredVersion + 1;
+  component.exploredFullVersion = component.exploredVersion;
+  component.exploredDirtyRegions = [];
+}
 
 export interface CellMapMethods extends ComponentMethods {
   type: 'cell-map';
@@ -267,6 +289,27 @@ export interface CellMapMethods extends ComponentMethods {
     worldY: number,
     worldZ: number,
   ) => boolean;
+
+  /**
+   * A JSON-safe snapshot of the whole explored map -- resident window and
+   * off-window alike -- keyed by world chunk. For a game that saves its own
+   * state; see `ExploredState`.
+   */
+  exportExploredState: (component: CellMapT) => ExploredState;
+
+  /**
+   * Marks every cell in `state` explored again. MERGES: ground already
+   * explored stays explored (call `clearExploredState` first to replace).
+   *
+   * Safe at any point after construction, including before the window has
+   * streamed the area in -- off-window chunks wait in the explored channel's
+   * cold storage. A snapshot taken at a different chunk size still loads.
+   * Malformed input is reported with a console warning and skipped.
+   */
+  importExploredState: (component: CellMapT, state: ExploredState) => void;
+
+  /** Forgets all explored ground, resident and off-window. */
+  clearExploredState: (component: CellMapT) => void;
 
   /**
    * Set only the visibility flag for a cell
@@ -786,6 +829,84 @@ export const CellMap: CellMapMethods = {
     assertFiniteCoordinates(worldX, worldY, worldZ);
     const local = component.window.worldToLocal(worldX, worldY, worldZ);
     return cmExploredChannel!.get(worldX, worldY, worldZ, local) === 1;
+  },
+
+  exportExploredState: (component: CellMapT): ExploredState => {
+    const size = component.chunkSize;
+    const count = size.x * size.y * size.z;
+    const chunks: ExploredState['chunks'] = [];
+    cmExploredChannel!.forEachDivergedChunk((cx, cy, cz, cells) => {
+      chunks.push([cx, cy, cz, encodeExploredChunk(cells, count)]);
+    });
+    return {
+      version: 1,
+      chunkSize: { x: size.x, y: size.y, z: size.z },
+      chunks,
+    };
+  },
+
+  importExploredState: (component: CellMapT, state: ExploredState): void => {
+    if (!isExploredState(state)) {
+      console.warn(
+        `[cell-map] importExploredState: not an explored-state snapshot; ignored`,
+      );
+      return;
+    }
+    const channel = cmExploredChannel!;
+    const size = component.chunkSize;
+    const from = state.chunkSize;
+    const sameChunking =
+      from.x === size.x && from.y === size.y && from.z === size.z;
+    const cells = new Uint32Array(from.x * from.y * from.z);
+    let malformed = 0;
+
+    for (const entry of state.chunks) {
+      if (
+        !isExploredChunkEntry(entry) ||
+        !decodeExploredChunk(entry[3], cells)
+      ) {
+        malformed++;
+        continue;
+      }
+      const cx = entry[0];
+      const cy = entry[1];
+      const cz = entry[2];
+      if (sameChunking) {
+        channel.mergeChunk(cx, cy, cz, cells, mergeExplored);
+        continue;
+      }
+      // Saved at a different chunk size: the chunks no longer line up, so
+      // place each explored cell by its world coordinate instead.
+      let i = 0;
+      for (let lz = 0; lz < from.z; lz++) {
+        const wz = cz * from.z + lz;
+        for (let ly = 0; ly < from.y; ly++) {
+          const wy = cy * from.y + ly;
+          for (let lx = 0; lx < from.x; lx++, i++) {
+            if (cells[i] === 0) continue;
+            const wx = cx * from.x + lx;
+            channel.set(
+              wx,
+              wy,
+              wz,
+              component.window.worldToLocal(wx, wy, wz),
+              1,
+            );
+          }
+        }
+      }
+    }
+    if (malformed > 0) {
+      console.warn(
+        `[cell-map] importExploredState: ${malformed} malformed chunk entr${malformed === 1 ? 'y' : 'ies'} skipped`,
+      );
+    }
+    invalidateExploredUploads(component);
+  },
+
+  clearExploredState: (component: CellMapT): void => {
+    cmExploredChannel!.reset();
+    invalidateExploredUploads(component);
   },
 
   setVisible: (

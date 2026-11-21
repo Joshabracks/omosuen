@@ -29,6 +29,7 @@
     "test:fog": "tsx test/fog-of-war-sweep.test.ts",
     "test:deferred": "tsx test/deferred-presentation.test.ts",
     "test:explored": "tsx test/explored-sweep.test.ts",
+    "test:explored-state": "tsx test/explored-state.test.ts",
     "test:vision": "tsx test/vision-source-selection.test.ts",
     "test:shapes": "tsx test/visibility-shapes.test.ts",
     "test:pick": "tsx test/screen-pick-window.test.ts",

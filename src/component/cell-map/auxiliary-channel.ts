@@ -1073,6 +1073,171 @@ export class AuxiliaryChannel {
     }
   }
 
+  /** Whether a world chunk lies inside the current window. False before the first commit. */
+  private chunkInWindow(cx: number, cy: number, cz: number): boolean {
+    const o = this.currentOrigin;
+    if (!o) return false;
+    const g = this.currentGridDims;
+    return (
+      cx >= o.cx &&
+      cx < o.cx + g.x &&
+      cy >= o.cy &&
+      cy < o.cy + g.y &&
+      cz >= o.cz &&
+      cz < o.cz + g.z
+    );
+  }
+
+  /**
+   * Visits every chunk holding non-baseline content, wherever it currently
+   * lives -- the resident window or cold storage -- as world-chunk coordinate
+   * plus its cells in chunk-local order. This is the whole channel, which
+   * `dumpEntries` (cold storage only) is not.
+   *
+   * `cells` is only valid for the duration of the call; copy it to keep it.
+   */
+  forEachDivergedChunk(
+    visit: (cx: number, cy: number, cz: number, cells: Uint32Array) => void,
+  ): void {
+    const { x: csx, y: csy, z: csz } = this.chunkSize;
+    const origin = this.currentOrigin;
+    if (origin) {
+      const cells = new Uint32Array(csx * csy * csz);
+      const wrap = this.currentWrap();
+      const visitResident = (wcx: number, wcy: number, wcz: number): void => {
+        extractChunkInto(
+          cells,
+          this.resident,
+          wcx - origin.cx,
+          wcy - origin.cy,
+          wcz - origin.cz,
+          this.currentCellDims,
+          this.chunkSize,
+          wrap,
+        );
+        if (!matchesBaselineFlat(cells, this.baselineValue)) {
+          visit(wcx, wcy, wcz, cells);
+        }
+      };
+      if (this.touchedSinceBaseline) {
+        // A superset that also keeps chunks evicted since they were touched,
+        // hence the window test.
+        for (const key of this.touchedSinceBaseline) {
+          const parts = key.split(',');
+          const wcx = Number(parts[0]);
+          const wcy = Number(parts[1]);
+          const wcz = Number(parts[2]);
+          if (this.chunkInWindow(wcx, wcy, wcz)) visitResident(wcx, wcy, wcz);
+        }
+      } else {
+        const g = this.currentGridDims;
+        for (let cz = 0; cz < g.z; cz++) {
+          for (let cy = 0; cy < g.y; cy++) {
+            for (let cx = 0; cx < g.x; cx++) {
+              visitResident(origin.cx + cx, origin.cy + cy, origin.cz + cz);
+            }
+          }
+        }
+      }
+    }
+    for (const { cx, cy, cz } of this.coldStorage.chunkCoords()) {
+      // A resident chunk's cold copy is whatever it held when it last entered
+      // the window; the resident buffer above is the current one.
+      if (this.chunkInWindow(cx, cy, cz)) continue;
+      const stored = this.coldStorage.get(cx, cy, cz);
+      if (stored && !matchesBaselineFlat(stored, this.baselineValue)) {
+        visit(cx, cy, cz, stored);
+      }
+    }
+  }
+
+  /**
+   * Folds a whole chunk of incoming values into the channel:
+   * `combine(existing, incoming)` per cell, in chunk-local order.
+   *
+   * A chunk inside the current window is written straight into the resident
+   * buffer. Anything else -- including every chunk before the window's first
+   * commit -- goes to cold storage, and the ordinary `onWindowChange` restore
+   * brings it in when the window gets there. That is what makes a bulk load
+   * safe at any point, with no need to wait for an area to stream in.
+   *
+   * Returns whether RESIDENT content changed (i.e. a GPU copy is now stale).
+   */
+  mergeChunk(
+    cx: number,
+    cy: number,
+    cz: number,
+    incoming: ArrayLike<number>,
+    combine: (existing: number, incoming: number) => number,
+  ): boolean {
+    const { x: csx, y: csy, z: csz } = this.chunkSize;
+    const count = csx * csy * csz;
+    const origin = this.currentOrigin;
+    if (origin && this.chunkInWindow(cx, cy, cz)) {
+      const scratch = evictionScratch(count);
+      const wrap = this.currentWrap();
+      const lx = cx - origin.cx;
+      const ly = cy - origin.cy;
+      const lz = cz - origin.cz;
+      extractChunkInto(
+        scratch,
+        this.resident,
+        lx,
+        ly,
+        lz,
+        this.currentCellDims,
+        this.chunkSize,
+        wrap,
+      );
+      let changed = false;
+      for (let i = 0; i < count; i++) {
+        const next = combine(scratch[i], incoming[i]);
+        if (next !== scratch[i]) {
+          scratch[i] = next;
+          changed = true;
+        }
+      }
+      if (!changed) return false;
+      writeChunkWrapped(
+        this.resident,
+        lx,
+        ly,
+        lz,
+        scratch,
+        this.currentCellDims,
+        this.chunkSize,
+        wrap,
+      );
+      if (this.touchedSinceBaseline) {
+        this.touchedSinceBaseline.add(chunkKey(cx, cy, cz));
+      } else {
+        this.everWrittenUntracked = true;
+      }
+      return true;
+    }
+    const cells =
+      this.coldStorage.get(cx, cy, cz) ??
+      new Uint32Array(count).fill(this.baselineValue);
+    for (let i = 0; i < count; i++) {
+      cells[i] = combine(cells[i], incoming[i]);
+    }
+    if (matchesBaselineFlat(cells, this.baselineValue)) {
+      this.coldStorage.delete(cx, cy, cz);
+    } else {
+      this.coldStorage.set(cx, cy, cz, cells);
+    }
+    return false;
+  }
+
+  /** Returns the whole channel -- resident and cold-stored -- to baseline. */
+  reset(): void {
+    this.resident.fill(this.baselineValue);
+    this.coldStorage.clear();
+    if (this.touchedSinceBaseline) this.touchedSinceBaseline.clear();
+    this.everWrittenUntracked = false;
+    this.shiftChangedContent = true;
+  }
+
   dumpEntries(): ColdStorageEntrySnapshot[] {
     return this.coldStorage.dumpEntries();
   }

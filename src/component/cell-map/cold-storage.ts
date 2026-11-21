@@ -230,6 +230,13 @@ export class ChunkColdStorage {
     return this.index.size;
   }
 
+  /** World-chunk coordinate of every stored chunk, in no particular order. */
+  chunkCoords(): Array<{ cx: number; cy: number; cz: number }> {
+    const out: Array<{ cx: number; cy: number; cz: number }> = [];
+    for (const key of this.index.keys()) out.push(unpackChunkKey(key));
+    return out;
+  }
+
   /**
    * Dumps every stored chunk in its native tier representation (RLE runs or
    * a dense cell array) — the save-format shape a chunked serializer wants,

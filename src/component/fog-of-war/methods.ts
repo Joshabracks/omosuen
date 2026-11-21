@@ -9,6 +9,15 @@ import { Vector2D, Vector3D, Vector4D } from '../../math';
 import { getActiveScene } from '../../scene';
 import { sceneIndex } from '../scene-index';
 import type { NexusT } from '../nexus/data';
+import type { CellMapT } from '../cell-map/data';
+import { CellMap } from '../cell-map/methods';
+import type { ExploredState } from '../cell-map/explored-state';
+import type {
+  PhantomImportOptions,
+  PhantomOwnerRef,
+  PhantomSnapshot,
+  PhantomState,
+} from './phantom-state';
 import type { SpriteT, SpriteOptions } from '../sprite/data';
 import { clonePaletteRemap } from '../sprite/palette';
 import type { TransformT, TransformOptions } from '../transform/data';
@@ -146,8 +155,13 @@ interface LivePhantom {
    * The sprite this stands in for, and its transform. The OWNER's, not the
    * phantom's -- `phantomSupersededBySprite` asks where the real sprite is now.
    */
-  ownerSprite: SpriteT;
-  ownerTransform: TransformT;
+  // Both null for a phantom restored by `importPhantoms` whose sprite could not
+  // be found again: it stands until vision reaches it, then dissolves, and is
+  // never "covered".
+  ownerSprite: SpriteT | null;
+  ownerTransform: TransformT | null;
+  /** Base name the phantom's components were created from. */
+  label: string;
   /** Where the phantom was frozen -- `phantomSupersededBySprite`'s reference. */
   spawnPos: { x: number; y: number; z: number };
   /** Monotonic spawn order, so the oldest memory can be found (see the cap). */
@@ -582,6 +596,7 @@ async function spawnPhantomNexus(
     phantomSprite,
     ownerSprite: sprite,
     ownerTransform: transform,
+    label: sprite.name,
     spawnPos: frozenPos,
     seq: phantomSeq++,
     dissolve: 0,
@@ -674,6 +689,293 @@ function isWorldCellObserved(
 }
 
 /**
+ * The cell-map whose explored channel this fog-of-war reads and writes: the
+ * first one under the fog component's own scene root (falling back to the
+ * active scene), the same "first cell-map" simplification as the sweep.
+ *
+ * Looked up through the tree rather than `sceneIndex`, which is empty until a
+ * frame has run -- and a save is restored right after the scene is built.
+ */
+function exploredCellMap(fow: FogOfWarT): CellMapT | null {
+  const scene = sceneRootOf(fow);
+  if (!scene) return null;
+  return scene.getComponentByType('cell-map', true) as CellMapT | null;
+}
+
+/** The root nexus above the fog component, falling back to the active scene. */
+function sceneRootOf(fow: FogOfWarT): NexusT | null {
+  let root: ComponentData | null = fow.parent;
+  while (root && root.parent) root = root.parent;
+  return root && root.type === 'nexus'
+    ? castTo<NexusT>(root)
+    : getActiveScene();
+}
+
+/** Describes `sprite` so `resolvePhantomOwner` can find it again after a load. */
+function phantomOwnerRef(sprite: SpriteT): PhantomOwnerRef | null {
+  const holder = sprite.parent;
+  if (!holder || holder.type !== 'nexus') return null;
+  const nexusIds: number[] = [];
+  const nexusNames: string[] = [];
+  // Stops below the scene root: its id means nothing to a game's own records.
+  for (let n: ComponentData | null = holder; n && n.parent; n = n.parent) {
+    if (n.id === undefined) return null;
+    nexusIds.push(n.id);
+    nexusNames.push(n.name);
+  }
+  let spriteIndex = 0;
+  for (const c of castTo<NexusT>(holder).components) {
+    if (c.type !== 'sprite') continue;
+    if (c.id === sprite.id) break;
+    spriteIndex++;
+  }
+  return { nexusIds, nexusNames, spriteName: sprite.name, spriteIndex };
+}
+
+/** Every nexus under `scene`, by id. Built once per import. */
+function indexNexusesById(scene: NexusT): Map<number, NexusT> {
+  const byId = new Map<number, NexusT>();
+  const stack: NexusT[] = [scene];
+  while (stack.length > 0) {
+    const nexus = stack.pop()!;
+    if (nexus.id !== undefined) byId.set(nexus.id, nexus);
+    for (const c of nexus.components) {
+      if (c.type === 'nexus') stack.push(castTo<NexusT>(c));
+    }
+  }
+  return byId;
+}
+
+/**
+ * The built-in owner lookup: find the nearest recorded ancestor that still
+ * exists (through `ids` when the scene was rebuilt), walk back down to the
+ * sprite's own nexus by name, then pick the sprite by position and name.
+ *
+ * Names are checked at every step, so a recycled id pointing at some unrelated
+ * nexus resolves to nothing rather than to the wrong sprite.
+ */
+function resolvePhantomOwner(
+  owner: PhantomOwnerRef,
+  byId: Map<number, NexusT>,
+  ids: ReadonlyMap<number, number> | undefined,
+): SpriteT | null {
+  for (let k = 0; k < owner.nexusIds.length; k++) {
+    const savedId = owner.nexusIds[k];
+    const liveId = ids ? ids.get(savedId) : savedId;
+    if (liveId === undefined) continue;
+    let nexus: NexusT | null = byId.get(liveId) ?? null;
+    if (!nexus || nexus.name !== owner.nexusNames[k]) continue;
+    for (let j = k - 1; j >= 0 && nexus; j--) {
+      let child: NexusT | null = null;
+      for (const c of nexus.components) {
+        if (c.type === 'nexus' && c.name === owner.nexusNames[j]) {
+          child = castTo<NexusT>(c);
+          break;
+        }
+      }
+      nexus = child;
+    }
+    if (!nexus) continue;
+    const sprites: SpriteT[] = [];
+    for (const c of nexus.components) {
+      if (c.type === 'sprite') sprites.push(c as unknown as SpriteT);
+    }
+    const byIndex = sprites[owner.spriteIndex];
+    if (byIndex && byIndex.name === owner.spriteName) return byIndex;
+    return sprites.find((s) => s.name === owner.spriteName) ?? null;
+  }
+  return null;
+}
+
+/** A nexus's first transform -- the one the scene index pairs its sprites with. */
+function firstTransformOf(nexus: NexusT): TransformT | null {
+  for (const c of nexus.components) {
+    if (c.type === 'transform') return c as unknown as TransformT;
+  }
+  return null;
+}
+
+/** Snapshot of a sprite's look and a world placement, as a phantom would show it. */
+function snapshotPhantom(
+  look: SpriteT,
+  name: string,
+  position: { x: number; y: number; z: number },
+  rotationY: number,
+  scale: { x: number; y: number; z: number },
+  owner: PhantomOwnerRef | null,
+  dissolve: number,
+  dissolving: boolean,
+): PhantomSnapshot {
+  return {
+    owner,
+    name,
+    position: [position.x, position.y, position.z],
+    rotationY,
+    scale: [scale.x, scale.y, scale.z],
+    dissolve,
+    dissolving,
+    sprite: {
+      textureMapKeys: { ...look.textureMapKeys },
+      frame: { ...look.frame },
+      anchor: [look.anchor.x, look.anchor.y],
+      tint: [look.tint.x, look.tint.y, look.tint.z, look.tint.w],
+      paletteRemap: clonePaletteRemap(look.paletteRemap),
+      opacity: look.opacity,
+      showSilhouette: look.showSilhouette,
+      silhouetteColor: [
+        look.silhouetteColor.x,
+        look.silhouetteColor.y,
+        look.silhouetteColor.z,
+        look.silhouetteColor.w,
+      ],
+      renderOrder: look.renderOrder,
+      emissionIntensity: look.emissionIntensity,
+      emissionColor: [
+        look.emissionColor.x,
+        look.emissionColor.y,
+        look.emissionColor.z,
+      ],
+    },
+  };
+}
+
+function isFiniteTuple(value: unknown, length: number): value is number[] {
+  return (
+    Array.isArray(value) &&
+    value.length === length &&
+    value.every((v) => typeof v === 'number' && Number.isFinite(v))
+  );
+}
+
+/** Whether `value` is complete enough to rebuild a phantom from. */
+function isPhantomSnapshot(value: unknown): value is PhantomSnapshot {
+  if (!value || typeof value !== 'object') return false;
+  const snap = value as Partial<PhantomSnapshot>;
+  const look = snap.sprite;
+  return (
+    isFiniteTuple(snap.position, 3) &&
+    isFiniteTuple(snap.scale, 3) &&
+    typeof snap.rotationY === 'number' &&
+    !!look &&
+    typeof look === 'object' &&
+    !!look.textureMapKeys &&
+    !!look.frame &&
+    isFiniteTuple(look.anchor, 2) &&
+    isFiniteTuple(look.tint, 4) &&
+    isFiniteTuple(look.silhouetteColor, 4) &&
+    isFiniteTuple(look.emissionColor, 3)
+  );
+}
+
+function isPhantomOwnerRef(value: unknown): value is PhantomOwnerRef {
+  if (!value || typeof value !== 'object') return false;
+  const owner = value as Partial<PhantomOwnerRef>;
+  return (
+    Array.isArray(owner.nexusIds) &&
+    Array.isArray(owner.nexusNames) &&
+    owner.nexusIds.length === owner.nexusNames.length &&
+    typeof owner.spriteName === 'string' &&
+    typeof owner.spriteIndex === 'number'
+  );
+}
+
+/** Rebuilds one phantom from a snapshot and registers it as live. */
+async function restorePhantom(
+  scene: NexusT,
+  snap: PhantomSnapshot,
+  ownerSprite: SpriteT | null,
+): Promise<boolean> {
+  const label = typeof snap.name === 'string' ? snap.name : 'restored';
+  const phantomNexus = (await newComponent(
+    'nexus',
+    { name: `${label}-fow-phantom` },
+    scene,
+  )) as NexusT | null;
+  if (!phantomNexus || phantomNexus.id === undefined) return false;
+  phantomNexus._generated = true;
+
+  const [px, py, pz] = snap.position;
+  const transformOptions: TransformOptions = {
+    name: `${label}-fow-phantom-transform`,
+    position: new Vector3D(px, py, pz),
+    rotation: new Vector3D(0, snap.rotationY, 0),
+    scale: new Vector3D(snap.scale[0], snap.scale[1], snap.scale[2]),
+  };
+  const phantomTransform = (await newComponent(
+    'transform',
+    transformOptions,
+    phantomNexus,
+  )) as TransformT | null;
+
+  const look = snap.sprite;
+  const spriteOptions: SpriteOptions = {
+    name: `${label}-fow-phantom-sprite`,
+    textureMapKeys: { ...look.textureMapKeys },
+    frame: { ...look.frame },
+    anchor: new Vector2D(look.anchor[0], look.anchor[1]),
+    tint: new Vector4D(look.tint[0], look.tint[1], look.tint[2], look.tint[3]),
+    // Validated by the sprite builder, so a hand-edited save cannot smuggle a
+    // malformed remap in.
+    paletteRemap: look.paletteRemap ?? null,
+    opacity: typeof look.opacity === 'number' ? look.opacity : 1,
+    showSilhouette: look.showSilhouette === true,
+    silhouetteColor: new Vector4D(
+      look.silhouetteColor[0],
+      look.silhouetteColor[1],
+      look.silhouetteColor[2],
+      look.silhouetteColor[3],
+    ),
+    renderOrder: typeof look.renderOrder === 'number' ? look.renderOrder : 0,
+    emissionIntensity:
+      typeof look.emissionIntensity === 'number' ? look.emissionIntensity : 0,
+    emissionColor: new Vector3D(
+      look.emissionColor[0],
+      look.emissionColor[1],
+      look.emissionColor[2],
+    ),
+    trackedByFog: false,
+    _fowStatus: 'phantom',
+  };
+  const phantomSprite = (await newComponent(
+    'sprite',
+    spriteOptions,
+    phantomNexus,
+  )) as SpriteT | null;
+
+  const ownerHolder = ownerSprite?.parent;
+  const ownerTransform =
+    ownerHolder && ownerHolder.type === 'nexus'
+      ? firstTransformOf(castTo<NexusT>(ownerHolder))
+      : null;
+  // An owner with no transform could never be "standing over" anything, and
+  // the sweep never indexes it -- treat it as gone.
+  const owner = ownerTransform ? ownerSprite : null;
+
+  const dissolve =
+    typeof snap.dissolve === 'number'
+      ? Math.max(0, Math.min(1, snap.dissolve))
+      : 0;
+  livePhantoms.set(phantomNexus.id, {
+    nexus: phantomNexus,
+    phantomTransform,
+    phantomSprite,
+    ownerSprite: owner,
+    ownerTransform: owner ? ownerTransform : null,
+    label,
+    spawnPos: { x: px, y: py, z: pz },
+    seq: phantomSeq++,
+    dissolve,
+  });
+  if (owner && owner.id !== undefined) {
+    phantomOwner.set(phantomNexus.id, owner.id);
+  }
+  if (snap.dissolving === true || dissolve > 0) {
+    dissolvingPhantoms.add(phantomNexus.id);
+  }
+  return true;
+}
+
+/**
  * Methods interface for fog-of-war component.
  * Provides type-safe method signatures for the $ Proxy.
  */
@@ -694,6 +996,48 @@ export interface FogOfWarMethods extends ComponentMethods {
    * the device limit. `dropped` is always 0 with no cap set.
    */
   getVisionStats: (fow: FogOfWarT) => VisibilityStats;
+  /**
+   * A JSON-safe snapshot of all explored ground, for a game that saves its own
+   * state instead of serializing the scene. `null` when the scene has no
+   * cell-map. Terrain memory only: phantoms are not included and rebuild
+   * themselves as vision returns.
+   */
+  exportExplored: (fow: FogOfWarT) => ExploredState | null;
+  /**
+   * Restores a snapshot from `exportExplored`, merging with anything already
+   * explored (`clearExplored` first to replace). Callable as soon as the
+   * scene's cell-map exists; ground outside the loaded window is restored as
+   * the window reaches it.
+   */
+  importExplored: (fow: FogOfWarT, state: ExploredState) => void;
+  /** Forgets all explored ground. */
+  clearExplored: (fow: FogOfWarT) => void;
+  /**
+   * A JSON-safe snapshot of every phantom -- the frozen stand-ins left where
+   * tracked sprites were last seen -- oldest first. Together with
+   * `exportExplored` this is the whole of fog-of-war's persistent state. A
+   * sprite caught mid-handover (out of sight, phantom not yet attached) is
+   * included as the phantom it is about to become.
+   */
+  exportPhantoms: (fow: FogOfWarT) => PhantomState;
+  /**
+   * Rebuilds the phantoms in `state` and reconnects each to the sprite it
+   * stands in for. Call it AFTER the scene's sprites exist; resolves to the
+   * number restored.
+   *
+   * A rebuilt scene has new engine ids, so pass `{ ids }` (saved nexus id ->
+   * current nexus id; any ancestor of the sprite will do) or `{ resolveOwner }`.
+   * A phantom whose sprite cannot be found is still restored: it stands until
+   * vision reaches it, then dissolves. Adds to any phantoms already present
+   * (`clearPhantoms` first to replace).
+   */
+  importPhantoms: (
+    fow: FogOfWarT,
+    state: PhantomState,
+    options?: PhantomImportOptions,
+  ) => Promise<number>;
+  /** Removes every phantom at once, without a dissolve. */
+  clearPhantoms: (fow: FogOfWarT) => void;
   update: (component: ComponentData, deltaTime: number) => void;
   dispose: (component: ComponentData) => void;
 }
@@ -788,6 +1132,129 @@ export const FogOfWar: FogOfWarMethods = {
 
   getVisionStats: (_fow: FogOfWarT): VisibilityStats => {
     return getVisibilityStats();
+  },
+
+  exportExplored: (fow: FogOfWarT): ExploredState | null => {
+    const cellMap = exploredCellMap(fow);
+    return cellMap ? CellMap.exportExploredState(cellMap) : null;
+  },
+
+  importExplored: (fow: FogOfWarT, state: ExploredState): void => {
+    const cellMap = exploredCellMap(fow);
+    if (!cellMap) {
+      console.warn(
+        `[fog-of-war] importExplored: no cell-map in the scene; nothing restored`,
+      );
+      return;
+    }
+    CellMap.importExploredState(cellMap, state);
+  },
+
+  clearExplored: (fow: FogOfWarT): void => {
+    const cellMap = exploredCellMap(fow);
+    if (cellMap) CellMap.clearExploredState(cellMap);
+  },
+
+  exportPhantoms: (_fow: FogOfWarT): PhantomState => {
+    const entries = [...livePhantoms.entries()]
+      .filter(([, e]) => e.nexus._disposed !== true)
+      .sort((a, b) => a[1].seq - b[1].seq);
+    const phantoms: PhantomSnapshot[] = [];
+    for (const [phantomId, entry] of entries) {
+      const look = entry.phantomSprite;
+      const at = entry.phantomTransform;
+      if (!look || !at) continue;
+      const owner = entry.ownerSprite;
+      phantoms.push(
+        snapshotPhantom(
+          look,
+          entry.label,
+          at.position,
+          at.rotation.y,
+          at.scale,
+          owner && owner._disposed !== true ? phantomOwnerRef(owner) : null,
+          entry.dissolve,
+          dissolvingPhantoms.has(phantomId),
+        ),
+      );
+    }
+    // Mid-handover: out of sight, still drawing its own memory look while the
+    // phantom spawn lands. Saved now, that memory would otherwise be lost.
+    const index = sceneIndex;
+    for (let i = 0; i < index.count; i++) {
+      const sprite = index.sprites[i];
+      if (sprite._disposed === true || sprite._fowStatus !== 'obscuring') {
+        continue;
+      }
+      const transform = index.transforms[i];
+      phantoms.push(
+        snapshotPhantom(
+          sprite,
+          sprite.name,
+          transform.worldPosition,
+          transform.worldRotation.y,
+          transform.worldScale,
+          phantomOwnerRef(sprite),
+          0,
+          false,
+        ),
+      );
+    }
+    return { version: 1, phantoms };
+  },
+
+  importPhantoms: async (
+    fow: FogOfWarT,
+    state: PhantomState,
+    options?: PhantomImportOptions,
+  ): Promise<number> => {
+    const scene = sceneRootOf(fow);
+    if (
+      !scene ||
+      !state ||
+      state.version !== 1 ||
+      !Array.isArray(state.phantoms)
+    ) {
+      console.warn(
+        `[fog-of-war] importPhantoms: not a phantom-state snapshot; ignored`,
+      );
+      return 0;
+    }
+    const byId = options?.resolveOwner ? null : indexNexusesById(scene);
+    let restored = 0;
+    let malformed = 0;
+    for (const snap of state.phantoms) {
+      if (!isPhantomSnapshot(snap)) {
+        malformed++;
+        continue;
+      }
+      let owner: SpriteT | null = null;
+      if (isPhantomOwnerRef(snap.owner)) {
+        const found = byId
+          ? resolvePhantomOwner(snap.owner, byId, options?.ids)
+          : (options!.resolveOwner!(snap.owner) as ComponentData | null);
+        if (found && found.type === 'sprite' && found._disposed !== true) {
+          owner = found as unknown as SpriteT;
+        }
+      }
+      if (await restorePhantom(scene, snap, owner)) restored++;
+    }
+    if (malformed > 0) {
+      console.warn(
+        `[fog-of-war] importPhantoms: ${malformed} malformed phantom${malformed === 1 ? '' : 's'} skipped`,
+      );
+    }
+    return restored;
+  },
+
+  clearPhantoms: (_fow: FogOfWarT): void => {
+    for (const entry of livePhantoms.values()) {
+      if (entry.nexus._disposed !== true) markForDisposal(entry.nexus);
+    }
+    livePhantoms.clear();
+    phantomOwner.clear();
+    coveredPhantoms.clear();
+    dissolvingPhantoms.clear();
   },
 
   /**
